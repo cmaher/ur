@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
+use std::io::Write;
 use tarpc::client;
 use tarpc::context;
 use tarpc::tokio_serde::formats::Bincode;
-use ur_rpc::UrAgentBridgeClient;
+use ur_rpc::{ExecGitRequest, UrAgentBridgeClient};
 
 const DEFAULT_SOCKET: &str = "/var/run/ur.sock";
 
@@ -72,7 +73,16 @@ async fn main() -> anyhow::Result<()> {
             println!("Asking: {question}");
         }
         Commands::Git { args } => {
-            println!("Git: {args:?}");
+            let process_id = std::env::var("UR_PROCESS_ID")
+                .map_err(|_| anyhow::anyhow!("UR_PROCESS_ID environment variable not set"))?;
+            let client = connect(&cli.socket).await?;
+            let resp = client
+                .exec_git(context::current(), ExecGitRequest { process_id, args })
+                .await?
+                .map_err(|e| anyhow::anyhow!(e))?;
+            std::io::stdout().write_all(resp.stdout.as_bytes())?;
+            std::io::stderr().write_all(resp.stderr.as_bytes())?;
+            std::process::exit(resp.exit_code);
         }
         Commands::Ticket { command } => match command {
             TicketCommands::Read => println!("Reading ticket..."),
