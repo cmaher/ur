@@ -8,6 +8,9 @@ use tracing::info;
 
 use ur_rpc::*;
 
+mod config;
+pub use config::Config;
+
 #[derive(Parser)]
 #[command(
     name = "urd",
@@ -184,6 +187,11 @@ async fn accept_loop(socket_path: PathBuf) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    let cfg = Config::load()?;
+    info!("config dir: {}", cfg.config_dir.display());
+    info!("workspace:  {}", cfg.workspace.display());
+    tokio::fs::create_dir_all(&cfg.workspace).await?;
 
     let cli = Cli::parse();
     tokio::fs::create_dir_all(&cli.socket_dir).await?;
