@@ -1,13 +1,12 @@
-FROM alpine:3.21
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     tmux \
     curl \
     ca-certificates \
     coreutils \
-    libstdc++ \
-    libgcc
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code CLI (script is cached locally, binary downloaded at build time)
 COPY install-claude.sh /tmp/install-claude.sh
