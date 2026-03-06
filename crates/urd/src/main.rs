@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use futures::StreamExt;
@@ -10,6 +11,9 @@ use ur_rpc::*;
 
 mod config;
 pub use config::Config;
+
+mod git_exec;
+pub use git_exec::RepoRegistry;
 
 #[derive(Parser)]
 #[command(
@@ -23,7 +27,9 @@ struct Cli {
 }
 
 #[derive(Clone)]
-struct BridgeServer;
+struct BridgeServer {
+    repo_registry: Arc<RepoRegistry>,
+}
 
 impl UrAgentBridge for BridgeServer {
     async fn ping(self, _ctx: tarpc::context::Context) -> String {
@@ -41,9 +47,11 @@ impl UrAgentBridge for BridgeServer {
     async fn exec_git(
         self,
         _ctx: tarpc::context::Context,
-        _req: ExecGitRequest,
+        req: ExecGitRequest,
     ) -> Result<GitResponse, String> {
-        Err("exec_git not yet implemented".into())
+        self.repo_registry
+            .exec_git(&req.process_id, &req.args)
+            .await
     }
 
     async fn report_status(
@@ -162,7 +170,7 @@ impl UrAgentBridge for BridgeServer {
     }
 }
 
-async fn accept_loop(socket_path: PathBuf) -> anyhow::Result<()> {
+async fn accept_loop(socket_path: PathBuf, server: BridgeServer) -> anyhow::Result<()> {
     // Remove stale socket if it exists
     let _ = tokio::fs::remove_file(&socket_path).await;
 
@@ -172,9 +180,10 @@ async fn accept_loop(socket_path: PathBuf) -> anyhow::Result<()> {
     while let Some(transport) = listener.next().await {
         let transport = transport?;
         let channel = server::BaseChannel::with_defaults(transport);
+        let srv = server.clone();
         tokio::spawn(
             channel
-                .execute(BridgeServer.serve())
+                .execute(srv.serve())
                 .for_each(|response| async {
                     tokio::spawn(response);
                 }),
@@ -193,9 +202,12 @@ async fn main() -> anyhow::Result<()> {
     info!("workspace:  {}", cfg.workspace.display());
     tokio::fs::create_dir_all(&cfg.workspace).await?;
 
+    let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace));
+    let server = BridgeServer { repo_registry };
+
     let cli = Cli::parse();
     tokio::fs::create_dir_all(&cli.socket_dir).await?;
 
     let socket_path = cli.socket_dir.join("ur.sock");
-    accept_loop(socket_path).await
+    accept_loop(socket_path, server).await
 }
