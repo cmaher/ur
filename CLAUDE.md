@@ -23,3 +23,9 @@ Cargo workspace with four crates:
 - Read `.bacon-locations` to get current diagnostics (errors/warnings from the last compile). This file is auto-updated by bacon's export-locations feature.
 - If `.bacon-locations` doesn't exist or is empty, bacon may not be running. Fall back to `cargo check --message-format short 2>&1`.
 - If you need to see only errors (no warnings), filter lines starting with `error` from `.bacon-locations`.
+
+## Conventions
+
+- **Plans** (`docs/plans/`): Filenames and content MUST include the relevant ticket number (e.g., `ur-a1b2c`).
+- **PR descriptions**: MUST reference the ticket number being addressed.
+- **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.
