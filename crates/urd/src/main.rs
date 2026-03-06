@@ -23,6 +23,10 @@ struct Cli {
 struct BridgeServer;
 
 impl UrAgentBridge for BridgeServer {
+    async fn ping(self, _ctx: tarpc::context::Context) -> String {
+        "pong".into()
+    }
+
     async fn ask_human(
         self,
         _ctx: tarpc::context::Context,

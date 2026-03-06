@@ -4,6 +4,8 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-clap = { workspace = true }
+anyhow = "1"
+clap = { workspace = true, features = ["env"] }
+tarpc = { workspace = true }
 tokio = { workspace = true }
 ur_rpc = { path = "../ur_rpc" }

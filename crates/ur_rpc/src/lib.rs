@@ -100,6 +100,7 @@ pub struct ContainerRunResponse {
 
 #[tarpc::service]
 pub trait UrAgentBridge {
+    async fn ping() -> String;
     async fn ask_human(req: AskHumanRequest) -> Result<AskHumanResponse, String>;
     async fn exec_git(req: ExecGitRequest) -> Result<GitResponse, String>;
     async fn report_status(req: ReportStatusRequest) -> Result<(), String>;

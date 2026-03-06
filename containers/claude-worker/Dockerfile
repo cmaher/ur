@@ -14,8 +14,8 @@ RUN bash /tmp/install-claude.sh && rm /tmp/install-claude.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# agent_tools binary will be copied in at build time once it exists.
-# For now, create placeholder so the image shape is correct.
-RUN mkdir -p /usr/local/bin
+# Copy the pre-built agent_tools binary into the image
+COPY agent_tools /usr/local/bin/agent_tools
+RUN chmod +x /usr/local/bin/agent_tools
 
 ENTRYPOINT ["/entrypoint.sh"]

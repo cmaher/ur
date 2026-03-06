@@ -11,6 +11,10 @@ use ur_rpc::*;
 struct StubBridge;
 
 impl UrAgentBridge for StubBridge {
+    async fn ping(self, _ctx: context::Context) -> String {
+        "pong".into()
+    }
+
     async fn ask_human(
         self,
         _ctx: context::Context,
@@ -132,6 +136,10 @@ async fn roundtrip_over_unix_socket() {
         .await
         .unwrap();
     let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
+
+    // ping
+    let resp = client.ping(context::current()).await.unwrap();
+    assert_eq!(resp, "pong");
 
     // ask_human
     let resp = client
