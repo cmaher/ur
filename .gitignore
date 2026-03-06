@@ -1,3 +1,9 @@
 # Tickets (tracked on orphan 'tickets' branch via git worktree)
 .tickets
 .worktrees
+
+# Build artifacts
+target/
+
+# Bacon
+.bacon-locations

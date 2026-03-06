@@ -1,0 +1,9 @@
+[package]
+name = "agent_tools"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+tokio = { workspace = true }
+ur_rpc = { path = "../ur_rpc" }
