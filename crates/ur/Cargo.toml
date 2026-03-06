@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 clap = { workspace = true }
+container = { path = "../container" }
 tarpc = { workspace = true }
 tokio = { workspace = true }
 ur_rpc = { path = "../ur_rpc" }

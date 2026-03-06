@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::process;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use container::ContainerId;
 use tarpc::tokio_serde::formats::Bincode;
 
 use ur_rpc::*;
@@ -65,6 +67,14 @@ async fn connect(socket: &PathBuf) -> Result<UrAgentBridgeClient> {
         .with_context(|| format!("failed to connect to urd at {}", socket.display()))?;
     let client = UrAgentBridgeClient::new(tarpc::client::Config::default(), transport).spawn();
     Ok(client)
+}
+
+fn process_attach(process_id: &str) -> Result<()> {
+    let runtime = container::runtime_from_env();
+    let id = ContainerId(process_id.to_string());
+    let command: Vec<String> = vec!["tmux".into(), "attach".into(), "-t".into(), "agent".into()];
+    let status = runtime.exec_interactive(&id, &command)?;
+    process::exit(status.code().unwrap_or(1));
 }
 
 async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result<()> {
@@ -145,23 +155,26 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
-        Commands::Process { command } => {
-            let client = connect(&cli.socket).await?;
-            match command {
-                ProcessCommands::Launch { ticket_id } => {
-                    process_launch(&client, &ticket_id).await?;
-                }
-                ProcessCommands::Status { process_id } => {
-                    println!("Status: {process_id:?}");
-                }
-                ProcessCommands::Attach { process_id } => {
-                    println!("Attaching to {process_id}...");
-                }
-                ProcessCommands::Stop { process_id } => {
-                    process_stop(&client, &process_id).await?;
+        Commands::Process { command } => match command {
+            ProcessCommands::Attach { process_id } => {
+                process_attach(&process_id)?;
+            }
+            other => {
+                let client = connect(&cli.socket).await?;
+                match other {
+                    ProcessCommands::Launch { ticket_id } => {
+                        process_launch(&client, &ticket_id).await?;
+                    }
+                    ProcessCommands::Status { process_id } => {
+                        println!("Status: {process_id:?}");
+                    }
+                    ProcessCommands::Stop { process_id } => {
+                        process_stop(&client, &process_id).await?;
+                    }
+                    ProcessCommands::Attach { .. } => unreachable!(),
                 }
             }
-        }
+        },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
                 println!("Creating ticket: {title} (parent: {parent:?})");
