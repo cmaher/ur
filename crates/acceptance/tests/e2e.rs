@@ -62,13 +62,8 @@ fn run_cmd(cmd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Ou
     for &(k, v) in envs {
         c.env(k, v);
     }
-    c.output().unwrap_or_else(|e| {
-        panic!(
-            "failed to run {} {}: {e}",
-            cmd.display(),
-            args.join(" ")
-        )
-    })
+    c.output()
+        .unwrap_or_else(|e| panic!("failed to run {} {}: {e}", cmd.display(), args.join(" ")))
 }
 
 /// Kill a child process and wait for it to exit.
