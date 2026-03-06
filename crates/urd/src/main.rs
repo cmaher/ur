@@ -70,6 +70,73 @@ impl UrAgentBridge for BridgeServer {
     ) -> Result<(), String> {
         Err("ticket_note not yet implemented".into())
     }
+
+    async fn container_build(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ContainerBuildRequest,
+    ) -> Result<ContainerBuildResponse, String> {
+        let rt = container::runtime_from_env();
+        let opts = container::BuildOpts {
+            tag: req.tag,
+            dockerfile: PathBuf::from(req.dockerfile),
+            context: PathBuf::from(req.context),
+        };
+        let image = rt.build(&opts).map_err(|e| e.to_string())?;
+        Ok(ContainerBuildResponse {
+            image_id: image.0,
+        })
+    }
+
+    async fn container_run(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ContainerRunRequest,
+    ) -> Result<ContainerRunResponse, String> {
+        let rt = container::runtime_from_env();
+        let opts = container::RunOpts {
+            image: container::ImageId(req.image_id),
+            name: req.name,
+            cpus: req.cpus,
+            memory: req.memory,
+            volumes: req
+                .volumes
+                .into_iter()
+                .map(|(h, g)| (PathBuf::from(h), PathBuf::from(g)))
+                .collect(),
+            socket_mounts: req
+                .socket_mounts
+                .into_iter()
+                .map(|(h, g)| (PathBuf::from(h), PathBuf::from(g)))
+                .collect(),
+            workdir: req.workdir.map(PathBuf::from),
+            command: req.command,
+        };
+        let id = rt.run(&opts).map_err(|e| e.to_string())?;
+        Ok(ContainerRunResponse {
+            container_id: id.0,
+        })
+    }
+
+    async fn container_stop(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ContainerIdRequest,
+    ) -> Result<(), String> {
+        let rt = container::runtime_from_env();
+        rt.stop(&container::ContainerId(req.container_id))
+            .map_err(|e| e.to_string())
+    }
+
+    async fn container_rm(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ContainerIdRequest,
+    ) -> Result<(), String> {
+        let rt = container::runtime_from_env();
+        rt.rm(&container::ContainerId(req.container_id))
+            .map_err(|e| e.to_string())
+    }
 }
 
 async fn accept_loop(socket_path: PathBuf) -> anyhow::Result<()> {
