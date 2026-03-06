@@ -150,10 +150,7 @@ mod tests {
     #[test]
     fn run_resolves_tmp_symlink_on_volumes() {
         let args = AppleRuntime::run_args(&sample_run_opts());
-        let vol_arg = args
-            .iter()
-            .find(|a| a.contains("/workspace"))
-            .unwrap();
+        let vol_arg = args.iter().find(|a| a.contains("/workspace")).unwrap();
         assert!(vol_arg.starts_with("/private/tmp/ur/workspace:"));
     }
 

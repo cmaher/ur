@@ -177,8 +177,7 @@ mod tests {
         let mut opts = sample_run_opts();
         opts.command = vec!["tmux".into(), "new-session".into(), "-d".into()];
         let args = DockerRuntime::run_args(&opts);
-        let last_three: Vec<&str> =
-            args[args.len() - 3..].iter().map(|s| s.as_str()).collect();
+        let last_three: Vec<&str> = args[args.len() - 3..].iter().map(|s| s.as_str()).collect();
         assert_eq!(last_three, vec!["tmux", "new-session", "-d"]);
     }
 
