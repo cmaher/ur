@@ -71,14 +71,17 @@ impl UrAgentBridge for StubBridge {
 }
 
 async fn spawn_server(sock: &Path) {
-    let mut listener =
-        tarpc::serde_transport::unix::listen(sock, Bincode::default).await.unwrap();
+    let mut listener = tarpc::serde_transport::unix::listen(sock, Bincode::default)
+        .await
+        .unwrap();
 
     tokio::spawn(async move {
         while let Some(Ok(transport)) = listener.next().await {
             let channel = server::BaseChannel::with_defaults(transport);
             let responses = channel.execute(StubBridge.serve());
-            tokio::spawn(responses.for_each(|resp| async { tokio::spawn(resp); }));
+            tokio::spawn(responses.for_each(|resp| async {
+                tokio::spawn(resp);
+            }));
         }
     });
 }
@@ -91,16 +94,20 @@ async fn roundtrip_over_unix_socket() {
     spawn_server(&sock).await;
 
     // Connect client
-    let transport =
-        tarpc::serde_transport::unix::connect(&sock, Bincode::default).await.unwrap();
+    let transport = tarpc::serde_transport::unix::connect(&sock, Bincode::default)
+        .await
+        .unwrap();
     let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
 
     // ask_human
     let resp = client
-        .ask_human(context::current(), AskHumanRequest {
-            process_id: "p1".into(),
-            question: "hello?".into(),
-        })
+        .ask_human(
+            context::current(),
+            AskHumanRequest {
+                process_id: "p1".into(),
+                question: "hello?".into(),
+            },
+        )
         .await
         .unwrap()
         .unwrap();
@@ -108,10 +115,13 @@ async fn roundtrip_over_unix_socket() {
 
     // exec_git
     let resp = client
-        .exec_git(context::current(), ExecGitRequest {
-            process_id: "p1".into(),
-            args: vec!["status".into()],
-        })
+        .exec_git(
+            context::current(),
+            ExecGitRequest {
+                process_id: "p1".into(),
+                args: vec!["status".into()],
+            },
+        )
         .await
         .unwrap()
         .unwrap();
@@ -120,19 +130,25 @@ async fn roundtrip_over_unix_socket() {
 
     // report_status
     client
-        .report_status(context::current(), ReportStatusRequest {
-            process_id: "p1".into(),
-            status: "working".into(),
-        })
+        .report_status(
+            context::current(),
+            ReportStatusRequest {
+                process_id: "p1".into(),
+                status: "working".into(),
+            },
+        )
         .await
         .unwrap()
         .unwrap();
 
     // ticket_read
     let resp = client
-        .ticket_read(context::current(), TicketReadRequest {
-            ticket_id: "ur-123".into(),
-        })
+        .ticket_read(
+            context::current(),
+            TicketReadRequest {
+                ticket_id: "ur-123".into(),
+            },
+        )
         .await
         .unwrap()
         .unwrap();
@@ -140,11 +156,14 @@ async fn roundtrip_over_unix_socket() {
 
     // ticket_spawn
     let resp = client
-        .ticket_spawn(context::current(), TicketSpawnRequest {
-            parent_id: "ur-123".into(),
-            title: "sub task".into(),
-            description: "do stuff".into(),
-        })
+        .ticket_spawn(
+            context::current(),
+            TicketSpawnRequest {
+                parent_id: "ur-123".into(),
+                title: "sub task".into(),
+                description: "do stuff".into(),
+            },
+        )
         .await
         .unwrap()
         .unwrap();
@@ -152,10 +171,13 @@ async fn roundtrip_over_unix_socket() {
 
     // ticket_note
     client
-        .ticket_note(context::current(), TicketNoteRequest {
-            ticket_id: "ur-123".into(),
-            note: "progress update".into(),
-        })
+        .ticket_note(
+            context::current(),
+            TicketNoteRequest {
+                ticket_id: "ur-123".into(),
+                note: "progress update".into(),
+            },
+        )
         .await
         .unwrap()
         .unwrap();

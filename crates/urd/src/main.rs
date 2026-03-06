@@ -76,8 +76,7 @@ async fn accept_loop(socket_path: PathBuf) -> anyhow::Result<()> {
     // Remove stale socket if it exists
     let _ = tokio::fs::remove_file(&socket_path).await;
 
-    let mut listener =
-        tarpc::serde_transport::unix::listen(&socket_path, Bincode::default).await?;
+    let mut listener = tarpc::serde_transport::unix::listen(&socket_path, Bincode::default).await?;
     info!("urd listening on {}", socket_path.display());
 
     while let Some(transport) = listener.next().await {
