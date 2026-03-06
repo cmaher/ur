@@ -33,6 +33,8 @@ impl AppleRuntime {
     pub fn build_args(opts: &BuildOpts) -> Vec<String> {
         vec![
             "build".into(),
+            "--arch".into(),
+            std::env::consts::ARCH.into(),
             "--tag".into(),
             opts.tag.clone(),
             "--file".into(),
@@ -171,6 +173,7 @@ mod tests {
         };
         let args = AppleRuntime::build_args(&opts);
         assert_eq!(args[0], "build");
+        assert!(args.contains(&s("--arch")));
         assert!(args.contains(&s("--tag")));
     }
 }
