@@ -8,5 +8,6 @@ version = "0.1.0"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
+tarpc = { version = "0.37", features = ["serde-transport-bincode", "unix"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
