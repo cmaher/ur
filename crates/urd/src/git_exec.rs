@@ -461,9 +461,8 @@ mod tests {
             .unwrap();
         assert!(init.status.success(), "git init failed");
 
-        // Use a short path for the socket dir to avoid SUN_LEN limits on macOS
-        let socket_dir = PathBuf::from("/tmp/ur-test-socks");
-        std::fs::create_dir_all(&socket_dir).unwrap();
+        let socket_tmp = tempfile::tempdir().unwrap();
+        let socket_dir = socket_tmp.path().to_path_buf();
 
         let reg = RepoRegistry::new(tmp.path().to_path_buf());
         reg.register("p1", repo_name);

@@ -20,11 +20,7 @@ pub use git_exec::RepoRegistry;
     name = "urd",
     about = "Ur daemon — coordination server for containerized agents"
 )]
-struct Cli {
-    /// Socket directory for agent UDS connections
-    #[arg(long, default_value = "/tmp/ur/sockets")]
-    socket_dir: PathBuf,
-}
+struct Cli {}
 
 #[derive(Clone)]
 struct BridgeServer {
@@ -208,22 +204,24 @@ async fn accept_loop(socket_path: PathBuf, server: BridgeServer) -> anyhow::Resu
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    let _cli = Cli::parse();
+
     let cfg = Config::load()?;
     info!("config dir: {}", cfg.config_dir.display());
     info!("workspace:  {}", cfg.workspace.display());
     tokio::fs::create_dir_all(&cfg.workspace).await?;
+    tokio::fs::create_dir_all(&cfg.config_dir).await?;
+
+    let socket_path = cfg.socket_path();
+    info!("socket:     {}", socket_path.display());
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace));
 
-    let cli = Cli::parse();
-    tokio::fs::create_dir_all(&cli.socket_dir).await?;
-
     let server = BridgeServer {
         repo_registry,
-        socket_dir: cli.socket_dir.clone(),
+        socket_dir: cfg.config_dir.clone(),
         process_id: String::new(),
     };
 
-    let socket_path = cli.socket_dir.join("ur.sock");
     accept_loop(socket_path, server).await
 }

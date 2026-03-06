@@ -11,9 +11,9 @@ use ur_rpc::*;
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// Path to the urd control socket
-    #[arg(long, default_value = "/tmp/ur/sockets/ur.sock")]
-    socket: PathBuf,
+    /// Path to the urd control socket (default: $UR_CONFIG/ur.sock or ~/.ur/ur.sock)
+    #[arg(long)]
+    socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -98,8 +98,7 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
 
     // Run the container
     let name = format!("ur-agent-{ticket_id}");
-    let socket_dir = PathBuf::from("/tmp/ur/sockets");
-    let host_socket = socket_dir.join("ur.sock");
+    let host_socket = ur_rpc::default_socket_path();
 
     println!("Starting container {name}...");
     let run_resp = client
@@ -153,6 +152,7 @@ async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let socket = cli.socket.unwrap_or_else(ur_rpc::default_socket_path);
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
                 process_attach(&process_id)?;
             }
             other => {
-                let client = connect(&cli.socket).await?;
+                let client = connect(&socket).await?;
                 match other {
                     ProcessCommands::Launch { ticket_id } => {
                         process_launch(&client, &ticket_id).await?;

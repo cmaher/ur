@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tarpc::client;
@@ -8,14 +8,12 @@ use tarpc::tokio_serde::formats::Bincode;
 use ur_rpc::stream::{connect_stream, recv_output};
 use ur_rpc::{CommandOutput, ExecGitRequest, UrAgentBridgeClient};
 
-const DEFAULT_SOCKET: &str = "/var/run/ur.sock";
-
 #[derive(Parser)]
 #[command(name = "agent_tools", about = "Worker CLI for Ur containers")]
 struct Cli {
-    /// Path to the urd Unix domain socket
-    #[arg(long, env = "UR_SOCKET", default_value = DEFAULT_SOCKET)]
-    socket: String,
+    /// Path to the urd Unix domain socket (default: $UR_CONFIG/ur.sock or ~/.ur/ur.sock)
+    #[arg(long, env = "UR_SOCKET")]
+    socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -82,7 +80,7 @@ async fn consume_command_stream(socket_path: &Path) -> anyhow::Result<i32> {
     Ok(exit_code)
 }
 
-async fn connect(socket: &str) -> anyhow::Result<UrAgentBridgeClient> {
+async fn connect(socket: &Path) -> anyhow::Result<UrAgentBridgeClient> {
     let transport = tarpc::serde_transport::unix::connect(socket, Bincode::default).await?;
     let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
     Ok(client)
@@ -91,9 +89,10 @@ async fn connect(socket: &str) -> anyhow::Result<UrAgentBridgeClient> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let socket = cli.socket.unwrap_or_else(ur_rpc::default_socket_path);
     match cli.command {
         Commands::Ping => {
-            let client = connect(&cli.socket).await?;
+            let client = connect(&socket).await?;
             let resp = client.ping(context::current()).await?;
             println!("{resp}");
         }
@@ -101,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Asking: {question}");
         }
         Commands::Git { args } => {
-            let client = connect(&cli.socket).await?;
+            let client = connect(&socket).await?;
             let resp = client
                 .exec_git_stream(context::current(), ExecGitRequest { args })
                 .await?
