@@ -74,9 +74,7 @@ impl UrAgentBridge for StubBridge {
         _ctx: context::Context,
         req: ContainerBuildRequest,
     ) -> Result<ContainerBuildResponse, String> {
-        Ok(ContainerBuildResponse {
-            image_id: req.tag,
-        })
+        Ok(ContainerBuildResponse { image_id: req.tag })
     }
 
     async fn container_run(
