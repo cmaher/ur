@@ -24,7 +24,7 @@ type CommandSink = SerdeFramed<
 >;
 
 /// Type alias for a framed receiver of `CommandOutput` over a Unix stream.
-type CommandStream = SerdeFramed<
+pub type CommandStream = SerdeFramed<
     Framed<UnixStream, LengthDelimitedCodec>,
     CommandOutput, // Item
     CommandOutput, // SinkItem (unused for stream)

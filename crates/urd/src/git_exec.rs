@@ -266,6 +266,23 @@ fn short_id() -> String {
 mod tests {
     use super::*;
 
+    /// Collect all stdout chunks and the exit code from a command stream.
+    async fn collect_stream(
+        stream: &mut ur_rpc::stream::CommandStream,
+    ) -> (Vec<Vec<u8>>, Option<i32>) {
+        use ur_rpc::stream::recv_output;
+        let mut stdout_chunks = Vec::new();
+        let mut exit_code = None;
+        while let Some(output) = recv_output(stream).await {
+            match output.unwrap() {
+                CommandOutput::Stdout(data) => stdout_chunks.push(data),
+                CommandOutput::Stderr(_) => {}
+                CommandOutput::Exit(code) => exit_code = Some(code),
+            }
+        }
+        (stdout_chunks, exit_code)
+    }
+
     #[test]
     fn validate_allows_normal_args() {
         let args: Vec<String> = vec!["status".into()];
@@ -430,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_git_stream_delivers_chunks() {
-        use ur_rpc::stream::{connect_stream, recv_output};
+        use ur_rpc::stream::connect_stream;
 
         let tmp = tempfile::tempdir().unwrap();
         let repo_name = "stream-repo";
@@ -459,17 +476,7 @@ mod tests {
         // Connect to the stream socket and collect output
         let stream_path = Path::new(&resp.stream_socket);
         let mut stream = connect_stream(stream_path).await.unwrap();
-
-        let mut stdout_chunks = Vec::new();
-        let mut exit_code = None;
-
-        while let Some(result) = recv_output(&mut stream).await {
-            match result.unwrap() {
-                CommandOutput::Stdout(data) => stdout_chunks.push(data),
-                CommandOutput::Stderr(_) => {}
-                CommandOutput::Exit(code) => exit_code = Some(code),
-            }
-        }
+        let (stdout_chunks, exit_code) = collect_stream(&mut stream).await;
 
         assert_eq!(exit_code, Some(0), "git status should exit 0");
         let all_stdout: Vec<u8> = stdout_chunks.into_iter().flatten().collect();
