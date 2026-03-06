@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
-use ur_rpc::GitResponse;
+use tokio::io::AsyncReadExt;
+use tracing::warn;
+use ur_rpc::stream::{accept_stream_sink, bind_stream_listener, send_output};
+use ur_rpc::{CommandOutput, GitResponse, StreamingExecResponse};
 
 /// Flags that could allow an agent to escape its repo directory.
 const BLOCKED_FLAGS: &[&str] = &["-C", "--git-dir", "--work-tree"];
@@ -53,14 +56,23 @@ impl RepoRegistry {
     }
 
     /// Validate git args and execute `git <args>` in the process's repo directory.
-    pub async fn exec_git(
-        &self,
-        process_id: &str,
-        args: &[String],
-    ) -> Result<GitResponse, String> {
+    pub async fn exec_git(&self, process_id: &str, args: &[String]) -> Result<GitResponse, String> {
         let repo_path = self.resolve(process_id)?;
         validate_args(args)?;
         run_git(&repo_path, args).await
+    }
+
+    /// Streaming variant: spawns git, creates a side-channel Unix socket,
+    /// and streams stdout/stderr chunks over it.
+    pub async fn exec_git_stream(
+        &self,
+        socket_dir: &Path,
+        process_id: &str,
+        args: &[String],
+    ) -> Result<StreamingExecResponse, String> {
+        let repo_path = self.resolve(process_id)?;
+        validate_args(args)?;
+        run_git_stream(socket_dir, &repo_path, args).await
     }
 }
 
@@ -120,6 +132,136 @@ async fn run_git(repo_path: &Path, args: &[String]) -> Result<GitResponse, Strin
     })
 }
 
+/// Streaming variant of `run_git`: spawns git with piped stdout/stderr,
+/// creates a per-command Unix socket, and sends `CommandOutput` frames
+/// as data arrives. Returns the socket path for the client to connect to.
+async fn run_git_stream(
+    socket_dir: &Path,
+    repo_path: &Path,
+    args: &[String],
+) -> Result<StreamingExecResponse, String> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    let socket_path = socket_dir.join(format!("s-{}.sock", short_id()));
+
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn git: {e}"))?;
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    let socket_path_str = socket_path
+        .to_str()
+        .ok_or_else(|| "non-UTF-8 socket path".to_string())?
+        .to_string();
+
+    // Bind the listener *before* returning so the client can connect immediately.
+    let listener = bind_stream_listener(&socket_path)
+        .map_err(|e| format!("failed to bind stream socket: {e}"))?;
+
+    // Spawn a background task that accepts a single client, then streams output.
+    let sp = socket_path.clone();
+    tokio::spawn(async move {
+        let mut sink = match accept_stream_sink(listener).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("stream accept failed: {e}");
+                return;
+            }
+        };
+
+        // Read stdout and stderr concurrently, sending chunks as they arrive.
+        let mut stdout = stdout;
+        let mut stderr = stderr;
+        let mut stdout_buf = vec![0u8; 8192];
+        let mut stderr_buf = vec![0u8; 8192];
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+
+            tokio::select! {
+                n = stdout.read(&mut stdout_buf), if !stdout_done => {
+                    match n {
+                        Ok(0) => stdout_done = true,
+                        Ok(n) => {
+                            if let Err(e) = send_output(
+                                &mut sink,
+                                CommandOutput::Stdout(stdout_buf[..n].to_vec()),
+                            ).await {
+                                warn!("stream send stdout failed: {e}");
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("stream read stdout failed: {e}");
+                            stdout_done = true;
+                        }
+                    }
+                }
+                n = stderr.read(&mut stderr_buf), if !stderr_done => {
+                    match n {
+                        Ok(0) => stderr_done = true,
+                        Ok(n) => {
+                            if let Err(e) = send_output(
+                                &mut sink,
+                                CommandOutput::Stderr(stderr_buf[..n].to_vec()),
+                            ).await {
+                                warn!("stream send stderr failed: {e}");
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("stream read stderr failed: {e}");
+                            stderr_done = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Wait for exit code
+        let exit_code = match child.wait().await {
+            Ok(status) => status.code().unwrap_or(-1),
+            Err(e) => {
+                warn!("stream wait failed: {e}");
+                -1
+            }
+        };
+
+        let _ = send_output(&mut sink, CommandOutput::Exit(exit_code)).await;
+
+        // Clean up the socket file
+        let _ = tokio::fs::remove_file(&sp).await;
+    });
+
+    Ok(StreamingExecResponse {
+        stream_socket: socket_path_str,
+    })
+}
+
+/// Generate a short unique hex ID for stream socket names.
+fn short_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static CTR: AtomicU32 = AtomicU32::new(0);
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u32;
+    let c = CTR.fetch_add(1, Ordering::Relaxed);
+    format!("{t:08x}{c:04x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +289,10 @@ mod tests {
     fn validate_blocks_git_dir() {
         let args: Vec<String> = vec!["--git-dir=/tmp/repo".into(), "status".into()];
         let err = validate_args(&args).unwrap_err();
-        assert!(err.contains("--git-dir"), "error should mention --git-dir: {err}");
+        assert!(
+            err.contains("--git-dir"),
+            "error should mention --git-dir: {err}"
+        );
     }
 
     #[test]
@@ -281,5 +426,90 @@ mod tests {
             "unexpected stdout: {}",
             resp.stdout
         );
+    }
+
+    #[tokio::test]
+    async fn exec_git_stream_delivers_chunks() {
+        use ur_rpc::stream::{connect_stream, recv_output};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_name = "stream-repo";
+        let repo_dir = tmp.path().join(repo_name);
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let init = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed");
+
+        // Use a short path for the socket dir to avoid SUN_LEN limits on macOS
+        let socket_dir = PathBuf::from("/tmp/ur-test-socks");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+
+        let reg = RepoRegistry::new(tmp.path().to_path_buf());
+        reg.register("p1", repo_name);
+
+        let resp = reg
+            .exec_git_stream(&socket_dir, "p1", &["status".into()])
+            .await
+            .unwrap();
+
+        // Connect to the stream socket and collect output
+        let stream_path = Path::new(&resp.stream_socket);
+        let mut stream = connect_stream(stream_path).await.unwrap();
+
+        let mut stdout_chunks = Vec::new();
+        let mut exit_code = None;
+
+        while let Some(result) = recv_output(&mut stream).await {
+            match result.unwrap() {
+                CommandOutput::Stdout(data) => stdout_chunks.push(data),
+                CommandOutput::Stderr(_) => {}
+                CommandOutput::Exit(code) => exit_code = Some(code),
+            }
+        }
+
+        assert_eq!(exit_code, Some(0), "git status should exit 0");
+        let all_stdout: Vec<u8> = stdout_chunks.into_iter().flatten().collect();
+        let stdout_str = String::from_utf8_lossy(&all_stdout);
+        assert!(
+            stdout_str.contains("branch") || stdout_str.contains("No commits"),
+            "unexpected streaming stdout: {stdout_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_git_stream_unknown_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_dir = tmp.path().join("sockets");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+
+        let reg = RepoRegistry::new(tmp.path().to_path_buf());
+        let result = reg
+            .exec_git_stream(&socket_dir, "nope", &["status".into()])
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown process_id"));
+    }
+
+    #[tokio::test]
+    async fn exec_git_stream_blocked_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_dir = tmp.path().join("sockets");
+        std::fs::create_dir_all(&socket_dir).unwrap();
+
+        let reg = RepoRegistry::new(tmp.path().to_path_buf());
+        reg.register("p1", "repo");
+        let result = reg
+            .exec_git_stream(
+                &socket_dir,
+                "p1",
+                &["-C".into(), "/tmp".into(), "status".into()],
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("-C"));
     }
 }

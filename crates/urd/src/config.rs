@@ -43,7 +43,9 @@ impl Config {
             Err(e) => return Err(e.into()),
         };
 
-        let workspace = raw.workspace.unwrap_or_else(|| config_dir.join("workspace"));
+        let workspace = raw
+            .workspace
+            .unwrap_or_else(|| config_dir.join("workspace"));
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
@@ -57,7 +59,8 @@ fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
         return Ok(PathBuf::from(val));
     }
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?;
     Ok(home.join(".ur"))
 }
 

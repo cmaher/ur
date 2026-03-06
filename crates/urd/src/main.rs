@@ -29,6 +29,7 @@ struct Cli {
 #[derive(Clone)]
 struct BridgeServer {
     repo_registry: Arc<RepoRegistry>,
+    socket_dir: PathBuf,
 }
 
 impl UrAgentBridge for BridgeServer {
@@ -51,6 +52,16 @@ impl UrAgentBridge for BridgeServer {
     ) -> Result<GitResponse, String> {
         self.repo_registry
             .exec_git(&req.process_id, &req.args)
+            .await
+    }
+
+    async fn exec_git_stream(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ExecGitRequest,
+    ) -> Result<StreamingExecResponse, String> {
+        self.repo_registry
+            .exec_git_stream(&self.socket_dir, &req.process_id, &req.args)
             .await
     }
 
@@ -181,13 +192,9 @@ async fn accept_loop(socket_path: PathBuf, server: BridgeServer) -> anyhow::Resu
         let transport = transport?;
         let channel = server::BaseChannel::with_defaults(transport);
         let srv = server.clone();
-        tokio::spawn(
-            channel
-                .execute(srv.serve())
-                .for_each(|response| async {
-                    tokio::spawn(response);
-                }),
-        );
+        tokio::spawn(channel.execute(srv.serve()).for_each(|response| async {
+            tokio::spawn(response);
+        }));
     }
 
     Ok(())
@@ -203,10 +210,14 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&cfg.workspace).await?;
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace));
-    let server = BridgeServer { repo_registry };
 
     let cli = Cli::parse();
     tokio::fs::create_dir_all(&cli.socket_dir).await?;
+
+    let server = BridgeServer {
+        repo_registry,
+        socket_dir: cli.socket_dir.clone(),
+    };
 
     let socket_path = cli.socket_dir.join("ur.sock");
     accept_loop(socket_path, server).await

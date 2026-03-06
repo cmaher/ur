@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures",
  "tarpc",
  "tokio",
  "ur_rpc",
@@ -1079,8 +1080,12 @@ dependencies = [
 name = "ur_rpc"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "serde",
  "tarpc",
+ "tokio",
+ "tokio-serde",
+ "tokio-util",
 ]
 
 [[package]]

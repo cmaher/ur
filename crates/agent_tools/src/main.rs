@@ -1,9 +1,12 @@
-use clap::{Parser, Subcommand};
 use std::io::Write;
+use std::path::Path;
+
+use clap::{Parser, Subcommand};
 use tarpc::client;
 use tarpc::context;
 use tarpc::tokio_serde::formats::Bincode;
-use ur_rpc::{ExecGitRequest, UrAgentBridgeClient};
+use ur_rpc::stream::{connect_stream, recv_output};
+use ur_rpc::{CommandOutput, ExecGitRequest, UrAgentBridgeClient};
 
 const DEFAULT_SOCKET: &str = "/var/run/ur.sock";
 
@@ -54,6 +57,31 @@ enum TicketCommands {
     Status { status: String },
 }
 
+/// Connect to a streaming command socket and write output chunks
+/// to stdout/stderr as they arrive. Returns the exit code.
+async fn consume_command_stream(socket_path: &Path) -> anyhow::Result<i32> {
+    let mut stream = connect_stream(socket_path).await?;
+    let mut exit_code = -1;
+
+    while let Some(result) = recv_output(&mut stream).await {
+        match result? {
+            CommandOutput::Stdout(data) => {
+                std::io::stdout().write_all(&data)?;
+                std::io::stdout().flush()?;
+            }
+            CommandOutput::Stderr(data) => {
+                std::io::stderr().write_all(&data)?;
+                std::io::stderr().flush()?;
+            }
+            CommandOutput::Exit(code) => {
+                exit_code = code;
+            }
+        }
+    }
+
+    Ok(exit_code)
+}
+
 async fn connect(socket: &str) -> anyhow::Result<UrAgentBridgeClient> {
     let transport = tarpc::serde_transport::unix::connect(socket, Bincode::default).await?;
     let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
@@ -77,12 +105,12 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|_| anyhow::anyhow!("UR_PROCESS_ID environment variable not set"))?;
             let client = connect(&cli.socket).await?;
             let resp = client
-                .exec_git(context::current(), ExecGitRequest { process_id, args })
+                .exec_git_stream(context::current(), ExecGitRequest { process_id, args })
                 .await?
                 .map_err(|e| anyhow::anyhow!(e))?;
-            std::io::stdout().write_all(resp.stdout.as_bytes())?;
-            std::io::stderr().write_all(resp.stderr.as_bytes())?;
-            std::process::exit(resp.exit_code);
+
+            let exit_code = consume_command_stream(Path::new(&resp.stream_socket)).await?;
+            std::process::exit(exit_code);
         }
         Commands::Ticket { command } => match command {
             TicketCommands::Read => println!("Reading ticket..."),
