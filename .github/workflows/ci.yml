@@ -41,10 +41,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          targets: x86_64-unknown-linux-musl
+      - name: Install Rust toolchain + musl target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -56,9 +59,6 @@ jobs:
           key: ${{ runner.os }}-cargo-acceptance-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-acceptance-
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Install cargo-make
         run: cargo install cargo-make
