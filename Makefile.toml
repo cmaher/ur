@@ -1,6 +1,9 @@
 [config]
 default_to_workspace = false
 
+[env]
+UR_CONTAINER = { value = "apple", condition = { platforms = ["mac"] } }
+
 [tasks.fmt]
 description = "Check code formatting"
 command = "cargo"

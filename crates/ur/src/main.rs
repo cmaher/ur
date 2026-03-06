@@ -1,8 +1,18 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use tarpc::tokio_serde::formats::Bincode;
+
+use ur_rpc::*;
 
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
+    /// Path to the urd control socket
+    #[arg(long, default_value = "/tmp/ur/sockets/ur.sock")]
+    socket: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -31,6 +41,8 @@ enum ProcessCommands {
     Status { process_id: Option<String> },
     /// Attach to a running process
     Attach { process_id: String },
+    /// Stop a running agent process
+    Stop { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -47,22 +59,109 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
+async fn connect(socket: &PathBuf) -> Result<UrAgentBridgeClient> {
+    let transport = tarpc::serde_transport::unix::connect(&socket, Bincode::default)
+        .await
+        .with_context(|| format!("failed to connect to urd at {}", socket.display()))?;
+    let client = UrAgentBridgeClient::new(tarpc::client::Config::default(), transport).spawn();
+    Ok(client)
+}
+
+async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result<()> {
+    let ctx = tarpc::context::current();
+
+    // Build the worker image
+    let project_root = std::env::current_dir()?;
+    let context_dir = project_root.join("containers/claude-worker");
+    println!("Building worker image...");
+    let build_resp = client
+        .container_build(
+            ctx,
+            ContainerBuildRequest {
+                tag: "ur-worker:latest".into(),
+                dockerfile: context_dir.join("Dockerfile").display().to_string(),
+                context: context_dir.display().to_string(),
+            },
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    // Run the container
+    let name = format!("ur-agent-{ticket_id}");
+    let socket_dir = PathBuf::from("/tmp/ur/sockets");
+    let host_socket = socket_dir.join("ur.sock");
+
+    println!("Starting container {name}...");
+    let run_resp = client
+        .container_run(
+            tarpc::context::current(),
+            ContainerRunRequest {
+                image_id: build_resp.image_id,
+                name: name.clone(),
+                cpus: 4,
+                memory: "8G".into(),
+                volumes: vec![],
+                socket_mounts: vec![(host_socket.display().to_string(), "/var/run/ur.sock".into())],
+                workdir: Some("/workspace".into()),
+                command: vec![],
+            },
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Agent {name} running (container {})", run_resp.container_id);
+    Ok(())
+}
+
+async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<()> {
+    println!("Stopping {process_id}...");
+    client
+        .container_stop(
+            tarpc::context::current(),
+            ContainerIdRequest {
+                container_id: process_id.into(),
+            },
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Removing {process_id}...");
+    client
+        .container_rm(
+            tarpc::context::current(),
+            ContainerIdRequest {
+                container_id: process_id.into(),
+            },
+        )
+        .await?
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Agent {process_id} stopped and removed.");
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
-        Commands::Process { command } => match command {
-            ProcessCommands::Launch { ticket_id } => {
-                println!("Launching process for ticket {ticket_id}...");
+        Commands::Process { command } => {
+            let client = connect(&cli.socket).await?;
+            match command {
+                ProcessCommands::Launch { ticket_id } => {
+                    process_launch(&client, &ticket_id).await?;
+                }
+                ProcessCommands::Status { process_id } => {
+                    println!("Status: {process_id:?}");
+                }
+                ProcessCommands::Attach { process_id } => {
+                    println!("Attaching to {process_id}...");
+                }
+                ProcessCommands::Stop { process_id } => {
+                    process_stop(&client, &process_id).await?;
+                }
             }
-            ProcessCommands::Status { process_id } => {
-                println!("Status: {process_id:?}");
-            }
-            ProcessCommands::Attach { process_id } => {
-                println!("Attaching to {process_id}...");
-            }
-        },
+        }
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
                 println!("Creating ticket: {title} (parent: {parent:?})");
@@ -73,4 +172,5 @@ async fn main() {
             }
         },
     }
+    Ok(())
 }
