@@ -1,0 +1,3 @@
+# Tickets (tracked on orphan 'tickets' branch via git worktree)
+.tickets
+.worktrees
