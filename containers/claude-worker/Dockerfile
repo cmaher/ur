@@ -4,11 +4,12 @@ RUN apk add --no-cache \
     bash \
     tmux \
     curl \
-    ca-certificates
+    ca-certificates \
+    coreutils
 
-# Install Claude Code CLI
+# Install Claude Code CLI (script is cached locally, binary downloaded at build time)
 COPY install-claude.sh /tmp/install-claude.sh
-RUN chmod +x /tmp/install-claude.sh && /tmp/install-claude.sh && rm /tmp/install-claude.sh
+RUN bash /tmp/install-claude.sh && rm /tmp/install-claude.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
