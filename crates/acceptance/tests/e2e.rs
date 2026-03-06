@@ -55,10 +55,11 @@ fn start_urd(config_dir: &Path) -> Child {
     child
 }
 
-/// Run a CLI command, returning its output. Panics on spawn failure.
+/// Run a CLI command from the workspace root, returning its output. Panics on spawn failure.
 fn run_cmd(cmd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
     let mut c = Command::new(cmd);
     c.args(args);
+    c.current_dir(workspace_root());
     for &(k, v) in envs {
         c.env(k, v);
     }
