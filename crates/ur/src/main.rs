@@ -79,10 +79,7 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
             ctx,
             ContainerBuildRequest {
                 tag: "ur-worker:latest".into(),
-                dockerfile: context_dir
-                    .join("Dockerfile")
-                    .display()
-                    .to_string(),
+                dockerfile: context_dir.join("Dockerfile").display().to_string(),
                 context: context_dir.display().to_string(),
             },
         )
@@ -104,10 +101,7 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
                 cpus: 4,
                 memory: "8G".into(),
                 volumes: vec![],
-                socket_mounts: vec![(
-                    host_socket.display().to_string(),
-                    "/var/run/ur.sock".into(),
-                )],
+                socket_mounts: vec![(host_socket.display().to_string(), "/var/run/ur.sock".into())],
                 workdir: Some("/workspace".into()),
                 command: vec![],
             },

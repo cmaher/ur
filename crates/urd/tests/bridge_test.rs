@@ -68,6 +68,42 @@ impl UrAgentBridge for StubBridge {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    async fn container_build(
+        self,
+        _ctx: context::Context,
+        req: ContainerBuildRequest,
+    ) -> Result<ContainerBuildResponse, String> {
+        Ok(ContainerBuildResponse {
+            image_id: req.tag,
+        })
+    }
+
+    async fn container_run(
+        self,
+        _ctx: context::Context,
+        req: ContainerRunRequest,
+    ) -> Result<ContainerRunResponse, String> {
+        Ok(ContainerRunResponse {
+            container_id: req.name,
+        })
+    }
+
+    async fn container_stop(
+        self,
+        _ctx: context::Context,
+        _req: ContainerIdRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn container_rm(
+        self,
+        _ctx: context::Context,
+        _req: ContainerIdRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 async fn spawn_server(sock: &Path) {

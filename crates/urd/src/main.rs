@@ -83,9 +83,7 @@ impl UrAgentBridge for BridgeServer {
             context: PathBuf::from(req.context),
         };
         let image = rt.build(&opts).map_err(|e| e.to_string())?;
-        Ok(ContainerBuildResponse {
-            image_id: image.0,
-        })
+        Ok(ContainerBuildResponse { image_id: image.0 })
     }
 
     async fn container_run(
@@ -113,9 +111,7 @@ impl UrAgentBridge for BridgeServer {
             command: req.command,
         };
         let id = rt.run(&opts).map_err(|e| e.to_string())?;
-        Ok(ContainerRunResponse {
-            container_id: id.0,
-        })
+        Ok(ContainerRunResponse { container_id: id.0 })
     }
 
     async fn container_stop(
