@@ -34,6 +34,22 @@ description = "Run cargo audit for dependency vulnerabilities"
 command = "cargo"
 args = ["audit"]
 
+[tasks.cross-agent-tools]
+description = "Cross-compile agent_tools for linux-musl (matches host arch)"
+script_runner = "@shell"
+script = '''
+ARCH=$(uname -m)
+case "$ARCH" in
+    arm64|aarch64) TARGET="aarch64-unknown-linux-musl" ;;
+    x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+    *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+echo "Cross-compiling agent_tools for $TARGET"
+cargo build --release --target "$TARGET" -p agent_tools
+cp "target/$TARGET/release/agent_tools" containers/claude-worker/agent_tools
+echo "Copied agent_tools to containers/claude-worker/agent_tools"
+'''
+
 [tasks.ci]
 description = "Run all CI checks"
 dependencies = ["fmt", "clippy", "build", "test"]
