@@ -1,9 +1,14 @@
-FROM ubuntu:24.04
+FROM alpine:3.21
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
+    bash \
     tmux \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    ca-certificates
+
+# Install Claude Code CLI
+COPY install-claude.sh /tmp/install-claude.sh
+RUN chmod +x /tmp/install-claude.sh && /tmp/install-claude.sh && rm /tmp/install-claude.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
