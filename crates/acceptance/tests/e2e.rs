@@ -153,25 +153,9 @@ fn e2e_ping_and_git() {
             "agent_tools ping should return 'pong', got: {ping_stdout}"
         );
 
-        // ---- (5) Register repo and test git commands ----
-        // Create a test repo in the workspace directory.
-        let workspace = config_path.join("workspace");
-        let repo_name = "test-repo";
-        let repo_dir = workspace.join(repo_name);
-        std::fs::create_dir_all(&repo_dir).expect("failed to create test repo dir");
-
-        // Initialize a git repo on the host side (this is where urd runs git).
-        let git_init = Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .expect("failed to run git init");
-        assert!(git_init.status.success(), "git init failed in test repo");
-
-        // Verify agent_tools can reach urd via the git RPC path.
-        // The command will fail with "unknown process_id" since no repo is
-        // registered for this container, but a definite exit code proves
-        // the full RPC round-trip works end-to-end.
+        // ---- (5) Test git commands via agent_tools ----
+        // urd has already created and git-init'd the repo for this process.
+        // agent_tools git status should succeed via the per-agent socket.
         let git_output = Command::new(&runtime)
             .args([
                 "exec",
@@ -185,16 +169,24 @@ fn e2e_ping_and_git() {
             .output()
             .expect("failed to exec agent_tools git in container");
 
-        assert_ne!(
+        assert_eq!(
             git_output.status.code(),
-            None,
-            "agent_tools git should produce an exit code"
+            Some(0),
+            "agent_tools git status should exit 0.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&git_output.stdout),
+            String::from_utf8_lossy(&git_output.stderr),
         );
 
-        // ---- (6) ur process stop ----
+        let git_stdout = String::from_utf8_lossy(&git_output.stdout);
+        assert!(
+            git_stdout.contains("branch") || git_stdout.contains("No commits"),
+            "git status should show repo info.\nGot: {git_stdout}"
+        );
+
+        // ---- (6) ur process stop (by ticket_id, not container name) ----
         let stop_output = run_cmd(
             &ur,
-            &["--socket", socket_str, "process", "stop", &container_name],
+            &["--socket", socket_str, "process", "stop", ticket_id],
             &[],
         );
         assert!(

@@ -38,7 +38,6 @@ impl RepoRegistry {
     }
 
     /// Remove a process from the registry.
-    #[allow(dead_code)]
     pub fn unregister(&self, process_id: &str) {
         self.repos
             .write()

@@ -155,6 +155,24 @@ pub struct StreamingExecResponse {
     pub stream_socket: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessLaunchRequest {
+    pub process_id: String,
+    pub image_id: String,
+    pub cpus: u32,
+    pub memory: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessLaunchResponse {
+    pub container_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessStopRequest {
+    pub process_id: String,
+}
+
 // -- Service trait --
 
 #[tarpc::service]
@@ -174,4 +192,6 @@ pub trait UrAgentBridge {
     async fn container_stop(req: ContainerIdRequest) -> Result<(), String>;
     async fn container_rm(req: ContainerIdRequest) -> Result<(), String>;
     async fn container_exec(req: ContainerExecRequest) -> Result<ContainerExecResponse, String>;
+    async fn process_launch(req: ProcessLaunchRequest) -> Result<ProcessLaunchResponse, String>;
+    async fn process_stop(req: ProcessStopRequest) -> Result<(), String>;
 }

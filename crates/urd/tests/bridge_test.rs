@@ -160,6 +160,24 @@ impl UrAgentBridge for StubBridge {
             stderr: String::new(),
         })
     }
+
+    async fn process_launch(
+        self,
+        _ctx: context::Context,
+        req: ProcessLaunchRequest,
+    ) -> Result<ProcessLaunchResponse, String> {
+        Ok(ProcessLaunchResponse {
+            container_id: format!("ur-agent-{}", req.process_id),
+        })
+    }
+
+    async fn process_stop(
+        self,
+        _ctx: context::Context,
+        _req: ProcessStopRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 async fn spawn_server(sock: &Path, stub: StubBridge) {
