@@ -10,7 +10,6 @@ fn claude_worker_context() -> PathBuf {
 }
 
 #[test]
-#[ignore] // requires a real container runtime
 fn build_run_stop_rm() {
     let rt = runtime_from_env();
     let context = claude_worker_context();
