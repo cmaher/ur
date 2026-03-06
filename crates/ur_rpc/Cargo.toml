@@ -4,5 +4,9 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+futures = "0.3"
 serde = { workspace = true }
 tarpc = { workspace = true }
+tokio = { workspace = true }
+tokio-serde = { version = "0.9", features = ["bincode"] }
+tokio-util = { version = "0.7", features = ["codec"] }

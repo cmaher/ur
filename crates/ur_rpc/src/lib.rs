@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+pub mod stream;
+
+// -- Streaming types --
+
+/// Incremental output chunk from a command execution.
+/// Sent over a side-channel Unix socket, not via tarpc.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum CommandOutput {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Exit(i32),
+}
+
 // -- Request types --
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -110,6 +123,14 @@ pub struct ContainerExecResponse {
     pub stderr: String,
 }
 
+/// Response from a streaming command execution RPC.
+/// The client connects to `stream_socket` to receive `CommandOutput` frames.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StreamingExecResponse {
+    /// Path to a Unix socket that will emit length-delimited bincode `CommandOutput` frames.
+    pub stream_socket: String,
+}
+
 // -- Service trait --
 
 #[tarpc::service]
@@ -117,6 +138,9 @@ pub trait UrAgentBridge {
     async fn ping() -> String;
     async fn ask_human(req: AskHumanRequest) -> Result<AskHumanResponse, String>;
     async fn exec_git(req: ExecGitRequest) -> Result<GitResponse, String>;
+    /// Streaming variant of exec_git. Returns a socket path; the client connects
+    /// to it to receive `CommandOutput` frames as the command runs.
+    async fn exec_git_stream(req: ExecGitRequest) -> Result<StreamingExecResponse, String>;
     async fn report_status(req: ReportStatusRequest) -> Result<(), String>;
     async fn ticket_read(req: TicketReadRequest) -> Result<TicketReadResponse, String>;
     async fn ticket_spawn(req: TicketSpawnRequest) -> Result<TicketSpawnResponse, String>;

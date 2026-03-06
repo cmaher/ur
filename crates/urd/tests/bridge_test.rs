@@ -5,6 +5,7 @@ use tarpc::client;
 use tarpc::context;
 use tarpc::server::{self, Channel};
 use tarpc::tokio_serde::formats::Bincode;
+use ur_rpc::stream::bind_stream_listener;
 use ur_rpc::*;
 
 #[derive(Clone)]
@@ -34,6 +35,35 @@ impl UrAgentBridge for StubBridge {
             exit_code: 0,
             stdout: format!("git {}", req.args.join(" ")),
             stderr: String::new(),
+        })
+    }
+
+    async fn exec_git_stream(
+        self,
+        _ctx: context::Context,
+        _req: ExecGitRequest,
+    ) -> Result<StreamingExecResponse, String> {
+        // Create a temporary stream socket that sends a canned response.
+        let dir = std::env::temp_dir().join("ur-test-streams");
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join(format!("stub-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&sock_path);
+
+        let listener = bind_stream_listener(&sock_path).map_err(|e| e.to_string())?;
+        let socket_str = sock_path.to_str().unwrap().to_string();
+
+        tokio::spawn(async move {
+            use ur_rpc::stream::{accept_stream_sink, send_output};
+            if let Ok(mut sink) = accept_stream_sink(listener).await {
+                let _ =
+                    send_output(&mut sink, CommandOutput::Stdout(b"git output\n".to_vec())).await;
+                let _ = send_output(&mut sink, CommandOutput::Exit(0)).await;
+            }
+            let _ = tokio::fs::remove_file(&sock_path).await;
+        });
+
+        Ok(StreamingExecResponse {
+            stream_socket: socket_str,
         })
     }
 
@@ -252,4 +282,49 @@ async fn roundtrip_over_unix_socket() {
     assert_eq!(resp.exit_code, 0);
     assert_eq!(resp.stdout, "echo hello");
     assert!(resp.stderr.is_empty());
+}
+
+#[tokio::test]
+async fn exec_git_stream_roundtrip() {
+    use ur_rpc::stream::{connect_stream, recv_output};
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("test.sock");
+
+    spawn_server(&sock).await;
+
+    let transport = tarpc::serde_transport::unix::connect(&sock, Bincode::default)
+        .await
+        .unwrap();
+    let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
+
+    let resp = client
+        .exec_git_stream(
+            context::current(),
+            ExecGitRequest {
+                process_id: "p1".into(),
+                args: vec!["status".into()],
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Connect to the side-channel stream socket
+    let stream_path = std::path::Path::new(&resp.stream_socket);
+    let mut stream = connect_stream(stream_path).await.unwrap();
+
+    let mut stdout_data = Vec::new();
+    let mut exit_code = None;
+
+    while let Some(result) = recv_output(&mut stream).await {
+        match result.unwrap() {
+            CommandOutput::Stdout(data) => stdout_data.extend_from_slice(&data),
+            CommandOutput::Stderr(_) => {}
+            CommandOutput::Exit(code) => exit_code = Some(code),
+        }
+    }
+
+    assert_eq!(String::from_utf8(stdout_data).unwrap(), "git output\n");
+    assert_eq!(exit_code, Some(0));
 }
