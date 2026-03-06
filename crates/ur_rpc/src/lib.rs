@@ -38,6 +38,30 @@ pub struct TicketNoteRequest {
     pub note: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerBuildRequest {
+    pub tag: String,
+    pub dockerfile: String,
+    pub context: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerRunRequest {
+    pub image_id: String,
+    pub name: String,
+    pub cpus: u32,
+    pub memory: String,
+    pub volumes: Vec<(String, String)>,
+    pub socket_mounts: Vec<(String, String)>,
+    pub workdir: Option<String>,
+    pub command: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerIdRequest {
+    pub container_id: String,
+}
+
 // -- Response types --
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,6 +86,16 @@ pub struct TicketSpawnResponse {
     pub ticket_id: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerBuildResponse {
+    pub image_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerRunResponse {
+    pub container_id: String,
+}
+
 // -- Service trait --
 
 #[tarpc::service]
@@ -72,4 +106,8 @@ pub trait UrAgentBridge {
     async fn ticket_read(req: TicketReadRequest) -> Result<TicketReadResponse, String>;
     async fn ticket_spawn(req: TicketSpawnRequest) -> Result<TicketSpawnResponse, String>;
     async fn ticket_note(req: TicketNoteRequest) -> Result<(), String>;
+    async fn container_build(req: ContainerBuildRequest) -> Result<ContainerBuildResponse, String>;
+    async fn container_run(req: ContainerRunRequest) -> Result<ContainerRunResponse, String>;
+    async fn container_stop(req: ContainerIdRequest) -> Result<(), String>;
+    async fn container_rm(req: ContainerIdRequest) -> Result<(), String>;
 }
