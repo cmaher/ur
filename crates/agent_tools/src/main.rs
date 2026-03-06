@@ -101,11 +101,9 @@ async fn main() -> anyhow::Result<()> {
             println!("Asking: {question}");
         }
         Commands::Git { args } => {
-            let process_id = std::env::var("UR_PROCESS_ID")
-                .map_err(|_| anyhow::anyhow!("UR_PROCESS_ID environment variable not set"))?;
             let client = connect(&cli.socket).await?;
             let resp = client
-                .exec_git_stream(context::current(), ExecGitRequest { process_id, args })
+                .exec_git_stream(context::current(), ExecGitRequest { args })
                 .await?
                 .map_err(|e| anyhow::anyhow!(e))?;
 

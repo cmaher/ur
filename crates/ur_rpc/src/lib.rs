@@ -23,7 +23,6 @@ pub struct AskHumanRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExecGitRequest {
-    pub process_id: String,
     pub args: Vec<String>,
 }
 

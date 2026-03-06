@@ -30,6 +30,10 @@ struct Cli {
 struct BridgeServer {
     repo_registry: Arc<RepoRegistry>,
     socket_dir: PathBuf,
+    /// Identity of the agent this server instance serves, determined by which
+    /// per-agent socket accepted the connection. Passed server-side to
+    /// `RepoRegistry` so the request payload never carries a process_id.
+    process_id: String,
 }
 
 impl UrAgentBridge for BridgeServer {
@@ -51,7 +55,7 @@ impl UrAgentBridge for BridgeServer {
         req: ExecGitRequest,
     ) -> Result<GitResponse, String> {
         self.repo_registry
-            .exec_git(&req.process_id, &req.args)
+            .exec_git(&self.process_id, &req.args)
             .await
     }
 
@@ -61,7 +65,7 @@ impl UrAgentBridge for BridgeServer {
         req: ExecGitRequest,
     ) -> Result<StreamingExecResponse, String> {
         self.repo_registry
-            .exec_git_stream(&self.socket_dir, &req.process_id, &req.args)
+            .exec_git_stream(&self.socket_dir, &self.process_id, &req.args)
             .await
     }
 
@@ -217,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
     let server = BridgeServer {
         repo_registry,
         socket_dir: cli.socket_dir.clone(),
+        process_id: String::new(),
     };
 
     let socket_path = cli.socket_dir.join("ur.sock");

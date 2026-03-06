@@ -202,7 +202,6 @@ async fn roundtrip_over_unix_socket() {
         .exec_git(
             context::current(),
             ExecGitRequest {
-                process_id: "p1".into(),
                 args: vec!["status".into()],
             },
         )
@@ -302,7 +301,6 @@ async fn exec_git_stream_roundtrip() {
         .exec_git_stream(
             context::current(),
             ExecGitRequest {
-                process_id: "p1".into(),
                 args: vec!["status".into()],
             },
         )
