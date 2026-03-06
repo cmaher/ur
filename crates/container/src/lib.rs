@@ -40,11 +40,18 @@ pub trait ContainerRuntime {
     fn rm(&self, id: &ContainerId) -> Result<()>;
 }
 
+fn has_command(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 pub fn runtime_from_env() -> Box<dyn ContainerRuntime> {
     match std::env::var("UR_CONTAINER").as_deref() {
         Ok("apple") => Box::new(apple::AppleRuntime),
         Ok("docker") => Box::new(docker::DockerRuntime),
-        _ if cfg!(target_os = "macos") => Box::new(apple::AppleRuntime),
+        _ if has_command("container") => Box::new(apple::AppleRuntime),
         _ => Box::new(docker::DockerRuntime),
     }
 }
