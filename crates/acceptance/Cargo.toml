@@ -1,0 +1,15 @@
+[package]
+name = "acceptance"
+edition.workspace = true
+version.workspace = true
+
+# This crate contains only integration tests — no library or binary.
+# Gate behind the `acceptance` feature so `cargo test` skips it by default.
+
+[features]
+acceptance = []
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"

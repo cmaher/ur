@@ -1,6 +1,31 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 pub mod stream;
+
+// -- Shared socket-path resolution --
+
+/// Environment variable that overrides the config directory (default: `~/.ur`).
+const UR_CONFIG_ENV: &str = "UR_CONFIG";
+
+/// Name of the UDS socket file within the config directory.
+const SOCKET_FILENAME: &str = "ur.sock";
+
+/// Return the default socket path derived from `$UR_CONFIG` (or `~/.ur`).
+///
+/// Used by `urd`, `ur`, and `agent_tools` so they all agree on the same
+/// path without an explicit CLI flag.
+pub fn default_socket_path() -> PathBuf {
+    let config_dir = if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
+        PathBuf::from(val)
+    } else {
+        dirs::home_dir()
+            .expect("cannot determine home directory")
+            .join(".ur")
+    };
+    config_dir.join(SOCKET_FILENAME)
+}
 
 // -- Streaming types --
 
@@ -23,7 +48,6 @@ pub struct AskHumanRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExecGitRequest {
-    pub process_id: String,
     pub args: Vec<String>,
 }
 
@@ -131,6 +155,24 @@ pub struct StreamingExecResponse {
     pub stream_socket: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessLaunchRequest {
+    pub process_id: String,
+    pub image_id: String,
+    pub cpus: u32,
+    pub memory: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessLaunchResponse {
+    pub container_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProcessStopRequest {
+    pub process_id: String,
+}
+
 // -- Service trait --
 
 #[tarpc::service]
@@ -150,4 +192,6 @@ pub trait UrAgentBridge {
     async fn container_stop(req: ContainerIdRequest) -> Result<(), String>;
     async fn container_rm(req: ContainerIdRequest) -> Result<(), String>;
     async fn container_exec(req: ContainerExecRequest) -> Result<ContainerExecResponse, String>;
+    async fn process_launch(req: ProcessLaunchRequest) -> Result<ProcessLaunchResponse, String>;
+    async fn process_stop(req: ProcessStopRequest) -> Result<(), String>;
 }

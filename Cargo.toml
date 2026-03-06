@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+default-members = [
+    "crates/agent_tools",
+    "crates/container",
+    "crates/ur",
+    "crates/ur_rpc",
+    "crates/urd",
+]
 
 [workspace.package]
 edition = "2024"

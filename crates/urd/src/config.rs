@@ -20,6 +20,9 @@ pub struct Config {
     pub workspace: PathBuf,
 }
 
+/// Name of the UDS socket file within `config_dir`.
+const SOCKET_FILENAME: &str = "ur.sock";
+
 impl Config {
     /// Load configuration from `$UR_CONFIG/ur.toml`.
     ///
@@ -31,6 +34,11 @@ impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let config_dir = resolve_config_dir()?;
         Self::load_from(&config_dir)
+    }
+
+    /// Path to the UDS socket file within this config directory.
+    pub fn socket_path(&self) -> PathBuf {
+        self.config_dir.join(SOCKET_FILENAME)
     }
 
     /// Load configuration using an explicit config directory.
@@ -102,6 +110,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "not valid [[[ toml").unwrap();
         assert!(Config::load_from(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn socket_path_derived_from_config_dir() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.socket_path(), tmp.path().join("ur.sock"));
     }
 
     #[test]

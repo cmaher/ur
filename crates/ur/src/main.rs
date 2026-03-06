@@ -11,9 +11,9 @@ use ur_rpc::*;
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// Path to the urd control socket
-    #[arg(long, default_value = "/tmp/ur/sockets/ur.sock")]
-    socket: PathBuf,
+    /// Path to the urd control socket (default: $UR_CONFIG/ur.sock or ~/.ur/ur.sock)
+    #[arg(long)]
+    socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -96,63 +96,49 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
         .await?
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    // Run the container
-    let name = format!("ur-agent-{ticket_id}");
-    let socket_dir = PathBuf::from("/tmp/ur/sockets");
-    let host_socket = socket_dir.join("ur.sock");
-
-    println!("Starting container {name}...");
-    let run_resp = client
-        .container_run(
+    // Launch the agent process (urd handles socket, repo, container)
+    let container_name = format!("ur-agent-{ticket_id}");
+    println!("Launching agent {container_name}...");
+    let launch_resp = client
+        .process_launch(
             tarpc::context::current(),
-            ContainerRunRequest {
+            ProcessLaunchRequest {
+                process_id: ticket_id.into(),
                 image_id: build_resp.image_id,
-                name: name.clone(),
                 cpus: 4,
                 memory: "8G".into(),
-                volumes: vec![],
-                socket_mounts: vec![(host_socket.display().to_string(), "/var/run/ur.sock".into())],
-                workdir: Some("/workspace".into()),
-                command: vec![],
             },
         )
         .await?
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Agent {name} running (container {})", run_resp.container_id);
+    println!(
+        "Agent {container_name} running (container {})",
+        launch_resp.container_id
+    );
     Ok(())
 }
 
 async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<()> {
     println!("Stopping {process_id}...");
     client
-        .container_stop(
+        .process_stop(
             tarpc::context::current(),
-            ContainerIdRequest {
-                container_id: process_id.into(),
+            ProcessStopRequest {
+                process_id: process_id.into(),
             },
         )
         .await?
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    println!("Removing {process_id}...");
-    client
-        .container_rm(
-            tarpc::context::current(),
-            ContainerIdRequest {
-                container_id: process_id.into(),
-            },
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
-
-    println!("Agent {process_id} stopped and removed.");
+    println!("Agent {process_id} stopped.");
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let socket = cli.socket.unwrap_or_else(ur_rpc::default_socket_path);
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
@@ -160,7 +146,7 @@ async fn main() -> Result<()> {
                 process_attach(&process_id)?;
             }
             other => {
-                let client = connect(&cli.socket).await?;
+                let client = connect(&socket).await?;
                 match other {
                     ProcessCommands::Launch { ticket_id } => {
                         process_launch(&client, &ticket_id).await?;

@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "acceptance"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "agent_tools"
 version = "0.1.0"
 dependencies = [
@@ -1169,6 +1176,7 @@ dependencies = [
 name = "ur_rpc"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "futures",
  "serde",
  "tarpc",

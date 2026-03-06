@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use futures::StreamExt;
 use tarpc::client;
@@ -9,7 +10,18 @@ use ur_rpc::stream::bind_stream_listener;
 use ur_rpc::*;
 
 #[derive(Clone)]
-struct StubBridge;
+struct StubBridge {
+    /// Temp directory for stream sockets (shared across clones via Arc).
+    stream_dir: Arc<PathBuf>,
+}
+
+impl StubBridge {
+    fn new(stream_dir: PathBuf) -> Self {
+        Self {
+            stream_dir: Arc::new(stream_dir),
+        }
+    }
+}
 
 impl UrAgentBridge for StubBridge {
     async fn ping(self, _ctx: context::Context) -> String {
@@ -43,10 +55,10 @@ impl UrAgentBridge for StubBridge {
         _ctx: context::Context,
         _req: ExecGitRequest,
     ) -> Result<StreamingExecResponse, String> {
-        // Create a temporary stream socket that sends a canned response.
-        let dir = std::env::temp_dir().join("ur-test-streams");
-        let _ = std::fs::create_dir_all(&dir);
-        let sock_path = dir.join(format!("stub-{}.sock", std::process::id()));
+        // Create a temporary stream socket inside the per-test stream_dir.
+        let sock_path = self
+            .stream_dir
+            .join(format!("stub-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&sock_path);
 
         let listener = bind_stream_listener(&sock_path).map_err(|e| e.to_string())?;
@@ -148,9 +160,27 @@ impl UrAgentBridge for StubBridge {
             stderr: String::new(),
         })
     }
+
+    async fn process_launch(
+        self,
+        _ctx: context::Context,
+        req: ProcessLaunchRequest,
+    ) -> Result<ProcessLaunchResponse, String> {
+        Ok(ProcessLaunchResponse {
+            container_id: format!("ur-agent-{}", req.process_id),
+        })
+    }
+
+    async fn process_stop(
+        self,
+        _ctx: context::Context,
+        _req: ProcessStopRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
-async fn spawn_server(sock: &Path) {
+async fn spawn_server(sock: &Path, stub: StubBridge) {
     let mut listener = tarpc::serde_transport::unix::listen(sock, Bincode::default)
         .await
         .unwrap();
@@ -158,7 +188,7 @@ async fn spawn_server(sock: &Path) {
     tokio::spawn(async move {
         while let Some(Ok(transport)) = listener.next().await {
             let channel = server::BaseChannel::with_defaults(transport);
-            let responses = channel.execute(StubBridge.serve());
+            let responses = channel.execute(stub.clone().serve());
             tokio::spawn(responses.for_each(|resp| async {
                 tokio::spawn(resp);
             }));
@@ -170,8 +200,9 @@ async fn spawn_server(sock: &Path) {
 async fn roundtrip_over_unix_socket() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("test.sock");
+    let stub = StubBridge::new(dir.path().to_path_buf());
 
-    spawn_server(&sock).await;
+    spawn_server(&sock, stub).await;
 
     // Connect client
     let transport = tarpc::serde_transport::unix::connect(&sock, Bincode::default)
@@ -202,7 +233,6 @@ async fn roundtrip_over_unix_socket() {
         .exec_git(
             context::current(),
             ExecGitRequest {
-                process_id: "p1".into(),
                 args: vec!["status".into()],
             },
         )
@@ -290,8 +320,9 @@ async fn exec_git_stream_roundtrip() {
 
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("test.sock");
+    let stub = StubBridge::new(dir.path().to_path_buf());
 
-    spawn_server(&sock).await;
+    spawn_server(&sock, stub).await;
 
     let transport = tarpc::serde_transport::unix::connect(&sock, Bincode::default)
         .await
@@ -302,7 +333,6 @@ async fn exec_git_stream_roundtrip() {
         .exec_git_stream(
             context::current(),
             ExecGitRequest {
-                process_id: "p1".into(),
                 args: vec!["status".into()],
             },
         )
