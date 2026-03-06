@@ -1,0 +1,36 @@
+[config]
+default_to_workspace = false
+
+[tasks.fmt]
+description = "Check code formatting"
+command = "cargo"
+args = ["fmt", "--all", "--check"]
+
+[tasks.fmt-fix]
+description = "Fix code formatting"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.clippy]
+description = "Run clippy lints on all workspace crates"
+command = "cargo"
+args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings", "-W", "clippy::excessive_nesting"]
+
+[tasks.build]
+description = "Build all workspace crates"
+command = "cargo"
+args = ["build", "--workspace", "--all-features"]
+
+[tasks.test]
+description = "Run tests on all workspace crates"
+command = "cargo"
+args = ["test", "--workspace"]
+
+[tasks.audit]
+description = "Run cargo audit for dependency vulnerabilities"
+command = "cargo"
+args = ["audit"]
+
+[tasks.ci]
+description = "Run all CI checks"
+dependencies = ["fmt", "clippy", "build", "test"]
