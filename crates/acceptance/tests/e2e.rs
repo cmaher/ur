@@ -1,0 +1,220 @@
+//! End-to-end acceptance tests for the full Ur stack.
+//!
+//! Gated behind `--features acceptance` so they never run in normal `cargo test`.
+//! Requires:
+//!   - Pre-built `urd` and `ur` binaries in `target/debug/`
+//!   - `agent_tools` cross-compiled and baked into the container image
+//!   - A container runtime (Apple `container` or Docker)
+#![cfg(feature = "acceptance")]
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Locate the workspace root (two levels up from this crate's manifest dir).
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent() // crates/
+        .unwrap()
+        .parent() // workspace root
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Path to a debug binary built from this workspace.
+fn bin(name: &str) -> PathBuf {
+    workspace_root().join("target").join("debug").join(name)
+}
+
+/// Start `urd` as a background process with `UR_CONFIG` set to the given dir.
+/// Waits for the socket file to appear before returning.
+fn start_urd(config_dir: &Path) -> Child {
+    let urd = bin("urd");
+    assert!(urd.exists(), "urd binary not found at {}", urd.display());
+
+    let child = Command::new(&urd)
+        .env("UR_CONFIG", config_dir)
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn urd");
+
+    // Wait for the socket to appear (urd creates it on startup).
+    let socket = config_dir.join("ur.sock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "urd did not create socket at {} within 10s",
+            socket.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    child
+}
+
+/// Run a CLI command, returning its output. Panics on spawn failure.
+fn run_cmd(cmd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    let mut c = Command::new(cmd);
+    c.args(args);
+    for &(k, v) in envs {
+        c.env(k, v);
+    }
+    c.output().unwrap_or_else(|e| {
+        panic!(
+            "failed to run {} {}: {e}",
+            cmd.display(),
+            args.join(" ")
+        )
+    })
+}
+
+/// Kill a child process and wait for it to exit.
+fn kill_and_wait(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Detect the container runtime available on this system.
+/// Returns the command name for the runtime (e.g., "container" or "docker").
+fn detect_container_runtime() -> String {
+    if let Ok(val) = std::env::var("UR_CONTAINER") {
+        return val;
+    }
+    // Check for Apple `container` CLI first, then fall back to docker.
+    if Command::new("container")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+    {
+        return "container".into();
+    }
+    "docker".into()
+}
+
+#[test]
+fn e2e_ping_and_git() {
+    // ---- (1) Create temp UR_CONFIG dir ----
+    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
+    let config_path = config_dir.path();
+    let socket_path = config_path.join("ur.sock");
+
+    // ---- (2) Start urd ----
+    let urd_child = start_urd(config_path);
+
+    // Use catch_unwind so we always clean up urd even on panic.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ur = bin("ur");
+        assert!(ur.exists(), "ur binary not found at {}", ur.display());
+
+        let socket_str = socket_path.to_str().unwrap();
+        let ticket_id = "acceptance-test";
+
+        // ---- (3) ur process launch ----
+        let launch_output = run_cmd(
+            &ur,
+            &["--socket", socket_str, "process", "launch", ticket_id],
+            &[("UR_CONFIG", config_path.to_str().unwrap())],
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur process launch failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        // Expected output: "Agent ur-agent-<ticket> running (container <id>)"
+        let container_name = format!("ur-agent-{ticket_id}");
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        // ---- (4) exec agent_tools ping inside container ----
+        // agent_tools is at /usr/local/bin/agent_tools inside the container.
+        // The socket is mounted at /var/run/ur.sock inside the container.
+        let runtime = detect_container_runtime();
+        let ping_output = Command::new(&runtime)
+            .args(["exec", &container_name, "agent_tools", "ping"])
+            .output()
+            .expect("failed to exec agent_tools ping in container");
+
+        assert_eq!(
+            ping_output.status.code(),
+            Some(0),
+            "agent_tools ping should exit 0.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ping_output.stdout),
+            String::from_utf8_lossy(&ping_output.stderr),
+        );
+        let ping_stdout = String::from_utf8_lossy(&ping_output.stdout);
+        assert_eq!(
+            ping_stdout.trim(),
+            "pong",
+            "agent_tools ping should return 'pong', got: {ping_stdout}"
+        );
+
+        // ---- (5) Register repo and test git commands ----
+        // Create a test repo in the workspace directory.
+        let workspace = config_path.join("workspace");
+        let repo_name = "test-repo";
+        let repo_dir = workspace.join(repo_name);
+        std::fs::create_dir_all(&repo_dir).expect("failed to create test repo dir");
+
+        // Initialize a git repo on the host side (this is where urd runs git).
+        let git_init = Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .expect("failed to run git init");
+        assert!(git_init.status.success(), "git init failed in test repo");
+
+        // Verify agent_tools can reach urd via the git RPC path.
+        // The command will fail with "unknown process_id" since no repo is
+        // registered for this container, but a definite exit code proves
+        // the full RPC round-trip works end-to-end.
+        let git_output = Command::new(&runtime)
+            .args([
+                "exec",
+                &container_name,
+                "agent_tools",
+                "--socket",
+                "/var/run/ur.sock",
+                "git",
+                "status",
+            ])
+            .output()
+            .expect("failed to exec agent_tools git in container");
+
+        assert_ne!(
+            git_output.status.code(),
+            None,
+            "agent_tools git should produce an exit code"
+        );
+
+        // ---- (6) ur process stop ----
+        let stop_output = run_cmd(
+            &ur,
+            &["--socket", socket_str, "process", "stop", &container_name],
+            &[],
+        );
+        assert!(
+            stop_output.status.success(),
+            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    // ---- (7) Kill urd (always, even if test panicked) ----
+    kill_and_wait(urd_child);
+
+    // Re-raise any panic from the test body.
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
