@@ -33,11 +33,33 @@ pub struct RunOpts {
     pub command: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExecOpts {
+    pub command: Vec<String>,
+    pub workdir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub trait ContainerRuntime {
     fn build(&self, opts: &BuildOpts) -> Result<ImageId>;
     fn run(&self, opts: &RunOpts) -> Result<ContainerId>;
     fn stop(&self, id: &ContainerId) -> Result<()>;
     fn rm(&self, id: &ContainerId) -> Result<()>;
+    /// Execute a command inside a running container and capture its output.
+    fn exec(&self, id: &ContainerId, opts: &ExecOpts) -> Result<ExecOutput>;
+    /// Attach interactively to a running container with a PTY.
+    /// Inherits the caller's stdin/stdout/stderr.
+    fn exec_interactive(
+        &self,
+        id: &ContainerId,
+        command: &[String],
+    ) -> Result<std::process::ExitStatus>;
 }
 
 fn has_command(name: &str) -> bool {

@@ -23,6 +23,10 @@ struct Cli {
 struct BridgeServer;
 
 impl UrAgentBridge for BridgeServer {
+    async fn ping(self, _ctx: tarpc::context::Context) -> String {
+        "pong".into()
+    }
+
     async fn ask_human(
         self,
         _ctx: tarpc::context::Context,
@@ -132,6 +136,26 @@ impl UrAgentBridge for BridgeServer {
         let rt = container::runtime_from_env();
         rt.rm(&container::ContainerId(req.container_id))
             .map_err(|e| e.to_string())
+    }
+
+    async fn container_exec(
+        self,
+        _ctx: tarpc::context::Context,
+        req: ContainerExecRequest,
+    ) -> Result<ContainerExecResponse, String> {
+        let rt = container::runtime_from_env();
+        let opts = container::ExecOpts {
+            command: req.command,
+            workdir: req.workdir.map(PathBuf::from),
+        };
+        let output = rt
+            .exec(&container::ContainerId(req.container_id), &opts)
+            .map_err(|e| e.to_string())?;
+        Ok(ContainerExecResponse {
+            exit_code: output.exit_code,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 }
 

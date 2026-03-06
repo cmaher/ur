@@ -1,14 +1,26 @@
 use clap::{Parser, Subcommand};
+use tarpc::client;
+use tarpc::context;
+use tarpc::tokio_serde::formats::Bincode;
+use ur_rpc::UrAgentBridgeClient;
+
+const DEFAULT_SOCKET: &str = "/var/run/ur.sock";
 
 #[derive(Parser)]
 #[command(name = "agent_tools", about = "Worker CLI for Ur containers")]
 struct Cli {
+    /// Path to the urd Unix domain socket
+    #[arg(long, env = "UR_SOCKET", default_value = DEFAULT_SOCKET)]
+    socket: String,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Ping the urd server to verify connectivity
+    Ping,
     /// Ask a blocking question to the human operator
     Ask { question: String },
     /// Proxy git commands to the host
@@ -41,10 +53,21 @@ enum TicketCommands {
     Status { status: String },
 }
 
+async fn connect(socket: &str) -> anyhow::Result<UrAgentBridgeClient> {
+    let transport = tarpc::serde_transport::unix::connect(socket, Bincode::default).await?;
+    let client = UrAgentBridgeClient::new(client::Config::default(), transport).spawn();
+    Ok(client)
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Ping => {
+            let client = connect(&cli.socket).await?;
+            let resp = client.ping(context::current()).await?;
+            println!("{resp}");
+        }
         Commands::Ask { question } => {
             println!("Asking: {question}");
         }
@@ -64,4 +87,5 @@ async fn main() {
             }
         },
     }
+    Ok(())
 }
