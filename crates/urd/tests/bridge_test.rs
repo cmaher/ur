@@ -106,6 +106,18 @@ impl UrAgentBridge for StubBridge {
     ) -> Result<(), String> {
         Ok(())
     }
+
+    async fn container_exec(
+        self,
+        _ctx: context::Context,
+        req: ContainerExecRequest,
+    ) -> Result<ContainerExecResponse, String> {
+        Ok(ContainerExecResponse {
+            exit_code: 0,
+            stdout: req.command.join(" "),
+            stderr: String::new(),
+        })
+    }
 }
 
 async fn spawn_server(sock: &Path) {
@@ -223,4 +235,21 @@ async fn roundtrip_over_unix_socket() {
         .await
         .unwrap()
         .unwrap();
+
+    // container_exec
+    let resp = client
+        .container_exec(
+            context::current(),
+            ContainerExecRequest {
+                container_id: "test-container".into(),
+                command: vec!["echo".into(), "hello".into()],
+                workdir: None,
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resp.exit_code, 0);
+    assert_eq!(resp.stdout, "echo hello");
+    assert!(resp.stderr.is_empty());
 }

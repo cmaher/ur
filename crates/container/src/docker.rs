@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{BuildOpts, ContainerId, ContainerRuntime, ImageId, RunOpts};
+use crate::{BuildOpts, ContainerId, ContainerRuntime, ExecOpts, ExecOutput, ImageId, RunOpts};
 
 pub struct DockerRuntime;
 
@@ -65,6 +65,17 @@ impl DockerRuntime {
     pub fn rm_args(id: &ContainerId) -> Vec<String> {
         vec!["rm".into(), id.0.clone()]
     }
+
+    pub fn exec_args(id: &ContainerId, opts: &ExecOpts) -> Vec<String> {
+        let mut args = vec!["exec".into()];
+        if let Some(workdir) = &opts.workdir {
+            args.push("-w".into());
+            args.push(workdir.display().to_string());
+        }
+        args.push(id.0.clone());
+        args.extend(opts.command.iter().cloned());
+        args
+    }
 }
 
 impl ContainerRuntime for DockerRuntime {
@@ -90,6 +101,32 @@ impl ContainerRuntime for DockerRuntime {
         let args = Self::rm_args(id);
         Self::exec(&args)?;
         Ok(())
+    }
+
+    fn exec(&self, id: &ContainerId, opts: &ExecOpts) -> Result<ExecOutput> {
+        let args = Self::exec_args(id, opts);
+        let output = Command::new("docker")
+            .args(&args)
+            .output()
+            .context("failed to execute docker exec")?;
+        Ok(ExecOutput {
+            exit_code: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn exec_interactive(
+        &self,
+        id: &ContainerId,
+        command: &[String],
+    ) -> Result<std::process::ExitStatus> {
+        let mut args = vec!["exec".to_string(), "-it".to_string(), id.0.clone()];
+        args.extend(command.iter().cloned());
+        Command::new("docker")
+            .args(&args)
+            .status()
+            .context("failed to execute interactive docker exec")
     }
 }
 
@@ -194,6 +231,30 @@ mod tests {
         assert_eq!(
             DockerRuntime::rm_args(&ContainerId("abc".into())),
             vec![s("rm"), s("abc")]
+        );
+    }
+
+    #[test]
+    fn exec_command_args() {
+        let opts = ExecOpts {
+            command: vec![s("echo"), s("hello")],
+            workdir: None,
+        };
+        assert_eq!(
+            DockerRuntime::exec_args(&ContainerId("abc".into()), &opts),
+            vec![s("exec"), s("abc"), s("echo"), s("hello")]
+        );
+    }
+
+    #[test]
+    fn exec_command_args_with_workdir() {
+        let opts = ExecOpts {
+            command: vec![s("ls")],
+            workdir: Some(PathBuf::from("/workspace")),
+        };
+        assert_eq!(
+            DockerRuntime::exec_args(&ContainerId("abc".into()), &opts),
+            vec![s("exec"), s("-w"), s("/workspace"), s("abc"), s("ls")]
         );
     }
 }

@@ -62,6 +62,13 @@ pub struct ContainerIdRequest {
     pub container_id: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerExecRequest {
+    pub container_id: String,
+    pub command: Vec<String>,
+    pub workdir: Option<String>,
+}
+
 // -- Response types --
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -96,6 +103,13 @@ pub struct ContainerRunResponse {
     pub container_id: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContainerExecResponse {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 // -- Service trait --
 
 #[tarpc::service]
@@ -111,4 +125,5 @@ pub trait UrAgentBridge {
     async fn container_run(req: ContainerRunRequest) -> Result<ContainerRunResponse, String>;
     async fn container_stop(req: ContainerIdRequest) -> Result<(), String>;
     async fn container_rm(req: ContainerIdRequest) -> Result<(), String>;
+    async fn container_exec(req: ContainerExecRequest) -> Result<ContainerExecResponse, String>;
 }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use container::{BuildOpts, RunOpts, runtime_from_env};
+use container::{BuildOpts, ExecOpts, RunOpts, runtime_from_env};
 
 fn test_context() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,6 +36,32 @@ fn build_run_stop_rm() {
             command: vec!["sleep".into(), "30".into()],
         })
         .expect("run should succeed");
+
+    // Exec
+    let output = rt
+        .exec(
+            &id,
+            &ExecOpts {
+                command: vec!["echo".into(), "hello".into()],
+                workdir: None,
+            },
+        )
+        .expect("exec should succeed");
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.stdout.trim(), "hello");
+    assert!(output.stderr.is_empty());
+
+    // Exec with non-zero exit
+    let output = rt
+        .exec(
+            &id,
+            &ExecOpts {
+                command: vec!["sh".into(), "-c".into(), "exit 42".into()],
+                workdir: None,
+            },
+        )
+        .expect("exec should succeed even with non-zero exit");
+    assert_eq!(output.exit_code, 42);
 
     // Stop
     rt.stop(&id).expect("stop should succeed");
