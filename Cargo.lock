@@ -147,6 +147,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "container"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "educe"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -939,7 +946,9 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 name = "ur"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
+ "tarpc",
  "tokio",
  "ur_rpc",
 ]
@@ -958,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "container",
  "futures",
  "tarpc",
  "tempfile",
