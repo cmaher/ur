@@ -34,3 +34,45 @@ jobs:
 
       - name: Run CI checks
         run: cargo make ci
+
+  acceptance:
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-acceptance-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-acceptance-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cargo-make
+        run: cargo install cargo-make
+
+      - name: Cross-compile agent_tools
+        run: cargo make cross-agent-tools
+
+      - name: Build container image
+        run: docker build -t ur-worker:latest containers/claude-worker
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run acceptance tests
+        run: cargo test -p acceptance --features acceptance
+        env:
+          UR_CONTAINER: docker
