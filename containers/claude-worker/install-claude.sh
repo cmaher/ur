@@ -1,3 +1,3 @@
-#!/bin/sh
+#!/bin/bash
 set -e
-curl -fsSL https://claude.ai/install.sh | sh
+curl -fsSL https://claude.ai/install.sh | bash
