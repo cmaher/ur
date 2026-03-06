@@ -5,7 +5,9 @@ RUN apk add --no-cache \
     tmux \
     curl \
     ca-certificates \
-    coreutils
+    coreutils \
+    libstdc++ \
+    libgcc
 
 # Install Claude Code CLI (script is cached locally, binary downloaded at build time)
 COPY install-claude.sh /tmp/install-claude.sh
