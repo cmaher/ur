@@ -78,7 +78,9 @@ fn process_attach(process_id: &str) -> Result<()> {
 }
 
 async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result<()> {
-    let ctx = tarpc::context::current();
+    // Image build can take minutes (downloads + installs Claude Code CLI).
+    let mut ctx = tarpc::context::current();
+    ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
 
     // Build the worker image
     let project_root = std::env::current_dir()?;
@@ -99,9 +101,11 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
     // Launch the agent process (urd handles socket, repo, container)
     let container_name = format!("ur-agent-{ticket_id}");
     println!("Launching agent {container_name}...");
+    let mut launch_ctx = tarpc::context::current();
+    launch_ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let launch_resp = client
         .process_launch(
-            tarpc::context::current(),
+            launch_ctx,
             ProcessLaunchRequest {
                 process_id: ticket_id.into(),
                 image_id: build_resp.image_id,
@@ -121,9 +125,11 @@ async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result
 
 async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<()> {
     println!("Stopping {process_id}...");
+    let mut ctx = tarpc::context::current();
+    ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     client
         .process_stop(
-            tarpc::context::current(),
+            ctx,
             ProcessStopRequest {
                 process_id: process_id.into(),
             },

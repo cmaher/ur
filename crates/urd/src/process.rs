@@ -35,9 +35,15 @@ impl ProcessManager {
         }
     }
 
-    /// Path to the per-agent socket for a given process.
+    /// Per-agent socket directory. All sockets for this process (control + stream)
+    /// live here. This directory is mounted into the container.
+    pub fn socket_dir(&self, process_id: &str) -> PathBuf {
+        self.config_dir.join(process_id)
+    }
+
+    /// Path to the per-agent control socket.
     pub fn socket_path(&self, process_id: &str) -> PathBuf {
-        self.config_dir.join(format!("{process_id}.sock"))
+        self.socket_dir(process_id).join("ur.sock")
     }
 
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
@@ -52,7 +58,12 @@ impl ProcessManager {
             }
         }
 
-        // 1. Create + git init repo dir
+        // 1. Create per-agent socket dir + repo dir
+        let socket_dir = self.socket_dir(process_id);
+        tokio::fs::create_dir_all(&socket_dir)
+            .await
+            .map_err(|e| format!("failed to create socket dir: {e}"))?;
+
         let repo_dir = self.workspace.join(process_id);
         tokio::fs::create_dir_all(&repo_dir)
             .await
@@ -95,13 +106,19 @@ impl ProcessManager {
         let cid = {
             let rt = container::runtime_from_env();
             let container_name = format!("ur-agent-{process_id}");
+            // Mount the per-agent socket directory so the control socket and
+            // any stream sockets created during exec are visible inside.
+            let socket_dir = socket_path
+                .parent()
+                .expect("socket_path must have a parent dir")
+                .to_path_buf();
             let opts = container::RunOpts {
                 image: container::ImageId(image_id.to_string()),
                 name: container_name,
                 cpus,
                 memory: memory.to_string(),
-                volumes: vec![],
-                socket_mounts: vec![(socket_path.clone(), PathBuf::from("/var/run/ur.sock"))],
+                volumes: vec![(socket_dir, PathBuf::from("/var/run/ur"))],
+                socket_mounts: vec![],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
@@ -150,8 +167,10 @@ impl ProcessManager {
         // 3. Abort the accept_loop task
         entry.accept_handle.abort();
 
-        // 4. Remove the socket file
-        let _ = tokio::fs::remove_file(&entry.socket_path).await;
+        // 4. Remove the socket directory (contains control + stream sockets)
+        if let Some(socket_dir) = entry.socket_path.parent() {
+            let _ = tokio::fs::remove_dir_all(socket_dir).await;
+        }
 
         info!(process_id, "process stopped");
 
@@ -200,7 +219,7 @@ mod tests {
     async fn socket_path_uses_process_id() {
         let (mgr, _config_dir, _workspace) = test_manager();
         let path = mgr.socket_path("my-agent");
-        assert!(path.to_str().unwrap().ends_with("my-agent.sock"));
+        assert!(path.to_str().unwrap().ends_with("my-agent/ur.sock"));
     }
 
     #[tokio::test]
@@ -221,8 +240,8 @@ mod tests {
             .await;
         assert!(resp.is_ok());
 
-        // Verify socket path
-        assert!(socket_path.to_str().unwrap().ends_with("test-proc.sock"));
+        // Verify socket path is in per-process directory
+        assert!(socket_path.to_str().unwrap().ends_with("test-proc/ur.sock"));
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # claude-worker (Container Image)
 
-Alpine-based container image for agent workers. Must work with both Apple (`container`) and Docker runtimes.
+Debian bookworm-slim container image for agent workers. Must work with Apple (`container`), Docker, and nerdctl (containerd) runtimes.
 
 - Build context is `containers/claude-worker/` — all files copied into the image must live here
 - Image is tagged `ur-worker:latest` by convention

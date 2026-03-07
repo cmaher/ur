@@ -102,12 +102,30 @@ async fn main() -> anyhow::Result<()> {
         Commands::Git { args } => {
             let client = connect(&socket).await?;
             let resp = client
-                .exec_git_stream(context::current(), ExecGitRequest { args })
+                .exec_git_stream(context::current(), ExecGitRequest { args: args.clone() })
                 .await?
                 .map_err(|e| anyhow::anyhow!(e))?;
 
-            let exit_code = consume_command_stream(Path::new(&resp.stream_socket)).await?;
-            std::process::exit(exit_code);
+            // Stream socket filename is relative to the control socket's directory.
+            let stream_socket = socket
+                .parent()
+                .expect("socket path must have a parent")
+                .join(&resp.stream_socket);
+
+            // Try streaming first; fall back to non-streaming exec_git if the
+            // stream socket isn't reachable (e.g. Apple VM-based runtime).
+            match consume_command_stream(&stream_socket).await {
+                Ok(exit_code) => std::process::exit(exit_code),
+                Err(_) => {
+                    let resp = client
+                        .exec_git(context::current(), ExecGitRequest { args })
+                        .await?
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    print!("{}", resp.stdout);
+                    eprint!("{}", resp.stderr);
+                    std::process::exit(resp.exit_code);
+                }
+            }
         }
         Commands::Ticket { command } => match command {
             TicketCommands::Read => println!("Reading ticket..."),

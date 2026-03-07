@@ -155,8 +155,12 @@ async fn run_git_stream(
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    let socket_path_str = socket_path
-        .to_str()
+    // Return just the filename — the client resolves it relative to the
+    // directory containing its control socket (which is the same directory
+    // on the host; inside containers it's the mounted dir).
+    let socket_filename = socket_path
+        .file_name()
+        .and_then(|f| f.to_str())
         .ok_or_else(|| "non-UTF-8 socket path".to_string())?
         .to_string();
 
@@ -244,7 +248,7 @@ async fn run_git_stream(
     });
 
     Ok(StreamingExecResponse {
-        stream_socket: socket_path_str,
+        stream_socket: socket_filename,
     })
 }
 
@@ -471,9 +475,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Connect to the stream socket and collect output
-        let stream_path = Path::new(&resp.stream_socket);
-        let mut stream = connect_stream(stream_path).await.unwrap();
+        // Stream socket is returned as a filename; resolve relative to socket_dir
+        let stream_path = socket_dir.join(&resp.stream_socket);
+        let mut stream = connect_stream(&stream_path).await.unwrap();
         let (stdout_chunks, exit_code) = collect_stream(&mut stream).await;
 
         assert_eq!(exit_code, Some(0), "git status should exit 0");

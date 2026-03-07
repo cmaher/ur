@@ -72,8 +72,21 @@ fn has_command(name: &str) -> bool {
 pub fn runtime_from_env() -> Box<dyn ContainerRuntime> {
     match std::env::var("UR_CONTAINER").as_deref() {
         Ok("apple") => Box::new(apple::AppleRuntime),
-        Ok("docker") => Box::new(docker::DockerRuntime),
+        Ok("docker") => Box::new(docker::DockerRuntime {
+            command: "docker".into(),
+        }),
+        Ok("nerdctl") | Ok("containerd") => Box::new(docker::DockerRuntime {
+            command: "nerdctl".into(),
+        }),
         _ if has_command("container") => Box::new(apple::AppleRuntime),
-        _ => Box::new(docker::DockerRuntime),
+        _ if has_command("docker") => Box::new(docker::DockerRuntime {
+            command: "docker".into(),
+        }),
+        _ if has_command("nerdctl") => Box::new(docker::DockerRuntime {
+            command: "nerdctl".into(),
+        }),
+        _ => Box::new(docker::DockerRuntime {
+            command: "docker".into(),
+        }),
     }
 }

@@ -22,8 +22,12 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Path to a debug binary built from this workspace.
+/// Respects `CARGO_TARGET_DIR` if set, otherwise uses `target/` under workspace root.
 fn bin(name: &str) -> PathBuf {
-    workspace_root().join("target").join("debug").join(name)
+    let target_dir = std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| workspace_root().join("target"));
+    target_dir.join("debug").join(name)
 }
 
 /// Start `urd` as a background process with `UR_CONFIG` set to the given dir.
@@ -74,26 +78,48 @@ fn kill_and_wait(mut child: Child) {
 }
 
 /// Detect the container runtime available on this system.
-/// Returns the command name for the runtime (e.g., "container" or "docker").
+/// Returns the command name for the runtime (e.g., "container", "docker", or "nerdctl").
 fn detect_container_runtime() -> String {
     if let Ok(val) = std::env::var("UR_CONTAINER") {
-        return val;
+        // Normalize "containerd" to the actual CLI command.
+        return if val == "containerd" {
+            "nerdctl".into()
+        } else {
+            val
+        };
     }
-    // Check for Apple `container` CLI first, then fall back to docker.
-    if Command::new("container")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok()
-    {
-        return "container".into();
+    // Check for Apple `container` CLI first, then docker, then nerdctl.
+    for cmd in ["container", "docker", "nerdctl"] {
+        if Command::new(cmd)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+        {
+            return cmd.into();
+        }
     }
     "docker".into()
 }
 
+/// Force-remove a container if it exists (cleanup from prior failed runs).
+fn force_remove_container(runtime: &str, name: &str) {
+    let _ = Command::new(runtime)
+        .args(["rm", "-f", name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 #[test]
 fn e2e_ping_and_git() {
+    // ---- (0) Clean up stale containers from prior failed runs ----
+    let runtime = detect_container_runtime();
+    let ticket_id = "acceptance-test";
+    let container_name = format!("ur-agent-{ticket_id}");
+    force_remove_container(&runtime, &container_name);
+
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
@@ -108,7 +134,6 @@ fn e2e_ping_and_git() {
         assert!(ur.exists(), "ur binary not found at {}", ur.display());
 
         let socket_str = socket_path.to_str().unwrap();
-        let ticket_id = "acceptance-test";
 
         // ---- (3) ur process launch ----
         let launch_output = run_cmd(
@@ -125,7 +150,6 @@ fn e2e_ping_and_git() {
 
         let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
         // Expected output: "Agent ur-agent-<ticket> running (container <id>)"
-        let container_name = format!("ur-agent-{ticket_id}");
         assert!(
             launch_stdout.contains(&container_name),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
@@ -133,8 +157,7 @@ fn e2e_ping_and_git() {
 
         // ---- (4) exec agent_tools ping inside container ----
         // agent_tools is at /usr/local/bin/agent_tools inside the container.
-        // The socket is mounted at /var/run/ur.sock inside the container.
-        let runtime = detect_container_runtime();
+        // The socket dir is mounted at /var/run/ur/ (UR_SOCKET set in Dockerfile).
         let ping_output = Command::new(&runtime)
             .args(["exec", &container_name, "agent_tools", "ping"])
             .output()
@@ -162,8 +185,6 @@ fn e2e_ping_and_git() {
                 "exec",
                 &container_name,
                 "agent_tools",
-                "--socket",
-                "/var/run/ur.sock",
                 "git",
                 "status",
             ])

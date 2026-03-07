@@ -4,17 +4,21 @@ use anyhow::{Context, Result, bail};
 
 use crate::{BuildOpts, ContainerId, ContainerRuntime, ExecOpts, ExecOutput, ImageId, RunOpts};
 
-pub struct DockerRuntime;
+/// Docker-compatible container runtime. Works with `docker` and `nerdctl` (containerd).
+#[derive(Clone)]
+pub struct DockerRuntime {
+    pub command: String,
+}
 
 impl DockerRuntime {
-    fn exec(args: &[String]) -> Result<String> {
-        let output = Command::new("docker")
+    fn exec(&self, args: &[String]) -> Result<String> {
+        let output = Command::new(&self.command)
             .args(args)
             .output()
-            .context("failed to execute docker")?;
+            .with_context(|| format!("failed to execute {}", self.command))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("docker {} failed: {}", args[0], stderr.trim());
+            bail!("{} {} failed: {}", self.command, args[0], stderr.trim());
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
@@ -59,7 +63,7 @@ impl DockerRuntime {
     }
 
     pub fn stop_args(id: &ContainerId) -> Vec<String> {
-        vec!["stop".into(), id.0.clone()]
+        vec!["stop".into(), "-t".into(), "3".into(), id.0.clone()]
     }
 
     pub fn rm_args(id: &ContainerId) -> Vec<String> {
@@ -81,34 +85,34 @@ impl DockerRuntime {
 impl ContainerRuntime for DockerRuntime {
     fn build(&self, opts: &BuildOpts) -> Result<ImageId> {
         let args = Self::build_args(opts);
-        Self::exec(&args)?;
+        self.exec(&args)?;
         Ok(ImageId(opts.tag.clone()))
     }
 
     fn run(&self, opts: &RunOpts) -> Result<ContainerId> {
         let args = Self::run_args(opts);
-        let id = Self::exec(&args)?;
+        let id = self.exec(&args)?;
         Ok(ContainerId(id))
     }
 
     fn stop(&self, id: &ContainerId) -> Result<()> {
         let args = Self::stop_args(id);
-        Self::exec(&args)?;
+        self.exec(&args)?;
         Ok(())
     }
 
     fn rm(&self, id: &ContainerId) -> Result<()> {
         let args = Self::rm_args(id);
-        Self::exec(&args)?;
+        self.exec(&args)?;
         Ok(())
     }
 
     fn exec(&self, id: &ContainerId, opts: &ExecOpts) -> Result<ExecOutput> {
         let args = Self::exec_args(id, opts);
-        let output = Command::new("docker")
+        let output = Command::new(&self.command)
             .args(&args)
             .output()
-            .context("failed to execute docker exec")?;
+            .with_context(|| format!("failed to execute {} exec", self.command))?;
         Ok(ExecOutput {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -123,10 +127,10 @@ impl ContainerRuntime for DockerRuntime {
     ) -> Result<std::process::ExitStatus> {
         let mut args = vec!["exec".to_string(), "-it".to_string(), id.0.clone()];
         args.extend(command.iter().cloned());
-        Command::new("docker")
+        Command::new(&self.command)
             .args(&args)
             .status()
-            .context("failed to execute interactive docker exec")
+            .with_context(|| format!("failed to execute interactive {} exec", self.command))
     }
 }
 
@@ -222,7 +226,7 @@ mod tests {
     fn stop_command_args() {
         assert_eq!(
             DockerRuntime::stop_args(&ContainerId("abc".into())),
-            vec![s("stop"), s("abc")]
+            vec![s("stop"), s("-t"), s("3"), s("abc")]
         );
     }
 

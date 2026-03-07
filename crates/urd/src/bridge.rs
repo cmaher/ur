@@ -336,9 +336,15 @@ impl UrAgentBridge for BridgeServer {
 
         // Spawn per-agent accept_loop using AgentBridge (not BridgeServer,
         // which would create a recursive opaque-type chain).
+        // Use per-process socket directory so stream sockets are co-located
+        // with the control socket and visible inside the container.
+        let agent_socket_dir = socket_path
+            .parent()
+            .expect("socket_path must have a parent dir")
+            .to_path_buf();
         let agent = AgentBridge {
             repo_registry: self.repo_registry.clone(),
-            socket_dir: self.socket_dir.clone(),
+            socket_dir: agent_socket_dir,
             process_id: req.process_id.clone(),
         };
         let sp = socket_path.clone();
