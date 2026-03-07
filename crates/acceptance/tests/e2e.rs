@@ -1,11 +1,11 @@
 //! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
 //!
 //! These tests exercise the full user-facing workflow:
-//!   1. `urd` starts and listens on a gRPC socket (`ur-grpc.sock`)
+//!   1. `urd` starts and listens on a TCP port (127.0.0.1:PORT)
 //!   2. `ur process launch` builds the container image and launches a container
-//!      with a per-agent gRPC socket mounted at `/var/run/ur/ur.sock`
+//!      with a per-agent gRPC TCP port published into the container
 //!   3. Worker commands inside the container (`ur-ping`, `git`) connect to urd
-//!      via tonic gRPC over the per-agent UDS
+//!      via tonic gRPC over TCP using `UR_GRPC_PORT`
 //!   4. `ur process stop` tears down the container and cleans up
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
@@ -39,10 +39,15 @@ fn bin(name: &str) -> PathBuf {
 }
 
 /// Start `urd` as a background process with `UR_CONFIG` set to the given dir.
-/// Waits for the socket file to appear before returning.
-fn start_urd(config_dir: &Path) -> Child {
+/// Waits for the "gRPC server listening" log line and extracts the port.
+fn start_urd(config_dir: &Path, daemon_port: u16) -> (Child, u16) {
     let urd = bin("urd");
     assert!(urd.exists(), "urd binary not found at {}", urd.display());
+
+    // Write config with the specified daemon port
+    let toml_path = config_dir.join("ur.toml");
+    std::fs::write(&toml_path, format!("daemon_port = {daemon_port}\n"))
+        .expect("failed to write ur.toml");
 
     let child = Command::new(&urd)
         .env("UR_CONFIG", config_dir)
@@ -52,19 +57,16 @@ fn start_urd(config_dir: &Path) -> Child {
         .spawn()
         .expect("failed to spawn urd");
 
-    // Wait for the gRPC socket to appear (urd creates it on startup).
-    let socket = config_dir.join("ur-grpc.sock");
+    // Wait for the daemon to start by polling a TCP connection
+    let addr = format!("127.0.0.1:{daemon_port}");
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() {
-        assert!(
-            Instant::now() < deadline,
-            "urd did not create socket at {} within 10s",
-            socket.display()
-        );
+    while Instant::now() < deadline {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            return (child, daemon_port);
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
-
-    child
+    panic!("urd did not start listening on {addr} within 10s");
 }
 
 /// Run a CLI command from the workspace root, returning its output. Panics on spawn failure.
@@ -131,22 +133,23 @@ fn e2e_ping_and_git() {
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let grpc_socket_path = config_path.join("ur-grpc.sock");
+
+    // Use a high ephemeral port to avoid conflicts
+    let daemon_port = 19876u16;
 
     // ---- (2) Start urd ----
-    let urd_child = start_urd(config_path);
+    let (urd_child, port) = start_urd(config_path, daemon_port);
+    let port_str = port.to_string();
 
     // Use catch_unwind so we always clean up urd even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ur = bin("ur");
         assert!(ur.exists(), "ur binary not found at {}", ur.display());
 
-        let socket_str = grpc_socket_path.to_str().unwrap();
-
         // ---- (3) ur process launch ----
         let launch_output = run_cmd(
             &ur,
-            &["--socket", socket_str, "process", "launch", ticket_id],
+            &["--port", &port_str, "process", "launch", ticket_id],
             &[("UR_CONFIG", config_path.to_str().unwrap())],
         );
         assert!(
@@ -165,7 +168,7 @@ fn e2e_ping_and_git() {
 
         // ---- (4) exec ur-ping inside container ----
         // ur-ping is at /usr/local/bin/ur-ping inside the container.
-        // The socket dir is mounted at /var/run/ur/ (UR_SOCKET set in Dockerfile).
+        // UR_GRPC_PORT is set via -e flag during container run.
         let ping_output = Command::new(&runtime)
             .args(["exec", &container_name, "ur-ping"])
             .output()
@@ -187,7 +190,7 @@ fn e2e_ping_and_git() {
 
         // ---- (5) Test git commands via git proxy ----
         // urd has already created and git-init'd the repo for this process.
-        // git status should succeed via the per-agent gRPC socket.
+        // git status should succeed via the per-agent gRPC TCP connection.
         let git_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "status"])
             .output()
@@ -225,7 +228,7 @@ fn e2e_ping_and_git() {
         // ---- (6) ur process stop (by ticket_id, not container name) ----
         let stop_output = run_cmd(
             &ur,
-            &["--socket", socket_str, "process", "stop", ticket_id],
+            &["--port", &port_str, "process", "stop", ticket_id],
             &[],
         );
         assert!(

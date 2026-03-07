@@ -75,6 +75,7 @@ impl CoreService for CoreServiceHandler {
                 req.cpus,
                 &req.memory,
                 grpc_port,
+                self.agent_grpc_port,
                 server_handle,
             )
             .await

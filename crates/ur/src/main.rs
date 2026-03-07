@@ -1,22 +1,21 @@
-use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use container::ContainerId;
-use hyper_util::rt::TokioIo;
-use tokio::net::UnixStream;
-use tonic::transport::{Channel, Endpoint, Uri};
-use tower::service_fn;
+use tonic::transport::{Channel, Endpoint};
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
+
+/// Default TCP port the urd daemon listens on.
+const DEFAULT_DAEMON_PORT: u16 = 42068;
 
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// Path to the urd gRPC socket (default: $UR_CONFIG/ur-grpc.sock or ~/.ur/ur-grpc.sock)
+    /// TCP port of the urd gRPC server (default: 42068, override with $UR_DAEMON_PORT)
     #[arg(long)]
-    socket: Option<PathBuf>,
+    port: Option<u16>,
 
     #[command(subcommand)]
     command: Commands,
@@ -64,25 +63,24 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
-fn default_grpc_socket() -> PathBuf {
-    let config_dir = std::env::var("UR_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| dirs::home_dir().expect("no home dir").join(".ur"));
-    config_dir.join("ur-grpc.sock")
+fn resolve_daemon_port(cli_port: Option<u16>) -> u16 {
+    if let Some(port) = cli_port {
+        return port;
+    }
+    if let Ok(val) = std::env::var("UR_DAEMON_PORT")
+        && let Ok(port) = val.parse::<u16>()
+    {
+        return port;
+    }
+    DEFAULT_DAEMON_PORT
 }
 
-async fn connect(socket: &Path) -> Result<CoreServiceClient<Channel>> {
-    let path = socket.to_path_buf();
-    let channel = Endpoint::try_from("http://[::]:50051")?
-        .connect_with_connector(service_fn(move |_: Uri| {
-            let path = path.clone();
-            async move {
-                let stream = UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(stream))
-            }
-        }))
+async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
+    let addr = format!("http://127.0.0.1:{port}");
+    let channel = Endpoint::try_from(addr.clone())?
+        .connect()
         .await
-        .with_context(|| format!("failed to connect to urd at {}", socket.display()))?;
+        .with_context(|| format!("failed to connect to urd at {addr}"))?;
     Ok(CoreServiceClient::new(channel))
 }
 
@@ -139,7 +137,7 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(default_grpc_socket);
+    let port = resolve_daemon_port(cli.port);
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
@@ -147,7 +145,7 @@ async fn main() -> Result<()> {
                 process_attach(&process_id)?;
             }
             other => {
-                let mut client = connect(&socket).await?;
+                let mut client = connect(port).await?;
                 match other {
                     ProcessCommands::Launch { ticket_id } => {
                         process_launch(&mut client, &ticket_id).await?;

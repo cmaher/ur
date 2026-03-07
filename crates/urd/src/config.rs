@@ -8,11 +8,15 @@ const UR_CONFIG_ENV: &str = "UR_CONFIG";
 /// Default gRPC port for per-agent servers inside the container.
 const DEFAULT_AGENT_GRPC_PORT: u16 = 42069;
 
+/// Default TCP port the main urd daemon listens on.
+const DEFAULT_DAEMON_PORT: u16 = 42068;
+
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     workspace: Option<PathBuf>,
     agent_grpc_port: Option<u16>,
+    daemon_port: Option<u16>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -25,10 +29,9 @@ pub struct Config {
     /// Fixed container-side gRPC port for per-agent servers (default: 42069).
     /// Host-side ports are dynamically assigned via `127.0.0.1:0`.
     pub agent_grpc_port: u16,
+    /// TCP port the main urd daemon listens on (default: 42068).
+    pub daemon_port: u16,
 }
-
-/// Name of the UDS socket file within `config_dir`.
-const SOCKET_FILENAME: &str = "ur.sock";
 
 impl Config {
     /// Load configuration from `$UR_CONFIG/ur.toml`.
@@ -41,11 +44,6 @@ impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let config_dir = resolve_config_dir()?;
         Self::load_from(&config_dir)
-    }
-
-    /// Path to the UDS socket file within this config directory.
-    pub fn socket_path(&self) -> PathBuf {
-        self.config_dir.join(SOCKET_FILENAME)
     }
 
     /// Load configuration using an explicit config directory.
@@ -62,11 +60,13 @@ impl Config {
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
         let agent_grpc_port = raw.agent_grpc_port.unwrap_or(DEFAULT_AGENT_GRPC_PORT);
+        let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             agent_grpc_port,
+            daemon_port,
         })
     }
 }
@@ -93,6 +93,7 @@ mod tests {
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.agent_grpc_port, 42069);
+        assert_eq!(cfg.daemon_port, 42068);
     }
 
     #[test]
@@ -102,6 +103,7 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.agent_grpc_port, 42069);
+        assert_eq!(cfg.daemon_port, 42068);
     }
 
     #[test]
@@ -132,10 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_derived_from_config_dir() {
+    fn reads_daemon_port_from_toml() {
         let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 9000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.socket_path(), tmp.path().join("ur.sock"));
+        assert_eq!(cfg.daemon_port, 9000);
     }
 
     #[test]

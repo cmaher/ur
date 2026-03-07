@@ -1328,11 +1328,8 @@ dependencies = [
  "anyhow",
  "clap",
  "container",
- "dirs",
- "hyper-util",
  "tokio",
  "tonic",
- "tower",
  "ur_rpc",
 ]
 
@@ -1341,10 +1338,8 @@ name = "ur-ping"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hyper-util",
  "tokio",
  "tonic",
- "tower",
  "ur_rpc",
 ]
 
@@ -1367,7 +1362,6 @@ dependencies = [
  "container",
  "dirs",
  "futures",
- "hyper-util",
  "prost",
  "serde",
  "tempfile",
@@ -1375,7 +1369,6 @@ dependencies = [
  "tokio-stream",
  "toml",
  "tonic",
- "tower",
  "tracing",
  "tracing-subscriber",
  "ur_rpc",
@@ -1650,10 +1643,8 @@ name = "workercmd-git"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hyper-util",
  "tokio",
  "tonic",
- "tower",
  "ur_rpc",
 ]
 

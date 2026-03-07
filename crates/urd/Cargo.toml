@@ -26,7 +26,5 @@ temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
-hyper-util = "0.1"
 tempfile = "3"
-tower = { workspace = true }
 ur_rpc = { path = "../ur_rpc", features = ["core", "git"] }

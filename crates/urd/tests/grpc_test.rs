@@ -1,42 +1,35 @@
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use tonic::transport::Server;
+use tonic::transport::{Endpoint, Server};
 
-/// Helper: start a gRPC server and return a connected channel.
+/// Helper: start a gRPC server on TCP and return a connected channel.
 async fn spawn_grpc_server(
-    socket_path: std::path::PathBuf,
     handler: urd::grpc::CoreServiceHandler,
-) -> tonic::transport::Channel {
-    use hyper_util::rt::TokioIo;
-    use tokio::net::UnixStream;
-    use tonic::transport::{Endpoint, Uri};
-    use tower::service_fn;
+) -> (tonic::transport::Channel, SocketAddr) {
+    use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-    let sp = socket_path.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
     tokio::spawn(async move {
-        urd::grpc_server::serve_grpc(&sp, handler).await.unwrap();
+        Server::builder()
+            .add_service(CoreServiceServer::new(handler))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
     });
 
-    // Wait for the socket file to appear
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
-
-    Endpoint::try_from("http://[::]:50051")
+    let channel = Endpoint::try_from(format!("http://{addr}"))
         .unwrap()
-        .connect_with_connector(service_fn(move |_: Uri| {
-            let path = socket_path.clone();
-            async move {
-                let stream = UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(stream))
-            }
-        }))
+        .connect()
         .await
-        .unwrap()
+        .unwrap();
+
+    (channel, addr)
 }
 
 /// Helper: create a CoreServiceHandler from a temp dir with workspace.
@@ -56,15 +49,14 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
 }
 
 #[tokio::test]
-async fn grpc_ping_over_unix_socket() {
+async fn grpc_ping_over_tcp() {
     use ur_rpc::proto::core::PingRequest;
     use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
     let dir = tempfile::tempdir().unwrap();
-    let socket_path = dir.path().join("test-grpc.sock");
 
     let (handler, _repo_registry) = make_grpc_handler(dir.path());
-    let channel = spawn_grpc_server(socket_path, handler).await;
+    let (channel, _addr) = spawn_grpc_server(handler).await;
 
     let mut client = CoreServiceClient::new(channel);
     let resp = client.ping(PingRequest {}).await.unwrap();
@@ -78,7 +70,6 @@ async fn grpc_git_exec_streams_output() {
     use ur_rpc::proto::git::git_service_client::GitServiceClient;
 
     let dir = tempfile::tempdir().unwrap();
-    let socket_path = dir.path().join("test-git-grpc.sock");
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
@@ -98,53 +89,31 @@ async fn grpc_git_exec_streams_output() {
     repo_registry.register(process_id, repo_name);
 
     // Start a custom gRPC server with our process_id bound to GitServiceHandler.
-    use tokio::net::UnixListener;
-    use tokio_stream::wrappers::UnixListenerStream;
     use ur_rpc::proto::core::core_service_server::CoreServiceServer;
     use ur_rpc::proto::git::git_service_server::GitServiceServer;
 
-    let _ = tokio::fs::remove_file(&socket_path).await;
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let uds_stream = UnixListenerStream::new(listener);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let git_handler = urd::grpc_git::GitServiceHandler {
         repo_registry: repo_registry.clone(),
         process_id: process_id.to_string(),
     };
 
-    let sp = socket_path.clone();
     tokio::spawn(async move {
         Server::builder()
             .add_service(CoreServiceServer::new(handler))
             .add_service(GitServiceServer::new(git_handler))
-            .serve_with_incoming(uds_stream)
+            .serve_with_incoming(incoming)
             .await
             .unwrap();
     });
 
-    // Wait for socket
-    for _ in 0..50 {
-        if sp.exists() {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
-
     // Connect client
-    use hyper_util::rt::TokioIo;
-    use tokio::net::UnixStream;
-    use tonic::transport::{Endpoint, Uri};
-    use tower::service_fn;
-
-    let channel = Endpoint::try_from("http://[::]:50051")
+    let channel = Endpoint::try_from(format!("http://{addr}"))
         .unwrap()
-        .connect_with_connector(service_fn(move |_: Uri| {
-            let path = sp.clone();
-            async move {
-                let stream = UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(stream))
-            }
-        }))
+        .connect()
         .await
         .unwrap();
 
@@ -184,7 +153,6 @@ async fn grpc_git_exec_rejects_blocked_flags() {
     use ur_rpc::proto::git::git_service_client::GitServiceClient;
 
     let dir = tempfile::tempdir().unwrap();
-    let socket_path = dir.path().join("test-git-blocked.sock");
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
@@ -192,51 +160,30 @@ async fn grpc_git_exec_rejects_blocked_flags() {
     let process_id = "test-process";
     repo_registry.register(process_id, "some-repo");
 
-    use tokio::net::UnixListener;
-    use tokio_stream::wrappers::UnixListenerStream;
     use ur_rpc::proto::core::core_service_server::CoreServiceServer;
     use ur_rpc::proto::git::git_service_server::GitServiceServer;
 
-    let _ = tokio::fs::remove_file(&socket_path).await;
-    let listener = UnixListener::bind(&socket_path).unwrap();
-    let uds_stream = UnixListenerStream::new(listener);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let git_handler = urd::grpc_git::GitServiceHandler {
         repo_registry: repo_registry.clone(),
         process_id: process_id.to_string(),
     };
 
-    let sp = socket_path.clone();
     tokio::spawn(async move {
         Server::builder()
             .add_service(CoreServiceServer::new(handler))
             .add_service(GitServiceServer::new(git_handler))
-            .serve_with_incoming(uds_stream)
+            .serve_with_incoming(incoming)
             .await
             .unwrap();
     });
 
-    for _ in 0..50 {
-        if sp.exists() {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
-
-    use hyper_util::rt::TokioIo;
-    use tokio::net::UnixStream;
-    use tonic::transport::{Endpoint, Uri};
-    use tower::service_fn;
-
-    let channel = Endpoint::try_from("http://[::]:50051")
+    let channel = Endpoint::try_from(format!("http://{addr}"))
         .unwrap()
-        .connect_with_connector(service_fn(move |_: Uri| {
-            let path = sp.clone();
-            async move {
-                let uds = UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(uds))
-            }
-        }))
+        .connect()
         .await
         .unwrap();
 

@@ -7,9 +7,6 @@ version.workspace = true
 anyhow = "1"
 clap = { workspace = true }
 container = { path = "../container" }
-dirs = "6"
-hyper-util = "0.1"
 tokio = { workspace = true }
 tonic = { workspace = true }
-tower = { workspace = true }
 ur_rpc = { path = "../ur_rpc", features = ["core"] }

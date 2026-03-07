@@ -1,6 +1,6 @@
 # Ur
 
-Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tonic gRPC over Unix Domain Sockets.
+Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tonic gRPC over TCP.
 
 ## Structure
 

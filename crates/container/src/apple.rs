@@ -63,6 +63,10 @@ impl AppleRuntime {
             args.push("-p".into());
             args.push(format!("{}:{}", pm.host_port, pm.container_port));
         }
+        for (key, val) in &opts.env_vars {
+            args.push("-e".into());
+            args.push(format!("{key}={val}"));
+        }
         if let Some(workdir) = &opts.workdir {
             args.push("--workdir".into());
             args.push(workdir.display().to_string());
@@ -169,6 +173,7 @@ mod tests {
                 host_port: 55000,
                 container_port: 42069,
             }],
+            env_vars: vec![("UR_GRPC_PORT".into(), "42069".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -186,6 +191,13 @@ mod tests {
         let args = AppleRuntime::run_args(&sample_run_opts());
         let vol_arg = args.iter().find(|a| a.contains("/workspace")).unwrap();
         assert!(vol_arg.starts_with("/private/tmp/ur/workspace:"));
+    }
+
+    #[test]
+    fn run_uses_env_flag_for_vars() {
+        let args = AppleRuntime::run_args(&sample_run_opts());
+        assert!(args.contains(&s("-e")));
+        assert!(args.contains(&s("UR_GRPC_PORT=42069")));
     }
 
     #[test]

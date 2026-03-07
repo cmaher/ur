@@ -53,6 +53,10 @@ impl DockerRuntime {
             args.push("-p".into());
             args.push(format!("{}:{}", pm.host_port, pm.container_port));
         }
+        for (key, val) in &opts.env_vars {
+            args.push("-e".into());
+            args.push(format!("{key}={val}"));
+        }
         if let Some(workdir) = &opts.workdir {
             args.push("-w".into());
             args.push(workdir.display().to_string());
@@ -167,6 +171,7 @@ mod tests {
                 host_port: 55000,
                 container_port: 42069,
             }],
+            env_vars: vec![("UR_GRPC_PORT".into(), "42069".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -206,6 +211,8 @@ mod tests {
                 s("/host/workspace:/workspace"),
                 s("-p"),
                 s("55000:42069"),
+                s("-e"),
+                s("UR_GRPC_PORT=42069"),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),

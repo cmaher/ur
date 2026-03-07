@@ -1,24 +1,18 @@
-use std::path::Path;
+use std::net::SocketAddr;
 
-use tokio::net::UnixListener;
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 use crate::grpc::CoreServiceHandler;
 
-/// Start the tonic gRPC server on a Unix domain socket.
+/// Start the main tonic gRPC server on a TCP socket.
 ///
-/// Used for the main host CLI path (ur -> urd). Per-agent servers use TCP instead.
+/// Used for the main host CLI path (ur -> urd). Per-agent servers also use TCP
+/// but bind to OS-assigned ports.
 /// When the `git` feature is enabled, the `GitService` is also registered.
-pub async fn serve_grpc(socket_path: &Path, handler: CoreServiceHandler) -> anyhow::Result<()> {
-    let _ = tokio::fs::remove_file(socket_path).await;
-
-    let listener = UnixListener::bind(socket_path)?;
-    let stream = UnixListenerStream::new(listener);
-
-    tracing::info!("gRPC server listening on {}", socket_path.display());
+pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
+    tracing::info!("gRPC server listening on {addr}");
 
     let mut builder = Server::builder();
 
@@ -36,7 +30,7 @@ pub async fn serve_grpc(socket_path: &Path, handler: CoreServiceHandler) -> anyh
         router.add_service(GitServiceServer::new(git_handler))
     };
 
-    router.serve_with_incoming(stream).await?;
+    router.serve(addr).await?;
 
     Ok(())
 }

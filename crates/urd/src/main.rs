@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -21,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
     info!("config dir: {}", cfg.config_dir.display());
     info!("workspace:  {}", cfg.workspace.display());
+    info!("daemon port: {}", cfg.daemon_port);
     tokio::fs::create_dir_all(&cfg.workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
 
@@ -34,9 +36,9 @@ async fn main() -> anyhow::Result<()> {
         workspace: cfg.workspace,
         agent_grpc_port: cfg.agent_grpc_port,
     };
-    let grpc_socket = cfg.config_dir.join("ur-grpc.sock");
+    let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
 
-    urd::grpc_server::serve_grpc(&grpc_socket, grpc_handler).await?;
+    urd::grpc_server::serve_grpc(addr, grpc_handler).await?;
 
     Ok(())
 }

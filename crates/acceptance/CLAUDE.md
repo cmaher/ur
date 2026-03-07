@@ -10,4 +10,4 @@ End-to-end acceptance tests that exercise the full stack: urd daemon, container 
 
 ## Design principle
 
-Tests MUST use only CLI commands (`urd`, `ur`, `ur-ping`, `git`) — never programmatic/in-process wiring. The point of acceptance tests is to validate the real user-facing workflow. If a test scenario requires manual setup that the CLI doesn't support (e.g., registering a repo, creating a socket), that means the CLI is incomplete and needs a new feature — not that the test should work around it with code.
+Tests MUST use only CLI commands (`urd`, `ur`, `ur-ping`, `git`) — never programmatic/in-process wiring. The point of acceptance tests is to validate the real user-facing workflow. If a test scenario requires manual setup that the CLI doesn't support, that means the CLI is incomplete and needs a new feature — not that the test should work around it with code.

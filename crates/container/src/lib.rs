@@ -36,6 +36,7 @@ pub struct RunOpts {
     pub memory: String,
     pub volumes: Vec<(PathBuf, PathBuf)>,
     pub port_maps: Vec<PortMap>,
+    pub env_vars: Vec<(String, String)>,
     pub workdir: Option<PathBuf>,
     pub command: Vec<String>,
 }

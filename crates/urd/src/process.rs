@@ -73,6 +73,11 @@ impl ProcessManager {
 
     /// Phase 2 of launch: run the container and record the process entry.
     /// Call after spawning the per-agent gRPC server.
+    ///
+    /// `grpc_port` is the host-side TCP port the per-agent gRPC server is bound to.
+    /// `agent_grpc_port` is the fixed container-side port (e.g. 42069) that gets
+    /// published via `-p host_port:container_port` and set as `UR_GRPC_PORT` env var.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_and_record(
         &self,
         process_id: &str,
@@ -80,6 +85,7 @@ impl ProcessManager {
         cpus: u32,
         memory: &str,
         grpc_port: u16,
+        agent_grpc_port: u16,
         server_handle: JoinHandle<()>,
     ) -> Result<String, String> {
         // Run the container (scoped so rt is dropped before any subsequent awaits)
@@ -92,7 +98,14 @@ impl ProcessManager {
                 cpus,
                 memory: memory.to_string(),
                 volumes: vec![],
-                port_maps: vec![],
+                port_maps: vec![container::PortMap {
+                    host_port: grpc_port,
+                    container_port: agent_grpc_port,
+                }],
+                env_vars: vec![(
+                    "UR_GRPC_PORT".into(),
+                    agent_grpc_port.to_string(),
+                )],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
