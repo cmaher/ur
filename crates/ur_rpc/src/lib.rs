@@ -2,6 +2,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod proto {
+    pub mod core {
+        tonic::include_proto!("ur.core");
+    }
+    pub mod git {
+        tonic::include_proto!("ur.git");
+    }
+}
+
 pub mod stream;
 
 // -- Shared socket-path resolution --
