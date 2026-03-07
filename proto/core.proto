@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package ur.core;
 
+// Shared streaming message for CLI proxy services
 message CommandOutput {
   oneof payload {
     bytes stdout = 1;
@@ -10,4 +11,31 @@ message CommandOutput {
   }
 }
 
-service CoreService {}
+// Core always-on service
+service CoreService {
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc ProcessLaunch(ProcessLaunchRequest) returns (ProcessLaunchResponse);
+  rpc ProcessStop(ProcessStopRequest) returns (ProcessStopResponse);
+}
+
+message PingRequest {}
+message PingResponse {
+  string message = 1;
+}
+
+message ProcessLaunchRequest {
+  string process_id = 1;
+  string image_id = 2;
+  uint32 cpus = 3;
+  string memory = 4;
+}
+
+message ProcessLaunchResponse {
+  string container_id = 1;
+}
+
+message ProcessStopRequest {
+  string process_id = 1;
+}
+
+message ProcessStopResponse {}
