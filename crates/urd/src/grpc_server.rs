@@ -39,3 +39,35 @@ pub async fn serve_grpc(socket_path: &Path, handler: CoreServiceHandler) -> anyh
 
     Ok(())
 }
+
+/// Start a per-agent gRPC server with both CoreService and GitService.
+///
+/// Used by `CoreServiceHandler::process_launch` to create a dedicated gRPC
+/// endpoint for each agent process, with the correct `process_id` bound to
+/// the `GitServiceHandler`.
+#[cfg(feature = "git")]
+pub async fn serve_grpc_with_git(
+    socket_path: &Path,
+    core_handler: CoreServiceHandler,
+    git_handler: crate::grpc_git::GitServiceHandler,
+) -> anyhow::Result<()> {
+    use ur_rpc::proto::git::git_service_server::GitServiceServer;
+
+    let _ = tokio::fs::remove_file(socket_path).await;
+
+    let listener = UnixListener::bind(socket_path)?;
+    let stream = UnixListenerStream::new(listener);
+
+    tracing::info!(
+        "per-agent gRPC server listening on {}",
+        socket_path.display()
+    );
+
+    Server::builder()
+        .add_service(CoreServiceServer::new(core_handler))
+        .add_service(GitServiceServer::new(git_handler))
+        .serve_with_incoming(stream)
+        .await?;
+
+    Ok(())
+}

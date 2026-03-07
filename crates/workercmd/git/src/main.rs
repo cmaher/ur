@@ -5,8 +5,8 @@ use tokio::net::UnixStream;
 use tonic::transport::{Endpoint, Uri};
 use tower::service_fn;
 use ur_rpc::proto::core::command_output::Payload;
-use ur_rpc::proto::git::git_service_client::GitServiceClient;
 use ur_rpc::proto::git::GitExecRequest;
+use ur_rpc::proto::git::git_service_client::GitServiceClient;
 
 #[tokio::main]
 async fn main() {
@@ -26,8 +26,7 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let socket_path =
-        std::env::var("UR_SOCKET").unwrap_or_else(|_| "/var/run/ur/ur.sock".into());
+    let socket_path = std::env::var("UR_SOCKET").unwrap_or_else(|_| "/var/run/ur/ur.sock".into());
 
     let path = socket_path.clone();
     let channel = match Endpoint::try_from("http://[::]:50051")
@@ -62,20 +61,19 @@ async fn main() {
     let mut exit_code = 1;
 
     while let Ok(Some(msg)) = stream.message().await {
-        if let Some(payload) = msg.payload {
-            match payload {
-                Payload::Stdout(data) => {
-                    let _ = std::io::stdout().write_all(&data);
-                    let _ = std::io::stdout().flush();
-                }
-                Payload::Stderr(data) => {
-                    let _ = std::io::stderr().write_all(&data);
-                    let _ = std::io::stderr().flush();
-                }
-                Payload::ExitCode(code) => {
-                    exit_code = code;
-                }
+        let Some(payload) = msg.payload else {
+            continue;
+        };
+        match payload {
+            Payload::Stdout(data) => {
+                let _ = std::io::stdout().write_all(&data);
+                let _ = std::io::stdout().flush();
             }
+            Payload::Stderr(data) => {
+                let _ = std::io::stderr().write_all(&data);
+                let _ = std::io::stderr().flush();
+            }
+            Payload::ExitCode(code) => exit_code = code,
         }
     }
 

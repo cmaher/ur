@@ -8,10 +8,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::warn;
 
-use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::core::CommandOutput;
-use ur_rpc::proto::git::git_service_server::GitService;
+use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::git::GitExecRequest;
+use ur_rpc::proto::git::git_service_server::GitService;
 
 use crate::git_exec::RepoRegistry;
 

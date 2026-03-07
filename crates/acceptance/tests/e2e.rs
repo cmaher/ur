@@ -3,7 +3,7 @@
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
 //!   - Pre-built `urd` and `ur` binaries in `target/debug/`
-//!   - `agent_tools` cross-compiled and baked into the container image
+//!   - Worker commands (`ur-ping`, `git`) baked into the container image
 //!   - A container runtime (Apple `container` or Docker)
 #![cfg(feature = "acceptance")]
 
@@ -44,8 +44,8 @@ fn start_urd(config_dir: &Path) -> Child {
         .spawn()
         .expect("failed to spawn urd");
 
-    // Wait for the socket to appear (urd creates it on startup).
-    let socket = config_dir.join("ur.sock");
+    // Wait for the gRPC socket to appear (urd creates it on startup).
+    let socket = config_dir.join("ur-grpc.sock");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !socket.exists() {
         assert!(
@@ -123,7 +123,7 @@ fn e2e_ping_and_git() {
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let socket_path = config_path.join("ur.sock");
+    let grpc_socket_path = config_path.join("ur-grpc.sock");
 
     // ---- (2) Start urd ----
     let urd_child = start_urd(config_path);
@@ -133,7 +133,7 @@ fn e2e_ping_and_git() {
         let ur = bin("ur");
         assert!(ur.exists(), "ur binary not found at {}", ur.display());
 
-        let socket_str = socket_path.to_str().unwrap();
+        let socket_str = grpc_socket_path.to_str().unwrap();
 
         // ---- (3) ur process launch ----
         let launch_output = run_cmd(
@@ -155,18 +155,18 @@ fn e2e_ping_and_git() {
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
-        // ---- (4) exec agent_tools ping inside container ----
-        // agent_tools is at /usr/local/bin/agent_tools inside the container.
+        // ---- (4) exec ur-ping inside container ----
+        // ur-ping is at /usr/local/bin/ur-ping inside the container.
         // The socket dir is mounted at /var/run/ur/ (UR_SOCKET set in Dockerfile).
         let ping_output = Command::new(&runtime)
-            .args(["exec", &container_name, "agent_tools", "ping"])
+            .args(["exec", &container_name, "ur-ping"])
             .output()
-            .expect("failed to exec agent_tools ping in container");
+            .expect("failed to exec ur-ping in container");
 
         assert_eq!(
             ping_output.status.code(),
             Some(0),
-            "agent_tools ping should exit 0.\nstdout: {}\nstderr: {}",
+            "ur-ping should exit 0.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&ping_output.stdout),
             String::from_utf8_lossy(&ping_output.stderr),
         );
@@ -174,27 +174,21 @@ fn e2e_ping_and_git() {
         assert_eq!(
             ping_stdout.trim(),
             "pong",
-            "agent_tools ping should return 'pong', got: {ping_stdout}"
+            "ur-ping should return 'pong', got: {ping_stdout}"
         );
 
-        // ---- (5) Test git commands via agent_tools ----
+        // ---- (5) Test git commands via git proxy ----
         // urd has already created and git-init'd the repo for this process.
-        // agent_tools git status should succeed via the per-agent socket.
+        // git status should succeed via the per-agent gRPC socket.
         let git_output = Command::new(&runtime)
-            .args([
-                "exec",
-                &container_name,
-                "agent_tools",
-                "git",
-                "status",
-            ])
+            .args(["exec", &container_name, "git", "status"])
             .output()
-            .expect("failed to exec agent_tools git in container");
+            .expect("failed to exec git status in container");
 
         assert_eq!(
             git_output.status.code(),
             Some(0),
-            "agent_tools git status should exit 0.\nstdout: {}\nstderr: {}",
+            "git status should exit 0.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&git_output.stdout),
             String::from_utf8_lossy(&git_output.stderr),
         );

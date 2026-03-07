@@ -1,14 +1,14 @@
 # Ur
 
-Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tarpc over Unix Domain Sockets.
+Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tonic gRPC over Unix Domain Sockets.
 
 ## Structure
 
-Cargo workspace with four crates:
+Cargo workspace:
 - `crates/ur/` - Host CLI (TUI, process management, ticket management)
-- `crates/urd/` - Daemon server (orchestration, RPC server, container management)
-- `crates/agent_tools/` - Worker CLI (runs inside containers, tarpc client)
-- `crates/ur_rpc/` - Shared RPC contract (tarpc service traits, data types)
+- `crates/urd/` - Daemon server (orchestration, gRPC server, container management)
+- `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
+- `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
 
 ## Code Style
 

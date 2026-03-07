@@ -9,7 +9,6 @@ use ur_rpc::proto::core::{
     ProcessStopResponse,
 };
 
-use crate::bridge::{agent_accept_loop, AgentBridge};
 use crate::{ProcessManager, RepoRegistry};
 
 /// gRPC implementation of the CoreService.
@@ -17,11 +16,7 @@ use crate::{ProcessManager, RepoRegistry};
 pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
-    /// Will be used by future gRPC services (e.g., container management).
-    #[allow(dead_code)]
     pub config_dir: PathBuf,
-    /// Will be used by future gRPC services (e.g., container management).
-    #[allow(dead_code)]
     pub workspace: PathBuf,
 }
 
@@ -46,20 +41,31 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        // Spawn per-agent accept loop for agent_tools connections
-        let agent_socket_dir = socket_path
-            .parent()
-            .expect("socket_path must have a parent dir")
-            .to_path_buf();
-        let agent = AgentBridge {
+        // Spawn per-agent gRPC server with both CoreService and GitService
+        let core_handler = CoreServiceHandler {
+            process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
-            socket_dir: agent_socket_dir,
+            config_dir: self.config_dir.clone(),
+            workspace: self.workspace.clone(),
+        };
+
+        #[cfg(feature = "git")]
+        let git_handler = crate::grpc_git::GitServiceHandler {
+            repo_registry: self.repo_registry.clone(),
             process_id: req.process_id.clone(),
         };
+
         let sp = socket_path.clone();
         let accept_handle = tokio::spawn(async move {
-            if let Err(e) = agent_accept_loop(sp, agent).await {
-                tracing::warn!("per-agent accept_loop error: {e}");
+            #[cfg(feature = "git")]
+            let result =
+                crate::grpc_server::serve_grpc_with_git(&sp, core_handler, git_handler).await;
+
+            #[cfg(not(feature = "git"))]
+            let result = crate::grpc_server::serve_grpc(&sp, core_handler).await;
+
+            if let Err(e) = result {
+                tracing::warn!("per-agent gRPC server error: {e}");
             }
         });
 

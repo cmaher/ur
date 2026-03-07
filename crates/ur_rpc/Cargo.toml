@@ -4,15 +4,8 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-dirs = "6"
-futures = "0.3"
 prost = { workspace = true }
-serde = { workspace = true }
-tarpc = { workspace = true }
-tokio = { workspace = true }
-tokio-serde = { version = "0.9", features = ["bincode"] }
 tokio-stream = { workspace = true }
-tokio-util = { version = "0.7", features = ["codec"] }
 tonic = { workspace = true }
 
 [features]

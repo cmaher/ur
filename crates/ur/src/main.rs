@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result};
@@ -71,7 +71,7 @@ fn default_grpc_socket() -> PathBuf {
     config_dir.join("ur-grpc.sock")
 }
 
-async fn connect(socket: &PathBuf) -> Result<CoreServiceClient<Channel>> {
+async fn connect(socket: &Path) -> Result<CoreServiceClient<Channel>> {
     let path = socket.to_path_buf();
     let channel = Endpoint::try_from("http://[::]:50051")?
         .connect_with_connector(service_fn(move |_: Uri| {
@@ -94,10 +94,7 @@ fn process_attach(process_id: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-async fn process_launch(
-    client: &mut CoreServiceClient<Channel>,
-    ticket_id: &str,
-) -> Result<()> {
+async fn process_launch(client: &mut CoreServiceClient<Channel>, ticket_id: &str) -> Result<()> {
     // Build the container image directly using the container crate
     // (container_build is not part of CoreService proto).
     let project_root = std::env::current_dir()?;
@@ -128,10 +125,7 @@ async fn process_launch(
     Ok(())
 }
 
-async fn process_stop(
-    client: &mut CoreServiceClient<Channel>,
-    process_id: &str,
-) -> Result<()> {
+async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str) -> Result<()> {
     println!("Stopping {process_id}...");
     client
         .process_stop(ProcessStopRequest {

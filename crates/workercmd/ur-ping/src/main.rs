@@ -2,13 +2,12 @@ use hyper_util::rt::TokioIo;
 use tokio::net::UnixStream;
 use tonic::transport::{Endpoint, Uri};
 use tower::service_fn;
-use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::PingRequest;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let socket_path =
-        std::env::var("UR_SOCKET").unwrap_or_else(|_| "/var/run/ur/ur.sock".into());
+    let socket_path = std::env::var("UR_SOCKET").unwrap_or_else(|_| "/var/run/ur/ur.sock".into());
 
     let path = socket_path.clone();
     let channel = Endpoint::try_from("http://[::]:50051")?

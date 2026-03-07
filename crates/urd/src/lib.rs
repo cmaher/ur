@@ -1,4 +1,3 @@
-pub mod bridge;
 pub mod config;
 pub mod git_exec;
 pub mod grpc;
