@@ -2,6 +2,8 @@ pub mod bridge;
 pub mod config;
 pub mod git_exec;
 pub mod grpc;
+#[cfg(feature = "git")]
+pub mod grpc_git;
 pub mod grpc_server;
 pub mod process;
 

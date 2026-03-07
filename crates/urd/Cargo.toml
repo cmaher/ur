@@ -30,4 +30,4 @@ temporal = ["ur_rpc/temporal"]
 hyper-util = "0.1"
 tempfile = "3"
 tower = { workspace = true }
-ur_rpc = { path = "../ur_rpc", features = ["core"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "git"] }

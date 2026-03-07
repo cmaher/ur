@@ -46,7 +46,7 @@ impl RepoRegistry {
     }
 
     /// Resolve a process_id to its full repo path within the workspace.
-    fn resolve(&self, process_id: &str) -> Result<PathBuf, String> {
+    pub(crate) fn resolve(&self, process_id: &str) -> Result<PathBuf, String> {
         let repos = self.repos.read().expect("repo registry lock poisoned");
         let repo_name = repos
             .get(process_id)
@@ -76,7 +76,7 @@ impl RepoRegistry {
 }
 
 /// Reject args that could escape the repo sandbox.
-fn validate_args(args: &[String]) -> Result<(), String> {
+pub(crate) fn validate_args(args: &[String]) -> Result<(), String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         // Block path-escaping flags
