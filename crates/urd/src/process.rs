@@ -35,8 +35,8 @@ impl ProcessManager {
         }
     }
 
-    /// Per-agent socket directory. All sockets for this process (control + stream)
-    /// live here. This directory is mounted into the container.
+    /// Per-agent socket directory on the host. The control socket lives here.
+    /// Only the control socket file is mounted into the container.
     pub fn socket_dir(&self, process_id: &str) -> PathBuf {
         self.config_dir.join(process_id)
     }
@@ -106,19 +106,15 @@ impl ProcessManager {
         let cid = {
             let rt = container::runtime_from_env();
             let container_name = format!("ur-agent-{process_id}");
-            // Mount the per-agent socket directory so the control socket and
-            // any stream sockets created during exec are visible inside.
-            let socket_dir = socket_path
-                .parent()
-                .expect("socket_path must have a parent dir")
-                .to_path_buf();
+            // Mount only the per-agent control socket into the container.
+            // gRPC handles streaming natively, so no side-channel sockets are needed.
             let opts = container::RunOpts {
                 image: container::ImageId(image_id.to_string()),
                 name: container_name,
                 cpus,
                 memory: memory.to_string(),
-                volumes: vec![(socket_dir, PathBuf::from("/var/run/ur"))],
-                socket_mounts: vec![],
+                volumes: vec![],
+                socket_mounts: vec![(socket_path.clone(), PathBuf::from("/var/run/ur/ur.sock"))],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
@@ -167,7 +163,7 @@ impl ProcessManager {
         // 3. Abort the accept_loop task
         entry.accept_handle.abort();
 
-        // 4. Remove the socket directory (contains control + stream sockets)
+        // 4. Remove the socket directory (contains the control socket)
         if let Some(socket_dir) = entry.socket_path.parent() {
             let _ = tokio::fs::remove_dir_all(socket_dir).await;
         }

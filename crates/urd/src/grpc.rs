@@ -46,7 +46,7 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        // Spawn per-agent tarpc accept loop (will be replaced by gRPC in a later ticket)
+        // Spawn per-agent accept loop for agent_tools connections
         let agent_socket_dir = socket_path
             .parent()
             .expect("socket_path must have a parent dir")

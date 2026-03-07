@@ -19,7 +19,7 @@ RUN chmod +x /entrypoint.sh
 COPY agent_tools /usr/local/bin/agent_tools
 RUN chmod +x /usr/local/bin/agent_tools
 
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /var/run/ur
 
 # agent_tools connects to urd via this socket (mounted by the host at run time)
 ENV UR_SOCKET=/var/run/ur/ur.sock
