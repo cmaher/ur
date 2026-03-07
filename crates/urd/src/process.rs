@@ -92,7 +92,7 @@ impl ProcessManager {
                 cpus,
                 memory: memory.to_string(),
                 volumes: vec![],
-                socket_mounts: vec![],
+                port_maps: vec![],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };

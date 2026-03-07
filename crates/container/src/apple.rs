@@ -59,10 +59,9 @@ impl AppleRuntime {
             let resolved = Self::resolve_host_path(host);
             args.push(format!("{}:{}", resolved.display(), guest.display()));
         }
-        for (host, guest) in &opts.socket_mounts {
-            args.push("--publish-socket".into());
-            let resolved = Self::resolve_host_path(host);
-            args.push(format!("{}:{}", resolved.display(), guest.display()));
+        for pm in &opts.port_maps {
+            args.push("-p".into());
+            args.push(format!("{}:{}", pm.host_port, pm.container_port));
         }
         if let Some(workdir) = &opts.workdir {
             args.push("--workdir".into());
@@ -166,22 +165,20 @@ mod tests {
                 PathBuf::from("/tmp/ur/workspace"),
                 PathBuf::from("/workspace"),
             )],
-            socket_mounts: vec![(
-                PathBuf::from("/tmp/ur/sockets/agent_abc123.sock"),
-                PathBuf::from("/var/run/ur.sock"),
-            )],
+            port_maps: vec![crate::PortMap {
+                host_port: 55000,
+                container_port: 42069,
+            }],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
     }
 
     #[test]
-    fn run_uses_publish_socket_for_uds() {
+    fn run_uses_port_flag_for_mapping() {
         let args = AppleRuntime::run_args(&sample_run_opts());
-        assert!(args.contains(&s("--publish-socket")));
-        assert!(args.contains(&s(
-            "/private/tmp/ur/sockets/agent_abc123.sock:/var/run/ur.sock"
-        )));
+        assert!(args.contains(&s("-p")));
+        assert!(args.contains(&s("55000:42069")));
     }
 
     #[test]

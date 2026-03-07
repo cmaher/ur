@@ -14,6 +14,13 @@ pub struct ImageId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerId(pub String);
 
+/// Maps a host TCP port to a container TCP port (`-p host_port:container_port`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortMap {
+    pub host_port: u16,
+    pub container_port: u16,
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildOpts {
     pub tag: String,
@@ -28,7 +35,7 @@ pub struct RunOpts {
     pub cpus: u32,
     pub memory: String,
     pub volumes: Vec<(PathBuf, PathBuf)>,
-    pub socket_mounts: Vec<(PathBuf, PathBuf)>,
+    pub port_maps: Vec<PortMap>,
     pub workdir: Option<PathBuf>,
     pub command: Vec<String>,
 }

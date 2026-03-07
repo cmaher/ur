@@ -49,9 +49,9 @@ impl DockerRuntime {
             args.push("-v".into());
             args.push(format!("{}:{}", host.display(), guest.display()));
         }
-        for (host, guest) in &opts.socket_mounts {
-            args.push("-v".into());
-            args.push(format!("{}:{}", host.display(), guest.display()));
+        for pm in &opts.port_maps {
+            args.push("-p".into());
+            args.push(format!("{}:{}", pm.host_port, pm.container_port));
         }
         if let Some(workdir) = &opts.workdir {
             args.push("-w".into());
@@ -163,10 +163,10 @@ mod tests {
                 PathBuf::from("/host/workspace"),
                 PathBuf::from("/workspace"),
             )],
-            socket_mounts: vec![(
-                PathBuf::from("/tmp/ur/sockets/agent_abc123.sock"),
-                PathBuf::from("/var/run/ur.sock"),
-            )],
+            port_maps: vec![crate::PortMap {
+                host_port: 55000,
+                container_port: 42069,
+            }],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -204,8 +204,8 @@ mod tests {
                 s("8G"),
                 s("-v"),
                 s("/host/workspace:/workspace"),
-                s("-v"),
-                s("/tmp/ur/sockets/agent_abc123.sock:/var/run/ur.sock"),
+                s("-p"),
+                s("55000:42069"),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),
