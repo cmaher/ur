@@ -1605,8 +1605,23 @@ dependencies = [
  "anyhow",
  "clap",
  "container",
- "tarpc",
+ "dirs",
+ "hyper-util",
  "tokio",
+ "tonic",
+ "tower",
+ "ur_rpc",
+]
+
+[[package]]
+name = "ur-ping"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hyper-util",
+ "tokio",
+ "tonic",
+ "tower",
  "ur_rpc",
 ]
 
@@ -1968,6 +1983,18 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workercmd-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hyper-util",
+ "tokio",
+ "tonic",
+ "tower",
+ "ur_rpc",
 ]
 
 [[package]]
