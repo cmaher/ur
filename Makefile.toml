@@ -35,17 +35,17 @@ command = "cargo"
 args = ["audit"]
 
 [tasks.stage-workercmd]
-description = "Cross-compile workercmd binaries for linux-musl and stage for Dockerfile"
+description = "Cross-compile workercmd binaries for linux-gnu and stage for Dockerfile (requires zig + cargo-zigbuild)"
 script_runner = "@shell"
 script = '''
 ARCH=$(uname -m)
 case "$ARCH" in
-    arm64|aarch64) TARGET="aarch64-unknown-linux-musl" ;;
-    x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+    arm64|aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
+    x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
     *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 echo "Cross-compiling workercmd binaries for $TARGET"
-cargo build --release --target "$TARGET" -p ur-ping -p workercmd-git
+cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-git
 DEST=containers/claude-worker
 cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
 cp "target/$TARGET/release/git" "$DEST/git"

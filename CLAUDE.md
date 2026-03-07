@@ -40,5 +40,5 @@ Cargo workspace:
 - **PR descriptions**: MUST reference the ticket number being addressed.
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.
 - **Tests**: NEVER `#[ignore]` or skip tests to make them pass. Fix the underlying issue.
-- **Cross-compile**: Always support both `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` targets for container binaries. Match the host arch like the container crate does (`std::env::consts::ARCH`).
+- **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Apple backend tested locally on macOS, Docker backend tested in CI (ubuntu-latest).
