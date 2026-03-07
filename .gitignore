@@ -5,6 +5,8 @@
 # Build artifacts
 target/
 containers/claude-worker/agent_tools
+containers/claude-worker/ur-ping
+containers/claude-worker/git
 
 # Bacon
 .bacon-locations
