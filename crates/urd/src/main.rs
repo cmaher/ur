@@ -26,17 +26,13 @@ async fn main() -> anyhow::Result<()> {
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
-    let process_manager = ProcessManager::new(
-        cfg.config_dir.clone(),
-        cfg.workspace.clone(),
-        repo_registry.clone(),
-    );
+    let process_manager = ProcessManager::new(cfg.workspace.clone(), repo_registry.clone());
 
     let grpc_handler = urd::grpc::CoreServiceHandler {
         process_manager,
         repo_registry,
-        config_dir: cfg.config_dir.clone(),
         workspace: cfg.workspace,
+        agent_grpc_port: cfg.agent_grpc_port,
     };
     let grpc_socket = cfg.config_dir.join("ur-grpc.sock");
 

@@ -45,13 +45,12 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
     std::fs::create_dir_all(&workspace).unwrap();
 
     let repo_registry = Arc::new(urd::RepoRegistry::new(workspace.clone()));
-    let process_manager =
-        urd::ProcessManager::new(dir.to_path_buf(), workspace.clone(), repo_registry.clone());
+    let process_manager = urd::ProcessManager::new(workspace.clone(), repo_registry.clone());
     let handler = urd::grpc::CoreServiceHandler {
         process_manager,
         repo_registry: repo_registry.clone(),
-        config_dir: dir.to_path_buf(),
         workspace,
+        agent_grpc_port: 42069,
     };
     (handler, repo_registry)
 }

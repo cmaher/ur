@@ -16,8 +16,9 @@ use crate::{ProcessManager, RepoRegistry};
 pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
-    pub config_dir: PathBuf,
     pub workspace: PathBuf,
+    /// Fixed container-side gRPC port for per-agent servers (default: 42069).
+    pub agent_grpc_port: u16,
 }
 
 #[tonic::async_trait]
@@ -35,18 +36,17 @@ impl CoreService for CoreServiceHandler {
         let req = req.into_inner();
 
         // Phase 1: prepare (create repo, git init, register)
-        let socket_path = self
-            .process_manager
+        self.process_manager
             .prepare(&req.process_id)
             .await
             .map_err(Status::internal)?;
 
-        // Spawn per-agent gRPC server with both CoreService and GitService
+        // Spawn per-agent gRPC server on TCP (OS-assigned port)
         let core_handler = CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
-            config_dir: self.config_dir.clone(),
             workspace: self.workspace.clone(),
+            agent_grpc_port: self.agent_grpc_port,
         };
 
         #[cfg(feature = "git")]
@@ -55,19 +55,16 @@ impl CoreService for CoreServiceHandler {
             process_id: req.process_id.clone(),
         };
 
-        let sp = socket_path.clone();
-        let accept_handle = tokio::spawn(async move {
-            #[cfg(feature = "git")]
-            let result =
-                crate::grpc_server::serve_grpc_with_git(&sp, core_handler, git_handler).await;
+        #[cfg(feature = "git")]
+        let (grpc_port, server_handle) =
+            crate::grpc_server::serve_agent_grpc(core_handler, git_handler)
+                .await
+                .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
-            #[cfg(not(feature = "git"))]
-            let result = crate::grpc_server::serve_grpc(&sp, core_handler).await;
-
-            if let Err(e) = result {
-                tracing::warn!("per-agent gRPC server error: {e}");
-            }
-        });
+        #[cfg(not(feature = "git"))]
+        let (grpc_port, server_handle) = crate::grpc_server::serve_agent_grpc(core_handler)
+            .await
+            .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         // Phase 2: run container
         let container_id = self
@@ -77,8 +74,8 @@ impl CoreService for CoreServiceHandler {
                 &req.image_id,
                 req.cpus,
                 &req.memory,
-                socket_path,
-                accept_handle,
+                grpc_port,
+                server_handle,
             )
             .await
             .map_err(Status::internal)?;
