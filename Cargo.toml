@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "crates/workercmd/*"]
+exclude = ["crates/workercmd"]
 default-members = [
     "crates/agent_tools",
     "crates/container",

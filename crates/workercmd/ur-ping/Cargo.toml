@@ -1,0 +1,16 @@
+[package]
+name = "ur-ping"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ur-ping"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+hyper-util = "0.1"
+tokio = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+ur_rpc = { path = "../../ur_rpc", features = ["core"] }
