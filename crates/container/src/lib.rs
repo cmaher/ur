@@ -8,11 +8,6 @@ use anyhow::Result;
 pub use apple::AppleRuntime;
 pub use docker::DockerRuntime;
 
-/// Default gRPC port for per-agent servers inside the container.
-/// Host-side ports are dynamically assigned; this is the fixed container-side port
-/// published via `-p host_port:DEFAULT_AGENT_GRPC_PORT`.
-pub const DEFAULT_AGENT_GRPC_PORT: u16 = 42069;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageId(pub String);
 
@@ -73,6 +68,9 @@ pub trait ContainerRuntime {
         id: &ContainerId,
         command: &[String],
     ) -> Result<std::process::ExitStatus>;
+    /// Return the host IP address reachable from inside containers.
+    /// Containers use this to connect back to services running on the host.
+    fn host_gateway_ip(&self) -> Result<String>;
 }
 
 fn has_command(name: &str) -> bool {

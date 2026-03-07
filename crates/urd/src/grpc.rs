@@ -17,8 +17,6 @@ pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
-    /// Fixed container-side gRPC port for per-agent servers.
-    pub agent_grpc_port: u16,
 }
 
 #[tonic::async_trait]
@@ -46,7 +44,6 @@ impl CoreService for CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
-            agent_grpc_port: self.agent_grpc_port,
         };
 
         #[cfg(feature = "git")]
@@ -76,7 +73,6 @@ impl CoreService for CoreServiceHandler {
                 req.cpus,
                 &req.memory,
                 grpc_port,
-                self.agent_grpc_port,
                 server_handle,
             )
             .await

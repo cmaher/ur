@@ -136,6 +136,60 @@ impl ContainerRuntime for DockerRuntime {
             .status()
             .with_context(|| format!("failed to execute interactive {} exec", self.command))
     }
+
+    fn host_gateway_ip(&self) -> Result<String> {
+        // Try lima first (nerdctl in lima VM on macOS). host.lima.internal
+        // routes to the macOS host, unlike the bridge gateway which stays
+        // inside the VM.
+        if let Some(ip) = self.resolve_lima_host() {
+            return Ok(ip);
+        }
+        // Native Docker: inspect the default bridge network for the gateway IP.
+        if let Some(ip) = self.resolve_bridge_gateway() {
+            return Ok(ip);
+        }
+        // Fallback: common Docker bridge gateway
+        Ok("172.17.0.1".into())
+    }
+}
+
+impl DockerRuntime {
+    fn resolve_lima_host(&self) -> Option<String> {
+        let out = Command::new(&self.command)
+            .args([
+                "run",
+                "--rm",
+                "debian:bookworm",
+                "getent",
+                "hosts",
+                "host.lima.internal",
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        stdout.split_whitespace().next().map(String::from)
+    }
+
+    fn resolve_bridge_gateway(&self) -> Option<String> {
+        let out = Command::new(&self.command)
+            .args([
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if ip.is_empty() { None } else { Some(ip) }
+    }
 }
 
 #[cfg(test)]
@@ -167,14 +221,11 @@ mod tests {
                 PathBuf::from("/host/workspace"),
                 PathBuf::from("/workspace"),
             )],
-            port_maps: vec![crate::PortMap {
-                host_port: 55000,
-                container_port: crate::DEFAULT_AGENT_GRPC_PORT,
-            }],
-            env_vars: vec![(
-                "UR_GRPC_PORT".into(),
-                crate::DEFAULT_AGENT_GRPC_PORT.to_string(),
-            )],
+            port_maps: vec![],
+            env_vars: vec![
+                ("UR_GRPC_HOST".into(), "172.17.0.1".into()),
+                ("UR_GRPC_PORT".into(), "55000".into()),
+            ],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -198,7 +249,6 @@ mod tests {
 
     #[test]
     fn run_command_args() {
-        let port = crate::DEFAULT_AGENT_GRPC_PORT;
         let args = DockerRuntime::run_args(&sample_run_opts());
         assert_eq!(
             args,
@@ -213,10 +263,10 @@ mod tests {
                 s("8G"),
                 s("-v"),
                 s("/host/workspace:/workspace"),
-                s("-p"),
-                s(&format!("55000:{port}")),
                 s("-e"),
-                s(&format!("UR_GRPC_PORT={port}")),
+                s("UR_GRPC_HOST=172.17.0.1"),
+                s("-e"),
+                s("UR_GRPC_PORT=55000"),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),

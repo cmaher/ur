@@ -15,7 +15,7 @@ async fn main() {
         eprintln!("Usage: git <args...>");
         eprintln!();
         eprintln!("All arguments are sent to the host daemon via gRPC over TCP.");
-        eprintln!("Set $UR_GRPC_PORT to override the default port (42069).");
+        eprintln!("Set $UR_GRPC_HOST and $UR_GRPC_PORT to override connection defaults.");
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version") {
@@ -23,8 +23,9 @@ async fn main() {
         std::process::exit(0);
     }
 
+    let grpc_host = std::env::var("UR_GRPC_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let grpc_port = std::env::var("UR_GRPC_PORT").unwrap_or_else(|_| "42069".into());
-    let addr = format!("http://127.0.0.1:{grpc_port}");
+    let addr = format!("http://{grpc_host}:{grpc_port}");
 
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,

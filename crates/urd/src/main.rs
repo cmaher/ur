@@ -34,7 +34,6 @@ async fn main() -> anyhow::Result<()> {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
-        agent_grpc_port: cfg.agent_grpc_port,
     };
     let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
 

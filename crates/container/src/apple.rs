@@ -96,6 +96,24 @@ impl AppleRuntime {
     }
 }
 
+/// Parse the host IP from the bridge100 interface (Apple container VM bridge).
+fn parse_bridge100_ip() -> Result<String> {
+    let output = Command::new("ifconfig")
+        .arg("bridge100")
+        .output()
+        .context("failed to run ifconfig bridge100")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("inet ")
+            && let Some(ip) = rest.split_whitespace().next()
+        {
+            return Ok(ip.to_string());
+        }
+    }
+    bail!("could not determine host gateway IP from bridge100 interface")
+}
+
 impl ContainerRuntime for AppleRuntime {
     fn build(&self, opts: &BuildOpts) -> Result<ImageId> {
         let args = Self::build_args(opts);
@@ -146,6 +164,10 @@ impl ContainerRuntime for AppleRuntime {
             .status()
             .context("failed to execute interactive container exec")
     }
+
+    fn host_gateway_ip(&self) -> Result<String> {
+        parse_bridge100_ip()
+    }
 }
 
 #[cfg(test)]
@@ -169,25 +191,14 @@ mod tests {
                 PathBuf::from("/tmp/ur/workspace"),
                 PathBuf::from("/workspace"),
             )],
-            port_maps: vec![crate::PortMap {
-                host_port: 55000,
-                container_port: crate::DEFAULT_AGENT_GRPC_PORT,
-            }],
-            env_vars: vec![(
-                "UR_GRPC_PORT".into(),
-                crate::DEFAULT_AGENT_GRPC_PORT.to_string(),
-            )],
+            port_maps: vec![],
+            env_vars: vec![
+                ("UR_GRPC_HOST".into(), "192.168.64.1".into()),
+                ("UR_GRPC_PORT".into(), "55000".into()),
+            ],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
-    }
-
-    #[test]
-    fn run_uses_port_flag_for_mapping() {
-        let args = AppleRuntime::run_args(&sample_run_opts());
-        assert!(args.contains(&s("-p")));
-        let expected = format!("55000:{}", crate::DEFAULT_AGENT_GRPC_PORT);
-        assert!(args.contains(&expected));
     }
 
     #[test]
@@ -201,8 +212,8 @@ mod tests {
     fn run_uses_env_flag_for_vars() {
         let args = AppleRuntime::run_args(&sample_run_opts());
         assert!(args.contains(&s("-e")));
-        let expected = format!("UR_GRPC_PORT={}", crate::DEFAULT_AGENT_GRPC_PORT);
-        assert!(args.contains(&expected));
+        assert!(args.contains(&s("UR_GRPC_HOST=192.168.64.1")));
+        assert!(args.contains(&s("UR_GRPC_PORT=55000")));
     }
 
     #[test]

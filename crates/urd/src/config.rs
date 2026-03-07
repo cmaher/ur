@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use container::DEFAULT_AGENT_GRPC_PORT;
-
 /// Environment variable that overrides the config directory (default: `~/.ur`).
 const UR_CONFIG_ENV: &str = "UR_CONFIG";
 
@@ -14,7 +12,6 @@ const DEFAULT_DAEMON_PORT: u16 = 42068;
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     workspace: Option<PathBuf>,
-    agent_grpc_port: Option<u16>,
     daemon_port: Option<u16>,
 }
 
@@ -25,9 +22,6 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// Agent workspace directory.
     pub workspace: PathBuf,
-    /// Fixed container-side gRPC port for per-agent servers.
-    /// Host-side ports are dynamically assigned via `127.0.0.1:0`.
-    pub agent_grpc_port: u16,
     /// TCP port the main urd daemon listens on (default: 42068).
     pub daemon_port: u16,
 }
@@ -58,13 +52,11 @@ impl Config {
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
-        let agent_grpc_port = raw.agent_grpc_port.unwrap_or(DEFAULT_AGENT_GRPC_PORT);
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
-            agent_grpc_port,
             daemon_port,
         })
     }
@@ -91,7 +83,6 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.agent_grpc_port, DEFAULT_AGENT_GRPC_PORT);
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
@@ -101,7 +92,6 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.agent_grpc_port, DEFAULT_AGENT_GRPC_PORT);
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
@@ -115,14 +105,6 @@ mod tests {
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, PathBuf::from("/custom/workspace"));
-    }
-
-    #[test]
-    fn reads_agent_grpc_port_from_toml() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "agent_grpc_port = 9999\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.agent_grpc_port, 9999);
     }
 
     #[test]

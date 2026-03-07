@@ -35,12 +35,11 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
     Ok(())
 }
 
-/// Start a per-agent gRPC server on TCP (127.0.0.1:0 for OS-assigned port).
+/// Start a per-agent gRPC server on TCP (0.0.0.0:0 for OS-assigned port).
 ///
 /// Binds the listener, spawns the server task, and returns the assigned port
-/// plus a `JoinHandle` the caller can abort to stop the server. The host-side
-/// port is dynamically assigned; the container runtime maps it to the fixed
-/// `agent_grpc_port` inside the container.
+/// plus a `JoinHandle` the caller can abort to stop the server. The container
+/// connects back to this port via the host's gateway IP.
 #[cfg(feature = "git")]
 pub async fn serve_agent_grpc(
     core_handler: CoreServiceHandler,
@@ -48,7 +47,7 @@ pub async fn serve_agent_grpc(
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
     use ur_rpc::proto::git::git_service_server::GitServiceServer;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
     let addr = listener.local_addr()?;
     let port = addr.port();
 
@@ -78,7 +77,7 @@ pub async fn serve_agent_grpc(
 pub async fn serve_agent_grpc(
     core_handler: CoreServiceHandler,
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
     let addr = listener.local_addr()?;
     let port = addr.port();
 

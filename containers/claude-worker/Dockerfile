@@ -23,7 +23,7 @@ RUN chmod +x /usr/local/bin/git
 
 RUN mkdir -p /workspace
 
-# Worker commands connect to urd's per-agent gRPC server via TCP on this port
-ENV UR_GRPC_PORT=42069
+# UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by urd when launching the container.
+# Worker commands use these to connect back to the host's per-agent gRPC server.
 
 ENTRYPOINT ["/entrypoint.sh"]
