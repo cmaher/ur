@@ -49,7 +49,7 @@ fn start_urd(config_dir: &Path, daemon_port: u16) -> (Child, u16) {
     std::fs::write(&toml_path, format!("daemon_port = {daemon_port}\n"))
         .expect("failed to write ur.toml");
 
-    let child = Command::new(&urd)
+    let mut child = Command::new(&urd)
         .env("UR_CONFIG", config_dir)
         .env("RUST_LOG", "info")
         .stdout(Stdio::piped())
@@ -66,6 +66,8 @@ fn start_urd(config_dir: &Path, daemon_port: u16) -> (Child, u16) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    let _ = child.kill();
+    let _ = child.wait();
     panic!("urd did not start listening on {addr} within 10s");
 }
 

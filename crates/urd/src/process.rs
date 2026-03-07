@@ -102,17 +102,19 @@ impl ProcessManager {
                     host_port: grpc_port,
                     container_port: agent_grpc_port,
                 }],
-                env_vars: vec![(
-                    "UR_GRPC_PORT".into(),
-                    agent_grpc_port.to_string(),
-                )],
+                env_vars: vec![("UR_GRPC_PORT".into(), agent_grpc_port.to_string())],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
             rt.run(&opts).map_err(|e| e.to_string())?
         };
 
-        info!(process_id, container_id = cid.0, grpc_port, "process launched");
+        info!(
+            process_id,
+            container_id = cid.0,
+            grpc_port,
+            "process launched"
+        );
 
         // Record in process map
         {
@@ -154,7 +156,7 @@ impl ProcessManager {
         // 3. Abort the per-agent gRPC server task
         entry.server_handle.abort();
 
-        info!(process_id, "process stopped");
+        info!(process_id, grpc_port = entry.grpc_port, "process stopped");
 
         Ok(())
     }

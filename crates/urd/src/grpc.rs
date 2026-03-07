@@ -62,9 +62,10 @@ impl CoreService for CoreServiceHandler {
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         #[cfg(not(feature = "git"))]
-        let (grpc_port, server_handle) = crate::grpc_server::serve_agent_grpc(core_handler)
-            .await
-            .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
+        let (grpc_port, server_handle) =
+            crate::grpc_server::serve_agent_grpc(core_handler)
+                .await
+                .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         // Phase 2: run container
         let container_id = self
