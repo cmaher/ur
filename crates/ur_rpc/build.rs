@@ -4,13 +4,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("..")
         .join("proto");
 
-    tonic_build::configure()
-        .build_server(true)
-        .build_client(true)
-        .compile_protos(
-            &[proto_dir.join("core.proto"), proto_dir.join("git.proto")],
-            &[&proto_dir],
-        )?;
+    println!("cargo:rerun-if-changed=../../proto/core.proto");
+    println!("cargo:rerun-if-changed=../../proto/git.proto");
+
+    let mut protos = Vec::new();
+
+    // Core is always compiled (default feature)
+    protos.push(proto_dir.join("core.proto"));
+
+    if cfg!(feature = "git") {
+        protos.push(proto_dir.join("git.proto"));
+    }
+
+    if !protos.is_empty() {
+        tonic_build::configure()
+            .build_server(true)
+            .build_client(true)
+            .compile_protos(&protos, &[&proto_dir])?;
+    }
 
     Ok(())
 }

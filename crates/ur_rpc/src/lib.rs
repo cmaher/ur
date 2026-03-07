@@ -6,6 +6,7 @@ pub mod proto {
     pub mod core {
         tonic::include_proto!("ur.core");
     }
+    #[cfg(feature = "git")]
     pub mod git {
         tonic::include_proto!("ur.git");
     }

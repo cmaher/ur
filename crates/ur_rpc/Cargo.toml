@@ -15,5 +15,11 @@ tokio-stream = { workspace = true }
 tokio-util = { version = "0.7", features = ["codec"] }
 tonic = { workspace = true }
 
+[features]
+default = ["core"]
+core = []
+git = []
+temporal = []
+
 [build-dependencies]
 tonic-build = { workspace = true }
