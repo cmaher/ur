@@ -43,7 +43,7 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
         process_manager,
         repo_registry: repo_registry.clone(),
         workspace,
-        agent_grpc_port: 42069,
+        agent_grpc_port: container::DEFAULT_AGENT_GRPC_PORT,
     };
     (handler, repo_registry)
 }

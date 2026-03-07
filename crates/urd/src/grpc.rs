@@ -17,7 +17,7 @@ pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
-    /// Fixed container-side gRPC port for per-agent servers (default: 42069).
+    /// Fixed container-side gRPC port for per-agent servers.
     pub agent_grpc_port: u16,
 }
 

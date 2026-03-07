@@ -8,6 +8,11 @@ use anyhow::Result;
 pub use apple::AppleRuntime;
 pub use docker::DockerRuntime;
 
+/// Default gRPC port for per-agent servers inside the container.
+/// Host-side ports are dynamically assigned; this is the fixed container-side port
+/// published via `-p host_port:DEFAULT_AGENT_GRPC_PORT`.
+pub const DEFAULT_AGENT_GRPC_PORT: u16 = 42069;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageId(pub String);
 

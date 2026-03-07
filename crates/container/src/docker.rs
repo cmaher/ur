@@ -169,9 +169,12 @@ mod tests {
             )],
             port_maps: vec![crate::PortMap {
                 host_port: 55000,
-                container_port: 42069,
+                container_port: crate::DEFAULT_AGENT_GRPC_PORT,
             }],
-            env_vars: vec![("UR_GRPC_PORT".into(), "42069".into())],
+            env_vars: vec![(
+                "UR_GRPC_PORT".into(),
+                crate::DEFAULT_AGENT_GRPC_PORT.to_string(),
+            )],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -195,6 +198,7 @@ mod tests {
 
     #[test]
     fn run_command_args() {
+        let port = crate::DEFAULT_AGENT_GRPC_PORT;
         let args = DockerRuntime::run_args(&sample_run_opts());
         assert_eq!(
             args,
@@ -210,9 +214,9 @@ mod tests {
                 s("-v"),
                 s("/host/workspace:/workspace"),
                 s("-p"),
-                s("55000:42069"),
+                s(&format!("55000:{port}")),
                 s("-e"),
-                s("UR_GRPC_PORT=42069"),
+                s(&format!("UR_GRPC_PORT={port}")),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),

@@ -171,9 +171,12 @@ mod tests {
             )],
             port_maps: vec![crate::PortMap {
                 host_port: 55000,
-                container_port: 42069,
+                container_port: crate::DEFAULT_AGENT_GRPC_PORT,
             }],
-            env_vars: vec![("UR_GRPC_PORT".into(), "42069".into())],
+            env_vars: vec![(
+                "UR_GRPC_PORT".into(),
+                crate::DEFAULT_AGENT_GRPC_PORT.to_string(),
+            )],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -183,7 +186,8 @@ mod tests {
     fn run_uses_port_flag_for_mapping() {
         let args = AppleRuntime::run_args(&sample_run_opts());
         assert!(args.contains(&s("-p")));
-        assert!(args.contains(&s("55000:42069")));
+        let expected = format!("55000:{}", crate::DEFAULT_AGENT_GRPC_PORT);
+        assert!(args.contains(&expected));
     }
 
     #[test]
@@ -197,7 +201,8 @@ mod tests {
     fn run_uses_env_flag_for_vars() {
         let args = AppleRuntime::run_args(&sample_run_opts());
         assert!(args.contains(&s("-e")));
-        assert!(args.contains(&s("UR_GRPC_PORT=42069")));
+        let expected = format!("UR_GRPC_PORT={}", crate::DEFAULT_AGENT_GRPC_PORT);
+        assert!(args.contains(&expected));
     }
 
     #[test]

@@ -2,11 +2,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use container::DEFAULT_AGENT_GRPC_PORT;
+
 /// Environment variable that overrides the config directory (default: `~/.ur`).
 const UR_CONFIG_ENV: &str = "UR_CONFIG";
-
-/// Default gRPC port for per-agent servers inside the container.
-const DEFAULT_AGENT_GRPC_PORT: u16 = 42069;
 
 /// Default TCP port the main urd daemon listens on.
 const DEFAULT_DAEMON_PORT: u16 = 42068;
@@ -26,7 +25,7 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// Agent workspace directory.
     pub workspace: PathBuf,
-    /// Fixed container-side gRPC port for per-agent servers (default: 42069).
+    /// Fixed container-side gRPC port for per-agent servers.
     /// Host-side ports are dynamically assigned via `127.0.0.1:0`.
     pub agent_grpc_port: u16,
     /// TCP port the main urd daemon listens on (default: 42068).
@@ -92,8 +91,8 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.agent_grpc_port, 42069);
-        assert_eq!(cfg.daemon_port, 42068);
+        assert_eq!(cfg.agent_grpc_port, DEFAULT_AGENT_GRPC_PORT);
+        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
     #[test]
@@ -102,8 +101,8 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.agent_grpc_port, 42069);
-        assert_eq!(cfg.daemon_port, 42068);
+        assert_eq!(cfg.agent_grpc_port, DEFAULT_AGENT_GRPC_PORT);
+        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
     #[test]
