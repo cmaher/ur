@@ -8,17 +8,8 @@ use tarpc::tokio_serde::formats::Bincode;
 use tracing::info;
 use ur_rpc::UrAgentBridge;
 
-mod bridge;
-pub use bridge::{AgentBridge, BridgeServer};
-
-mod config;
-pub use config::Config;
-
-mod git_exec;
-pub use git_exec::RepoRegistry;
-
-mod process;
-pub use process::ProcessManager;
+use urd::bridge::BridgeServer;
+use urd::{Config, ProcessManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -27,7 +18,7 @@ pub use process::ProcessManager;
 )]
 struct Cli {}
 
-pub async fn accept_loop(socket_path: PathBuf, server: BridgeServer) -> anyhow::Result<()> {
+async fn accept_loop(socket_path: PathBuf, server: BridgeServer) -> anyhow::Result<()> {
     let _ = tokio::fs::remove_file(&socket_path).await;
 
     let mut listener = tarpc::serde_transport::unix::listen(&socket_path, Bincode::default).await?;
@@ -63,14 +54,27 @@ async fn main() -> anyhow::Result<()> {
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
     let process_manager =
-        ProcessManager::new(cfg.config_dir.clone(), cfg.workspace, repo_registry.clone());
+        ProcessManager::new(cfg.config_dir.clone(), cfg.workspace.clone(), repo_registry.clone());
 
     let server = BridgeServer {
-        repo_registry,
+        repo_registry: repo_registry.clone(),
         socket_dir: cfg.config_dir.clone(),
         process_id: String::new(),
-        process_manager,
+        process_manager: process_manager.clone(),
     };
 
-    accept_loop(socket_path, server).await
+    let grpc_handler = urd::grpc::CoreServiceHandler {
+        process_manager,
+        repo_registry,
+        config_dir: cfg.config_dir.clone(),
+        workspace: cfg.workspace,
+    };
+    let grpc_socket = cfg.config_dir.join("ur-grpc.sock");
+
+    tokio::try_join!(
+        accept_loop(socket_path, server),
+        urd::grpc_server::serve_grpc(&grpc_socket, grpc_handler),
+    )?;
+
+    Ok(())
 }

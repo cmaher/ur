@@ -358,3 +358,61 @@ async fn exec_git_stream_roundtrip() {
     assert_eq!(String::from_utf8(stdout_data).unwrap(), "git output\n");
     assert_eq!(exit_code, Some(0));
 }
+
+#[tokio::test]
+async fn grpc_ping_over_unix_socket() {
+    use std::sync::Arc as StdArc;
+    use hyper_util::rt::TokioIo;
+    use tokio::net::UnixStream;
+    use tonic::transport::{Endpoint, Uri};
+    use tower::service_fn;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+    use ur_rpc::proto::core::PingRequest;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("test-grpc.sock");
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let repo_registry = StdArc::new(urd::RepoRegistry::new(workspace.clone()));
+    let process_manager = urd::ProcessManager::new(
+        dir.path().to_path_buf(),
+        workspace.clone(),
+        repo_registry.clone(),
+    );
+    let handler = urd::grpc::CoreServiceHandler {
+        process_manager,
+        repo_registry,
+        config_dir: dir.path().to_path_buf(),
+        workspace,
+    };
+
+    let sp = socket_path.clone();
+    tokio::spawn(async move {
+        urd::grpc_server::serve_grpc(&sp, handler).await.unwrap();
+    });
+
+    // Wait for the socket file to appear
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    let channel = Endpoint::try_from("http://[::]:50051")
+        .unwrap()
+        .connect_with_connector(service_fn(move |_: Uri| {
+            let path = socket_path.clone();
+            async move {
+                let stream = UnixStream::connect(path).await?;
+                Ok::<_, std::io::Error>(TokioIo::new(stream))
+            }
+        }))
+        .await
+        .unwrap();
+
+    let mut client = CoreServiceClient::new(channel);
+    let resp = client.ping(PingRequest {}).await.unwrap();
+    assert_eq!(resp.into_inner().message, "pong");
+}

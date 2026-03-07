@@ -9,10 +9,13 @@ container = { path = "../container" }
 clap = { workspace = true }
 dirs = "6"
 futures = "0.3"
+prost = { workspace = true }
 serde = { workspace = true }
 tarpc = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 toml = "0.8"
+tonic = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 ur_rpc = { path = "../ur_rpc" }
@@ -24,4 +27,7 @@ git = ["ur_rpc/git"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
+hyper-util = "0.1"
 tempfile = "3"
+tower = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["core"] }

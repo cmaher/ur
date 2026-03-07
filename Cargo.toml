@@ -21,4 +21,5 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 tonic = "0.13"
 tonic-build = "0.13"
+tower = "0.5"
 serde = { version = "1", features = ["derive"] }
