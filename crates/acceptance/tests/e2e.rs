@@ -1,10 +1,18 @@
-//! End-to-end acceptance tests for the full Ur stack.
+//! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
+//!
+//! These tests exercise the full user-facing workflow:
+//!   1. `urd` starts and listens on a gRPC socket (`ur-grpc.sock`)
+//!   2. `ur process launch` builds the container image and launches a container
+//!      with a per-agent gRPC socket mounted at `/var/run/ur/ur.sock`
+//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to urd
+//!      via tonic gRPC over the per-agent UDS
+//!   4. `ur process stop` tears down the container and cleans up
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
 //!   - Pre-built `urd` and `ur` binaries in `target/debug/`
 //!   - Worker commands (`ur-ping`, `git`) baked into the container image
-//!   - A container runtime (Apple `container` or Docker)
+//!   - A container runtime (Apple `container`, Docker, or nerdctl)
 #![cfg(feature = "acceptance")]
 
 use std::path::{Path, PathBuf};
@@ -197,6 +205,21 @@ fn e2e_ping_and_git() {
         assert!(
             git_stdout.contains("branch") || git_stdout.contains("No commits"),
             "git status should show repo info.\nGot: {git_stdout}"
+        );
+
+        // ---- (5b) Test blocked flags ----
+        // `-C` is a blocked flag that could let the agent escape its repo.
+        // The git proxy should relay the gRPC InvalidArgument error and exit non-zero.
+        let blocked_output = Command::new(&runtime)
+            .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
+            .output()
+            .expect("failed to exec git -C in container");
+        assert_ne!(
+            blocked_output.status.code(),
+            Some(0),
+            "git -C should be blocked.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&blocked_output.stdout),
+            String::from_utf8_lossy(&blocked_output.stderr),
         );
 
         // ---- (6) ur process stop (by ticket_id, not container name) ----
