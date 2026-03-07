@@ -2,4 +2,13 @@ syntax = "proto3";
 
 package ur.git;
 
-service GitService {}
+import "core.proto";
+
+// Git CLI proxy service — transparent command passthrough with streaming output
+service GitService {
+  rpc Exec(GitExecRequest) returns (stream ur.core.CommandOutput);
+}
+
+message GitExecRequest {
+  repeated string args = 1;
+}
