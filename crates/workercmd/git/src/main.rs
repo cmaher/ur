@@ -1,9 +1,6 @@
 use std::io::Write;
 
-use hyper_util::rt::TokioIo;
-use tokio::net::UnixStream;
-use tonic::transport::{Endpoint, Uri};
-use tower::service_fn;
+use tonic::transport::Endpoint;
 use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::git::GitExecRequest;
 use ur_rpc::proto::git::git_service_client::GitServiceClient;
@@ -17,8 +14,8 @@ async fn main() {
         eprintln!("ur git proxy — transparently forwards git commands to urd's GitService");
         eprintln!("Usage: git <args...>");
         eprintln!();
-        eprintln!("All arguments are sent to the host daemon via gRPC over UDS.");
-        eprintln!("Set $UR_SOCKET to override the default socket path.");
+        eprintln!("All arguments are sent to the host daemon via gRPC over TCP.");
+        eprintln!("Set $UR_GRPC_PORT to override the default port (42069).");
         std::process::exit(0);
     }
     if args.iter().any(|a| a == "--version") {
@@ -26,20 +23,10 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let socket_path = std::env::var("UR_SOCKET").unwrap_or_else(|_| "/var/run/ur/ur.sock".into());
+    let grpc_port = std::env::var("UR_GRPC_PORT").unwrap_or_else(|_| "42069".into());
+    let addr = format!("http://127.0.0.1:{grpc_port}");
 
-    let path = socket_path.clone();
-    let channel = match Endpoint::try_from("http://[::]:50051")
-        .unwrap()
-        .connect_with_connector(service_fn(move |_: Uri| {
-            let path = path.clone();
-            async move {
-                let stream = UnixStream::connect(path).await?;
-                Ok::<_, std::io::Error>(TokioIo::new(stream))
-            }
-        }))
-        .await
-    {
+    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,
         Err(e) => {
             eprintln!("git: failed to connect to ur daemon: {e}");

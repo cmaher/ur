@@ -21,9 +21,9 @@ RUN chmod +x /usr/local/bin/ur-ping
 COPY git /usr/local/bin/git
 RUN chmod +x /usr/local/bin/git
 
-RUN mkdir -p /workspace /var/run/ur
+RUN mkdir -p /workspace
 
-# Worker commands connect to urd via this socket (mounted by the host at run time)
-ENV UR_SOCKET=/var/run/ur/ur.sock
+# Worker commands connect to urd's per-agent gRPC server via TCP on this port
+ENV UR_GRPC_PORT=42069
 
 ENTRYPOINT ["/entrypoint.sh"]
