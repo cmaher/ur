@@ -45,10 +45,11 @@ case "$ARCH" in
     *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 echo "Cross-compiling workercmd binaries for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-git
+cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-git -p workercmd-gh
 DEST=containers/claude-worker
 cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
 cp "target/$TARGET/release/git" "$DEST/git"
+cp "target/$TARGET/release/gh" "$DEST/gh"
 TK_PATH=$(which tk 2>/dev/null || true)
 if [ -n "$TK_PATH" ]; then
     cp "$TK_PATH" "$DEST/tk"
@@ -64,10 +65,11 @@ echo "Staged workercmd binaries in $DEST/"
 description = "Build workercmd binaries natively and stage for Dockerfile (for Linux CI)"
 script_runner = "@shell"
 script = '''
-cargo build --release -p ur-ping -p workercmd-git
+cargo build --release -p ur-ping -p workercmd-git -p workercmd-gh
 DEST=containers/claude-worker
 cp target/release/ur-ping "$DEST/ur-ping"
 cp target/release/git "$DEST/git"
+cp target/release/gh "$DEST/gh"
 TK_PATH=$(which tk 2>/dev/null || true)
 if [ -n "$TK_PATH" ]; then
     cp "$TK_PATH" "$DEST/tk"

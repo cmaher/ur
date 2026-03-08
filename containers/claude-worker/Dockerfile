@@ -20,6 +20,8 @@ COPY ur-ping /usr/local/bin/ur-ping
 RUN chmod +x /usr/local/bin/ur-ping
 COPY git /usr/local/bin/git
 RUN chmod +x /usr/local/bin/git
+COPY gh /usr/local/bin/gh
+RUN chmod +x /usr/local/bin/gh
 
 COPY tk /usr/local/bin/tk
 RUN chmod +x /usr/local/bin/tk
