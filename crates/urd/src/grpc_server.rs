@@ -41,10 +41,7 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
 
     let routes = build_agent_routes(handler, "");
 
-    Server::builder()
-        .add_routes(routes)
-        .serve(addr)
-        .await?;
+    Server::builder().add_routes(routes).serve(addr).await?;
 
     Ok(())
 }

@@ -7,8 +7,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use ur_rpc::proto::core::CommandOutput;
-use ur_rpc::proto::gh::gh_service_server::GhService;
 use ur_rpc::proto::gh::GhExecRequest;
+use ur_rpc::proto::gh::gh_service_server::GhService;
 
 use crate::git_exec::RepoRegistry;
 

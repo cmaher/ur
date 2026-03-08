@@ -2,8 +2,8 @@ use std::io::Write;
 
 use tonic::transport::Endpoint;
 use ur_rpc::proto::core::command_output::Payload;
-use ur_rpc::proto::gh::gh_service_client::GhServiceClient;
 use ur_rpc::proto::gh::GhExecRequest;
+use ur_rpc::proto::gh::gh_service_client::GhServiceClient;
 
 #[tokio::main]
 async fn main() {
