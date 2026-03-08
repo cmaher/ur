@@ -17,12 +17,13 @@ ur_config = { path = "../ur_config" }
 ur_rpc = { path = "../ur_rpc" }
 
 [features]
-default = ["core", "git"]
+default = ["core", "git", "gh"]
 core = ["ur_rpc/core"]
 git = ["ur_rpc/git"]
+gh = ["ur_rpc/gh"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "git"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "git", "gh"] }
