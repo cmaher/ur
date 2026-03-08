@@ -15,9 +15,6 @@ struct ProcessEntry {
     grpc_port: u16,
     /// Handle to the per-agent gRPC server task.
     server_handle: JoinHandle<()>,
-    /// Whether the repo is externally managed (mounted workspace, not git-init'd by urd).
-    #[allow(dead_code)]
-    externally_managed: bool,
 }
 
 /// Configuration for launching a container process.
@@ -112,7 +109,6 @@ impl ProcessManager {
         let urd_addr = format!("{}:{}", config.host_ip, config.grpc_port);
 
         // Build volume mounts
-        let externally_managed = config.workspace_dir.is_some();
         let volumes = match &config.workspace_dir {
             Some(ws_dir) => vec![(ws_dir.clone(), PathBuf::from("/workspace"))],
             None => vec![],
@@ -158,7 +154,6 @@ impl ProcessManager {
                     container_id: cid.0.clone(),
                     grpc_port: config.grpc_port,
                     server_handle,
-                    externally_managed,
                 },
             );
         }
@@ -262,7 +257,6 @@ mod tests {
                     container_id: "fake-cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
-                    externally_managed: false,
                 },
             );
         }
