@@ -33,9 +33,16 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<ProcessLaunchResponse>, Status> {
         let req = req.into_inner();
 
+        // Parse workspace_dir: empty string means None
+        let workspace_dir = if req.workspace_dir.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(&req.workspace_dir))
+        };
+
         // Phase 1: prepare (create repo, git init, register)
         self.process_manager
-            .prepare(&req.process_id)
+            .prepare(&req.process_id, workspace_dir.clone())
             .await
             .map_err(Status::internal)?;
 
@@ -81,6 +88,7 @@ impl CoreService for CoreServiceHandler {
             memory: req.memory,
             grpc_port,
             host_ip,
+            workspace_dir,
         };
         let container_id = self
             .process_manager

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
-use urd::{Config, ProcessManager, RepoRegistry};
+use urd::{Config, CredentialManager, ProcessManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -28,7 +28,12 @@ async fn main() -> anyhow::Result<()> {
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
-    let process_manager = ProcessManager::new(cfg.workspace.clone(), repo_registry.clone());
+    let credential_manager = CredentialManager;
+    let process_manager = ProcessManager::new(
+        cfg.workspace.clone(),
+        repo_registry.clone(),
+        credential_manager,
+    );
 
     let grpc_handler = urd::grpc::CoreServiceHandler {
         process_manager,
