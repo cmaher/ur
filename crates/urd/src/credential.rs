@@ -13,7 +13,12 @@ impl CredentialManager {
     /// is missing or the command fails (e.g., on non-macOS hosts).
     pub fn read_claude_credentials(&self) -> Option<String> {
         let output = std::process::Command::new("security")
-            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .args([
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ])
             .output();
 
         match output {

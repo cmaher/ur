@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use crate::credential::CredentialManager;
 use crate::RepoRegistry;
+use crate::credential::CredentialManager;
 
 /// Tracks a running agent process.
 struct ProcessEntry {

@@ -29,8 +29,11 @@ async fn main() -> anyhow::Result<()> {
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
     let credential_manager = CredentialManager;
-    let process_manager =
-        ProcessManager::new(cfg.workspace.clone(), repo_registry.clone(), credential_manager);
+    let process_manager = ProcessManager::new(
+        cfg.workspace.clone(),
+        repo_registry.clone(),
+        credential_manager,
+    );
 
     let grpc_handler = urd::grpc::CoreServiceHandler {
         process_manager,
