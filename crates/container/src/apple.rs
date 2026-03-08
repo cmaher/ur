@@ -192,10 +192,7 @@ mod tests {
                 PathBuf::from("/workspace"),
             )],
             port_maps: vec![],
-            env_vars: vec![
-                (ur_config::UR_GRPC_HOST_ENV.into(), "192.168.64.1".into()),
-                (ur_config::UR_GRPC_PORT_ENV.into(), "55000".into()),
-            ],
+            env_vars: vec![(ur_config::URD_ADDR_ENV.into(), "192.168.64.1:55000".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -212,8 +209,7 @@ mod tests {
     fn run_uses_env_flag_for_vars() {
         let args = AppleRuntime::run_args(&sample_run_opts());
         assert!(args.contains(&s("-e")));
-        assert!(args.contains(&format!("{}=192.168.64.1", ur_config::UR_GRPC_HOST_ENV)));
-        assert!(args.contains(&format!("{}=55000", ur_config::UR_GRPC_PORT_ENV)));
+        assert!(args.contains(&format!("{}=192.168.64.1:55000", ur_config::URD_ADDR_ENV)));
     }
 
     #[test]

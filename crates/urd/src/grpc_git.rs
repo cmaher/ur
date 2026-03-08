@@ -35,8 +35,7 @@ impl GitService for GitServiceHandler {
     ) -> Result<Response<Self::ExecStream>, Status> {
         let args = req.into_inner().args;
 
-        // Sanitize args (strip -C), then validate remaining
-        let args = crate::git_exec::sanitize_args(&args);
+        // Validate args (blocks -C, --git-dir, --work-tree)
         crate::git_exec::validate_args(&args).map_err(Status::invalid_argument)?;
 
         // Resolve repo path

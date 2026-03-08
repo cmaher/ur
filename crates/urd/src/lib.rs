@@ -9,4 +9,4 @@ pub mod stream;
 
 pub use config::Config;
 pub use git_exec::RepoRegistry;
-pub use process::ProcessManager;
+pub use process::{ProcessConfig, ProcessManager};
