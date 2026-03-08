@@ -14,6 +14,9 @@ struct ProcessEntry {
     grpc_port: u16,
     /// Handle to the per-agent gRPC server task.
     server_handle: JoinHandle<()>,
+    /// Whether the repo is externally managed (mounted workspace, not git-init'd by urd).
+    #[allow(dead_code)]
+    externally_managed: bool,
 }
 
 /// Configuration for launching a container process.
@@ -24,6 +27,7 @@ pub struct ProcessConfig {
     pub memory: String,
     pub grpc_port: u16,
     pub host_ip: String,
+    pub workspace_dir: Option<PathBuf>,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -45,9 +49,15 @@ impl ProcessManager {
     }
 
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
+    /// When `workspace_dir` is Some, the directory is used as-is (no git init)
+    /// and registered via `register_absolute`.
     /// The caller is responsible for spawning the per-agent gRPC server and
     /// then calling `run_and_record`.
-    pub async fn prepare(&self, process_id: &str) -> Result<(), String> {
+    pub async fn prepare(
+        &self,
+        process_id: &str,
+        workspace_dir: Option<PathBuf>,
+    ) -> Result<(), String> {
         // Check for duplicate
         {
             let procs = self.processes.read().expect("process lock poisoned");
@@ -56,27 +66,31 @@ impl ProcessManager {
             }
         }
 
-        // 1. Create repo dir
-        let repo_dir = self.workspace.join(process_id);
-        tokio::fs::create_dir_all(&repo_dir)
-            .await
-            .map_err(|e| format!("failed to create repo dir: {e}"))?;
+        if let Some(ws_dir) = workspace_dir {
+            // External workspace: register the absolute path directly, skip git init
+            self.repo_registry.register_absolute(process_id, ws_dir);
+        } else {
+            // Default: create repo dir and git init
+            let repo_dir = self.workspace.join(process_id);
+            tokio::fs::create_dir_all(&repo_dir)
+                .await
+                .map_err(|e| format!("failed to create repo dir: {e}"))?;
 
-        let git_init = tokio::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .await
-            .map_err(|e| format!("failed to run git init: {e}"))?;
-        if !git_init.status.success() {
-            return Err(format!(
-                "git init failed: {}",
-                String::from_utf8_lossy(&git_init.stderr)
-            ));
+            let git_init = tokio::process::Command::new("git")
+                .args(["init"])
+                .current_dir(&repo_dir)
+                .output()
+                .await
+                .map_err(|e| format!("failed to run git init: {e}"))?;
+            if !git_init.status.success() {
+                return Err(format!(
+                    "git init failed: {}",
+                    String::from_utf8_lossy(&git_init.stderr)
+                ));
+            }
+
+            self.repo_registry.register(process_id, process_id);
         }
-
-        // 2. Register in RepoRegistry
-        self.repo_registry.register(process_id, process_id);
 
         Ok(())
     }
@@ -90,6 +104,13 @@ impl ProcessManager {
     ) -> Result<String, String> {
         let urd_addr = format!("{}:{}", config.host_ip, config.grpc_port);
 
+        // Build volume mounts
+        let externally_managed = config.workspace_dir.is_some();
+        let volumes = match &config.workspace_dir {
+            Some(ws_dir) => vec![(ws_dir.clone(), PathBuf::from("/workspace"))],
+            None => vec![],
+        };
+
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
             let rt = container::runtime_from_env();
@@ -99,7 +120,7 @@ impl ProcessManager {
                 name: container_name,
                 cpus: config.cpus,
                 memory: config.memory.clone(),
-                volumes: vec![],
+                volumes,
                 port_maps: vec![],
                 env_vars: vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)],
                 workdir: Some(PathBuf::from("/workspace")),
@@ -124,6 +145,7 @@ impl ProcessManager {
                     container_id: cid.0.clone(),
                     grpc_port: config.grpc_port,
                     server_handle,
+                    externally_managed,
                 },
             );
         }
@@ -177,7 +199,7 @@ mod tests {
         let (mgr, workspace) = test_manager();
         let process_id = "test-proc";
 
-        mgr.prepare(process_id).await.unwrap();
+        mgr.prepare(process_id, None).await.unwrap();
 
         // Verify repo dir exists and has .git
         let repo_dir = workspace.path().join(process_id);
@@ -189,6 +211,27 @@ mod tests {
             .exec_git(process_id, &["status".into()])
             .await;
         assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn prepare_with_workspace_skips_git_init() {
+        let (mgr, _workspace) = test_manager();
+        let process_id = "ws-proc";
+
+        // Create a temp dir to act as the external workspace
+        let ext_workspace = tempfile::tempdir().unwrap();
+        let ext_path = ext_workspace.path().to_path_buf();
+
+        mgr.prepare(process_id, Some(ext_path.clone()))
+            .await
+            .unwrap();
+
+        // Should NOT have a .git dir — we skipped git init
+        assert!(!ext_path.join(".git").exists());
+
+        // Registry should resolve to the external path directly
+        let resolved = mgr.repo_registry.resolve(process_id).unwrap();
+        assert_eq!(resolved, ext_path);
     }
 
     #[tokio::test]
@@ -205,11 +248,12 @@ mod tests {
                     container_id: "fake-cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
+                    externally_managed: false,
                 },
             );
         }
 
-        let result = mgr.prepare("dup-proc").await;
+        let result = mgr.prepare("dup-proc", None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already running"));
     }

@@ -21,6 +21,9 @@ RUN chmod +x /usr/local/bin/ur-ping
 COPY git /usr/local/bin/git
 RUN chmod +x /usr/local/bin/git
 
+COPY tk /usr/local/bin/tk
+RUN chmod +x /usr/local/bin/tk
+
 RUN mkdir -p /workspace
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by urd when launching the container.

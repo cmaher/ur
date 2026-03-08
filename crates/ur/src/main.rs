@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result};
@@ -37,7 +38,12 @@ enum Commands {
 #[derive(Subcommand)]
 enum ProcessCommands {
     /// Launch a new agent process
-    Launch { ticket_id: String },
+    Launch {
+        ticket_id: String,
+        /// Mount a host directory as the container workspace
+        #[arg(short = 'w', long = "workspace")]
+        workspace: Option<PathBuf>,
+    },
     /// Show process status
     Status { process_id: Option<String> },
     /// Attach to a running process
@@ -87,7 +93,21 @@ fn process_attach(process_id: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-async fn process_launch(client: &mut CoreServiceClient<Channel>, ticket_id: &str) -> Result<()> {
+async fn process_launch(
+    client: &mut CoreServiceClient<Channel>,
+    ticket_id: &str,
+    workspace: Option<PathBuf>,
+) -> Result<()> {
+    // Resolve workspace to an absolute path if provided
+    let workspace_dir = match workspace {
+        Some(path) => {
+            let abs = std::fs::canonicalize(&path)
+                .with_context(|| format!("failed to resolve workspace path: {}", path.display()))?;
+            abs.to_string_lossy().into_owned()
+        }
+        None => String::new(),
+    };
+
     // Build the container image directly using the container crate
     // (container_build is not part of CoreService proto).
     let project_root = std::env::current_dir()?;
@@ -108,6 +128,7 @@ async fn process_launch(client: &mut CoreServiceClient<Channel>, ticket_id: &str
             image_id: image.0,
             cpus: 2,
             memory: "8G".into(),
+            workspace_dir,
         })
         .await?;
 
@@ -142,8 +163,11 @@ async fn main() -> Result<()> {
             other => {
                 let mut client = connect(port).await?;
                 match other {
-                    ProcessCommands::Launch { ticket_id } => {
-                        process_launch(&mut client, &ticket_id).await?;
+                    ProcessCommands::Launch {
+                        ticket_id,
+                        workspace,
+                    } => {
+                        process_launch(&mut client, &ticket_id, workspace).await?;
                     }
                     ProcessCommands::Status { process_id } => {
                         println!("Status: {process_id:?}");

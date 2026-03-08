@@ -28,6 +28,7 @@ message ProcessLaunchRequest {
   string image_id = 2;
   uint32 cpus = 3;
   string memory = 4;
+  string workspace_dir = 5;
 }
 
 message ProcessLaunchResponse {

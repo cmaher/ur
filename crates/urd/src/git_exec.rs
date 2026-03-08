@@ -16,12 +16,12 @@ const BLOCKED_FLAGS: &[&str] = &["-C", "--git-dir", "--work-tree"];
 /// Blocked `-c` config keys (case-insensitive prefix match).
 const BLOCKED_CONFIG_KEYS: &[&str] = &["core.worktree"];
 
-/// In-memory map of process_id → repo directory (relative to workspace root).
+/// In-memory map of process_id → repo directory path.
 /// TEMPORARY: will be replaced by CozoDB.
 pub struct RepoRegistry {
     workspace: PathBuf,
-    /// process_id → repo subdirectory name within workspace
-    repos: RwLock<HashMap<String, String>>,
+    /// process_id → absolute repo path
+    repos: RwLock<HashMap<String, PathBuf>>,
 }
 
 impl RepoRegistry {
@@ -37,7 +37,15 @@ impl RepoRegistry {
         self.repos
             .write()
             .expect("repo registry lock poisoned")
-            .insert(process_id.to_string(), repo_name.to_string());
+            .insert(process_id.to_string(), self.workspace.join(repo_name));
+    }
+
+    /// Register a process with an absolute path (e.g., a pre-existing workspace directory).
+    pub fn register_absolute(&self, process_id: &str, path: PathBuf) {
+        self.repos
+            .write()
+            .expect("repo registry lock poisoned")
+            .insert(process_id.to_string(), path);
     }
 
     /// Remove a process from the registry.
@@ -48,13 +56,13 @@ impl RepoRegistry {
             .remove(process_id);
     }
 
-    /// Resolve a process_id to its full repo path within the workspace.
+    /// Resolve a process_id to its full repo path.
     pub(crate) fn resolve(&self, process_id: &str) -> Result<PathBuf, String> {
         let repos = self.repos.read().expect("repo registry lock poisoned");
-        let repo_name = repos
+        repos
             .get(process_id)
-            .ok_or_else(|| format!("unknown process_id: {process_id}"))?;
-        Ok(self.workspace.join(repo_name))
+            .cloned()
+            .ok_or_else(|| format!("unknown process_id: {process_id}"))
     }
 
     /// Validate and execute `git <args>` in the process's repo directory.
@@ -238,6 +246,26 @@ mod tests {
         reg.register("p1", "my-repo");
         reg.unregister("p1");
         assert!(reg.resolve("p1").is_err());
+    }
+
+    #[test]
+    fn registry_register_absolute() {
+        let reg = RepoRegistry::new(PathBuf::from("/workspace"));
+        let abs_path = PathBuf::from("/home/user/my-project");
+        reg.register_absolute("p1", abs_path.clone());
+        let path = reg.resolve("p1").unwrap();
+        assert_eq!(path, abs_path);
+    }
+
+    #[test]
+    fn registry_absolute_does_not_join_workspace() {
+        let reg = RepoRegistry::new(PathBuf::from("/workspace"));
+        let abs_path = PathBuf::from("/other/dir");
+        reg.register_absolute("p1", abs_path.clone());
+        let resolved = reg.resolve("p1").unwrap();
+        // Should NOT be /workspace/other/dir — should be the absolute path directly
+        assert_eq!(resolved, abs_path);
+        assert!(!resolved.starts_with("/workspace"));
     }
 
     #[tokio::test]
