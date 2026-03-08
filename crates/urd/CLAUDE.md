@@ -8,4 +8,4 @@ Long-running daemon process. Listens on TCP via tonic gRPC, serves both host CLI
 - `CoreServiceHandler` is `Clone` — keep it stateless or use `Arc` for shared state
 - Config and constants are in the `ur_config` crate, re-exported via `urd::config`
 - `stream::spawn_child_output_stream` is the shared helper for streaming child process output as `CommandOutput` gRPC frames
-- `git_exec::sanitize_args` strips `-C` flags (silently removed, not blocked); `--git-dir` and `--work-tree` are still blocked with errors
+- `git_exec::validate_args` blocks `-C`, `--git-dir`, and `--work-tree` with errors
