@@ -81,7 +81,7 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
 
 fn process_attach(process_id: &str) -> Result<()> {
     let runtime = container::runtime_from_env();
-    let id = ContainerId(process_id.to_string());
+    let id = ContainerId(format!("ur-agent-{process_id}"));
     let command: Vec<String> = vec!["tmux".into(), "attach".into(), "-t".into(), "agent".into()];
     let status = runtime.exec_interactive(&id, &command)?;
     process::exit(status.code().unwrap_or(1));
