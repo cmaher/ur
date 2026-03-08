@@ -1,14 +1,14 @@
 # Ur
 
-Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tarpc over Unix Domain Sockets.
+Coding LLM coordination framework. Native macOS monolith managing containerized Claude Code workers via tonic gRPC over TCP.
 
 ## Structure
 
-Cargo workspace with four crates:
+Cargo workspace:
 - `crates/ur/` - Host CLI (TUI, process management, ticket management)
-- `crates/urd/` - Daemon server (orchestration, RPC server, container management)
-- `crates/agent_tools/` - Worker CLI (runs inside containers, tarpc client)
-- `crates/ur_rpc/` - Shared RPC contract (tarpc service traits, data types)
+- `crates/urd/` - Daemon server (orchestration, gRPC server, container management)
+- `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
+- `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
 
 ## Code Style
 
@@ -40,5 +40,5 @@ Cargo workspace with four crates:
 - **PR descriptions**: MUST reference the ticket number being addressed.
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.
 - **Tests**: NEVER `#[ignore]` or skip tests to make them pass. Fix the underlying issue.
-- **Cross-compile**: Always support both `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` targets for container binaries. Match the host arch like the container crate does (`std::env::consts::ARCH`).
+- **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Apple backend tested locally on macOS, Docker backend tested in CI (ubuntu-latest).

@@ -1,19 +1,21 @@
-use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use container::ContainerId;
-use tarpc::tokio_serde::formats::Bincode;
+use tonic::transport::{Channel, Endpoint};
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+use ur_rpc::proto::core::*;
 
-use ur_rpc::*;
+/// Default TCP port the urd daemon listens on.
+const DEFAULT_DAEMON_PORT: u16 = 42068;
 
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// Path to the urd control socket (default: $UR_CONFIG/ur.sock or ~/.ur/ur.sock)
+    /// TCP port of the urd gRPC server (default: 42068, override with $UR_DAEMON_PORT)
     #[arg(long)]
-    socket: Option<PathBuf>,
+    port: Option<u16>,
 
     #[command(subcommand)]
     command: Commands,
@@ -61,12 +63,25 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
-async fn connect(socket: &PathBuf) -> Result<UrAgentBridgeClient> {
-    let transport = tarpc::serde_transport::unix::connect(&socket, Bincode::default)
+fn resolve_daemon_port(cli_port: Option<u16>) -> u16 {
+    if let Some(port) = cli_port {
+        return port;
+    }
+    if let Ok(val) = std::env::var("UR_DAEMON_PORT")
+        && let Ok(port) = val.parse::<u16>()
+    {
+        return port;
+    }
+    DEFAULT_DAEMON_PORT
+}
+
+async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
+    let addr = format!("http://127.0.0.1:{port}");
+    let channel = Endpoint::try_from(addr.clone())?
+        .connect()
         .await
-        .with_context(|| format!("failed to connect to urd at {}", socket.display()))?;
-    let client = UrAgentBridgeClient::new(tarpc::client::Config::default(), transport).spawn();
-    Ok(client)
+        .with_context(|| format!("failed to connect to urd at {addr}"))?;
+    Ok(CoreServiceClient::new(channel))
 }
 
 fn process_attach(process_id: &str) -> Result<()> {
@@ -77,66 +92,44 @@ fn process_attach(process_id: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-async fn process_launch(client: &UrAgentBridgeClient, ticket_id: &str) -> Result<()> {
-    // Image build can take minutes (downloads + installs Claude Code CLI).
-    let mut ctx = tarpc::context::current();
-    ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-
-    // Build the worker image
+async fn process_launch(client: &mut CoreServiceClient<Channel>, ticket_id: &str) -> Result<()> {
+    // Build the container image directly using the container crate
+    // (container_build is not part of CoreService proto).
     let project_root = std::env::current_dir()?;
     let context_dir = project_root.join("containers/claude-worker");
     println!("Building worker image...");
-    let build_resp = client
-        .container_build(
-            ctx,
-            ContainerBuildRequest {
-                tag: "ur-worker:latest".into(),
-                dockerfile: context_dir.join("Dockerfile").display().to_string(),
-                context: context_dir.display().to_string(),
-            },
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let rt = container::runtime_from_env();
+    let image = rt.build(&container::BuildOpts {
+        tag: "ur-worker:latest".into(),
+        dockerfile: context_dir.join("Dockerfile"),
+        context: context_dir.clone(),
+    })?;
 
-    // Launch the agent process (urd handles socket, repo, container)
     let container_name = format!("ur-agent-{ticket_id}");
     println!("Launching agent {container_name}...");
-    let mut launch_ctx = tarpc::context::current();
-    launch_ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let launch_resp = client
-        .process_launch(
-            launch_ctx,
-            ProcessLaunchRequest {
-                process_id: ticket_id.into(),
-                image_id: build_resp.image_id,
-                cpus: 4,
-                memory: "8G".into(),
-            },
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let resp = client
+        .process_launch(ProcessLaunchRequest {
+            process_id: ticket_id.into(),
+            image_id: image.0,
+            cpus: 4,
+            memory: "8G".into(),
+        })
+        .await?;
 
     println!(
         "Agent {container_name} running (container {})",
-        launch_resp.container_id
+        resp.into_inner().container_id
     );
     Ok(())
 }
 
-async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<()> {
+async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str) -> Result<()> {
     println!("Stopping {process_id}...");
-    let mut ctx = tarpc::context::current();
-    ctx.deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     client
-        .process_stop(
-            ctx,
-            ProcessStopRequest {
-                process_id: process_id.into(),
-            },
-        )
-        .await?
-        .map_err(|e| anyhow::anyhow!(e))?;
-
+        .process_stop(ProcessStopRequest {
+            process_id: process_id.into(),
+        })
+        .await?;
     println!("Agent {process_id} stopped.");
     Ok(())
 }
@@ -144,7 +137,7 @@ async fn process_stop(client: &UrAgentBridgeClient, process_id: &str) -> Result<
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let socket = cli.socket.unwrap_or_else(ur_rpc::default_socket_path);
+    let port = resolve_daemon_port(cli.port);
     match cli.command {
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
@@ -152,16 +145,16 @@ async fn main() -> Result<()> {
                 process_attach(&process_id)?;
             }
             other => {
-                let client = connect(&socket).await?;
+                let mut client = connect(port).await?;
                 match other {
                     ProcessCommands::Launch { ticket_id } => {
-                        process_launch(&client, &ticket_id).await?;
+                        process_launch(&mut client, &ticket_id).await?;
                     }
                     ProcessCommands::Status { process_id } => {
                         println!("Status: {process_id:?}");
                     }
                     ProcessCommands::Stop { process_id } => {
-                        process_stop(&client, &process_id).await?;
+                        process_stop(&mut client, &process_id).await?;
                     }
                     ProcessCommands::Attach { .. } => unreachable!(),
                 }

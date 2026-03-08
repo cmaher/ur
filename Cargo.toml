@@ -1,8 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = [
+    "crates/acceptance",
+    "crates/container",
+    "crates/ur",
+    "crates/ur_rpc",
+    "crates/urd",
+    "crates/workercmd/*",
+]
 default-members = [
-    "crates/agent_tools",
     "crates/container",
     "crates/ur",
     "crates/ur_rpc",
@@ -15,6 +21,10 @@ version = "0.1.0"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
-tarpc = { version = "0.37", features = ["serde-transport-bincode", "unix"] }
+prost = "0.13"
 tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = "0.13"
+tonic-build = "0.13"
+tower = "0.5"
 serde = { version = "1", features = ["derive"] }

@@ -5,10 +5,14 @@ use serde::Deserialize;
 /// Environment variable that overrides the config directory (default: `~/.ur`).
 const UR_CONFIG_ENV: &str = "UR_CONFIG";
 
+/// Default TCP port the main urd daemon listens on.
+const DEFAULT_DAEMON_PORT: u16 = 42068;
+
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     workspace: Option<PathBuf>,
+    daemon_port: Option<u16>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -18,10 +22,9 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// Agent workspace directory.
     pub workspace: PathBuf,
+    /// TCP port the main urd daemon listens on (default: 42068).
+    pub daemon_port: u16,
 }
-
-/// Name of the UDS socket file within `config_dir`.
-const SOCKET_FILENAME: &str = "ur.sock";
 
 impl Config {
     /// Load configuration from `$UR_CONFIG/ur.toml`.
@@ -34,11 +37,6 @@ impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let config_dir = resolve_config_dir()?;
         Self::load_from(&config_dir)
-    }
-
-    /// Path to the UDS socket file within this config directory.
-    pub fn socket_path(&self) -> PathBuf {
-        self.config_dir.join(SOCKET_FILENAME)
     }
 
     /// Load configuration using an explicit config directory.
@@ -54,10 +52,12 @@ impl Config {
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
+        let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
+            daemon_port,
         })
     }
 }
@@ -83,6 +83,7 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
+        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
     #[test]
@@ -91,6 +92,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
+        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
     }
 
     #[test]
@@ -113,10 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_derived_from_config_dir() {
+    fn reads_daemon_port_from_toml() {
         let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 9000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.socket_path(), tmp.path().join("ur.sock"));
+        assert_eq!(cfg.daemon_port, 9000);
     }
 
     #[test]

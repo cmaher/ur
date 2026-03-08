@@ -4,10 +4,15 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-dirs = "6"
-futures = "0.3"
-serde = { workspace = true }
-tarpc = { workspace = true }
-tokio = { workspace = true }
-tokio-serde = { version = "0.9", features = ["bincode"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+prost = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+
+[features]
+default = ["core"]
+core = []
+git = []
+temporal = []
+
+[build-dependencies]
+tonic-build = { workspace = true }

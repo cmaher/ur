@@ -15,13 +15,15 @@ RUN bash /tmp/install-claude.sh && rm /tmp/install-claude.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Copy the pre-built agent_tools binary into the image
-COPY agent_tools /usr/local/bin/agent_tools
-RUN chmod +x /usr/local/bin/agent_tools
+# Copy pre-built worker command binaries into the image
+COPY ur-ping /usr/local/bin/ur-ping
+RUN chmod +x /usr/local/bin/ur-ping
+COPY git /usr/local/bin/git
+RUN chmod +x /usr/local/bin/git
 
 RUN mkdir -p /workspace
 
-# agent_tools connects to urd via this socket (mounted by the host at run time)
-ENV UR_SOCKET=/var/run/ur/ur.sock
+# UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by urd when launching the container.
+# Worker commands use these to connect back to the host's per-agent gRPC server.
 
 ENTRYPOINT ["/entrypoint.sh"]

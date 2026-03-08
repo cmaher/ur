@@ -1,12 +1,14 @@
 [package]
-name = "ur"
+name = "workercmd-git"
 edition.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "git"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
-clap = { workspace = true }
-container = { path = "../container" }
 tokio = { workspace = true }
 tonic = { workspace = true }
-ur_rpc = { path = "../ur_rpc", features = ["core"] }
+ur_rpc = { path = "../../ur_rpc", features = ["core", "git"] }

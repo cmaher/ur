@@ -31,7 +31,8 @@ fn build_run_stop_rm() {
             cpus: 1,
             memory: "512M".into(),
             volumes: vec![],
-            socket_mounts: vec![],
+            port_maps: vec![],
+            env_vars: vec![],
             workdir: None,
             command: vec!["sleep".into(), "30".into()],
         })

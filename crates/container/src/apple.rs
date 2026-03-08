@@ -59,10 +59,13 @@ impl AppleRuntime {
             let resolved = Self::resolve_host_path(host);
             args.push(format!("{}:{}", resolved.display(), guest.display()));
         }
-        for (host, guest) in &opts.socket_mounts {
-            args.push("--publish-socket".into());
-            let resolved = Self::resolve_host_path(host);
-            args.push(format!("{}:{}", resolved.display(), guest.display()));
+        for pm in &opts.port_maps {
+            args.push("-p".into());
+            args.push(format!("{}:{}", pm.host_port, pm.container_port));
+        }
+        for (key, val) in &opts.env_vars {
+            args.push("-e".into());
+            args.push(format!("{key}={val}"));
         }
         if let Some(workdir) = &opts.workdir {
             args.push("--workdir".into());
@@ -91,6 +94,24 @@ impl AppleRuntime {
         args.extend(opts.command.iter().cloned());
         args
     }
+}
+
+/// Parse the host IP from the bridge100 interface (Apple container VM bridge).
+fn parse_bridge100_ip() -> Result<String> {
+    let output = Command::new("ifconfig")
+        .arg("bridge100")
+        .output()
+        .context("failed to run ifconfig bridge100")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("inet ")
+            && let Some(ip) = rest.split_whitespace().next()
+        {
+            return Ok(ip.to_string());
+        }
+    }
+    bail!("could not determine host gateway IP from bridge100 interface")
 }
 
 impl ContainerRuntime for AppleRuntime {
@@ -143,6 +164,10 @@ impl ContainerRuntime for AppleRuntime {
             .status()
             .context("failed to execute interactive container exec")
     }
+
+    fn host_gateway_ip(&self) -> Result<String> {
+        parse_bridge100_ip()
+    }
 }
 
 #[cfg(test)]
@@ -166,22 +191,14 @@ mod tests {
                 PathBuf::from("/tmp/ur/workspace"),
                 PathBuf::from("/workspace"),
             )],
-            socket_mounts: vec![(
-                PathBuf::from("/tmp/ur/sockets/agent_abc123.sock"),
-                PathBuf::from("/var/run/ur.sock"),
-            )],
+            port_maps: vec![],
+            env_vars: vec![
+                ("UR_GRPC_HOST".into(), "192.168.64.1".into()),
+                ("UR_GRPC_PORT".into(), "55000".into()),
+            ],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
-    }
-
-    #[test]
-    fn run_uses_publish_socket_for_uds() {
-        let args = AppleRuntime::run_args(&sample_run_opts());
-        assert!(args.contains(&s("--publish-socket")));
-        assert!(args.contains(&s(
-            "/private/tmp/ur/sockets/agent_abc123.sock:/var/run/ur.sock"
-        )));
     }
 
     #[test]
@@ -189,6 +206,14 @@ mod tests {
         let args = AppleRuntime::run_args(&sample_run_opts());
         let vol_arg = args.iter().find(|a| a.contains("/workspace")).unwrap();
         assert!(vol_arg.starts_with("/private/tmp/ur/workspace:"));
+    }
+
+    #[test]
+    fn run_uses_env_flag_for_vars() {
+        let args = AppleRuntime::run_args(&sample_run_opts());
+        assert!(args.contains(&s("-e")));
+        assert!(args.contains(&s("UR_GRPC_HOST=192.168.64.1")));
+        assert!(args.contains(&s("UR_GRPC_PORT=55000")));
     }
 
     #[test]
