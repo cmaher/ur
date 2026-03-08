@@ -62,21 +62,8 @@ impl CoreService for CoreServiceHandler {
             workspace: self.workspace.clone(),
         };
 
-        #[cfg(feature = "git")]
-        let git_handler = crate::grpc_git::GitServiceHandler {
-            repo_registry: self.repo_registry.clone(),
-            process_id: req.process_id.clone(),
-        };
-
-        #[cfg(feature = "git")]
         let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler, git_handler)
-                .await
-                .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
-
-        #[cfg(not(feature = "git"))]
-        let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler)
+            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler, &req.process_id)
                 .await
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
