@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use crate::credential::CredentialManager;
 use crate::RepoRegistry;
 
 /// Tracks a running agent process.
@@ -36,14 +37,20 @@ pub struct ProcessConfig {
 pub struct ProcessManager {
     workspace: PathBuf,
     repo_registry: Arc<RepoRegistry>,
+    credential_manager: CredentialManager,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
 }
 
 impl ProcessManager {
-    pub fn new(workspace: PathBuf, repo_registry: Arc<RepoRegistry>) -> Self {
+    pub fn new(
+        workspace: PathBuf,
+        repo_registry: Arc<RepoRegistry>,
+        credential_manager: CredentialManager,
+    ) -> Self {
         Self {
             workspace,
             repo_registry,
+            credential_manager,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -111,6 +118,12 @@ impl ProcessManager {
             None => vec![],
         };
 
+        // Build env vars, injecting Claude credentials when available
+        let mut env_vars = vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)];
+        if let Some(creds) = self.credential_manager.read_claude_credentials() {
+            env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
+        }
+
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
             let rt = container::runtime_from_env();
@@ -122,7 +135,7 @@ impl ProcessManager {
                 memory: config.memory.clone(),
                 volumes,
                 port_maps: vec![],
-                env_vars: vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)],
+                env_vars,
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
@@ -190,7 +203,8 @@ mod tests {
     fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
-        let mgr = ProcessManager::new(workspace.path().to_path_buf(), registry);
+        let cred_mgr = CredentialManager;
+        let mgr = ProcessManager::new(workspace.path().to_path_buf(), registry, cred_mgr);
         (mgr, workspace)
     }
 

@@ -10,6 +10,9 @@ pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 /// Environment variable: `host:port` address for worker→urd gRPC connections.
 pub const URD_ADDR_ENV: &str = "URD_ADDR";
 
+/// Environment variable: Claude credentials JSON blob injected into containers.
+pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
+
 // ---- Defaults ----
 
 /// Default TCP port for the main urd daemon (ur→urd communication).
