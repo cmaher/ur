@@ -9,4 +9,9 @@ pub mod proto {
     pub mod git {
         tonic::include_proto!("ur.git");
     }
+    #[cfg(feature = "gh")]
+    #[allow(clippy::excessive_nesting)]
+    pub mod gh {
+        tonic::include_proto!("ur.gh");
+    }
 }
