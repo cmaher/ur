@@ -222,10 +222,7 @@ mod tests {
                 PathBuf::from("/workspace"),
             )],
             port_maps: vec![],
-            env_vars: vec![
-                (ur_config::UR_GRPC_HOST_ENV.into(), "172.17.0.1".into()),
-                (ur_config::UR_GRPC_PORT_ENV.into(), "55000".into()),
-            ],
+            env_vars: vec![(ur_config::URD_ADDR_ENV.into(), "172.17.0.1:55000".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -264,9 +261,7 @@ mod tests {
                 s("-v"),
                 s("/host/workspace:/workspace"),
                 s("-e"),
-                format!("{}=172.17.0.1", ur_config::UR_GRPC_HOST_ENV),
-                s("-e"),
-                format!("{}=55000", ur_config::UR_GRPC_PORT_ENV),
+                format!("{}=172.17.0.1:55000", ur_config::URD_ADDR_ENV),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),

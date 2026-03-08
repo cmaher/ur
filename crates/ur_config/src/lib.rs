@@ -7,11 +7,8 @@ use serde::Deserialize;
 /// Environment variable: override the config directory (default `~/.ur`).
 pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 
-/// Environment variable: host IP address for worker→urd gRPC connections.
-pub const UR_GRPC_HOST_ENV: &str = "UR_GRPC_HOST";
-
-/// Environment variable: port for worker→urd gRPC connections.
-pub const UR_GRPC_PORT_ENV: &str = "UR_GRPC_PORT";
+/// Environment variable: `host:port` address for worker→urd gRPC connections.
+pub const URD_ADDR_ENV: &str = "URD_ADDR";
 
 // ---- Defaults ----
 

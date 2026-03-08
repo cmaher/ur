@@ -74,17 +74,17 @@ impl CoreService for CoreServiceHandler {
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         // Phase 2: run container
+        let config = crate::ProcessConfig {
+            process_id: req.process_id,
+            image_id: req.image_id,
+            cpus: req.cpus,
+            memory: req.memory,
+            grpc_port,
+            host_ip,
+        };
         let container_id = self
             .process_manager
-            .run_and_record(
-                &req.process_id,
-                &req.image_id,
-                req.cpus,
-                &req.memory,
-                grpc_port,
-                &host_ip,
-                server_handle,
-            )
+            .run_and_record(config, server_handle)
             .await
             .map_err(Status::internal)?;
 

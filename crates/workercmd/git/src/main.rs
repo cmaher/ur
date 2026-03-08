@@ -9,9 +9,18 @@ use ur_rpc::proto::git::git_service_client::GitServiceClient;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let grpc_host = std::env::var(ur_config::UR_GRPC_HOST_ENV).expect("UR_GRPC_HOST must be set");
-    let grpc_port = std::env::var(ur_config::UR_GRPC_PORT_ENV).expect("UR_GRPC_PORT must be set");
-    let addr = format!("http://{grpc_host}:{grpc_port}");
+    if args.first().map(|a| a.as_str()) == Some("--help") {
+        eprintln!("ur git proxy — forwards git commands to urd via gRPC");
+        eprintln!();
+        eprintln!("Blocked flags (not available inside containers):");
+        eprintln!("  -C <path>       (urd sets the working directory)");
+        eprintln!("  --git-dir       (sandboxed to assigned repo)");
+        eprintln!("  --work-tree     (sandboxed to assigned repo)");
+        std::process::exit(0);
+    }
+
+    let urd_addr = std::env::var(ur_config::URD_ADDR_ENV).expect("URD_ADDR must be set");
+    let addr = format!("http://{urd_addr}");
 
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,

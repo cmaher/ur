@@ -16,6 +16,16 @@ struct ProcessEntry {
     server_handle: JoinHandle<()>,
 }
 
+/// Configuration for launching a container process.
+pub struct ProcessConfig {
+    pub process_id: String,
+    pub image_id: String,
+    pub cpus: u32,
+    pub memory: String,
+    pub grpc_port: u16,
+    pub host_ip: String,
+}
+
 /// Orchestrates the full lifecycle of agent processes:
 /// per-agent gRPC server (TCP), repo registration, git init, container run/stop.
 #[derive(Clone)]
@@ -73,35 +83,25 @@ impl ProcessManager {
 
     /// Phase 2 of launch: run the container and record the process entry.
     /// Call after spawning the per-agent gRPC server.
-    ///
-    /// `grpc_port` is the host-side TCP port the per-agent gRPC server is bound to.
-    /// `host_ip` is the host gateway IP the container uses to connect back.
-    #[allow(clippy::too_many_arguments)]
     pub async fn run_and_record(
         &self,
-        process_id: &str,
-        image_id: &str,
-        cpus: u32,
-        memory: &str,
-        grpc_port: u16,
-        host_ip: &str,
+        config: ProcessConfig,
         server_handle: JoinHandle<()>,
     ) -> Result<String, String> {
+        let urd_addr = format!("{}:{}", config.host_ip, config.grpc_port);
+
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
             let rt = container::runtime_from_env();
-            let container_name = format!("ur-agent-{process_id}");
+            let container_name = format!("ur-agent-{}", config.process_id);
             let opts = container::RunOpts {
-                image: container::ImageId(image_id.to_string()),
+                image: container::ImageId(config.image_id.clone()),
                 name: container_name,
-                cpus,
-                memory: memory.to_string(),
+                cpus: config.cpus,
+                memory: config.memory.clone(),
                 volumes: vec![],
                 port_maps: vec![],
-                env_vars: vec![
-                    (ur_config::UR_GRPC_HOST_ENV.into(), host_ip.to_string()),
-                    (ur_config::UR_GRPC_PORT_ENV.into(), grpc_port.to_string()),
-                ],
+                env_vars: vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
             };
@@ -109,9 +109,9 @@ impl ProcessManager {
         };
 
         info!(
-            process_id,
+            process_id = config.process_id,
             container_id = cid.0,
-            grpc_port,
+            grpc_port = config.grpc_port,
             "process launched"
         );
 
@@ -119,10 +119,10 @@ impl ProcessManager {
         {
             let mut procs = self.processes.write().expect("process lock poisoned");
             procs.insert(
-                process_id.to_string(),
+                config.process_id,
                 ProcessEntry {
                     container_id: cid.0.clone(),
-                    grpc_port,
+                    grpc_port: config.grpc_port,
                     server_handle,
                 },
             );
