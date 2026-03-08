@@ -1651,6 +1651,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "workercmd-gh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tonic",
+ "ur_config",
+ "ur_rpc",
+]
+
+[[package]]
 name = "workercmd-git"
 version = "0.1.0"
 dependencies = [

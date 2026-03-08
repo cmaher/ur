@@ -12,6 +12,7 @@ tonic = { workspace = true }
 default = ["core"]
 core = []
 git = []
+gh = []
 temporal = []
 
 [build-dependencies]
