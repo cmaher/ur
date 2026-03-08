@@ -11,7 +11,7 @@ pub struct GitResponse {
 }
 
 /// Flags that could allow an agent to escape its repo directory.
-const BLOCKED_FLAGS: &[&str] = &["-C", "--git-dir", "--work-tree"];
+const BLOCKED_FLAGS: &[&str] = &["--git-dir", "--work-tree"];
 
 /// Blocked `-c` config keys (case-insensitive prefix match).
 const BLOCKED_CONFIG_KEYS: &[&str] = &["core.worktree"];
@@ -57,12 +57,29 @@ impl RepoRegistry {
         Ok(self.workspace.join(repo_name))
     }
 
-    /// Validate git args and execute `git <args>` in the process's repo directory.
+    /// Sanitize, validate, and execute `git <args>` in the process's repo directory.
     pub async fn exec_git(&self, process_id: &str, args: &[String]) -> Result<GitResponse, String> {
         let repo_path = self.resolve(process_id)?;
-        validate_args(args)?;
-        run_git(&repo_path, args).await
+        let args = sanitize_args(args);
+        validate_args(&args)?;
+        run_git(&repo_path, &args).await
     }
+}
+
+/// Strip `-C <path>` arguments, which are unnecessary since urd already
+/// sets the working directory. Returns the filtered argument list.
+pub(crate) fn sanitize_args(args: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(args.len());
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "-C" {
+            // Skip -C and its value
+            let _ = iter.next();
+            continue;
+        }
+        result.push(arg.clone());
+    }
+    result
 }
 
 /// Reject args that could escape the repo sandbox.
@@ -138,10 +155,30 @@ mod tests {
     }
 
     #[test]
-    fn validate_blocks_dash_c_flag() {
+    fn sanitize_strips_dash_c_flag() {
         let args: Vec<String> = vec!["-C".into(), "/tmp".into(), "status".into()];
-        let err = validate_args(&args).unwrap_err();
-        assert!(err.contains("-C"), "error should mention -C: {err}");
+        let sanitized = sanitize_args(&args);
+        assert_eq!(sanitized, vec!["status".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_strips_multiple_dash_c() {
+        let args: Vec<String> = vec![
+            "-C".into(),
+            "/tmp".into(),
+            "-C".into(),
+            "/var".into(),
+            "log".into(),
+        ];
+        let sanitized = sanitize_args(&args);
+        assert_eq!(sanitized, vec!["log".to_string()]);
+    }
+
+    #[test]
+    fn sanitize_preserves_other_args() {
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "message".into()];
+        let sanitized = sanitize_args(&args);
+        assert_eq!(args, sanitized);
     }
 
     #[test]
@@ -249,14 +286,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exec_git_blocked_flag() {
+    async fn exec_git_strips_dash_c_and_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_name = "test-repo";
+        let repo_dir = tmp.path().join(repo_name);
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        let init = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(init.status.success(), "git init failed");
+
+        let reg = RepoRegistry::new(tmp.path().to_path_buf());
+        reg.register("p1", repo_name);
+
+        // -C /tmp should be stripped, leaving just "status"
+        let resp = reg
+            .exec_git("p1", &["-C".into(), "/tmp".into(), "status".into()])
+            .await
+            .unwrap();
+        assert_eq!(resp.exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn exec_git_blocks_git_dir() {
         let reg = RepoRegistry::new(PathBuf::from("/workspace"));
         reg.register("p1", "repo");
         let result = reg
-            .exec_git("p1", &["-C".into(), "/tmp".into(), "status".into()])
+            .exec_git("p1", &["--git-dir".into(), "/tmp".into(), "status".into()])
             .await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("-C"));
+        assert!(result.unwrap_err().contains("--git-dir"));
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ pub mod grpc;
 pub mod grpc_git;
 pub mod grpc_server;
 pub mod process;
+pub mod stream;
 
 pub use config::Config;
 pub use git_exec::RepoRegistry;

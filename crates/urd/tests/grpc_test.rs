@@ -147,6 +147,85 @@ async fn grpc_git_exec_streams_output() {
 }
 
 #[tokio::test]
+async fn grpc_git_exec_strips_dash_c_flag() {
+    use ur_rpc::proto::core::command_output::Payload;
+    use ur_rpc::proto::git::GitExecRequest;
+    use ur_rpc::proto::git::git_service_client::GitServiceClient;
+
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Create a git repo so the command succeeds after stripping -C
+    let repo_name = "test-repo";
+    let repo_dir = workspace.join(repo_name);
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "git init failed");
+
+    let (handler, repo_registry) = make_grpc_handler(dir.path());
+    let process_id = "test-process";
+    repo_registry.register(process_id, repo_name);
+
+    use ur_rpc::proto::core::core_service_server::CoreServiceServer;
+    use ur_rpc::proto::git::git_service_server::GitServiceServer;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    let git_handler = urd::grpc_git::GitServiceHandler {
+        repo_registry: repo_registry.clone(),
+        process_id: process_id.to_string(),
+    };
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(CoreServiceServer::new(handler))
+            .add_service(GitServiceServer::new(git_handler))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    let channel = Endpoint::try_from(format!("http://{addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    let mut client = GitServiceClient::new(channel);
+
+    // -C /tmp should be stripped; `git status` should succeed in the repo
+    let response = client
+        .exec(GitExecRequest {
+            args: vec!["-C".into(), "/tmp".into(), "status".into()],
+        })
+        .await
+        .unwrap();
+
+    let mut rpc_stream = response.into_inner();
+    let mut exit_code = None;
+
+    while let Some(msg) = futures::StreamExt::next(&mut rpc_stream).await {
+        let msg = msg.unwrap();
+        if let Some(Payload::ExitCode(code)) = msg.payload {
+            exit_code = Some(code);
+        }
+    }
+
+    assert_eq!(
+        exit_code,
+        Some(0),
+        "git -C /tmp status should succeed (with -C stripped)"
+    );
+}
+
+#[tokio::test]
 async fn grpc_git_exec_rejects_blocked_flags() {
     use ur_rpc::proto::git::GitExecRequest;
     use ur_rpc::proto::git::git_service_client::GitServiceClient;
@@ -187,14 +266,16 @@ async fn grpc_git_exec_rejects_blocked_flags() {
         .unwrap();
 
     let mut client = GitServiceClient::new(channel);
+
+    // --git-dir is still a blocked flag
     let result = client
         .exec(GitExecRequest {
-            args: vec!["-C".into(), "/tmp".into(), "status".into()],
+            args: vec!["--git-dir=/tmp".into(), "status".into()],
         })
         .await;
 
     assert!(result.is_err(), "blocked flag should be rejected");
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    assert!(status.message().contains("-C"));
+    assert!(status.message().contains("--git-dir"));
 }

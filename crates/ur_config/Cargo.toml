@@ -1,10 +1,13 @@
 [package]
-name = "container"
+name = "ur_config"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
 anyhow = "1"
+dirs = "6"
+serde = { workspace = true }
+toml = "0.8"
 
 [dev-dependencies]
-ur_config = { path = "../ur_config" }
+tempfile = "3"
