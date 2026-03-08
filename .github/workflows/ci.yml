@@ -13,27 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Setup Rust workspace
+        uses: ./.github/actions/setup
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install cargo-make
-        run: cargo install cargo-make
 
       - name: Run CI checks
         run: cargo make ci
@@ -44,25 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install cargo-make
-        run: cargo install cargo-make
+      - name: Setup Rust workspace
+        uses: ./.github/actions/setup
 
       - name: Build workspace and stage workercmd binaries
         run: |
