@@ -4,6 +4,7 @@ members = [
     "crates/acceptance",
     "crates/container",
     "crates/ur",
+    "crates/ur_config",
     "crates/ur_rpc",
     "crates/urd",
     "crates/workercmd/*",
@@ -11,6 +12,7 @@ members = [
 default-members = [
     "crates/container",
     "crates/ur",
+    "crates/ur_config",
     "crates/ur_rpc",
     "crates/urd",
 ]

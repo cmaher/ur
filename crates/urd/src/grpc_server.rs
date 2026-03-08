@@ -9,7 +9,7 @@ use crate::grpc::CoreServiceHandler;
 /// Start the main tonic gRPC server on a TCP socket.
 ///
 /// Used for the main host CLI path (ur -> urd). Per-agent servers also use TCP
-/// but bind to OS-assigned ports.
+/// but bind to the host gateway IP with OS-assigned ports.
 /// When the `git` feature is enabled, the `GitService` is also registered.
 pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
     tracing::info!("gRPC server listening on {addr}");
@@ -35,19 +35,25 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
     Ok(())
 }
 
-/// Start a per-agent gRPC server on TCP (0.0.0.0:0 for OS-assigned port).
+/// Start a per-agent gRPC server on TCP, bound to the given host IP with an
+/// OS-assigned port.
 ///
 /// Binds the listener, spawns the server task, and returns the assigned port
 /// plus a `JoinHandle` the caller can abort to stop the server. The container
-/// connects back to this port via the host's gateway IP.
+/// connects back to this port via the same host IP.
+///
+/// `bind_host` should be the host gateway IP (e.g. 192.168.64.x for Apple,
+/// 172.17.0.x for Docker) so the server is reachable from containers but
+/// not exposed on the local network.
 #[cfg(feature = "git")]
 pub async fn serve_agent_grpc(
+    bind_host: &str,
     core_handler: CoreServiceHandler,
     git_handler: crate::grpc_git::GitServiceHandler,
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
     use ur_rpc::proto::git::git_service_server::GitServiceServer;
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
+    let listener = tokio::net::TcpListener::bind(format!("{bind_host}:0")).await?;
     let addr = listener.local_addr()?;
     let port = addr.port();
 
@@ -75,9 +81,10 @@ pub async fn serve_agent_grpc(
 /// Fallback when the `git` feature is not enabled.
 #[cfg(not(feature = "git"))]
 pub async fn serve_agent_grpc(
+    bind_host: &str,
     core_handler: CoreServiceHandler,
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await?;
+    let listener = tokio::net::TcpListener::bind(format!("{bind_host}:0")).await?;
     let addr = listener.local_addr()?;
     let port = addr.port();
 

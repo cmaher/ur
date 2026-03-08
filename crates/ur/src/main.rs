@@ -7,13 +7,10 @@ use tonic::transport::{Channel, Endpoint};
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
 
-/// Default TCP port the urd daemon listens on.
-const DEFAULT_DAEMON_PORT: u16 = 42068;
-
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// TCP port of the urd gRPC server (default: 42068, override with $UR_DAEMON_PORT)
+    /// TCP port of the urd gRPC server (overrides ur.toml)
     #[arg(long)]
     port: Option<u16>,
 
@@ -67,12 +64,10 @@ fn resolve_daemon_port(cli_port: Option<u16>) -> u16 {
     if let Some(port) = cli_port {
         return port;
     }
-    if let Ok(val) = std::env::var("UR_DAEMON_PORT")
-        && let Ok(port) = val.parse::<u16>()
-    {
-        return port;
+    match ur_config::Config::load() {
+        Ok(cfg) => cfg.daemon_port,
+        Err(_) => ur_config::DEFAULT_DAEMON_PORT,
     }
-    DEFAULT_DAEMON_PORT
 }
 
 async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
@@ -86,7 +81,7 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
 
 fn process_attach(process_id: &str) -> Result<()> {
     let runtime = container::runtime_from_env();
-    let id = ContainerId(process_id.to_string());
+    let id = ContainerId(format!("ur-agent-{process_id}"));
     let command: Vec<String> = vec!["tmux".into(), "attach".into(), "-t".into(), "agent".into()];
     let status = runtime.exec_interactive(&id, &command)?;
     process::exit(status.code().unwrap_or(1));
@@ -111,7 +106,7 @@ async fn process_launch(client: &mut CoreServiceClient<Channel>, ticket_id: &str
         .process_launch(ProcessLaunchRequest {
             process_id: ticket_id.into(),
             image_id: image.0,
-            cpus: 4,
+            cpus: 2,
             memory: "8G".into(),
         })
         .await?;

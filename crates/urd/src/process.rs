@@ -75,7 +75,8 @@ impl ProcessManager {
     /// Call after spawning the per-agent gRPC server.
     ///
     /// `grpc_port` is the host-side TCP port the per-agent gRPC server is bound to.
-    /// The container connects back to the host via the runtime's gateway IP.
+    /// `host_ip` is the host gateway IP the container uses to connect back.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_and_record(
         &self,
         process_id: &str,
@@ -83,14 +84,12 @@ impl ProcessManager {
         cpus: u32,
         memory: &str,
         grpc_port: u16,
+        host_ip: &str,
         server_handle: JoinHandle<()>,
     ) -> Result<String, String> {
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
             let rt = container::runtime_from_env();
-            let host_ip = rt
-                .host_gateway_ip()
-                .map_err(|e| format!("failed to detect host gateway IP: {e}"))?;
             let container_name = format!("ur-agent-{process_id}");
             let opts = container::RunOpts {
                 image: container::ImageId(image_id.to_string()),
@@ -100,8 +99,8 @@ impl ProcessManager {
                 volumes: vec![],
                 port_maps: vec![],
                 env_vars: vec![
-                    ("UR_GRPC_HOST".into(), host_ip),
-                    ("UR_GRPC_PORT".into(), grpc_port.to_string()),
+                    (ur_config::UR_GRPC_HOST_ENV.into(), host_ip.to_string()),
+                    (ur_config::UR_GRPC_PORT_ENV.into(), grpc_port.to_string()),
                 ],
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],

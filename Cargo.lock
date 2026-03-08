@@ -209,6 +209,7 @@ name = "container"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ur_config",
 ]
 
 [[package]]
@@ -1330,6 +1331,7 @@ dependencies = [
  "container",
  "tokio",
  "tonic",
+ "ur_config",
  "ur_rpc",
 ]
 
@@ -1340,7 +1342,19 @@ dependencies = [
  "anyhow",
  "tokio",
  "tonic",
+ "ur_config",
  "ur_rpc",
+]
+
+[[package]]
+name = "ur_config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -1360,17 +1374,15 @@ dependencies = [
  "anyhow",
  "clap",
  "container",
- "dirs",
  "futures",
  "prost",
- "serde",
  "tempfile",
  "tokio",
  "tokio-stream",
- "toml",
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "ur_config",
  "ur_rpc",
 ]
 
@@ -1645,6 +1657,7 @@ dependencies = [
  "anyhow",
  "tokio",
  "tonic",
+ "ur_config",
  "ur_rpc",
 ]
 

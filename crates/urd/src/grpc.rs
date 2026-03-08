@@ -39,7 +39,16 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        // Spawn per-agent gRPC server on TCP (OS-assigned port)
+        // Detect host gateway IP for per-agent gRPC server bind address.
+        // Binding to the gateway IP (rather than 0.0.0.0) ensures the server
+        // is reachable from containers but not exposed on the local network.
+        let host_ip = {
+            let rt = container::runtime_from_env();
+            rt.host_gateway_ip()
+                .map_err(|e| Status::internal(format!("failed to detect host gateway IP: {e}")))?
+        };
+
+        // Spawn per-agent gRPC server on TCP bound to the host gateway IP
         let core_handler = CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
@@ -54,13 +63,13 @@ impl CoreService for CoreServiceHandler {
 
         #[cfg(feature = "git")]
         let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(core_handler, git_handler)
+            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler, git_handler)
                 .await
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         #[cfg(not(feature = "git"))]
         let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(core_handler)
+            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler)
                 .await
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
@@ -73,6 +82,7 @@ impl CoreService for CoreServiceHandler {
                 req.cpus,
                 &req.memory,
                 grpc_port,
+                &host_ip,
                 server_handle,
             )
             .await

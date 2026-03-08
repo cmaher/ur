@@ -9,22 +9,8 @@ use ur_rpc::proto::git::git_service_client::GitServiceClient;
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    // Intercept --help and --version to identify this as the ur git proxy
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("ur git proxy — transparently forwards git commands to urd's GitService");
-        eprintln!("Usage: git <args...>");
-        eprintln!();
-        eprintln!("All arguments are sent to the host daemon via gRPC over TCP.");
-        eprintln!("Set $UR_GRPC_HOST and $UR_GRPC_PORT to override connection defaults.");
-        std::process::exit(0);
-    }
-    if args.iter().any(|a| a == "--version") {
-        eprintln!("ur git proxy {}", env!("CARGO_PKG_VERSION"));
-        std::process::exit(0);
-    }
-
-    let grpc_host = std::env::var("UR_GRPC_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let grpc_port = std::env::var("UR_GRPC_PORT").unwrap_or_else(|_| "42069".into());
+    let grpc_host = std::env::var(ur_config::UR_GRPC_HOST_ENV).expect("UR_GRPC_HOST must be set");
+    let grpc_port = std::env::var(ur_config::UR_GRPC_PORT_ENV).expect("UR_GRPC_PORT must be set");
     let addr = format!("http://{grpc_host}:{grpc_port}");
 
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {

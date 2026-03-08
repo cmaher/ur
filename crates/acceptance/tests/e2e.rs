@@ -212,19 +212,19 @@ fn e2e_ping_and_git() {
             "git status should show repo info.\nGot: {git_stdout}"
         );
 
-        // ---- (5b) Test blocked flags ----
-        // `-C` is a blocked flag that could let the agent escape its repo.
-        // The git proxy should relay the gRPC InvalidArgument error and exit non-zero.
-        let blocked_output = Command::new(&runtime)
+        // ---- (5b) Test -C flag stripping ----
+        // `-C` is silently stripped since urd runs git in the correct directory.
+        // The command should succeed just like `git status`.
+        let stripped_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
             .output()
-            .expect("failed to exec git -C in container");
-        assert_ne!(
-            blocked_output.status.code(),
+            .expect("failed to exec git -C /tmp status in container");
+        assert_eq!(
+            stripped_output.status.code(),
             Some(0),
-            "git -C should be blocked.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&blocked_output.stdout),
-            String::from_utf8_lossy(&blocked_output.stderr),
+            "git -C should be silently stripped and succeed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stripped_output.stdout),
+            String::from_utf8_lossy(&stripped_output.stderr),
         );
 
         // ---- (6) ur process stop (by ticket_id, not container name) ----

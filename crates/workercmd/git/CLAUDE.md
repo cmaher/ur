@@ -2,7 +2,8 @@
 
 Transparent git proxy binary for worker containers. Installed at `/usr/local/bin/git` to intercept all git commands.
 
-- Connects to `127.0.0.1:$UR_GRPC_PORT` (default port: `42069`) via tonic gRPC over TCP
-- Sends all args to urd's `GitService::Exec` streaming RPC
+- Connects to `$UR_GRPC_HOST:$UR_GRPC_PORT` via tonic gRPC over TCP
+- `UR_GRPC_HOST` and `UR_GRPC_PORT` env vars are **required** — the binary panics if they are not set
+- All args are forwarded as-is to urd's `GitService::Exec` streaming RPC (including `--help`, `--version`)
+- `-C` flags are silently stripped by urd (not blocked); `--git-dir` and `--work-tree` return gRPC errors
 - Streams stdout/stderr in real time and exits with the remote exit code
-- Validation errors (blocked flags like `-C`, `--git-dir`) return gRPC status errors before streaming
