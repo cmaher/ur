@@ -77,6 +77,23 @@ fi
 echo "Staged workercmd binaries in $DEST/"
 '''
 
+[tasks.install]
+description = "Build release binaries, install to ~/bin, and register urd as a launchd service"
+script_runner = "@shell"
+script = '''
+set -euo pipefail
+cargo build --release -p ur -p urd
+mkdir -p "$HOME/bin" "$HOME/.ur/logs"
+cp target/release/ur "$HOME/bin/ur"
+cp target/release/urd "$HOME/bin/urd"
+echo "Installed ur and urd to $HOME/bin/"
+sed "s|__HOME__|$HOME|g" apple/com.ur.urd.plist.template > "$HOME/Library/LaunchAgents/com.ur.urd.plist"
+echo "Installed plist to $HOME/Library/LaunchAgents/com.ur.urd.plist"
+launchctl bootout "gui/$(id -u)/com.ur.urd" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ur.urd.plist"
+echo "urd service registered and started"
+'''
+
 [tasks.ci]
 description = "Run all CI checks"
 dependencies = ["fmt", "clippy", "build", "test"]
