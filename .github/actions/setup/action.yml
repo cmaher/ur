@@ -15,18 +15,17 @@ runs:
       with:
         components: ${{ inputs.components }}
 
+    - name: Install protoc
+      uses: arduino/setup-protoc@v3
+
     - name: Cache cargo bin
+      id: cargo-bin-cache
       uses: actions/cache@v4
       with:
         path: ~/.cargo/bin
-        key: ${{ runner.os }}-cargo-bin-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-bin-
-
-    - name: Install protoc
-      shell: bash
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        key: ${{ runner.os }}-cargo-bin-cargo-make-0.37
 
     - name: Install cargo-make
+      if: steps.cargo-bin-cache.outputs.cache-hit != 'true'
       shell: bash
-      run: cargo install cargo-make --locked || true
+      run: cargo install cargo-make --locked
