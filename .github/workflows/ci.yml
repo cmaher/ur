@@ -15,10 +15,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Setup Rust workspace
+      - name: Setup workspace
         uses: ./.github/actions/setup
-        with:
-          components: rustfmt, clippy
 
       - name: Run CI checks
         run: cargo make ci
