@@ -111,6 +111,26 @@ impl ContainerRuntime for DockerRuntime {
         Ok(())
     }
 
+    fn list_by_prefix(&self, prefix: &str) -> Result<Vec<ContainerId>> {
+        let output = Command::new(&self.command)
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={prefix}"),
+                "--format",
+                "{{.Names}}",
+            ])
+            .output()
+            .with_context(|| format!("failed to execute {} ps", self.command))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| ContainerId(l.trim().to_string()))
+            .collect())
+    }
+
     fn exec(&self, id: &ContainerId, opts: &ExecOpts) -> Result<ExecOutput> {
         let args = Self::exec_args(id, opts);
         let output = Command::new(&self.command)

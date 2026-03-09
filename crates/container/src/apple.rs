@@ -3,6 +3,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use serde::Deserialize;
+
 use crate::{BuildOpts, ContainerId, ContainerRuntime, ExecOpts, ExecOutput, ImageId, RunOpts};
 
 pub struct AppleRuntime;
@@ -96,6 +98,16 @@ impl AppleRuntime {
     }
 }
 
+#[derive(Deserialize)]
+struct ContainerListEntry {
+    configuration: ContainerListConfig,
+}
+
+#[derive(Deserialize)]
+struct ContainerListConfig {
+    id: String,
+}
+
 /// Parse the host IP from the bridge100 interface (Apple container VM bridge).
 fn parse_bridge100_ip() -> Result<String> {
     let output = Command::new("ifconfig")
@@ -131,6 +143,20 @@ impl ContainerRuntime for AppleRuntime {
         let args = Self::stop_args(id);
         Self::exec(&args)?;
         Ok(())
+    }
+
+    fn list_by_prefix(&self, prefix: &str) -> Result<Vec<ContainerId>> {
+        let output = Command::new("container")
+            .args(["list", "--format", "json"])
+            .output()
+            .context("failed to run container list")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let entries: Vec<ContainerListEntry> = serde_json::from_str(&stdout).unwrap_or_default();
+        Ok(entries
+            .into_iter()
+            .filter(|e| e.configuration.id.starts_with(prefix))
+            .map(|e| ContainerId(e.configuration.id))
+            .collect())
     }
 
     fn rm(&self, id: &ContainerId) -> Result<()> {

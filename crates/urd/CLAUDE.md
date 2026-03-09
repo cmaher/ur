@@ -1,6 +1,6 @@
 # urd (Daemon)
 
-Long-running daemon process. Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workercmd` binaries).
+Long-running daemon process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workercmd` binaries).
 
 - Runtime backend is selected via `UR_CONTAINER` env var or PATH detection (`container::runtime_from_env()`) — do not hardcode a backend
 - Each RPC handler instantiates its own runtime via `runtime_from_env()` — there is no shared runtime state yet

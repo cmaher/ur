@@ -74,6 +74,9 @@ impl Config {
     }
 }
 
+/// Filename for the urd daemon pid file, stored in the config directory.
+pub const URD_PID_FILE: &str = "urd.pid";
+
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
 fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
