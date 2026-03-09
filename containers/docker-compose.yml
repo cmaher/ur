@@ -1,0 +1,41 @@
+# Docker Compose template for the ur daemon (urd).
+#
+# Worker containers are NOT defined here — they are launched dynamically
+# by urd via ProcessManager using the Docker socket.
+#
+# Usage:
+#   docker compose -f containers/docker-compose.yml up -d
+#
+# The urd service name doubles as its Docker DNS hostname, which must match
+# ur_config::DEFAULT_URD_HOSTNAME ("urd") so worker containers can reach
+# the daemon and proxy via Docker internal DNS on the shared "ur" network.
+
+services:
+  urd:
+    image: ur-urd:latest
+    container_name: urd
+    restart: unless-stopped
+
+    # Docker socket — urd shells out to `docker` CLI to manage worker containers
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${UR_CONFIG:-~/.ur}:/config
+      - ${UR_WORKSPACE:-~/.ur/workspace}:/workspace
+
+    environment:
+      # Point urd at the mounted config directory inside the container
+      - UR_CONFIG=/config
+
+    # gRPC daemon port (ur CLI → urd) + forward proxy port (workers → internet)
+    ports:
+      - "${URD_PORT:-42069}:42069"
+
+    networks:
+      - ur
+
+networks:
+  # Shared bridge network for urd + dynamically launched worker containers.
+  # Name matches ur_config::DEFAULT_NETWORK_NAME.
+  ur:
+    driver: bridge
+    name: ur
