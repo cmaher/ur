@@ -141,9 +141,7 @@ impl Config {
         };
         let network = match raw.network {
             Some(n) => NetworkConfig {
-                name: n
-                    .name
-                    .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
+                name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
                 urd_hostname: n
                     .urd_hostname
                     .unwrap_or_else(|| DEFAULT_URD_HOSTNAME.to_string()),

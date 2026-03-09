@@ -127,7 +127,9 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
 
 /// Start urd via Docker Compose and return the compose manager used.
 fn start_urd_compose(compose: &ComposeManager) -> Result<()> {
-    compose.up().context("failed to start urd via docker compose")
+    compose
+        .up()
+        .context("failed to start urd via docker compose")
 }
 
 async fn connect(port: u16, compose: &ComposeManager) -> Result<CoreServiceClient<Channel>> {

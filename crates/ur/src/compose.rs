@@ -102,7 +102,10 @@ impl ComposeManager {
                 "compose file not found: {}\n\
                  Set compose_file in ur.toml or copy docker-compose.yml to {}",
                 self.compose_file.display(),
-                self.compose_file.parent().unwrap_or(Path::new("/")).display()
+                self.compose_file
+                    .parent()
+                    .unwrap_or(Path::new("/"))
+                    .display()
             );
         }
         Ok(())
@@ -183,11 +186,24 @@ mod tests {
         };
 
         let manager = compose_manager_from_config(&config);
-        assert_eq!(manager.compose_file, PathBuf::from("/test/docker-compose.yml"));
-        assert!(manager.env_vars.contains(&("UR_CONFIG".to_string(), "/test/config".to_string())));
-        assert!(manager
-            .env_vars
-            .contains(&("UR_WORKSPACE".to_string(), "/test/workspace".to_string())));
-        assert!(manager.env_vars.contains(&("URD_PORT".to_string(), "9999".to_string())));
+        assert_eq!(
+            manager.compose_file,
+            PathBuf::from("/test/docker-compose.yml")
+        );
+        assert!(
+            manager
+                .env_vars
+                .contains(&("UR_CONFIG".to_string(), "/test/config".to_string()))
+        );
+        assert!(
+            manager
+                .env_vars
+                .contains(&("UR_WORKSPACE".to_string(), "/test/workspace".to_string()))
+        );
+        assert!(
+            manager
+                .env_vars
+                .contains(&("URD_PORT".to_string(), "9999".to_string()))
+        );
     }
 }

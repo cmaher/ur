@@ -48,10 +48,7 @@ impl NetworkManager {
             .args(&args)
             .output()
             .with_context(|| {
-                format!(
-                    "failed to execute {} network inspect",
-                    self.docker_command
-                )
+                format!("failed to execute {} network inspect", self.docker_command)
             })?;
         Ok(output.status.success())
     }
@@ -62,9 +59,7 @@ impl NetworkManager {
         let output = Command::new(&self.docker_command)
             .args(&args)
             .output()
-            .with_context(|| {
-                format!("failed to execute {} network create", self.docker_command)
-            })?;
+            .with_context(|| format!("failed to execute {} network create", self.docker_command))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
@@ -85,9 +80,7 @@ impl NetworkManager {
         let output = Command::new(&self.docker_command)
             .args(&args)
             .output()
-            .with_context(|| {
-                format!("failed to execute {} network rm", self.docker_command)
-            })?;
+            .with_context(|| format!("failed to execute {} network rm", self.docker_command))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
@@ -102,11 +95,7 @@ impl NetworkManager {
     // -- Arg builders (public for unit testing) --
 
     pub fn inspect_args(network_name: &str) -> Vec<String> {
-        vec![
-            "network".into(),
-            "inspect".into(),
-            network_name.into(),
-        ]
+        vec!["network".into(), "inspect".into(), network_name.into()]
     }
 
     pub fn create_args(network_name: &str) -> Vec<String> {
