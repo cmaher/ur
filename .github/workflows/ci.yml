@@ -24,8 +24,8 @@ jobs:
       - name: Stage workercmd binaries
         run: cargo make stage-workercmd-native
 
-      - name: Stage urd binary
-        run: cargo make stage-urd-native
+      - name: Stage server binary
+        run: cargo make stage-server-native
 
       - name: Build base container image
         run: docker build -t ur-worker-base:latest -f containers/claude-worker/Dockerfile.base containers/claude-worker
@@ -33,8 +33,8 @@ jobs:
       - name: Build worker container image
         run: docker build -t ur-worker:latest containers/claude-worker
 
-      - name: Build urd container image
-        run: docker build -t ur-urd:latest containers/urd
+      - name: Build server container image
+        run: docker build -t ur-server:latest containers/server
 
       - name: Run acceptance tests
         run: cargo test -p acceptance --features acceptance

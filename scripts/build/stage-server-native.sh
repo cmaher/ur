@@ -5,7 +5,7 @@ set -euo pipefail
 
 cargo build --release -p urd
 
-DEST=containers/urd
+DEST=containers/server
 cp target/release/urd "$DEST/urd"
 
 echo "Staged urd binary in $DEST/"

@@ -11,7 +11,7 @@
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
 //!   - Pre-built `ur` binary in `target/debug/`
-//!   - Container images (`ur-urd:latest`, `ur-worker:latest`) already built
+//!   - Container images (`ur-server:latest`, `ur-worker:latest`) already built
 //!   - A Docker-compatible container runtime
 #![cfg(feature = "acceptance")]
 

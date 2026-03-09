@@ -12,7 +12,7 @@
 
 services:
   urd:
-    image: ur-urd:latest
+    image: ur-server:latest
     container_name: urd
     restart: unless-stopped
 
@@ -31,7 +31,7 @@ services:
 
     # gRPC daemon port (ur CLI → urd) + forward proxy port (workers → internet)
     ports:
-      - "${UR_DPORT:-42069}:${UR_DPORT:-42069}"
+      - "${UR_SERVER_PORT:-42069}:${UR_SERVER_PORT:-42069}"
 
     networks:
       - ur

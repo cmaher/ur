@@ -14,7 +14,7 @@ esac
 echo "Cross-compiling urd for $TARGET"
 cargo zigbuild --release --target "$TARGET" -p urd
 
-DEST=containers/urd
+DEST=containers/server
 cp "target/$TARGET/release/urd" "$DEST/urd"
 
 echo "Staged urd binary in $DEST/"
