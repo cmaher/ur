@@ -5,7 +5,8 @@ RUN apk add --no-cache \
     ca-certificates \
     tini \
     git \
-    github-cli
+    github-cli \
+    netcat-openbsd
 
 # Copy the cross-compiled ur-server binary (staged by the build script)
 COPY ur-server /usr/local/bin/ur-server

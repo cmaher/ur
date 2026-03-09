@@ -29,6 +29,15 @@ services:
       - GH_TOKEN=${GH_TOKEN:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
 
+    # Healthcheck so `docker compose up --wait` waits for the gRPC server to be ready,
+    # not just the container to be in "running" state.
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${UR_SERVER_PORT:-42069} || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
     # gRPC server port (ur CLI → server) + forward proxy port (workers → internet)
     ports:
       - "${UR_SERVER_PORT:-42069}:${UR_SERVER_PORT:-42069}"
