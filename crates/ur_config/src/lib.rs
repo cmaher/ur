@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -19,8 +18,11 @@ pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 /// Default TCP port for the server (ur→server communication).
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
-/// Default TCP port for the forward proxy (container→internet via server).
-pub const DEFAULT_PROXY_PORT: u16 = 42070;
+/// Default hostname for the Squid proxy container on the Docker network.
+pub const DEFAULT_PROXY_HOSTNAME: &str = "ur-squid";
+
+/// Squid listening port inside the container (standard Squid default).
+pub const SQUID_PORT: u16 = 3128;
 
 /// Default Docker network name for ur-managed containers.
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
@@ -43,7 +45,7 @@ struct RawConfig {
 /// Raw TOML representation for the `[proxy]` section.
 #[derive(Debug, Deserialize)]
 struct RawProxyConfig {
-    port: Option<u16>,
+    hostname: Option<String>,
     allowlist: Option<Vec<String>>,
 }
 
@@ -57,17 +59,10 @@ struct RawNetworkConfig {
 /// Forward proxy configuration for restricting container network access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
-    /// TCP port the proxy listens on (default: 42070).
-    pub port: u16,
+    /// Hostname containers use to reach the proxy via Docker DNS (default: "ur-squid").
+    pub hostname: String,
     /// Domain allowlist — only these hosts may be reached through the proxy.
     pub allowlist: Vec<String>,
-}
-
-impl ProxyConfig {
-    /// Return the allowlist as a `HashSet` for efficient lookup.
-    pub fn allowlist_set(&self) -> HashSet<String> {
-        self.allowlist.iter().cloned().collect()
-    }
 }
 
 /// Docker network configuration for container networking.
@@ -110,6 +105,11 @@ impl Config {
         Self::load_from(&config_dir)
     }
 
+    /// Path to the Squid config directory: `$UR_CONFIG/squid/`.
+    pub fn squid_dir(&self) -> PathBuf {
+        self.config_dir.join("squid")
+    }
+
     /// Load configuration using an explicit config directory.
     /// Useful for testing.
     pub fn load_from(config_dir: &Path) -> anyhow::Result<Self> {
@@ -129,13 +129,15 @@ impl Config {
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
         let proxy = match raw.proxy {
             Some(p) => ProxyConfig {
-                port: p.port.unwrap_or(DEFAULT_PROXY_PORT),
+                hostname: p
+                    .hostname
+                    .unwrap_or_else(|| DEFAULT_PROXY_HOSTNAME.to_string()),
                 allowlist: p
                     .allowlist
                     .unwrap_or_else(|| vec!["api.anthropic.com".to_string()]),
             },
             None => ProxyConfig {
-                port: DEFAULT_PROXY_PORT,
+                hostname: DEFAULT_PROXY_HOSTNAME.to_string(),
                 allowlist: vec!["api.anthropic.com".to_string()],
             },
         };
@@ -188,7 +190,7 @@ mod tests {
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
-        assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
+        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
@@ -201,7 +203,7 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
-        assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
+        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
     }
 
     #[test]
@@ -248,7 +250,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "[proxy]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
+        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
     }
 
@@ -257,26 +259,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[proxy]\nport = 9999\nallowlist = [\"example.com\", \"other.com\"]\n",
+            "[proxy]\nhostname = \"my-proxy\"\nallowlist = [\"example.com\", \"other.com\"]\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proxy = &cfg.proxy;
-        assert_eq!(proxy.port, 9999);
+        assert_eq!(proxy.hostname, "my-proxy");
         assert_eq!(proxy.allowlist, vec!["example.com", "other.com"]);
-    }
-
-    #[test]
-    fn proxy_allowlist_set_returns_hashset() {
-        let proxy = ProxyConfig {
-            port: DEFAULT_PROXY_PORT,
-            allowlist: vec!["api.anthropic.com".to_string(), "example.com".to_string()],
-        };
-        let set = proxy.allowlist_set();
-        assert_eq!(set.len(), 2);
-        assert!(set.contains("api.anthropic.com"));
-        assert!(set.contains("example.com"));
-        assert!(!set.contains("blocked.com"));
     }
 
     #[test]
@@ -284,8 +273,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
+        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
+    }
+
+    #[test]
+    fn squid_dir_returns_correct_path() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.squid_dir(), tmp.path().join("squid"));
     }
 
     #[test]

@@ -114,7 +114,7 @@ fn load_config() -> ur_config::Config {
             daemon_port: ur_config::DEFAULT_DAEMON_PORT,
             compose_file: config_dir.join("docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
-                port: ur_config::DEFAULT_PROXY_PORT,
+                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
                 allowlist: vec!["api.anthropic.com".to_string()],
             },
             network: ur_config::NetworkConfig {

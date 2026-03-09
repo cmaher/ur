@@ -5,13 +5,8 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
-bytes = "1"
 container = { path = "../container" }
 clap = { workspace = true }
-http = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

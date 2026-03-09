@@ -15,4 +15,6 @@ pub use config::Config;
 pub use credential::CredentialManager;
 pub use git_exec::RepoRegistry;
 pub use process::{ProcessConfig, ProcessManager};
+pub use proxy::SquidManager;
+/// Temporary compatibility alias — next ticket (ur-m5hk) migrates all callers.
 pub use proxy::ProxyManager;
