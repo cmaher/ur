@@ -7,5 +7,5 @@ Debian bookworm-slim container image for agent workers. Must work with Apple (`c
 - `install-claude.sh` is a local wrapper around the upstream installer — cached in the build context so the Dockerfile doesn't depend on a remote URL directly
 - Entrypoint uses bash (not sh) and starts a tmux session named `agent` to keep the container alive
 - Worker command binaries (`ur-ping`, `git`, `gh`) are cross-compiled and copied into the image at `/usr/local/bin/`
-- `git` binary is a transparent proxy that forwards all git commands to urd's GitService via gRPC over TCP (`$URD_ADDR`)
-- `gh` binary is a transparent proxy that forwards all gh commands to urd's GhService via gRPC over TCP (`$URD_ADDR`)
+- `git` binary is a transparent proxy that forwards all git commands to the server's GitService via gRPC over TCP (`$UR_SERVER_ADDR`)
+- `gh` binary is a transparent proxy that forwards all gh commands to the server's GhService via gRPC over TCP (`$UR_SERVER_ADDR`)

@@ -43,25 +43,25 @@ description = "Build workercmd binaries natively and stage for Dockerfile (for L
 script_runner = "@shell"
 script = ["scripts/build/stage-workercmd-native.sh"]
 
-[tasks.stage-urd]
-description = "Cross-compile urd binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
+[tasks.stage-server]
+description = "Cross-compile ur-server binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
 script_runner = "@shell"
-script = ["scripts/build/stage-urd.sh"]
+script = ["scripts/build/stage-server.sh"]
 
-[tasks.stage-urd-native]
-description = "Build urd binary natively and stage for Dockerfile (for Linux CI)"
+[tasks.stage-server-native]
+description = "Build ur-server binary natively and stage for Dockerfile (for Linux CI)"
 script_runner = "@shell"
-script = ["scripts/build/stage-urd-native.sh"]
+script = ["scripts/build/stage-server-native.sh"]
 
 [tasks.container-image]
-description = "Build all container images (worker + urd)"
-dependencies = ["stage-workercmd", "stage-urd"]
+description = "Build all container images (worker + server)"
+dependencies = ["stage-workercmd", "stage-server"]
 script_runner = "@shell"
 script = ["scripts/build/container-image.sh"]
 
 [tasks.container-image-native]
 description = "Build all container images using native compilation (for Linux CI)"
-dependencies = ["stage-workercmd-native", "stage-urd-native"]
+dependencies = ["stage-workercmd-native", "stage-server-native"]
 script_runner = "@shell"
 script = ["scripts/build/container-image.sh"]
 

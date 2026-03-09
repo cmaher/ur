@@ -1349,28 +1349,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ur_config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "serde",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "ur_rpc"
-version = "0.1.0"
-dependencies = [
- "prost",
- "tokio-stream",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "urd"
+name = "ur-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1391,6 +1370,27 @@ dependencies = [
  "tracing-subscriber",
  "ur_config",
  "ur_rpc",
+]
+
+[[package]]
+name = "ur_config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "ur_rpc"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ use tonic::transport::{Endpoint, Server};
 
 /// Helper: start a gRPC server on TCP and return a connected channel.
 async fn spawn_grpc_server(
-    handler: urd::grpc::CoreServiceHandler,
+    handler: ur_server::grpc::CoreServiceHandler,
 ) -> (tonic::transport::Channel, SocketAddr) {
     use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
@@ -33,19 +33,24 @@ async fn spawn_grpc_server(
 }
 
 /// Helper: create a CoreServiceHandler from a temp dir with workspace.
-fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::RepoRegistry>) {
+fn make_grpc_handler(
+    dir: &Path,
+) -> (
+    ur_server::grpc::CoreServiceHandler,
+    Arc<ur_server::RepoRegistry>,
+) {
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    let repo_registry = Arc::new(urd::RepoRegistry::new(workspace.clone()));
-    let credential_manager = urd::CredentialManager;
+    let repo_registry = Arc::new(ur_server::RepoRegistry::new(workspace.clone()));
+    let credential_manager = ur_server::CredentialManager;
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
-        urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.to_string(),
+        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
     };
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.name.clone());
-    let process_manager = urd::ProcessManager::new(
+    let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         repo_registry.clone(),
         credential_manager,
@@ -56,7 +61,7 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
         network_manager,
         network_config,
     );
-    let handler = urd::grpc::CoreServiceHandler {
+    let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_registry: repo_registry.clone(),
         workspace,
@@ -112,7 +117,7 @@ async fn grpc_git_exec_streams_output() {
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    let git_handler = urd::grpc_git::GitServiceHandler {
+    let git_handler = ur_server::grpc_git::GitServiceHandler {
         repo_registry: repo_registry.clone(),
         process_id: process_id.to_string(),
     };
@@ -183,7 +188,7 @@ async fn grpc_git_exec_blocks_dash_c_flag() {
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    let git_handler = urd::grpc_git::GitServiceHandler {
+    let git_handler = ur_server::grpc_git::GitServiceHandler {
         repo_registry: repo_registry.clone(),
         process_id: process_id.to_string(),
     };
@@ -238,7 +243,7 @@ async fn grpc_git_exec_rejects_blocked_flags() {
     let addr = listener.local_addr().unwrap();
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    let git_handler = urd::grpc_git::GitServiceHandler {
+    let git_handler = ur_server::grpc_git::GitServiceHandler {
         repo_registry: repo_registry.clone(),
         process_id: process_id.to_string(),
     };

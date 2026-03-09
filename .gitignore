@@ -9,7 +9,7 @@ containers/claude-worker/ur-ping
 containers/claude-worker/git
 containers/claude-worker/gh
 containers/claude-worker/tk
-containers/urd/urd
+containers/server/ur-server
 
 # Bacon
 .bacon-locations

@@ -6,7 +6,7 @@ Coding LLM coordination framework. Native macOS monolith managing containerized 
 
 Cargo workspace:
 - `crates/ur/` - Host CLI (TUI, process management, ticket management)
-- `crates/urd/` - Daemon server (orchestration, gRPC server, container management)
+- `crates/server/` - Server (`ur-server`, orchestration, gRPC server, container management)
 - `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
 - `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
 

@@ -20,7 +20,7 @@ RUN chmod +x /usr/local/bin/claude
 
 RUN mkdir -p /workspace && chown worker:worker /workspace
 
-# UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by urd when launching the container.
+# UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.
 
 USER worker

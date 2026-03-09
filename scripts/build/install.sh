@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build the ur CLI binary and install to ~/bin.
-# urd runs in a container (built by container-image task), not installed locally.
+# ur-server runs in a container (built by container-image task), not installed locally.
 # Set UR_BUILD_PROFILE=debug for debug builds (default: release).
 
 PROFILE="${UR_BUILD_PROFILE:-release}"
@@ -23,4 +23,4 @@ fi
 mkdir -p "$HOME/bin" "$HOME/.ur/logs"
 cp "$TARGET_DIR/ur" "$HOME/bin/ur"
 echo "Installed ur to $HOME/bin/"
-echo "urd runs in a container — use 'docker compose -f containers/docker-compose.yml up -d' to start"
+echo "ur-server runs in a container — use 'docker compose -f containers/docker-compose.yml up -d' to start"

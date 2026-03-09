@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// Manages urd lifecycle via Docker Compose.
+/// Manages server lifecycle via Docker Compose.
 ///
 /// Wraps `docker compose` CLI commands targeting the project's compose file.
 /// The compose file path is resolved from `ur_config::Config::compose_file`.
@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 pub struct ComposeManager {
     compose_file: PathBuf,
     /// Environment variables passed to `docker compose` (forwarded to the compose file's
-    /// variable interpolation, e.g. `${URD_PORT}`, `${UR_CONFIG}`).
+    /// variable interpolation, e.g. `${UR_SERVER_PORT}`, `${UR_CONFIG}`).
     env_vars: Vec<(String, String)>,
 }
 
@@ -35,7 +35,7 @@ impl ComposeManager {
         cmd
     }
 
-    /// Start urd via `docker compose up -d`.
+    /// Start the server via `docker compose up -d`.
     ///
     /// Validates that the compose file exists before invoking docker compose.
     pub fn up(&self) -> Result<()> {
@@ -55,7 +55,7 @@ impl ComposeManager {
         Ok(())
     }
 
-    /// Stop and remove urd containers/networks via `docker compose down`.
+    /// Stop and remove server containers/networks via `docker compose down`.
     pub fn down(&self) -> Result<()> {
         self.validate_compose_file()?;
 
@@ -73,9 +73,9 @@ impl ComposeManager {
         Ok(())
     }
 
-    /// Check if the urd service is running via `docker compose ps`.
+    /// Check if the server service is running via `docker compose ps`.
     ///
-    /// Returns `true` if at least one container for the urd service is running.
+    /// Returns `true` if at least one container for the server service is running.
     pub fn is_running(&self) -> Result<bool> {
         if !self.compose_file.exists() {
             return Ok(false);
@@ -114,7 +114,7 @@ impl ComposeManager {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, and `URD_PORT` as environment variables
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, and `UR_SERVER_PORT` as environment variables
 /// so the compose file's variable interpolation picks them up.
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
     let mut env_vars = vec![
@@ -126,7 +126,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             "UR_WORKSPACE".to_string(),
             config.workspace.to_string_lossy().into_owned(),
         ),
-        ("URD_PORT".to_string(), config.daemon_port.to_string()),
+        ("UR_SERVER_PORT".to_string(), config.daemon_port.to_string()),
     ];
 
     // Forward UR_CONTAINER if set so compose can potentially use it
@@ -181,7 +181,7 @@ mod tests {
             },
             network: ur_config::NetworkConfig {
                 name: "ur".to_string(),
-                urd_hostname: "urd".to_string(),
+                server_hostname: "ur-server".to_string(),
             },
         };
 
@@ -203,7 +203,7 @@ mod tests {
         assert!(
             manager
                 .env_vars
-                .contains(&("URD_PORT".to_string(), "9999".to_string()))
+                .contains(&("UR_SERVER_PORT".to_string(), "9999".to_string()))
         );
     }
 }

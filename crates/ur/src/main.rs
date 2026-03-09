@@ -15,7 +15,7 @@ use compose::{ComposeManager, compose_manager_from_config};
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// TCP port of the urd gRPC server (overrides ur.toml)
+    /// TCP port of the server gRPC server (overrides ur.toml)
     #[arg(long)]
     port: Option<u16>,
 
@@ -37,6 +37,11 @@ enum Commands {
         #[command(subcommand)]
         command: TicketCommands,
     },
+    /// Manage the server via Docker Compose
+    Compose {
+        #[command(subcommand)]
+        command: ComposeCommands,
+    },
     /// Kill server, containers, or everything
     Kill {
         #[command(subcommand)]
@@ -45,8 +50,16 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum ComposeCommands {
+    /// Start the server via docker compose up
+    Up,
+    /// Stop the server via docker compose down
+    Down,
+}
+
+#[derive(Subcommand)]
 enum KillCommands {
-    /// Stop the urd daemon (docker compose down)
+    /// Stop the server (docker compose down)
     Server,
     /// Kill a specific container, or all ur-agent containers with --all
     Container {
@@ -106,7 +119,7 @@ fn load_config() -> ur_config::Config {
             },
             network: ur_config::NetworkConfig {
                 name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
-                urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.to_string(),
+                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
             },
         }
     })
@@ -125,24 +138,24 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
     Some(CoreServiceClient::new(channel))
 }
 
-/// Start urd via Docker Compose and return the compose manager used.
-fn start_urd_compose(compose: &ComposeManager) -> Result<()> {
+/// Start the server via Docker Compose and return the compose manager used.
+fn start_server_compose(compose: &ComposeManager) -> Result<()> {
     compose
         .up()
-        .context("failed to start urd via docker compose")
+        .context("failed to start server via docker compose")
 }
 
 async fn connect(port: u16, compose: &ComposeManager) -> Result<CoreServiceClient<Channel>> {
     let addr = format!("http://127.0.0.1:{port}");
 
-    // Fast path: urd is already running and accepting connections
+    // Fast path: server is already running and accepting connections
     if let Some(client) = try_connect(&addr).await {
         return Ok(client);
     }
 
-    // Start urd via docker compose (includes --wait for health/readiness)
-    eprintln!("Starting urd via docker compose...");
-    start_urd_compose(compose)?;
+    // Start server via docker compose (includes --wait for health/readiness)
+    eprintln!("Starting server via docker compose...");
+    start_server_compose(compose)?;
 
     // Poll for gRPC readiness after compose reports the service is up.
     // The --wait flag handles container health checks, but the gRPC server
@@ -159,17 +172,17 @@ async fn connect(port: u16, compose: &ComposeManager) -> Result<CoreServiceClien
         }
     }
 
-    bail!("urd did not become reachable within timeout — check docker compose logs")
+    bail!("server did not become reachable within timeout — check docker compose logs")
 }
 
 fn kill_daemon(compose: &ComposeManager) -> Result<()> {
     if !compose.is_running()? {
-        println!("urd is not running");
+        println!("server is not running");
         return Ok(());
     }
 
     compose.down()?;
-    println!("Stopped urd (docker compose down)");
+    println!("Stopped server (docker compose down)");
     Ok(())
 }
 
@@ -284,6 +297,15 @@ async fn main() -> Result<()> {
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
+        Commands::Compose { command } => match command {
+            ComposeCommands::Up => {
+                start_server_compose(&compose)?;
+                println!("server started (docker compose up)");
+            }
+            ComposeCommands::Down => {
+                kill_daemon(&compose)?;
+            }
+        },
         Commands::Kill { command } => return handle_kill(command, &compose),
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {

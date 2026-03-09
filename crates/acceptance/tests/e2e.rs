@@ -1,23 +1,22 @@
 //! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
 //!
-//! These tests exercise the full user-facing workflow:
-//!   1. `urd` starts and listens on a TCP port (127.0.0.1:PORT)
-//!   2. `ur process launch` builds the container image and launches a container
-//!      with a per-agent gRPC TCP port published into the container
-//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to urd
-//!      via tonic gRPC over TCP using `UR_GRPC_PORT`
-//!   4. `ur process stop` tears down the container and cleans up
+//! These tests exercise the full user-facing workflow via Docker Compose:
+//!   1. `ur compose up` starts the server in a container via docker compose
+//!   2. `ur process launch` launches a worker container via the server
+//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to the server
+//!      via tonic gRPC over TCP using `UR_SERVER_ADDR`
+//!   4. `ur process stop` tears down the worker container
+//!   5. `ur compose down` stops the server container
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
-//!   - Pre-built `urd` and `ur` binaries in `target/debug/`
-//!   - Worker commands (`ur-ping`, `git`) baked into the container image
-//!   - A container runtime (Apple `container`, Docker, or nerdctl)
+//!   - Pre-built `ur` binary in `target/debug/`
+//!   - Container images (`ur-server:latest`, `ur-worker:latest`) already built
+//!   - A Docker-compatible container runtime
 #![cfg(feature = "acceptance")]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 
 /// Locate the workspace root (two levels up from this crate's manifest dir).
 fn workspace_root() -> PathBuf {
@@ -38,40 +37,7 @@ fn bin(name: &str) -> PathBuf {
     target_dir.join("debug").join(name)
 }
 
-/// Start `urd` as a background process with `UR_CONFIG` set to the given dir.
-/// Waits for the "gRPC server listening" log line and extracts the port.
-fn start_urd(config_dir: &Path, daemon_port: u16) -> (Child, u16) {
-    let urd = bin("urd");
-    assert!(urd.exists(), "urd binary not found at {}", urd.display());
-
-    // Write config with the specified daemon port
-    let toml_path = config_dir.join("ur.toml");
-    std::fs::write(&toml_path, format!("daemon_port = {daemon_port}\n"))
-        .expect("failed to write ur.toml");
-
-    let mut child = Command::new(&urd)
-        .env("UR_CONFIG", config_dir)
-        .env("RUST_LOG", "info")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn urd");
-
-    // Wait for the daemon to start by polling a TCP connection
-    let addr = format!("127.0.0.1:{daemon_port}");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            return (child, daemon_port);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("urd did not start listening on {addr} within 10s");
-}
-
-/// Run a CLI command from the workspace root, returning its output. Panics on spawn failure.
+/// Run a CLI command, returning its output. Panics on spawn failure.
 fn run_cmd(cmd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
     let mut c = Command::new(cmd);
     c.args(args);
@@ -83,17 +49,9 @@ fn run_cmd(cmd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Ou
         .unwrap_or_else(|e| panic!("failed to run {} {}: {e}", cmd.display(), args.join(" ")))
 }
 
-/// Kill a child process and wait for it to exit.
-fn kill_and_wait(mut child: Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Detect the container runtime available on this system.
-/// Returns the command name for the runtime (e.g., "docker" or "nerdctl").
+/// Detect the container runtime CLI command.
 fn detect_container_runtime() -> String {
     if let Ok(val) = std::env::var("UR_CONTAINER") {
-        // Normalize "containerd" to the actual CLI command.
         return if val == "containerd" {
             "nerdctl".into()
         } else {
@@ -123,36 +81,95 @@ fn force_remove_container(runtime: &str, name: &str) {
         .status();
 }
 
+/// Generate a test-specific docker-compose.yml from the project template.
+///
+/// Replaces the container name and network name to avoid colliding with
+/// production or other test instances.
+fn generate_test_compose(config_dir: &Path, test_name: &str) -> PathBuf {
+    let template_path = workspace_root().join("containers/docker-compose.yml");
+    let template = std::fs::read_to_string(&template_path)
+        .unwrap_or_else(|e| panic!("failed to read compose template: {e}"));
+
+    let compose_content = template
+        // Unique container name so tests don't collide with production server
+        .replace(
+            "container_name: ur-server",
+            &format!("container_name: ur-server-{test_name}"),
+        )
+        // Unique network name to isolate the test network
+        .replace("name: ur", &format!("name: ur-{test_name}"));
+
+    let compose_path = config_dir.join("docker-compose.yml");
+    std::fs::write(&compose_path, compose_content).expect("failed to write test compose file");
+    compose_path
+}
+
+/// Write a test-specific ur.toml pointing at the generated compose file.
+fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
+    let workspace_dir = config_dir.join("workspace");
+    std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
+
+    let toml_content = format!(
+        "daemon_port = {daemon_port}\n\
+         workspace = \"{workspace}\"\n\
+         compose_file = \"{compose}\"\n\
+         \n\
+         [network]\n\
+         name = \"ur-acceptance\"\n\
+         server_hostname = \"ur-server-acceptance\"\n",
+        workspace = workspace_dir.display(),
+        compose = compose_file.display(),
+    );
+    std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
+}
+
+/// Run `ur compose down` for cleanup, ignoring errors.
+fn compose_down(ur: &Path, config_dir: &Path) {
+    let _ = run_cmd(
+        ur,
+        &["compose", "down"],
+        &[("UR_CONFIG", config_dir.to_str().unwrap())],
+    );
+}
+
 #[test]
 fn e2e_ping_and_git() {
-    // ---- (0) Clean up stale containers from prior failed runs ----
     let runtime = detect_container_runtime();
+    let test_name = "acceptance";
     let ticket_id = "acceptance-test";
     let container_name = format!("ur-agent-{ticket_id}");
-    force_remove_container(&runtime, &container_name);
+    let server_container = format!("ur-server-{test_name}");
 
-    // ---- (1) Create temp UR_CONFIG dir ----
+    // ---- (0) Clean up stale containers from prior failed runs ----
+    force_remove_container(&runtime, &container_name);
+    force_remove_container(&runtime, &server_container);
+
+    // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-
-    // Use a high ephemeral port to avoid conflicts
     let daemon_port = 19876u16;
 
-    // ---- (2) Start urd ----
-    let (urd_child, port) = start_urd(config_path, daemon_port);
-    let port_str = port.to_string();
+    let compose_file = generate_test_compose(config_path, test_name);
+    write_test_config(config_path, daemon_port, &compose_file);
 
-    // Use catch_unwind so we always clean up urd even on panic.
+    let ur = bin("ur");
+    assert!(ur.exists(), "ur binary not found at {}", ur.display());
+    let config_str = config_path.to_str().unwrap();
+    let env = [("UR_CONFIG", config_str)];
+
+    // Use catch_unwind so we always clean up via compose down even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ur = bin("ur");
-        assert!(ur.exists(), "ur binary not found at {}", ur.display());
+        // ---- (2) ur compose up ----
+        let up_output = run_cmd(&ur, &["compose", "up"], &env);
+        assert!(
+            up_output.status.success(),
+            "ur compose up failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
 
         // ---- (3) ur process launch ----
-        let launch_output = run_cmd(
-            &ur,
-            &["--port", &port_str, "process", "launch", ticket_id],
-            &[("UR_CONFIG", config_path.to_str().unwrap())],
-        );
+        let launch_output = run_cmd(&ur, &["process", "launch", ticket_id], &env);
         assert!(
             launch_output.status.success(),
             "ur process launch failed.\nstdout: {}\nstderr: {}",
@@ -161,15 +178,12 @@ fn e2e_ping_and_git() {
         );
 
         let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
-        // Expected output: "Agent ur-agent-<ticket> running (container <id>)"
         assert!(
             launch_stdout.contains(&container_name),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
         // ---- (4) exec ur-ping inside container ----
-        // ur-ping is at /usr/local/bin/ur-ping inside the container.
-        // UR_GRPC_PORT is set via -e flag during container run.
         let ping_output = Command::new(&runtime)
             .args(["exec", &container_name, "ur-ping"])
             .output()
@@ -190,8 +204,6 @@ fn e2e_ping_and_git() {
         );
 
         // ---- (5) Test git commands via git proxy ----
-        // urd has already created and git-init'd the repo for this process.
-        // git status should succeed via the per-agent gRPC TCP connection.
         let git_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "status"])
             .output()
@@ -212,7 +224,6 @@ fn e2e_ping_and_git() {
         );
 
         // ---- (5b) Test -C flag blocking ----
-        // `-C` is blocked by urd since it sets the working directory itself.
         let blocked_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
             .output()
@@ -230,12 +241,8 @@ fn e2e_ping_and_git() {
             "error should mention -C.\nstderr: {blocked_stderr}"
         );
 
-        // ---- (6) ur process stop (by ticket_id, not container name) ----
-        let stop_output = run_cmd(
-            &ur,
-            &["--port", &port_str, "process", "stop", ticket_id],
-            &[],
-        );
+        // ---- (6) ur process stop ----
+        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id], &env);
         assert!(
             stop_output.status.success(),
             "ur process stop failed.\nstdout: {}\nstderr: {}",
@@ -244,8 +251,8 @@ fn e2e_ping_and_git() {
         );
     }));
 
-    // ---- (7) Kill urd (always, even if test panicked) ----
-    kill_and_wait(urd_child);
+    // ---- (7) Always tear down server via compose down ----
+    compose_down(&ur, config_path);
 
     // Re-raise any panic from the test body.
     if let Err(e) = result {

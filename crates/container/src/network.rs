@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 
 /// Manages the lifecycle of a Docker network used by ur-managed containers.
 ///
-/// All containers (urd + workers) join this shared network so they can
+/// All containers (server + workers) join this shared network so they can
 /// communicate via Docker internal DNS.
 #[derive(Clone, Debug)]
 pub struct NetworkManager {

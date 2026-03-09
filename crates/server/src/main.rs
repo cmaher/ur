@@ -5,12 +5,12 @@ use clap::Parser;
 use tracing::info;
 
 use container::NetworkManager;
-use urd::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
+use ur_server::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
-    name = "urd",
-    about = "Ur daemon — coordination server for containerized agents"
+    name = "ur-server",
+    about = "Ur server — coordination server for containerized agents"
 )]
 struct Cli {}
 
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&cfg.workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
 
-    let pid_file = cfg.config_dir.join(ur_config::URD_PID_FILE);
+    let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
@@ -51,20 +51,20 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Start the forward proxy on 0.0.0.0 so containers on the Docker network
-    // can reach it via the urd hostname resolved through Docker DNS.
+    // can reach it via the server hostname resolved through Docker DNS.
     let proxy_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], cfg.proxy.port));
     let allowlist = Arc::new(tokio::sync::RwLock::new(cfg.proxy.allowlist_set()));
     let proxy_manager = ProxyManager::new(allowlist);
     let _proxy_handle = proxy_manager.serve(proxy_addr).await?;
 
-    let grpc_handler = urd::grpc::CoreServiceHandler {
+    let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
     };
-    let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 
-    let result = urd::grpc_server::serve_grpc(addr, grpc_handler).await;
+    let result = ur_server::grpc_server::serve_grpc(addr, grpc_handler).await;
 
     let _ = tokio::fs::remove_file(&pid_file).await;
 

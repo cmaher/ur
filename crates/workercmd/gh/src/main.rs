@@ -10,17 +10,18 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.first().map(|a| a.as_str()) == Some("--help") {
-        eprintln!("ur gh proxy — forwards gh commands to urd via gRPC");
+        eprintln!("ur gh proxy — forwards gh commands to ur-server via gRPC");
         std::process::exit(0);
     }
 
-    let urd_addr = std::env::var(ur_config::URD_ADDR_ENV).expect("URD_ADDR must be set");
-    let addr = format!("http://{urd_addr}");
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    let addr = format!("http://{server_addr}");
 
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,
         Err(e) => {
-            eprintln!("gh: failed to connect to ur daemon: {e}");
+            eprintln!("gh: failed to connect to ur server: {e}");
             std::process::exit(1);
         }
     };
