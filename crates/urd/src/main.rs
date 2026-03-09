@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
+use container::NetworkManager;
 use urd::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
 
 #[derive(Parser)]
@@ -32,12 +33,21 @@ async fn main() -> anyhow::Result<()> {
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
+    // Determine the Docker command from env (docker vs nerdctl)
+    let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
+        Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
+        _ => "docker".to_string(),
+    };
+    let network_manager = NetworkManager::new(docker_command, cfg.network.name.clone());
+
     let credential_manager = CredentialManager;
     let process_manager = ProcessManager::new(
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
         cfg.proxy.clone(),
+        network_manager,
+        cfg.network.clone(),
     );
 
     // Start the forward proxy on 0.0.0.0 so containers on the Docker network
@@ -51,7 +61,6 @@ async fn main() -> anyhow::Result<()> {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
-        network: cfg.network,
     };
     let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
 

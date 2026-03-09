@@ -39,6 +39,8 @@ pub struct RunOpts {
     pub env_vars: Vec<(String, String)>,
     pub workdir: Option<PathBuf>,
     pub command: Vec<String>,
+    /// Docker network to attach the container to (`--network`).
+    pub network: Option<String>,
 }
 
 #[derive(Debug, Clone)]

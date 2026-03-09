@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use ur_config::ProxyConfig;
+use ur_config::{NetworkConfig, ProxyConfig};
 
-use container::ContainerRuntime;
+use container::{ContainerRuntime, NetworkManager};
 
 use crate::RepoRegistry;
 use crate::credential::CredentialManager;
@@ -28,8 +28,6 @@ pub struct ProcessConfig {
     pub cpus: u32,
     pub memory: String,
     pub grpc_port: u16,
-    /// Hostname containers use to reach urd, resolvable via Docker internal DNS.
-    pub urd_hostname: String,
     pub workspace_dir: Option<PathBuf>,
 }
 
@@ -41,6 +39,8 @@ pub struct ProcessManager {
     repo_registry: Arc<RepoRegistry>,
     credential_manager: CredentialManager,
     proxy: ProxyConfig,
+    network_manager: NetworkManager,
+    network_config: NetworkConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
 }
 
@@ -50,12 +50,16 @@ impl ProcessManager {
         repo_registry: Arc<RepoRegistry>,
         credential_manager: CredentialManager,
         proxy: ProxyConfig,
+        network_manager: NetworkManager,
+        network_config: NetworkConfig,
     ) -> Self {
         Self {
             workspace,
             repo_registry,
             credential_manager,
             proxy,
+            network_manager,
+            network_config,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -114,7 +118,13 @@ impl ProcessManager {
         config: ProcessConfig,
         server_handle: JoinHandle<()>,
     ) -> Result<String, String> {
-        let urd_addr = format!("{}:{}", config.urd_hostname, config.grpc_port);
+        // Ensure the Docker network exists before launching the container
+        self.network_manager
+            .ensure()
+            .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
+
+        let urd_hostname = &self.network_config.urd_hostname;
+        let urd_addr = format!("{urd_hostname}:{}", config.grpc_port);
 
         // Build volume mounts
         let volumes = match &config.workspace_dir {
@@ -129,9 +139,9 @@ impl ProcessManager {
         }
 
         // Inject proxy env vars (proxy runs on the same host as urd, reachable via Docker DNS)
-        env_vars.extend(proxy_env_vars(&config.urd_hostname, self.proxy.port));
+        env_vars.extend(proxy_env_vars(urd_hostname, self.proxy.port));
 
-        // Run the container (scoped so rt is dropped before any subsequent awaits)
+        // Run the container on the shared Docker network
         let cid = {
             let rt = container::runtime_from_env();
             let container_name = format!("ur-agent-{}", config.process_id);
@@ -145,6 +155,7 @@ impl ProcessManager {
                 env_vars,
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
+                network: Some(self.network_manager.network_name().to_string()),
             };
             rt.run(&opts).map_err(|e| e.to_string())?
         };
@@ -223,6 +234,12 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let cred_mgr = CredentialManager;
+        let network_manager =
+            NetworkManager::new("docker".into(), ur_config::DEFAULT_NETWORK_NAME.into());
+        let network_config = NetworkConfig {
+            name: ur_config::DEFAULT_NETWORK_NAME.into(),
+            urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.into(),
+        };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
             registry,
@@ -231,6 +248,8 @@ mod tests {
                 port: ur_config::DEFAULT_PROXY_PORT,
                 allowlist: vec!["api.anthropic.com".to_string()],
             },
+            network_manager,
+            network_config,
         );
         (mgr, workspace)
     }

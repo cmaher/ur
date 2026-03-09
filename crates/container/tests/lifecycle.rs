@@ -35,6 +35,7 @@ fn build_run_stop_rm() {
             env_vars: vec![],
             workdir: None,
             command: vec!["sleep".into(), "30".into()],
+            network: None,
         })
         .expect("run should succeed");
 

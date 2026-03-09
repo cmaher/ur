@@ -61,6 +61,10 @@ impl DockerRuntime {
             args.push("-w".into());
             args.push(workdir.display().to_string());
         }
+        if let Some(network) = &opts.network {
+            args.push("--network".into());
+            args.push(network.clone());
+        }
         args.push(opts.image.0.clone());
         args.extend(opts.command.iter().cloned());
         args
@@ -191,6 +195,7 @@ mod tests {
             env_vars: vec![(ur_config::URD_ADDR_ENV.into(), "urd:55000".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
+            network: None,
         }
     }
 
@@ -233,6 +238,19 @@ mod tests {
                 s("ur-worker:latest"),
             ]
         );
+    }
+
+    #[test]
+    fn run_command_args_with_network() {
+        let mut opts = sample_run_opts();
+        opts.network = Some("ur".into());
+        let args = DockerRuntime::run_args(&opts);
+        // --network ur should appear before the image name
+        let net_idx = args.iter().position(|a| a == "--network").unwrap();
+        assert_eq!(args[net_idx + 1], "ur");
+        // Image name comes after --network pair
+        let image_idx = args.iter().position(|a| a == "ur-worker:latest").unwrap();
+        assert!(net_idx + 1 < image_idx);
     }
 
     #[test]

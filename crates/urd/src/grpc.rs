@@ -9,8 +9,6 @@ use ur_rpc::proto::core::{
     ProcessStopResponse,
 };
 
-use ur_config::NetworkConfig;
-
 use crate::{ProcessManager, RepoRegistry};
 
 /// gRPC implementation of the CoreService.
@@ -19,7 +17,6 @@ pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
-    pub network: NetworkConfig,
 }
 
 #[tonic::async_trait]
@@ -55,7 +52,6 @@ impl CoreService for CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
-            network: self.network.clone(),
         };
 
         let bind_host = "0.0.0.0";
@@ -71,7 +67,6 @@ impl CoreService for CoreServiceHandler {
             cpus: req.cpus,
             memory: req.memory,
             grpc_port,
-            urd_hostname: self.network.urd_hostname.clone(),
             workspace_dir,
         };
         let container_id = self
