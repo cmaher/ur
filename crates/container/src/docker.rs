@@ -65,6 +65,10 @@ impl DockerRuntime {
             args.push("--network".into());
             args.push(network.clone());
         }
+        for (host, ip) in &opts.add_hosts {
+            args.push("--add-host".into());
+            args.push(format!("{host}:{ip}"));
+        }
         args.push(opts.image.0.clone());
         args.extend(opts.command.iter().cloned());
         args
@@ -196,6 +200,7 @@ mod tests {
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
             network: None,
+            add_hosts: vec![],
         }
     }
 

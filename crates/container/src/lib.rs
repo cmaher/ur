@@ -41,6 +41,8 @@ pub struct RunOpts {
     pub command: Vec<String>,
     /// Docker network to attach the container to (`--network`).
     pub network: Option<String>,
+    /// Extra host entries (`--add-host=host:ip`).
+    pub add_hosts: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
