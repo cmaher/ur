@@ -49,7 +49,7 @@ script_runner = "@shell"
 script = ["scripts/build/stage-server.sh"]
 
 [tasks.stage-server-native]
-description = "Build ur-server binary natively and stage for Dockerfile (for Linux CI)"
+description = "Build ur-server binary for linux-musl (Alpine) and stage for Dockerfile (for Linux CI, requires zig + cargo-zigbuild)"
 script_runner = "@shell"
 script = ["scripts/build/stage-server-native.sh"]
 

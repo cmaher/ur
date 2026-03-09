@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build ur-server binary natively and stage for Dockerfile (for Linux CI).
+# Build ur-server binary for linux-musl (Alpine) and stage for Dockerfile (for Linux CI).
+# Uses cargo-zigbuild (available via mise) to target musl — required because the server
+# container is Alpine-based.
 
-cargo build --release -p ur-server
+ARCH=$(uname -m)
+case "$ARCH" in
+    arm64|aarch64) TARGET="aarch64-unknown-linux-musl" ;;
+    x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+    *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+echo "Building ur-server for $TARGET"
+rustup target add "$TARGET" 2>/dev/null || true
+cargo zigbuild --release --target "$TARGET" -p ur-server
 
 DEST=containers/server
-cp target/release/ur-server "$DEST/ur-server"
+cp "target/$TARGET/release/ur-server" "$DEST/ur-server"
 
 echo "Staged ur-server binary in $DEST/"

@@ -116,7 +116,7 @@ fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
          \n\
          [network]\n\
          name = \"ur-acceptance\"\n\
-         server_hostname = \"ur-server-acceptance\"\n",
+         server_hostname = \"ur-server\"\n",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
     );

@@ -156,7 +156,7 @@ impl ProcessManager {
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
                 network: Some(self.network_manager.network_name().to_string()),
-                add_hosts: vec![(server_hostname.to_string(), "host-gateway".to_string())],
+                add_hosts: vec![],
             };
             rt.run(&opts).map_err(|e| e.to_string())?
         };
