@@ -171,7 +171,6 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
     }
 }
 
-
 fn kill_container(name: &str) -> Result<()> {
     let rt = container::runtime_from_env();
     let id = ContainerId(format!("{}{name}", container::AGENT_CONTAINER_PREFIX));

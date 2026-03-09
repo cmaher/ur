@@ -69,8 +69,7 @@ fn write_file(path: &PathBuf, content: &str, force: bool, force_hint: &str) -> R
         );
         return Ok(());
     }
-    fs::write(path, content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
     println!("Created {}", path.display());
     Ok(())
 }
@@ -183,10 +182,16 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, true, false)).unwrap();
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert_eq!(toml_content, "daemon_port = 9999\n", "toml should be untouched");
+        assert_eq!(
+            toml_content, "daemon_port = 9999\n",
+            "toml should be untouched"
+        );
 
         let compose_content = fs::read_to_string(tmp.path().join("docker-compose.yml")).unwrap();
-        assert!(compose_content.contains("ur-server"), "compose should be overwritten");
+        assert!(
+            compose_content.contains("ur-server"),
+            "compose should be overwritten"
+        );
     }
 
     #[test]
@@ -199,10 +204,17 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false, true)).unwrap();
 
         let allowlist = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
-        assert_eq!(allowlist.trim(), "api.anthropic.com", "allowlist should be overwritten");
+        assert_eq!(
+            allowlist.trim(),
+            "api.anthropic.com",
+            "allowlist should be overwritten"
+        );
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert_eq!(toml_content, "daemon_port = 9999\n", "toml should be untouched");
+        assert_eq!(
+            toml_content, "daemon_port = 9999\n",
+            "toml should be untouched"
+        );
     }
 
     #[test]
