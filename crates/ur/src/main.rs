@@ -1,4 +1,5 @@
 mod compose;
+mod proxy;
 
 use std::path::PathBuf;
 use std::process;
@@ -47,6 +48,21 @@ enum Commands {
         #[command(subcommand)]
         command: KillCommands,
     },
+    /// Manage the forward proxy domain allowlist
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProxyCommands {
+    /// Allow a domain through the proxy
+    Allow { domain: String },
+    /// Block a domain (remove from allowlist)
+    Block { domain: String },
+    /// List allowed domains
+    List,
 }
 
 #[derive(Subcommand)]
@@ -331,6 +347,26 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Proxy { command } => {
+            let squid_dir = config.squid_dir();
+            let allowlist_path = squid_dir.join("allowlist.txt");
+            match command {
+                ProxyCommands::Allow { domain } => {
+                    let domains = proxy::allow_domain(&allowlist_path, &domain)?;
+                    proxy::signal_reconfigure();
+                    proxy::print_domains(&domains);
+                }
+                ProxyCommands::Block { domain } => {
+                    let domains = proxy::block_domain(&allowlist_path, &domain)?;
+                    proxy::signal_reconfigure();
+                    proxy::print_domains(&domains);
+                }
+                ProxyCommands::List => {
+                    let domains = proxy::read_allowlist(&allowlist_path)?;
+                    proxy::print_domains(&domains);
+                }
+            }
+        }
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
                 println!("Creating ticket: {title} (parent: {parent:?})");
