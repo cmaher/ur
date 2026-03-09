@@ -1,12 +1,12 @@
-mod apple;
 mod docker;
+mod network;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 
-pub use apple::AppleRuntime;
 pub use docker::DockerRuntime;
+pub use network::NetworkManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageId(pub String);
@@ -39,6 +39,10 @@ pub struct RunOpts {
     pub env_vars: Vec<(String, String)>,
     pub workdir: Option<PathBuf>,
     pub command: Vec<String>,
+    /// Docker network to attach the container to (`--network`).
+    pub network: Option<String>,
+    /// Extra host entries (`--add-host=host:ip`).
+    pub add_hosts: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,36 +77,19 @@ pub trait ContainerRuntime {
         id: &ContainerId,
         command: &[String],
     ) -> Result<std::process::ExitStatus>;
-    /// Return the host IP address reachable from inside containers.
-    /// Containers use this to connect back to services running on the host.
-    fn host_gateway_ip(&self) -> Result<String>;
 }
 
-fn has_command(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-pub fn runtime_from_env() -> Box<dyn ContainerRuntime> {
+/// Create a Docker-based container runtime.
+///
+/// Checks `UR_CONTAINER` env var for `nerdctl`/`containerd` to use nerdctl;
+/// otherwise defaults to `docker`.
+pub fn runtime_from_env() -> DockerRuntime {
     match std::env::var("UR_CONTAINER").as_deref() {
-        Ok("apple") => Box::new(apple::AppleRuntime),
-        Ok("docker") => Box::new(docker::DockerRuntime {
-            command: "docker".into(),
-        }),
-        Ok("nerdctl") | Ok("containerd") => Box::new(docker::DockerRuntime {
+        Ok("nerdctl") | Ok("containerd") => DockerRuntime {
             command: "nerdctl".into(),
-        }),
-        _ if has_command("container") => Box::new(apple::AppleRuntime),
-        _ if has_command("docker") => Box::new(docker::DockerRuntime {
+        },
+        _ => DockerRuntime {
             command: "docker".into(),
-        }),
-        _ if has_command("nerdctl") => Box::new(docker::DockerRuntime {
-            command: "nerdctl".into(),
-        }),
-        _ => Box::new(docker::DockerRuntime {
-            command: "docker".into(),
-        }),
+        },
     }
 }

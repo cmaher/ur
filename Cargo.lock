@@ -209,8 +209,6 @@ name = "container"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "serde",
- "serde_json",
  "ur_config",
 ]
 
@@ -1331,6 +1329,8 @@ dependencies = [
  "anyhow",
  "clap",
  "container",
+ "dirs",
+ "tempfile",
  "tokio",
  "tonic",
  "ur_config",

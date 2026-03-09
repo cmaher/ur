@@ -1,12 +1,16 @@
+mod compose;
+
 use std::path::PathBuf;
 use std::process;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use container::ContainerId;
+use container::{ContainerId, ContainerRuntime};
 use tonic::transport::{Channel, Endpoint};
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
+
+use compose::{ComposeManager, compose_manager_from_config};
 
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
@@ -42,7 +46,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum KillCommands {
-    /// Kill the urd daemon process
+    /// Stop the urd daemon (docker compose down)
     Server,
     /// Kill a specific container, or all ur-agent containers with --all
     Container {
@@ -87,14 +91,29 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
-fn resolve_daemon_port(cli_port: Option<u16>) -> u16 {
-    if let Some(port) = cli_port {
-        return port;
-    }
-    match ur_config::Config::load() {
-        Ok(cfg) => cfg.daemon_port,
-        Err(_) => ur_config::DEFAULT_DAEMON_PORT,
-    }
+fn load_config() -> ur_config::Config {
+    ur_config::Config::load().unwrap_or_else(|_| {
+        let home = dirs::home_dir().expect("cannot determine home directory");
+        let config_dir = home.join(".ur");
+        ur_config::Config {
+            config_dir: config_dir.clone(),
+            workspace: config_dir.join("workspace"),
+            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
+            compose_file: config_dir.join("docker-compose.yml"),
+            proxy: ur_config::ProxyConfig {
+                port: ur_config::DEFAULT_PROXY_PORT,
+                allowlist: vec!["api.anthropic.com".to_string()],
+            },
+            network: ur_config::NetworkConfig {
+                name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
+                urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.to_string(),
+            },
+        }
+    })
+}
+
+fn resolve_daemon_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
+    cli_port.unwrap_or(config.daemon_port)
 }
 
 async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
@@ -106,52 +125,28 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
     Some(CoreServiceClient::new(channel))
 }
 
-fn spawn_daemon() -> Result<PathBuf> {
-    let ur_bin = std::env::current_exe().context("cannot determine ur binary path")?;
-    let urd_bin = ur_bin.with_file_name("urd");
-    if !urd_bin.exists() {
-        bail!("urd not found at {}", urd_bin.display());
-    }
-
-    let log_dir = ur_config::Config::load()
-        .map(|c| c.config_dir.join("logs"))
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").expect("HOME not set")).join(".ur/logs")
-        });
-    std::fs::create_dir_all(&log_dir)
-        .with_context(|| format!("failed to create log dir: {}", log_dir.display()))?;
-
-    let stdout = std::fs::File::options()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("urd.stdout.log"))
-        .context("failed to open urd stdout log")?;
-    let stderr = std::fs::File::options()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("urd.stderr.log"))
-        .context("failed to open urd stderr log")?;
-
-    std::process::Command::new(&urd_bin)
-        .stdout(stdout)
-        .stderr(stderr)
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("failed to spawn urd at {}", urd_bin.display()))?;
-
-    Ok(urd_bin)
+/// Start urd via Docker Compose and return the compose manager used.
+fn start_urd_compose(compose: &ComposeManager) -> Result<()> {
+    compose
+        .up()
+        .context("failed to start urd via docker compose")
 }
 
-async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
+async fn connect(port: u16, compose: &ComposeManager) -> Result<CoreServiceClient<Channel>> {
     let addr = format!("http://127.0.0.1:{port}");
 
+    // Fast path: urd is already running and accepting connections
     if let Some(client) = try_connect(&addr).await {
         return Ok(client);
     }
 
-    let urd_bin = spawn_daemon()?;
-    eprintln!("Starting urd ({})", urd_bin.display());
+    // Start urd via docker compose (includes --wait for health/readiness)
+    eprintln!("Starting urd via docker compose...");
+    start_urd_compose(compose)?;
 
+    // Poll for gRPC readiness after compose reports the service is up.
+    // The --wait flag handles container health checks, but the gRPC server
+    // inside the container may need a moment after the container is "healthy".
     for i in 0..30 {
         tokio::time::sleep(std::time::Duration::from_millis(if i < 5 {
             100
@@ -164,41 +159,17 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
         }
     }
 
-    bail!("urd did not start within timeout — check ~/.ur/logs/")
+    bail!("urd did not become reachable within timeout — check docker compose logs")
 }
 
-fn kill_daemon() -> Result<()> {
-    let cfg = ur_config::Config::load()?;
-    let pid_file = cfg.config_dir.join(ur_config::URD_PID_FILE);
-
-    let pid = match std::fs::read_to_string(&pid_file) {
-        Ok(s) => s.trim().to_string(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("urd is not running (no pid file)");
-            return Ok(());
-        }
-        Err(e) => return Err(e).context("failed to read pid file"),
-    };
-
-    // Check if the process is actually alive
-    let status = std::process::Command::new("kill")
-        .args(["-0", &pid])
-        .status()
-        .context("failed to check urd process")?;
-
-    if !status.success() {
-        std::fs::remove_file(&pid_file).ok();
-        println!("urd is not running (stale pid file removed)");
+fn kill_daemon(compose: &ComposeManager) -> Result<()> {
+    if !compose.is_running()? {
+        println!("urd is not running");
         return Ok(());
     }
 
-    std::process::Command::new("kill")
-        .arg(&pid)
-        .status()
-        .context("failed to kill urd")?;
-
-    std::fs::remove_file(&pid_file).ok();
-    println!("Stopped urd (pid {pid})");
+    compose.down()?;
+    println!("Stopped urd (docker compose down)");
     Ok(())
 }
 
@@ -232,9 +203,9 @@ fn kill_all_containers() -> Result<()> {
     Ok(())
 }
 
-fn handle_kill(command: KillCommands) -> Result<()> {
+fn handle_kill(command: KillCommands, compose: &ComposeManager) -> Result<()> {
     match command {
-        KillCommands::Server => kill_daemon(),
+        KillCommands::Server => kill_daemon(compose),
         KillCommands::Container { name, all } => {
             if all {
                 kill_all_containers()
@@ -246,7 +217,7 @@ fn handle_kill(command: KillCommands) -> Result<()> {
         }
         KillCommands::All => {
             kill_all_containers()?;
-            kill_daemon()
+            kill_daemon(compose)
         }
     }
 }
@@ -308,16 +279,19 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let port = resolve_daemon_port(cli.port);
+    let config = load_config();
+    let port = resolve_daemon_port(cli.port, &config);
+    let compose = compose_manager_from_config(&config);
+
     match cli.command {
-        Commands::Kill { command } => return handle_kill(command),
+        Commands::Kill { command } => return handle_kill(command, &compose),
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
             ProcessCommands::Attach { process_id } => {
                 process_attach(&process_id)?;
             }
             other => {
-                let mut client = connect(port).await?;
+                let mut client = connect(port, &compose).await?;
                 match other {
                     ProcessCommands::Launch {
                         ticket_id,

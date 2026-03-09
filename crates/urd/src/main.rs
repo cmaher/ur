@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
+use container::NetworkManager;
 use urd::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
 
 #[derive(Parser)]
@@ -23,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
     info!("config dir: {}", cfg.config_dir.display());
     info!("workspace:  {}", cfg.workspace.display());
     info!("daemon port: {}", cfg.daemon_port);
+    info!("network:    {}", cfg.network.name);
     tokio::fs::create_dir_all(&cfg.workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
 
@@ -31,19 +33,26 @@ async fn main() -> anyhow::Result<()> {
 
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
+    // Determine the Docker command from env (docker vs nerdctl)
+    let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
+        Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
+        _ => "docker".to_string(),
+    };
+    let network_manager = NetworkManager::new(docker_command, cfg.network.name.clone());
+
     let credential_manager = CredentialManager;
     let process_manager = ProcessManager::new(
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
         cfg.proxy.clone(),
+        network_manager,
+        cfg.network.clone(),
     );
 
-    // Start the forward proxy on the host gateway IP (bridge100 for Apple containers).
-    // The proxy binds to the gateway IP so containers can reach it, but localhost cannot.
-    let rt = container::runtime_from_env();
-    let host_ip = rt.host_gateway_ip()?;
-    let proxy_addr: SocketAddr = format!("{}:{}", host_ip, cfg.proxy.port).parse()?;
+    // Start the forward proxy on 0.0.0.0 so containers on the Docker network
+    // can reach it via the urd hostname resolved through Docker DNS.
+    let proxy_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], cfg.proxy.port));
     let allowlist = Arc::new(tokio::sync::RwLock::new(cfg.proxy.allowlist_set()));
     let proxy_manager = ProxyManager::new(allowlist);
     let _proxy_handle = proxy_manager.serve(proxy_addr).await?;

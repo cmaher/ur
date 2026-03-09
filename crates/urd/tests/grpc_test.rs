@@ -39,6 +39,12 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
 
     let repo_registry = Arc::new(urd::RepoRegistry::new(workspace.clone()));
     let credential_manager = urd::CredentialManager;
+    let network_config = ur_config::NetworkConfig {
+        name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
+        urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.to_string(),
+    };
+    let network_manager =
+        container::NetworkManager::new("docker".to_string(), network_config.name.clone());
     let process_manager = urd::ProcessManager::new(
         workspace.clone(),
         repo_registry.clone(),
@@ -47,6 +53,8 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
             port: ur_config::DEFAULT_PROXY_PORT,
             allowlist: vec!["api.anthropic.com".to_string()],
         },
+        network_manager,
+        network_config,
     );
     let handler = urd::grpc::CoreServiceHandler {
         process_manager,

@@ -1,31 +1,8 @@
-name: Setup Rust workspace
-description: Shared setup for CI jobs — toolchain, caches, protoc, cargo-make
-
-inputs:
-  components:
-    description: Rust components to install (comma-separated)
-    required: false
-    default: ""
+name: Setup workspace
+description: Install all project tools via mise
 
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@v1
-      with:
-        components: ${{ inputs.components }}
-
-    - name: Install protoc
-      uses: arduino/setup-protoc@v3
-
-    - name: Cache cargo bin
-      id: cargo-bin-cache
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/bin
-        key: ${{ runner.os }}-cargo-bin-cargo-make-0.37
-
-    - name: Install cargo-make
-      if: steps.cargo-bin-cache.outputs.cache-hit != 'true'
-      shell: bash
-      run: cargo install cargo-make --locked
+    - name: Install tools via mise
+      uses: jdx/mise-action@v3

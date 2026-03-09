@@ -3,9 +3,6 @@
 [config]
 default_to_workspace = false
 
-[env]
-UR_CONTAINER = { value = "apple", condition = { platforms = ["mac"] } }
-
 [tasks.fmt]
 description = "Check code formatting"
 command = "cargo"
@@ -46,14 +43,30 @@ description = "Build workercmd binaries natively and stage for Dockerfile (for L
 script_runner = "@shell"
 script = ["scripts/build/stage-workercmd-native.sh"]
 
+[tasks.stage-urd]
+description = "Cross-compile urd binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
+script_runner = "@shell"
+script = ["scripts/build/stage-urd.sh"]
+
+[tasks.stage-urd-native]
+description = "Build urd binary natively and stage for Dockerfile (for Linux CI)"
+script_runner = "@shell"
+script = ["scripts/build/stage-urd-native.sh"]
+
 [tasks.container-image]
-description = "Build worker container image using the available container runtime"
-dependencies = ["stage-workercmd"]
+description = "Build all container images (worker + urd)"
+dependencies = ["stage-workercmd", "stage-urd"]
+script_runner = "@shell"
+script = ["scripts/build/container-image.sh"]
+
+[tasks.container-image-native]
+description = "Build all container images using native compilation (for Linux CI)"
+dependencies = ["stage-workercmd-native", "stage-urd-native"]
 script_runner = "@shell"
 script = ["scripts/build/container-image.sh"]
 
 [tasks.install]
-description = "Build release binaries, install to ~/bin, and build worker image"
+description = "Build ur CLI, install to ~/bin, and build all container images"
 dependencies = ["container-image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]

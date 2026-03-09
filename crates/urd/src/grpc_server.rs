@@ -46,15 +46,14 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
     Ok(())
 }
 
-/// Start a per-agent gRPC server on TCP, bound to the given host IP with an
-/// OS-assigned port.
+/// Start a per-agent gRPC server on TCP, bound to the given host address with
+/// an OS-assigned port.
 ///
 /// Binds the listener, spawns the server task, and returns the assigned port
 /// plus a `JoinHandle` the caller can abort to stop the server.
 ///
-/// `bind_host` should be the host gateway IP (e.g. 192.168.64.x for Apple,
-/// 172.17.0.x for Docker) so the server is reachable from containers but
-/// not exposed on the local network.
+/// `bind_host` is typically `0.0.0.0` — containers reach the server via Docker
+/// internal DNS (the urd hostname on the shared Docker network).
 pub async fn serve_agent_grpc(
     bind_host: &str,
     core_handler: CoreServiceHandler,

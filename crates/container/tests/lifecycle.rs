@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use container::{BuildOpts, ExecOpts, RunOpts, runtime_from_env};
+use container::{BuildOpts, ContainerRuntime, ExecOpts, RunOpts, runtime_from_env};
 
 fn test_context() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,6 +35,8 @@ fn build_run_stop_rm() {
             env_vars: vec![],
             workdir: None,
             command: vec!["sleep".into(), "30".into()],
+            network: None,
+            add_hosts: vec![],
         })
         .expect("run should succeed");
 
