@@ -5,7 +5,7 @@ use clap::Parser;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_server::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
+use ur_server::{Config, CredentialManager, ProcessManager, RepoRegistry, SquidManager};
 
 #[derive(Parser)]
 #[command(
@@ -45,22 +45,19 @@ async fn main() -> anyhow::Result<()> {
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
-        cfg.proxy.clone(),
         network_manager,
         cfg.network.clone(),
     );
 
-    // Start the forward proxy on 0.0.0.0 so containers on the Docker network
-    // can reach it via the server hostname resolved through Docker DNS.
-    let proxy_addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], cfg.proxy.port));
-    let allowlist = Arc::new(tokio::sync::RwLock::new(cfg.proxy.allowlist_set()));
-    let proxy_manager = ProxyManager::new(allowlist);
-    let _proxy_handle = proxy_manager.serve(proxy_addr).await?;
+    // Write Squid config files (compose manages the container lifecycle).
+    let squid_manager = SquidManager::new(cfg.squid_dir(), cfg.proxy.allowlist.clone());
+    squid_manager.write_config()?;
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
+        proxy_hostname: cfg.proxy.hostname,
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 

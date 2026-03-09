@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use ur_config::{NetworkConfig, ProxyConfig};
+use ur_config::NetworkConfig;
 
 use container::{ContainerRuntime, NetworkManager};
 
@@ -29,6 +29,7 @@ pub struct ProcessConfig {
     pub memory: String,
     pub grpc_port: u16,
     pub workspace_dir: Option<PathBuf>,
+    pub proxy_hostname: String,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -38,7 +39,6 @@ pub struct ProcessManager {
     workspace: PathBuf,
     repo_registry: Arc<RepoRegistry>,
     credential_manager: CredentialManager,
-    proxy: ProxyConfig,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
@@ -49,7 +49,6 @@ impl ProcessManager {
         workspace: PathBuf,
         repo_registry: Arc<RepoRegistry>,
         credential_manager: CredentialManager,
-        proxy: ProxyConfig,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
     ) -> Self {
@@ -57,7 +56,6 @@ impl ProcessManager {
             workspace,
             repo_registry,
             credential_manager,
-            proxy,
             network_manager,
             network_config,
             processes: Arc::new(RwLock::new(HashMap::new())),
@@ -138,8 +136,8 @@ impl ProcessManager {
             env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
         }
 
-        // Inject proxy env vars (proxy runs on the same host as server, reachable via Docker DNS)
-        env_vars.extend(proxy_env_vars(server_hostname, self.proxy.port));
+        // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
+        env_vars.extend(proxy_env_vars(&config.proxy_hostname));
 
         // Run the container on the shared Docker network
         let cid = {
@@ -218,8 +216,8 @@ impl ProcessManager {
 ///
 /// Uses `http://` scheme even for `HTTPS_PROXY` — this tells the client to speak plain HTTP
 /// to the proxy, which then tunnels TLS traffic via CONNECT.
-fn proxy_env_vars(proxy_host: &str, proxy_port: u16) -> Vec<(String, String)> {
-    let proxy_url = format!("http://{proxy_host}:{proxy_port}");
+fn proxy_env_vars(proxy_hostname: &str) -> Vec<(String, String)> {
+    let proxy_url = format!("http://{proxy_hostname}:{}", ur_config::SQUID_PORT);
     vec![
         ("HTTP_PROXY".into(), proxy_url.clone()),
         ("HTTPS_PROXY".into(), proxy_url),
@@ -245,10 +243,6 @@ mod tests {
             workspace.path().to_path_buf(),
             registry,
             cred_mgr,
-            ProxyConfig {
-                port: ur_config::DEFAULT_PROXY_PORT,
-                allowlist: vec!["api.anthropic.com".to_string()],
-            },
             network_manager,
             network_config,
         );
@@ -327,23 +321,23 @@ mod tests {
     }
 
     #[test]
-    fn proxy_env_vars_builds_correct_entries() {
-        let vars = proxy_env_vars("192.168.64.1", 42070);
+    fn proxy_env_vars_uses_squid_hostname() {
+        let vars = proxy_env_vars("ur-squid");
         assert_eq!(vars.len(), 3);
         assert_eq!(
             vars[0],
-            ("HTTP_PROXY".into(), "http://192.168.64.1:42070".into())
+            ("HTTP_PROXY".into(), "http://ur-squid:3128".into())
         );
         assert_eq!(
             vars[1],
-            ("HTTPS_PROXY".into(), "http://192.168.64.1:42070".into())
+            ("HTTPS_PROXY".into(), "http://ur-squid:3128".into())
         );
         assert_eq!(vars[2], ("NO_PROXY".into(), String::new()));
     }
 
     #[test]
-    fn proxy_env_vars_uses_http_scheme_for_https_proxy() {
-        let vars = proxy_env_vars("10.0.0.1", 9999);
+    fn proxy_env_vars_uses_http_scheme_for_https() {
+        let vars = proxy_env_vars("ur-squid");
         let https_val = &vars[1].1;
         assert!(
             https_val.starts_with("http://"),

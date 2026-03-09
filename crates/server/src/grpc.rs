@@ -17,6 +17,7 @@ pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
+    pub proxy_hostname: String,
 }
 
 #[tonic::async_trait]
@@ -52,6 +53,7 @@ impl CoreService for CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
+            proxy_hostname: self.proxy_hostname.clone(),
         };
 
         let bind_host = "0.0.0.0";
@@ -68,6 +70,7 @@ impl CoreService for CoreServiceHandler {
             memory: req.memory,
             grpc_port,
             workspace_dir,
+            proxy_hostname: self.proxy_hostname.clone(),
         };
         let container_id = self
             .process_manager

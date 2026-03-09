@@ -15,4 +15,4 @@ pub use config::Config;
 pub use credential::CredentialManager;
 pub use git_exec::RepoRegistry;
 pub use process::{ProcessConfig, ProcessManager};
-pub use proxy::ProxyManager;
+pub use proxy::SquidManager;

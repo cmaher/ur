@@ -176,7 +176,7 @@ mod tests {
             daemon_port: 9999,
             compose_file: PathBuf::from("/test/docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
-                port: ur_config::DEFAULT_PROXY_PORT,
+                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
                 allowlist: vec![],
             },
             network: ur_config::NetworkConfig {
