@@ -113,7 +113,14 @@ impl ContainerRuntime for DockerRuntime {
 
     fn list_by_prefix(&self, prefix: &str) -> Result<Vec<ContainerId>> {
         let output = Command::new(&self.command)
-            .args(["ps", "-a", "--filter", &format!("name={prefix}"), "--format", "{{.Names}}"])
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("name={prefix}"),
+                "--format",
+                "{{.Names}}",
+            ])
             .output()
             .with_context(|| format!("failed to execute {} ps", self.command))?;
         let stdout = String::from_utf8_lossy(&output.stdout);

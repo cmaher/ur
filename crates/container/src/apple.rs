@@ -151,8 +151,7 @@ impl ContainerRuntime for AppleRuntime {
             .output()
             .context("failed to run container list")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let entries: Vec<ContainerListEntry> =
-            serde_json::from_str(&stdout).unwrap_or_default();
+        let entries: Vec<ContainerListEntry> = serde_json::from_str(&stdout).unwrap_or_default();
         Ok(entries
             .into_iter()
             .filter(|e| e.configuration.id.starts_with(prefix))

@@ -98,7 +98,11 @@ fn resolve_daemon_port(cli_port: Option<u16>) -> u16 {
 }
 
 async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
-    let channel = Endpoint::try_from(addr.to_string()).ok()?.connect().await.ok()?;
+    let channel = Endpoint::try_from(addr.to_string())
+        .ok()?
+        .connect()
+        .await
+        .ok()?;
     Some(CoreServiceClient::new(channel))
 }
 
@@ -149,7 +153,12 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
     eprintln!("Starting urd ({})", urd_bin.display());
 
     for i in 0..30 {
-        tokio::time::sleep(std::time::Duration::from_millis(if i < 5 { 100 } else { 250 })).await;
+        tokio::time::sleep(std::time::Duration::from_millis(if i < 5 {
+            100
+        } else {
+            250
+        }))
+        .await;
         if let Some(client) = try_connect(&addr).await {
             return Ok(client);
         }
