@@ -22,6 +22,12 @@ pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 /// Default TCP port for the forward proxy (container→internet via urd).
 pub const DEFAULT_PROXY_PORT: u16 = 42070;
 
+/// Default Docker network name for ur-managed containers.
+pub const DEFAULT_NETWORK_NAME: &str = "ur";
+
+/// Default hostname that containers use to reach the urd daemon via Docker DNS.
+pub const DEFAULT_URD_HOSTNAME: &str = "urd";
+
 // ---- Config ----
 
 /// Raw TOML representation — all fields optional so missing keys use defaults.
@@ -30,6 +36,7 @@ struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
     proxy: Option<RawProxyConfig>,
+    network: Option<RawNetworkConfig>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -37,6 +44,13 @@ struct RawConfig {
 struct RawProxyConfig {
     port: Option<u16>,
     allowlist: Option<Vec<String>>,
+}
+
+/// Raw TOML representation for the `[network]` section.
+#[derive(Debug, Deserialize)]
+struct RawNetworkConfig {
+    name: Option<String>,
+    urd_hostname: Option<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -55,6 +69,16 @@ impl ProxyConfig {
     }
 }
 
+/// Docker network configuration for container networking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkConfig {
+    /// Docker network name that ur-managed containers join (default: "ur").
+    pub name: String,
+    /// Hostname containers use to reach the urd daemon via Docker DNS (default: "urd").
+    /// This must match the container/service name of the urd daemon on the Docker network.
+    pub urd_hostname: String,
+}
+
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -66,6 +90,8 @@ pub struct Config {
     pub daemon_port: u16,
     /// Forward proxy settings (always enabled with defaults).
     pub proxy: ProxyConfig,
+    /// Docker network settings for container networking.
+    pub network: NetworkConfig,
 }
 
 impl Config {
@@ -107,12 +133,27 @@ impl Config {
                 allowlist: vec!["api.anthropic.com".to_string()],
             },
         };
+        let network = match raw.network {
+            Some(n) => NetworkConfig {
+                name: n
+                    .name
+                    .unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
+                urd_hostname: n
+                    .urd_hostname
+                    .unwrap_or_else(|| DEFAULT_URD_HOSTNAME.to_string()),
+            },
+            None => NetworkConfig {
+                name: DEFAULT_NETWORK_NAME.to_string(),
+                urd_hostname: DEFAULT_URD_HOSTNAME.to_string(),
+            },
+        };
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             daemon_port,
             proxy,
+            network,
         })
     }
 }
@@ -144,6 +185,8 @@ mod tests {
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
         assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
+        assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
     }
 
     #[test]
@@ -238,5 +281,36 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
+    }
+
+    #[test]
+    fn network_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
+    }
+
+    #[test]
+    fn network_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[network]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
+    }
+
+    #[test]
+    fn network_reads_custom_values() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[network]\nname = \"custom-net\"\nurd_hostname = \"my-urd\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.network.name, "custom-net");
+        assert_eq!(cfg.network.urd_hostname, "my-urd");
     }
 }

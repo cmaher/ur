@@ -156,60 +156,6 @@ impl ContainerRuntime for DockerRuntime {
             .status()
             .with_context(|| format!("failed to execute interactive {} exec", self.command))
     }
-
-    fn host_gateway_ip(&self) -> Result<String> {
-        // Try lima first (nerdctl in lima VM on macOS). host.lima.internal
-        // routes to the macOS host, unlike the bridge gateway which stays
-        // inside the VM.
-        if let Some(ip) = self.resolve_lima_host() {
-            return Ok(ip);
-        }
-        // Native Docker: inspect the default bridge network for the gateway IP.
-        if let Some(ip) = self.resolve_bridge_gateway() {
-            return Ok(ip);
-        }
-        // Fallback: common Docker bridge gateway
-        Ok("172.17.0.1".into())
-    }
-}
-
-impl DockerRuntime {
-    fn resolve_lima_host(&self) -> Option<String> {
-        let out = Command::new(&self.command)
-            .args([
-                "run",
-                "--rm",
-                "debian:bookworm",
-                "getent",
-                "hosts",
-                "host.lima.internal",
-            ])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        stdout.split_whitespace().next().map(String::from)
-    }
-
-    fn resolve_bridge_gateway(&self) -> Option<String> {
-        let out = Command::new(&self.command)
-            .args([
-                "network",
-                "inspect",
-                "bridge",
-                "--format",
-                "{{range .IPAM.Config}}{{.Gateway}}{{end}}",
-            ])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let ip = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if ip.is_empty() { None } else { Some(ip) }
-    }
 }
 
 #[cfg(test)]
@@ -242,7 +188,7 @@ mod tests {
                 PathBuf::from("/workspace"),
             )],
             port_maps: vec![],
-            env_vars: vec![(ur_config::URD_ADDR_ENV.into(), "172.17.0.1:55000".into())],
+            env_vars: vec![(ur_config::URD_ADDR_ENV.into(), "urd:55000".into())],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
         }
@@ -281,7 +227,7 @@ mod tests {
                 s("-v"),
                 s("/host/workspace:/workspace"),
                 s("-e"),
-                format!("{}=172.17.0.1:55000", ur_config::URD_ADDR_ENV),
+                format!("{}=urd:55000", ur_config::URD_ADDR_ENV),
                 s("-w"),
                 s("/workspace"),
                 s("ur-worker:latest"),

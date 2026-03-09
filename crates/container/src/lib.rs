@@ -71,9 +71,6 @@ pub trait ContainerRuntime {
         id: &ContainerId,
         command: &[String],
     ) -> Result<std::process::ExitStatus>;
-    /// Return the host IP address reachable from inside containers.
-    /// Containers use this to connect back to services running on the host.
-    fn host_gateway_ip(&self) -> Result<String>;
 }
 
 /// Create a Docker-based container runtime.

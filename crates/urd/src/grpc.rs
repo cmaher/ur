@@ -9,7 +9,7 @@ use ur_rpc::proto::core::{
     ProcessStopResponse,
 };
 
-use container::ContainerRuntime;
+use ur_config::NetworkConfig;
 
 use crate::{ProcessManager, RepoRegistry};
 
@@ -19,6 +19,7 @@ pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
+    pub network: NetworkConfig,
 }
 
 #[tonic::async_trait]
@@ -48,24 +49,18 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        // Detect host gateway IP for per-agent gRPC server bind address.
-        // Binding to the gateway IP (rather than 0.0.0.0) ensures the server
-        // is reachable from containers but not exposed on the local network.
-        let host_ip = {
-            let rt = container::runtime_from_env();
-            rt.host_gateway_ip()
-                .map_err(|e| Status::internal(format!("failed to detect host gateway IP: {e}")))?
-        };
-
-        // Spawn per-agent gRPC server on TCP bound to the host gateway IP
+        // Spawn per-agent gRPC server on TCP bound to 0.0.0.0 (reachable via
+        // Docker network; network isolation handled by Docker network membership).
         let core_handler = CoreServiceHandler {
             process_manager: self.process_manager.clone(),
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
+            network: self.network.clone(),
         };
 
+        let bind_host = "0.0.0.0";
         let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(&host_ip, core_handler, &req.process_id)
+            crate::grpc_server::serve_agent_grpc(bind_host, core_handler, &req.process_id)
                 .await
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
@@ -76,7 +71,7 @@ impl CoreService for CoreServiceHandler {
             cpus: req.cpus,
             memory: req.memory,
             grpc_port,
-            host_ip,
+            urd_hostname: self.network.urd_hostname.clone(),
             workspace_dir,
         };
         let container_id = self

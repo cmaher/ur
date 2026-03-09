@@ -28,7 +28,8 @@ pub struct ProcessConfig {
     pub cpus: u32,
     pub memory: String,
     pub grpc_port: u16,
-    pub host_ip: String,
+    /// Hostname containers use to reach urd, resolvable via Docker internal DNS.
+    pub urd_hostname: String,
     pub workspace_dir: Option<PathBuf>,
 }
 
@@ -113,7 +114,7 @@ impl ProcessManager {
         config: ProcessConfig,
         server_handle: JoinHandle<()>,
     ) -> Result<String, String> {
-        let urd_addr = format!("{}:{}", config.host_ip, config.grpc_port);
+        let urd_addr = format!("{}:{}", config.urd_hostname, config.grpc_port);
 
         // Build volume mounts
         let volumes = match &config.workspace_dir {
@@ -127,8 +128,8 @@ impl ProcessManager {
             env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
         }
 
-        // Inject proxy env vars
-        env_vars.extend(proxy_env_vars(&config.host_ip, self.proxy.port));
+        // Inject proxy env vars (proxy runs on the same host as urd, reachable via Docker DNS)
+        env_vars.extend(proxy_env_vars(&config.urd_hostname, self.proxy.port));
 
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
@@ -205,8 +206,8 @@ impl ProcessManager {
 ///
 /// Uses `http://` scheme even for `HTTPS_PROXY` — this tells the client to speak plain HTTP
 /// to the proxy, which then tunnels TLS traffic via CONNECT.
-fn proxy_env_vars(host_ip: &str, proxy_port: u16) -> Vec<(String, String)> {
-    let proxy_url = format!("http://{host_ip}:{proxy_port}");
+fn proxy_env_vars(proxy_host: &str, proxy_port: u16) -> Vec<(String, String)> {
+    let proxy_url = format!("http://{proxy_host}:{proxy_port}");
     vec![
         ("HTTP_PROXY".into(), proxy_url.clone()),
         ("HTTPS_PROXY".into(), proxy_url),
