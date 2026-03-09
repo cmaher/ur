@@ -37,11 +37,24 @@ enum Commands {
         #[command(subcommand)]
         command: TicketCommands,
     },
+    /// Manage the urd daemon via Docker Compose
+    Compose {
+        #[command(subcommand)]
+        command: ComposeCommands,
+    },
     /// Kill server, containers, or everything
     Kill {
         #[command(subcommand)]
         command: KillCommands,
     },
+}
+
+#[derive(Subcommand)]
+enum ComposeCommands {
+    /// Start urd via docker compose up
+    Up,
+    /// Stop urd via docker compose down
+    Down,
 }
 
 #[derive(Subcommand)]
@@ -284,6 +297,15 @@ async fn main() -> Result<()> {
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
+        Commands::Compose { command } => match command {
+            ComposeCommands::Up => {
+                start_urd_compose(&compose)?;
+                println!("urd started (docker compose up)");
+            }
+            ComposeCommands::Down => {
+                kill_daemon(&compose)?;
+            }
+        },
         Commands::Kill { command } => return handle_kill(command, &compose),
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {

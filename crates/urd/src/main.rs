@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
         repo_registry,
         workspace: cfg.workspace,
     };
-    let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 
     let result = urd::grpc_server::serve_grpc(addr, grpc_handler).await;
 

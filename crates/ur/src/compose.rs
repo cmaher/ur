@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 pub struct ComposeManager {
     compose_file: PathBuf,
     /// Environment variables passed to `docker compose` (forwarded to the compose file's
-    /// variable interpolation, e.g. `${URD_PORT}`, `${UR_CONFIG}`).
+    /// variable interpolation, e.g. `${UR_DPORT}`, `${UR_CONFIG}`).
     env_vars: Vec<(String, String)>,
 }
 
@@ -114,7 +114,7 @@ impl ComposeManager {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, and `URD_PORT` as environment variables
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, and `UR_DPORT` as environment variables
 /// so the compose file's variable interpolation picks them up.
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
     let mut env_vars = vec![
@@ -126,7 +126,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             "UR_WORKSPACE".to_string(),
             config.workspace.to_string_lossy().into_owned(),
         ),
-        ("URD_PORT".to_string(), config.daemon_port.to_string()),
+        ("UR_DPORT".to_string(), config.daemon_port.to_string()),
     ];
 
     // Forward UR_CONTAINER if set so compose can potentially use it
@@ -203,7 +203,7 @@ mod tests {
         assert!(
             manager
                 .env_vars
-                .contains(&("URD_PORT".to_string(), "9999".to_string()))
+                .contains(&("UR_DPORT".to_string(), "9999".to_string()))
         );
     }
 }

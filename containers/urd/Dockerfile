@@ -3,7 +3,9 @@ FROM alpine:3.21
 RUN apk add --no-cache \
     docker-cli \
     ca-certificates \
-    tini
+    tini \
+    git \
+    github-cli
 
 # Copy the cross-compiled urd binary (staged by the build script)
 COPY urd /usr/local/bin/urd

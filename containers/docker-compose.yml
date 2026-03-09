@@ -25,10 +25,13 @@ services:
     environment:
       # Point urd at the mounted config directory inside the container
       - UR_CONFIG=/config
+      # GitHub authentication (forwarded from host)
+      - GH_TOKEN=${GH_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
 
     # gRPC daemon port (ur CLI → urd) + forward proxy port (workers → internet)
     ports:
-      - "${URD_PORT:-42069}:42069"
+      - "${UR_DPORT:-42069}:${UR_DPORT:-42069}"
 
     networks:
       - ur
