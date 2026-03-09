@@ -1374,9 +1374,14 @@ name = "urd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "container",
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "prost",
  "tempfile",
  "tokio",

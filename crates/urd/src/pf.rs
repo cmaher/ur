@@ -143,8 +143,12 @@ mod tests {
     #[test]
     fn generate_rules_contains_pass_and_block() {
         let rules = generate_rules("192.168.64.1");
-        assert!(rules.contains("pass out quick on bridge100 proto tcp from bridge100:network to 192.168.64.1"));
-        assert!(rules.contains("block out quick on bridge100 proto tcp from bridge100:network to any"));
+        assert!(rules.contains(
+            "pass out quick on bridge100 proto tcp from bridge100:network to 192.168.64.1"
+        ));
+        assert!(
+            rules.contains("block out quick on bridge100 proto tcp from bridge100:network to any")
+        );
     }
 
     #[test]

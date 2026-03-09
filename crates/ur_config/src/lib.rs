@@ -97,7 +97,9 @@ impl Config {
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
         let proxy = raw.proxy.map(|p| ProxyConfig {
             port: p.port.unwrap_or(DEFAULT_PROXY_PORT),
-            allowlist: p.allowlist.unwrap_or_else(|| vec!["api.anthropic.com".to_string()]),
+            allowlist: p
+                .allowlist
+                .unwrap_or_else(|| vec!["api.anthropic.com".to_string()]),
         });
 
         Ok(Config {
@@ -214,10 +216,7 @@ mod tests {
     fn proxy_allowlist_set_returns_hashset() {
         let proxy = ProxyConfig {
             port: DEFAULT_PROXY_PORT,
-            allowlist: vec![
-                "api.anthropic.com".to_string(),
-                "example.com".to_string(),
-            ],
+            allowlist: vec!["api.anthropic.com".to_string(), "example.com".to_string()],
         };
         let set = proxy.allowlist_set();
         assert_eq!(set.len(), 2);

@@ -301,8 +301,14 @@ mod tests {
     fn proxy_env_vars_builds_correct_entries() {
         let vars = proxy_env_vars("192.168.64.1", 42070);
         assert_eq!(vars.len(), 3);
-        assert_eq!(vars[0], ("HTTP_PROXY".into(), "http://192.168.64.1:42070".into()));
-        assert_eq!(vars[1], ("HTTPS_PROXY".into(), "http://192.168.64.1:42070".into()));
+        assert_eq!(
+            vars[0],
+            ("HTTP_PROXY".into(), "http://192.168.64.1:42070".into())
+        );
+        assert_eq!(
+            vars[1],
+            ("HTTPS_PROXY".into(), "http://192.168.64.1:42070".into())
+        );
         assert_eq!(vars[2], ("NO_PROXY".into(), String::new()));
     }
 

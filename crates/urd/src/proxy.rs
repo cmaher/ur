@@ -201,9 +201,7 @@ async fn run_connect_tunnel(req: Request<Incoming>, upstream_addr: String) {
         Ok((client_to_server, server_to_client)) => {
             info!(
                 target = upstream_addr,
-                client_to_server,
-                server_to_client,
-                "CONNECT tunnel closed"
+                client_to_server, server_to_client, "CONNECT tunnel closed"
             );
         }
         Err(e) => {
@@ -351,10 +349,7 @@ mod tests {
 
     #[test]
     fn extract_host_from_authority_without_port() {
-        assert_eq!(
-            extract_host_from_authority("example.com"),
-            "example.com"
-        );
+        assert_eq!(extract_host_from_authority("example.com"), "example.com");
     }
 
     #[test]
@@ -372,27 +367,27 @@ mod tests {
 
     #[tokio::test]
     async fn allowlist_blocks_unknown_host() {
-        let allowlist = Arc::new(RwLock::new(HashSet::from([
-            "api.anthropic.com".to_string(),
-        ])));
+        let allowlist = Arc::new(RwLock::new(HashSet::from(
+            ["api.anthropic.com".to_string()],
+        )));
         let manager = ProxyManager::new(allowlist);
         assert!(!manager.is_allowed("evil.com").await);
     }
 
     #[tokio::test]
     async fn allowlist_allows_known_host() {
-        let allowlist = Arc::new(RwLock::new(HashSet::from([
-            "api.anthropic.com".to_string(),
-        ])));
+        let allowlist = Arc::new(RwLock::new(HashSet::from(
+            ["api.anthropic.com".to_string()],
+        )));
         let manager = ProxyManager::new(allowlist);
         assert!(manager.is_allowed("api.anthropic.com").await);
     }
 
     #[tokio::test]
     async fn allowlist_is_exact_match() {
-        let allowlist = Arc::new(RwLock::new(HashSet::from([
-            "api.anthropic.com".to_string(),
-        ])));
+        let allowlist = Arc::new(RwLock::new(HashSet::from(
+            ["api.anthropic.com".to_string()],
+        )));
         let manager = ProxyManager::new(allowlist);
         assert!(!manager.is_allowed("evil.api.anthropic.com").await);
         assert!(!manager.is_allowed("api.anthropic.com.evil.com").await);
@@ -441,10 +436,7 @@ mod tests {
             .uri("http://example.com/path")
             .body(())
             .unwrap();
-        assert_eq!(
-            extract_http_host(&req),
-            Some("example.com".to_string())
-        );
+        assert_eq!(extract_http_host(&req), Some("example.com".to_string()));
     }
 
     #[test]
@@ -454,10 +446,7 @@ mod tests {
             .header(http::header::HOST, "example.com:8080")
             .body(())
             .unwrap();
-        assert_eq!(
-            extract_http_host(&req),
-            Some("example.com".to_string())
-        );
+        assert_eq!(extract_http_host(&req), Some("example.com".to_string()));
     }
 
     #[test]
