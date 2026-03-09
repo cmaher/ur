@@ -54,10 +54,6 @@ fn make_grpc_handler(
         workspace.clone(),
         repo_registry.clone(),
         credential_manager,
-        ur_config::ProxyConfig {
-            hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
-            allowlist: vec!["api.anthropic.com".to_string()],
-        },
         network_manager,
         network_config,
     );
@@ -65,6 +61,7 @@ fn make_grpc_handler(
         process_manager,
         repo_registry: repo_registry.clone(),
         workspace,
+        proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
     };
     (handler, repo_registry)
 }

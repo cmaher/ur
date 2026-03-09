@@ -40,10 +40,6 @@ pub struct SquidManager {
     allowlist: Arc<RwLock<Vec<String>>>,
 }
 
-/// Temporary compatibility alias so existing call sites compile.
-/// The next ticket (ur-m5hk) will migrate all callers to SquidManager directly.
-pub type ProxyManager = SquidManager;
-
 impl SquidManager {
     pub fn new(config_dir: PathBuf, allowlist: Vec<String>) -> Self {
         Self {

@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
-use ur_config::{NetworkConfig, ProxyConfig};
+use ur_config::NetworkConfig;
 
 use container::{ContainerRuntime, NetworkManager};
 
@@ -29,6 +29,7 @@ pub struct ProcessConfig {
     pub memory: String,
     pub grpc_port: u16,
     pub workspace_dir: Option<PathBuf>,
+    pub proxy_hostname: String,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -38,7 +39,6 @@ pub struct ProcessManager {
     workspace: PathBuf,
     repo_registry: Arc<RepoRegistry>,
     credential_manager: CredentialManager,
-    proxy: ProxyConfig,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
@@ -49,7 +49,6 @@ impl ProcessManager {
         workspace: PathBuf,
         repo_registry: Arc<RepoRegistry>,
         credential_manager: CredentialManager,
-        proxy: ProxyConfig,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
     ) -> Self {
@@ -57,7 +56,6 @@ impl ProcessManager {
             workspace,
             repo_registry,
             credential_manager,
-            proxy,
             network_manager,
             network_config,
             processes: Arc::new(RwLock::new(HashMap::new())),
@@ -139,7 +137,7 @@ impl ProcessManager {
         }
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
-        env_vars.extend(proxy_env_vars(&self.proxy.hostname));
+        env_vars.extend(proxy_env_vars(&config.proxy_hostname));
 
         // Run the container on the shared Docker network
         let cid = {
@@ -245,10 +243,6 @@ mod tests {
             workspace.path().to_path_buf(),
             registry,
             cred_mgr,
-            ProxyConfig {
-                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
-                allowlist: vec!["api.anthropic.com".to_string()],
-            },
             network_manager,
             network_config,
         );

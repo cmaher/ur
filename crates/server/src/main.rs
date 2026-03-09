@@ -45,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
-        cfg.proxy.clone(),
         network_manager,
         cfg.network.clone(),
     );
@@ -58,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
+        proxy_hostname: cfg.proxy.hostname,
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 
