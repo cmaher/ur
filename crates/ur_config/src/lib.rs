@@ -32,10 +32,6 @@ pub const SQUID_CONF: &str = "\
 # Ur forward proxy — managed by urd. Do not edit manually.
 http_port 3128
 
-# Disable default MIME table — not needed for a forward proxy,
-# and the default /etc/squid/mime.conf is shadowed by the volume mount.
-mime_table none
-
 acl allowed_domains dstdomain \"/etc/squid/allowlist.txt\"
 acl CONNECT method CONNECT
 

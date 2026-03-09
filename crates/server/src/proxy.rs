@@ -30,17 +30,12 @@ impl SquidManager {
         }
     }
 
-    /// Write `squid.conf` and `allowlist.txt` to the config directory.
+    /// Write `allowlist.txt` to the config directory.
     /// Called once at server startup, before compose brings up the Squid service.
+    /// `squid.conf` is written by `ur init`, not here.
     pub fn write_config(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.config_dir)
-            .with_context(|| format!("create squid config dir: {}", self.config_dir.display()))?;
-
-        std::fs::write(self.config_dir.join("squid.conf"), ur_config::SQUID_CONF)
-            .context("write squid.conf")?;
-
         self.write_allowlist_file()?;
-        info!(dir = %self.config_dir.display(), "squid config written");
+        info!(dir = %self.config_dir.display(), "squid allowlist written");
         Ok(())
     }
 
@@ -111,18 +106,6 @@ mod tests {
 
     fn test_allowlist() -> Vec<String> {
         vec!["api.anthropic.com".into(), "example.com".into()]
-    }
-
-    #[test]
-    fn writes_squid_conf() {
-        let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
-
-        let conf = std::fs::read_to_string(tmp.path().join("squid.conf")).unwrap();
-        assert!(conf.contains("http_port 3128"));
-        assert!(conf.contains("allowlist.txt"));
-        assert!(conf.contains("http_access deny all"));
     }
 
     #[test]

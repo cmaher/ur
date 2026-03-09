@@ -11,6 +11,15 @@
 # the server and proxy via Docker internal DNS on the shared "ur" network.
 
 services:
+  ur-squid:
+    image: ur-squid:latest
+    container_name: ur-squid
+    volumes:
+      - ${UR_CONFIG:-~/.ur}/squid:/etc/squid:ro
+    networks:
+      - ur
+    restart: unless-stopped
+
   ur-server:
     image: ur-server:latest
     container_name: ur-server
