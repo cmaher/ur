@@ -1,6 +1,6 @@
 # ur_rpc (Shared RPC Contract)
 
-Shared protobuf/tonic definitions between all crates. Changes here affect `ur`, `urd`, and `workercmd` binaries.
+Shared protobuf/tonic definitions between all crates. Changes here affect `ur`, `ur-server`, and `workercmd` binaries.
 
 - Proto files live in `proto/` and are compiled by `build.rs` using `tonic-build`
 - Feature-gated modules: `core` (CoreService), `git` (GitService), `temporal` (future)

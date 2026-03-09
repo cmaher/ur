@@ -123,8 +123,8 @@ impl ProcessManager {
             .ensure()
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
-        let urd_hostname = &self.network_config.urd_hostname;
-        let urd_addr = format!("{urd_hostname}:{}", config.grpc_port);
+        let server_hostname = &self.network_config.server_hostname;
+        let server_addr = format!("{server_hostname}:{}", config.grpc_port);
 
         // Build volume mounts
         let volumes = match &config.workspace_dir {
@@ -133,13 +133,13 @@ impl ProcessManager {
         };
 
         // Build env vars, injecting Claude credentials when available
-        let mut env_vars = vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)];
+        let mut env_vars = vec![(ur_config::UR_SERVER_ADDR_ENV.into(), server_addr)];
         if let Some(creds) = self.credential_manager.read_claude_credentials() {
             env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
         }
 
-        // Inject proxy env vars (proxy runs on the same host as urd, reachable via Docker DNS)
-        env_vars.extend(proxy_env_vars(urd_hostname, self.proxy.port));
+        // Inject proxy env vars (proxy runs on the same host as server, reachable via Docker DNS)
+        env_vars.extend(proxy_env_vars(server_hostname, self.proxy.port));
 
         // Run the container on the shared Docker network
         let cid = {
@@ -156,7 +156,7 @@ impl ProcessManager {
                 workdir: Some(PathBuf::from("/workspace")),
                 command: vec![],
                 network: Some(self.network_manager.network_name().to_string()),
-                add_hosts: vec![(urd_hostname.to_string(), "host-gateway".to_string())],
+                add_hosts: vec![(server_hostname.to_string(), "host-gateway".to_string())],
             };
             rt.run(&opts).map_err(|e| e.to_string())?
         };
@@ -239,7 +239,7 @@ mod tests {
             NetworkManager::new("docker".into(), ur_config::DEFAULT_NETWORK_NAME.into());
         let network_config = NetworkConfig {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
-            urd_hostname: ur_config::DEFAULT_URD_HOSTNAME.into(),
+            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
         };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),

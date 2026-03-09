@@ -7,12 +7,12 @@ RUN apk add --no-cache \
     git \
     github-cli
 
-# Copy the cross-compiled urd binary (staged by the build script)
-COPY urd /usr/local/bin/urd
-RUN chmod +x /usr/local/bin/urd
+# Copy the cross-compiled ur-server binary (staged by the build script)
+COPY ur-server /usr/local/bin/ur-server
+RUN chmod +x /usr/local/bin/ur-server
 
 # Default gRPC port (ur_config::DEFAULT_DAEMON_PORT)
 EXPOSE 42069
 
 ENTRYPOINT ["tini", "--"]
-CMD ["urd"]
+CMD ["ur-server"]

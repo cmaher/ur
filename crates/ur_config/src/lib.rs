@@ -8,25 +8,25 @@ use serde::Deserialize;
 /// Environment variable: override the config directory (default `~/.ur`).
 pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 
-/// Environment variable: `host:port` address for worker→urd gRPC connections.
-pub const URD_ADDR_ENV: &str = "URD_ADDR";
+/// Environment variable: `host:port` address for worker→server gRPC connections.
+pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 
 // ---- Defaults ----
 
-/// Default TCP port for the main urd daemon (ur→urd communication).
+/// Default TCP port for the server (ur→server communication).
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
-/// Default TCP port for the forward proxy (container→internet via urd).
+/// Default TCP port for the forward proxy (container→internet via server).
 pub const DEFAULT_PROXY_PORT: u16 = 42070;
 
 /// Default Docker network name for ur-managed containers.
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
 
-/// Default hostname that containers use to reach the urd daemon via Docker DNS.
-pub const DEFAULT_URD_HOSTNAME: &str = "urd";
+/// Default hostname that containers use to reach the server via Docker DNS.
+pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 
 // ---- Config ----
 
@@ -51,7 +51,7 @@ struct RawProxyConfig {
 #[derive(Debug, Deserialize)]
 struct RawNetworkConfig {
     name: Option<String>,
-    urd_hostname: Option<String>,
+    server_hostname: Option<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -75,9 +75,9 @@ impl ProxyConfig {
 pub struct NetworkConfig {
     /// Docker network name that ur-managed containers join (default: "ur").
     pub name: String,
-    /// Hostname containers use to reach the urd daemon via Docker DNS (default: "urd").
-    /// This must match the container/service name of the urd daemon on the Docker network.
-    pub urd_hostname: String,
+    /// Hostname containers use to reach the server via Docker DNS (default: "ur-server").
+    /// This must match the container/service name of the server on the Docker network.
+    pub server_hostname: String,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -87,9 +87,9 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// Agent workspace directory.
     pub workspace: PathBuf,
-    /// TCP port the main urd daemon listens on (default: 42069).
+    /// TCP port the server listens on (default: 42069).
     pub daemon_port: u16,
-    /// Path to the Docker Compose file for starting urd (default: `<config_dir>/docker-compose.yml`).
+    /// Path to the Docker Compose file for starting the server (default: `<config_dir>/docker-compose.yml`).
     pub compose_file: PathBuf,
     /// Forward proxy settings (always enabled with defaults).
     pub proxy: ProxyConfig,
@@ -142,13 +142,13 @@ impl Config {
         let network = match raw.network {
             Some(n) => NetworkConfig {
                 name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
-                urd_hostname: n
-                    .urd_hostname
-                    .unwrap_or_else(|| DEFAULT_URD_HOSTNAME.to_string()),
+                server_hostname: n
+                    .server_hostname
+                    .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
             },
             None => NetworkConfig {
                 name: DEFAULT_NETWORK_NAME.to_string(),
-                urd_hostname: DEFAULT_URD_HOSTNAME.to_string(),
+                server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
             },
         };
 
@@ -163,8 +163,8 @@ impl Config {
     }
 }
 
-/// Filename for the urd daemon pid file, stored in the config directory.
-pub const URD_PID_FILE: &str = "urd.pid";
+/// Filename for the server pid file, stored in the config directory.
+pub const SERVER_PID_FILE: &str = "server.pid";
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
 fn resolve_config_dir() -> anyhow::Result<PathBuf> {
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(cfg.proxy.port, DEFAULT_PROXY_PORT);
         assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
-        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
+        assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
     #[test]
@@ -294,7 +294,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
-        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
+        assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "[network]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
-        assert_eq!(cfg.network.urd_hostname, DEFAULT_URD_HOSTNAME);
+        assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
     #[test]
@@ -311,11 +311,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nurd_hostname = \"my-urd\"\n",
+            "[network]\nname = \"custom-net\"\nserver_hostname = \"my-server\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, "custom-net");
-        assert_eq!(cfg.network.urd_hostname, "my-urd");
+        assert_eq!(cfg.network.server_hostname, "my-server");
     }
 }

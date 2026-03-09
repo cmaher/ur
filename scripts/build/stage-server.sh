@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cross-compile urd binary for linux-musl (Alpine) and stage for Dockerfile.
+# Cross-compile ur-server binary for linux-musl (Alpine) and stage for Dockerfile.
 # Requires: zig + cargo-zigbuild
 
 ARCH=$(uname -m)
@@ -11,10 +11,10 @@ case "$ARCH" in
     *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-echo "Cross-compiling urd for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p urd
+echo "Cross-compiling ur-server for $TARGET"
+cargo zigbuild --release --target "$TARGET" -p ur-server
 
 DEST=containers/server
-cp "target/$TARGET/release/urd" "$DEST/urd"
+cp "target/$TARGET/release/ur-server" "$DEST/ur-server"
 
-echo "Staged urd binary in $DEST/"
+echo "Staged ur-server binary in $DEST/"

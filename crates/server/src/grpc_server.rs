@@ -35,7 +35,7 @@ fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Rou
 
 /// Start the main tonic gRPC server on a TCP socket.
 ///
-/// Used for the main host CLI path (ur -> urd).
+/// Used for the main host CLI path (ur -> server).
 pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
     tracing::info!("gRPC server listening on {addr}");
 
@@ -53,7 +53,7 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
 /// plus a `JoinHandle` the caller can abort to stop the server.
 ///
 /// `bind_host` is typically `0.0.0.0` — containers reach the server via Docker
-/// internal DNS (the urd hostname on the shared Docker network).
+/// internal DNS (the server hostname on the shared Docker network).
 pub async fn serve_agent_grpc(
     bind_host: &str,
     core_handler: CoreServiceHandler,

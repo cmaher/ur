@@ -44,17 +44,17 @@ script_runner = "@shell"
 script = ["scripts/build/stage-workercmd-native.sh"]
 
 [tasks.stage-server]
-description = "Cross-compile urd binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
+description = "Cross-compile ur-server binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
 script_runner = "@shell"
 script = ["scripts/build/stage-server.sh"]
 
 [tasks.stage-server-native]
-description = "Build urd binary natively and stage for Dockerfile (for Linux CI)"
+description = "Build ur-server binary natively and stage for Dockerfile (for Linux CI)"
 script_runner = "@shell"
 script = ["scripts/build/stage-server-native.sh"]
 
 [tasks.container-image]
-description = "Build all container images (worker + urd)"
+description = "Build all container images (worker + server)"
 dependencies = ["stage-workercmd", "stage-server"]
 script_runner = "@shell"
 script = ["scripts/build/container-image.sh"]

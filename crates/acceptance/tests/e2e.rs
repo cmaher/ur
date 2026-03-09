@@ -1,12 +1,12 @@
 //! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
 //!
 //! These tests exercise the full user-facing workflow via Docker Compose:
-//!   1. `ur compose up` starts urd in a container via docker compose
-//!   2. `ur process launch` launches a worker container via urd
-//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to urd
-//!      via tonic gRPC over TCP using `URD_ADDR`
+//!   1. `ur compose up` starts the server in a container via docker compose
+//!   2. `ur process launch` launches a worker container via the server
+//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to the server
+//!      via tonic gRPC over TCP using `UR_SERVER_ADDR`
 //!   4. `ur process stop` tears down the worker container
-//!   5. `ur compose down` stops the urd container
+//!   5. `ur compose down` stops the server container
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
@@ -91,10 +91,10 @@ fn generate_test_compose(config_dir: &Path, test_name: &str) -> PathBuf {
         .unwrap_or_else(|e| panic!("failed to read compose template: {e}"));
 
     let compose_content = template
-        // Unique container name so tests don't collide with production urd
+        // Unique container name so tests don't collide with production server
         .replace(
-            "container_name: urd",
-            &format!("container_name: urd-{test_name}"),
+            "container_name: ur-server",
+            &format!("container_name: ur-server-{test_name}"),
         )
         // Unique network name to isolate the test network
         .replace("name: ur", &format!("name: ur-{test_name}"));
@@ -116,7 +116,7 @@ fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
          \n\
          [network]\n\
          name = \"ur-acceptance\"\n\
-         urd_hostname = \"urd-acceptance\"\n",
+         server_hostname = \"ur-server-acceptance\"\n",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
     );
@@ -138,11 +138,11 @@ fn e2e_ping_and_git() {
     let test_name = "acceptance";
     let ticket_id = "acceptance-test";
     let container_name = format!("ur-agent-{ticket_id}");
-    let urd_container = format!("urd-{test_name}");
+    let server_container = format!("ur-server-{test_name}");
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
-    force_remove_container(&runtime, &urd_container);
+    force_remove_container(&runtime, &server_container);
 
     // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
@@ -251,7 +251,7 @@ fn e2e_ping_and_git() {
         );
     }));
 
-    // ---- (7) Always tear down urd via compose down ----
+    // ---- (7) Always tear down server via compose down ----
     compose_down(&ur, config_path);
 
     // Re-raise any panic from the test body.

@@ -3,7 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// Manages urd lifecycle via Docker Compose.
+/// Manages server lifecycle via Docker Compose.
 ///
 /// Wraps `docker compose` CLI commands targeting the project's compose file.
 /// The compose file path is resolved from `ur_config::Config::compose_file`.
@@ -35,7 +35,7 @@ impl ComposeManager {
         cmd
     }
 
-    /// Start urd via `docker compose up -d`.
+    /// Start the server via `docker compose up -d`.
     ///
     /// Validates that the compose file exists before invoking docker compose.
     pub fn up(&self) -> Result<()> {
@@ -55,7 +55,7 @@ impl ComposeManager {
         Ok(())
     }
 
-    /// Stop and remove urd containers/networks via `docker compose down`.
+    /// Stop and remove server containers/networks via `docker compose down`.
     pub fn down(&self) -> Result<()> {
         self.validate_compose_file()?;
 
@@ -73,9 +73,9 @@ impl ComposeManager {
         Ok(())
     }
 
-    /// Check if the urd service is running via `docker compose ps`.
+    /// Check if the server service is running via `docker compose ps`.
     ///
-    /// Returns `true` if at least one container for the urd service is running.
+    /// Returns `true` if at least one container for the server service is running.
     pub fn is_running(&self) -> Result<bool> {
         if !self.compose_file.exists() {
             return Ok(false);
@@ -181,7 +181,7 @@ mod tests {
             },
             network: ur_config::NetworkConfig {
                 name: "ur".to_string(),
-                urd_hostname: "urd".to_string(),
+                server_hostname: "ur-server".to_string(),
             },
         };
 

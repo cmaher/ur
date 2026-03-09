@@ -1,5 +1,5 @@
 [package]
-name = "urd"
+name = "ur-server"
 edition.workspace = true
 version.workspace = true
 

@@ -4,7 +4,7 @@ set -euo pipefail
 # Build all container images using Docker (or nerdctl).
 # Builds:
 #   ur-worker-base:latest (slow, cached) + ur-worker:latest (fast) on top
-#   ur-server:latest (Alpine + cross-compiled urd binary)
+#   ur-server:latest (Alpine + cross-compiled ur-server binary)
 
 build_image() {
     local tag="$1"
@@ -30,4 +30,4 @@ build_image ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
 echo "Worker image built: ur-worker:latest"
 
 build_image ur-server:latest containers/server/Dockerfile containers/server
-echo "urd image built: ur-server:latest"
+echo "ur-server image built: ur-server:latest"

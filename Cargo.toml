@@ -6,7 +6,7 @@ members = [
     "crates/ur",
     "crates/ur_config",
     "crates/ur_rpc",
-    "crates/urd",
+    "crates/server",
     "crates/workercmd/*",
 ]
 default-members = [
@@ -14,7 +14,7 @@ default-members = [
     "crates/ur",
     "crates/ur_config",
     "crates/ur_rpc",
-    "crates/urd",
+    "crates/server",
 ]
 
 [workspace.package]
