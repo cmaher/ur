@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -18,6 +19,9 @@ pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 /// Default TCP port for the main urd daemon (ur→urd communication).
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
+/// Default TCP port for the forward proxy (container→internet via urd).
+pub const DEFAULT_PROXY_PORT: u16 = 42070;
+
 // ---- Config ----
 
 /// Raw TOML representation — all fields optional so missing keys use defaults.
@@ -25,6 +29,30 @@ pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
+    proxy: Option<RawProxyConfig>,
+}
+
+/// Raw TOML representation for the `[proxy]` section.
+#[derive(Debug, Deserialize)]
+struct RawProxyConfig {
+    port: Option<u16>,
+    allowlist: Option<Vec<String>>,
+}
+
+/// Forward proxy configuration for restricting container network access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    /// TCP port the proxy listens on (default: 42070).
+    pub port: u16,
+    /// Domain allowlist — only these hosts may be reached through the proxy.
+    pub allowlist: Vec<String>,
+}
+
+impl ProxyConfig {
+    /// Return the allowlist as a `HashSet` for efficient lookup.
+    pub fn allowlist_set(&self) -> HashSet<String> {
+        self.allowlist.iter().cloned().collect()
+    }
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -36,6 +64,8 @@ pub struct Config {
     pub workspace: PathBuf,
     /// TCP port the main urd daemon listens on (default: 42069).
     pub daemon_port: u16,
+    /// Forward proxy settings. `None` means proxy is disabled.
+    pub proxy: Option<ProxyConfig>,
 }
 
 impl Config {
@@ -65,11 +95,16 @@ impl Config {
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
+        let proxy = raw.proxy.map(|p| ProxyConfig {
+            port: p.port.unwrap_or(DEFAULT_PROXY_PORT),
+            allowlist: p.allowlist.unwrap_or_else(|| vec!["api.anthropic.com".to_string()]),
+        });
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             daemon_port,
+            proxy,
         })
     }
 }
@@ -99,6 +134,7 @@ mod tests {
         assert_eq!(cfg.config_dir, tmp.path());
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
+        assert!(cfg.proxy.is_none());
     }
 
     #[test]
@@ -108,6 +144,7 @@ mod tests {
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
+        assert!(cfg.proxy.is_none());
     }
 
     #[test]
@@ -147,5 +184,53 @@ mod tests {
         // SAFETY: test-only; single-threaded test runner for this module.
         unsafe { std::env::remove_var(UR_CONFIG_ENV) };
         assert_eq!(dir, tmp.path());
+    }
+
+    #[test]
+    fn proxy_section_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[proxy]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proxy = cfg.proxy.unwrap();
+        assert_eq!(proxy.port, DEFAULT_PROXY_PORT);
+        assert_eq!(proxy.allowlist, vec!["api.anthropic.com"]);
+    }
+
+    #[test]
+    fn proxy_section_reads_custom_values() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[proxy]\nport = 9999\nallowlist = [\"example.com\", \"other.com\"]\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proxy = cfg.proxy.unwrap();
+        assert_eq!(proxy.port, 9999);
+        assert_eq!(proxy.allowlist, vec!["example.com", "other.com"]);
+    }
+
+    #[test]
+    fn proxy_allowlist_set_returns_hashset() {
+        let proxy = ProxyConfig {
+            port: DEFAULT_PROXY_PORT,
+            allowlist: vec![
+                "api.anthropic.com".to_string(),
+                "example.com".to_string(),
+            ],
+        };
+        let set = proxy.allowlist_set();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("api.anthropic.com"));
+        assert!(set.contains("example.com"));
+        assert!(!set.contains("blocked.com"));
+    }
+
+    #[test]
+    fn proxy_none_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.proxy.is_none());
     }
 }
