@@ -1,16 +1,4 @@
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    tmux \
-    curl \
-    ca-certificates \
-    coreutils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Claude Code CLI (script is cached locally, binary downloaded at build time)
-COPY install-claude.sh /tmp/install-claude.sh
-RUN bash /tmp/install-claude.sh && rm /tmp/install-claude.sh
+FROM ur-worker-base:latest
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -25,6 +13,10 @@ RUN chmod +x /usr/local/bin/gh
 
 COPY tk /usr/local/bin/tk
 RUN chmod +x /usr/local/bin/tk
+
+# Wrapper that delegates to the real claude with sandboxed permissions
+COPY claude-wrapper.sh /usr/local/bin/claude
+RUN chmod +x /usr/local/bin/claude
 
 RUN mkdir -p /workspace
 

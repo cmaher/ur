@@ -1,3 +1,5 @@
+# Keep tasks small and composable. Inline scripts go in scripts/build/.
+
 [config]
 default_to_workspace = false
 
@@ -37,66 +39,31 @@ args = ["audit"]
 [tasks.stage-workercmd]
 description = "Cross-compile workercmd binaries for linux-gnu and stage for Dockerfile (requires zig + cargo-zigbuild)"
 script_runner = "@shell"
-script = '''
-ARCH=$(uname -m)
-case "$ARCH" in
-    arm64|aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
-    x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
-    *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
-echo "Cross-compiling workercmd binaries for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-git -p workercmd-gh
-DEST=containers/claude-worker
-cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
-cp "target/$TARGET/release/git" "$DEST/git"
-cp "target/$TARGET/release/gh" "$DEST/gh"
-TK_PATH=$(which tk 2>/dev/null || true)
-if [ -n "$TK_PATH" ]; then
-    cp "$TK_PATH" "$DEST/tk"
-    echo "Staged tk from $TK_PATH"
-else
-    printf '#!/bin/sh\necho "tk stub: $*"\n' > "$DEST/tk"
-    echo "Staged tk stub (real tk not found)"
-fi
-echo "Staged workercmd binaries in $DEST/"
-'''
+script = ["scripts/build/stage-workercmd.sh"]
 
 [tasks.stage-workercmd-native]
 description = "Build workercmd binaries natively and stage for Dockerfile (for Linux CI)"
 script_runner = "@shell"
-script = '''
-cargo build --release -p ur-ping -p workercmd-git -p workercmd-gh
-DEST=containers/claude-worker
-cp target/release/ur-ping "$DEST/ur-ping"
-cp target/release/git "$DEST/git"
-cp target/release/gh "$DEST/gh"
-TK_PATH=$(which tk 2>/dev/null || true)
-if [ -n "$TK_PATH" ]; then
-    cp "$TK_PATH" "$DEST/tk"
-    echo "Staged tk from $TK_PATH"
-else
-    printf '#!/bin/sh\necho "tk stub: $*"\n' > "$DEST/tk"
-    echo "Staged tk stub (real tk not found)"
-fi
-echo "Staged workercmd binaries in $DEST/"
-'''
+script = ["scripts/build/stage-workercmd-native.sh"]
+
+[tasks.container-image]
+description = "Build worker container image using the available container runtime"
+dependencies = ["stage-workercmd"]
+script_runner = "@shell"
+script = ["scripts/build/container-image.sh"]
 
 [tasks.install]
-description = "Build release binaries, install to ~/bin, and register urd as a launchd service"
+description = "Build release binaries, install to ~/bin, and build worker image"
+dependencies = ["container-image"]
 script_runner = "@shell"
-script = '''
-set -euo pipefail
-cargo build --release -p ur -p urd
-mkdir -p "$HOME/bin" "$HOME/.ur/logs"
-cp target/release/ur "$HOME/bin/ur"
-cp target/release/urd "$HOME/bin/urd"
-echo "Installed ur and urd to $HOME/bin/"
-sed "s|__HOME__|$HOME|g" apple/com.ur.urd.plist.template > "$HOME/Library/LaunchAgents/com.ur.urd.plist"
-echo "Installed plist to $HOME/Library/LaunchAgents/com.ur.urd.plist"
-launchctl bootout "gui/$(id -u)/com.ur.urd" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.ur.urd.plist"
-echo "urd service registered and started"
-'''
+script = ["scripts/build/install.sh"]
+
+[tasks.install-debug]
+description = "Same as install but with debug builds"
+dependencies = ["container-image"]
+env = { "UR_BUILD_PROFILE" = "debug" }
+script_runner = "@shell"
+script = ["scripts/build/install.sh"]
 
 [tasks.ci]
 description = "Run all CI checks"

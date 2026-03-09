@@ -26,6 +26,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&cfg.workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
 
+    let pid_file = cfg.config_dir.join(ur_config::URD_PID_FILE);
+    tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
+
     let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
 
     let credential_manager = CredentialManager;
@@ -42,7 +45,9 @@ async fn main() -> anyhow::Result<()> {
     };
     let addr = SocketAddr::from(([127, 0, 0, 1], cfg.daemon_port));
 
-    urd::grpc_server::serve_grpc(addr, grpc_handler).await?;
+    let result = urd::grpc_server::serve_grpc(addr, grpc_handler).await;
 
-    Ok(())
+    let _ = tokio::fs::remove_file(&pid_file).await;
+
+    result
 }

@@ -54,11 +54,16 @@ pub struct ExecOutput {
     pub stderr: String,
 }
 
+/// Container name prefix used for all ur-managed agent containers.
+pub const AGENT_CONTAINER_PREFIX: &str = "ur-agent-";
+
 pub trait ContainerRuntime {
     fn build(&self, opts: &BuildOpts) -> Result<ImageId>;
     fn run(&self, opts: &RunOpts) -> Result<ContainerId>;
     fn stop(&self, id: &ContainerId) -> Result<()>;
     fn rm(&self, id: &ContainerId) -> Result<()>;
+    /// List running containers whose name starts with `prefix`.
+    fn list_by_prefix(&self, prefix: &str) -> Result<Vec<ContainerId>>;
     /// Execute a command inside a running container and capture its output.
     fn exec(&self, id: &ContainerId, opts: &ExecOpts) -> Result<ExecOutput>;
     /// Attach interactively to a running container with a PTY.
