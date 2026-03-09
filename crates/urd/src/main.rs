@@ -36,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
+        cfg.proxy.clone(),
     );
 
     let grpc_handler = urd::grpc::CoreServiceHandler {

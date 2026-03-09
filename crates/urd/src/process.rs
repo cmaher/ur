@@ -5,6 +5,8 @@ use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use ur_config::ProxyConfig;
+
 use crate::RepoRegistry;
 use crate::credential::CredentialManager;
 
@@ -35,6 +37,7 @@ pub struct ProcessManager {
     workspace: PathBuf,
     repo_registry: Arc<RepoRegistry>,
     credential_manager: CredentialManager,
+    proxy: Option<ProxyConfig>,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
 }
 
@@ -43,11 +46,13 @@ impl ProcessManager {
         workspace: PathBuf,
         repo_registry: Arc<RepoRegistry>,
         credential_manager: CredentialManager,
+        proxy: Option<ProxyConfig>,
     ) -> Self {
         Self {
             workspace,
             repo_registry,
             credential_manager,
+            proxy,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -118,6 +123,11 @@ impl ProcessManager {
         let mut env_vars = vec![(ur_config::URD_ADDR_ENV.into(), urd_addr)];
         if let Some(creds) = self.credential_manager.read_claude_credentials() {
             env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
+        }
+
+        // Inject proxy env vars when proxy is configured
+        if let Some(proxy) = &self.proxy {
+            env_vars.extend(proxy_env_vars(&config.host_ip, proxy.port));
         }
 
         // Run the container (scoped so rt is dropped before any subsequent awaits)
@@ -191,6 +201,19 @@ impl ProcessManager {
     }
 }
 
+/// Build `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` env var pairs for container injection.
+///
+/// Uses `http://` scheme even for `HTTPS_PROXY` — this tells the client to speak plain HTTP
+/// to the proxy, which then tunnels TLS traffic via CONNECT.
+fn proxy_env_vars(host_ip: &str, proxy_port: u16) -> Vec<(String, String)> {
+    let proxy_url = format!("http://{host_ip}:{proxy_port}");
+    vec![
+        ("HTTP_PROXY".into(), proxy_url.clone()),
+        ("HTTPS_PROXY".into(), proxy_url),
+        ("NO_PROXY".into(), String::new()),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,7 +222,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let cred_mgr = CredentialManager;
-        let mgr = ProcessManager::new(workspace.path().to_path_buf(), registry, cred_mgr);
+        let mgr = ProcessManager::new(workspace.path().to_path_buf(), registry, cred_mgr, None);
         (mgr, workspace)
     }
 
@@ -272,5 +295,24 @@ mod tests {
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown process"));
+    }
+
+    #[test]
+    fn proxy_env_vars_builds_correct_entries() {
+        let vars = proxy_env_vars("192.168.64.1", 42070);
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars[0], ("HTTP_PROXY".into(), "http://192.168.64.1:42070".into()));
+        assert_eq!(vars[1], ("HTTPS_PROXY".into(), "http://192.168.64.1:42070".into()));
+        assert_eq!(vars[2], ("NO_PROXY".into(), String::new()));
+    }
+
+    #[test]
+    fn proxy_env_vars_uses_http_scheme_for_https_proxy() {
+        let vars = proxy_env_vars("10.0.0.1", 9999);
+        let https_val = &vars[1].1;
+        assert!(
+            https_val.starts_with("http://"),
+            "HTTPS_PROXY must use http:// scheme (proxy speaks plain HTTP, tunnels via CONNECT)"
+        );
     }
 }

@@ -40,7 +40,7 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
     let repo_registry = Arc::new(urd::RepoRegistry::new(workspace.clone()));
     let credential_manager = urd::CredentialManager;
     let process_manager =
-        urd::ProcessManager::new(workspace.clone(), repo_registry.clone(), credential_manager);
+        urd::ProcessManager::new(workspace.clone(), repo_registry.clone(), credential_manager, None);
     let handler = urd::grpc::CoreServiceHandler {
         process_manager,
         repo_registry: repo_registry.clone(),
