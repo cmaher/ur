@@ -106,9 +106,7 @@ impl SquidManager {
             command: vec!["squid".into(), "-k".into(), "reconfigure".into()],
             workdir: None,
         };
-        let output = rt
-            .exec(&cid, &opts)
-            .context("signal squid reconfigure")?;
+        let output = rt.exec(&cid, &opts).context("signal squid reconfigure")?;
         if output.exit_code != 0 {
             anyhow::bail!("squid reconfigure failed: {}", output.stderr);
         }
