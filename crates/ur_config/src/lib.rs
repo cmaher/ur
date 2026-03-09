@@ -116,7 +116,12 @@ impl Config {
         let toml_path = config_dir.join("ur.toml");
         let raw = match std::fs::read_to_string(&toml_path) {
             Ok(contents) => toml::from_str::<RawConfig>(&contents)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => RawConfig::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "ur.toml not found in {} — run 'ur init'",
+                    config_dir.display()
+                );
+            }
             Err(e) => return Err(e.into()),
         };
 
@@ -169,7 +174,7 @@ impl Config {
 pub const SERVER_PID_FILE: &str = "server.pid";
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
-fn resolve_config_dir() -> anyhow::Result<PathBuf> {
+pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
         return Ok(PathBuf::from(val));
     }
@@ -184,16 +189,12 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn defaults_when_no_file() {
+    fn errors_when_no_toml_file() {
         let tmp = TempDir::new().unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.config_dir, tmp.path());
-        assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
-        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
-        assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
-        assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
-        assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ur.toml not found"), "unexpected error: {msg}");
+        assert!(msg.contains("run 'ur init'"), "unexpected error: {msg}");
     }
 
     #[test]
@@ -280,6 +281,7 @@ mod tests {
     #[test]
     fn squid_dir_returns_correct_path() {
         let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.squid_dir(), tmp.path().join("squid"));
     }
