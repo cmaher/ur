@@ -31,3 +31,6 @@ echo "Worker image built: ur-worker:latest"
 
 build_image ur-server:latest containers/server/Dockerfile containers/server
 echo "ur-server image built: ur-server:latest"
+
+build_image ur-squid:latest containers/squid/Dockerfile containers/squid
+echo "Squid proxy image built: ur-squid:latest"
