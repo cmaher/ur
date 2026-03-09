@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
-use urd::{Config, CredentialManager, ProcessManager, RepoRegistry};
+use urd::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -36,7 +36,17 @@ async fn main() -> anyhow::Result<()> {
         cfg.workspace.clone(),
         repo_registry.clone(),
         credential_manager,
+        cfg.proxy.clone(),
     );
+
+    // Start the forward proxy on the host gateway IP (bridge100 for Apple containers).
+    // The proxy binds to the gateway IP so containers can reach it, but localhost cannot.
+    let rt = container::runtime_from_env();
+    let host_ip = rt.host_gateway_ip()?;
+    let proxy_addr: SocketAddr = format!("{}:{}", host_ip, cfg.proxy.port).parse()?;
+    let allowlist = Arc::new(tokio::sync::RwLock::new(cfg.proxy.allowlist_set()));
+    let proxy_manager = ProxyManager::new(allowlist);
+    let _proxy_handle = proxy_manager.serve(proxy_addr).await?;
 
     let grpc_handler = urd::grpc::CoreServiceHandler {
         process_manager,
