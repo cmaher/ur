@@ -43,7 +43,10 @@ fn make_grpc_handler(dir: &Path) -> (urd::grpc::CoreServiceHandler, Arc<urd::Rep
         workspace.clone(),
         repo_registry.clone(),
         credential_manager,
-        None,
+        ur_config::ProxyConfig {
+            port: ur_config::DEFAULT_PROXY_PORT,
+            allowlist: vec!["api.anthropic.com".to_string()],
+        },
     );
     let handler = urd::grpc::CoreServiceHandler {
         process_manager,

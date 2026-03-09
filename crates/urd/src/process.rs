@@ -37,7 +37,7 @@ pub struct ProcessManager {
     workspace: PathBuf,
     repo_registry: Arc<RepoRegistry>,
     credential_manager: CredentialManager,
-    proxy: Option<ProxyConfig>,
+    proxy: ProxyConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
 }
 
@@ -46,7 +46,7 @@ impl ProcessManager {
         workspace: PathBuf,
         repo_registry: Arc<RepoRegistry>,
         credential_manager: CredentialManager,
-        proxy: Option<ProxyConfig>,
+        proxy: ProxyConfig,
     ) -> Self {
         Self {
             workspace,
@@ -125,10 +125,8 @@ impl ProcessManager {
             env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
         }
 
-        // Inject proxy env vars when proxy is configured
-        if let Some(proxy) = &self.proxy {
-            env_vars.extend(proxy_env_vars(&config.host_ip, proxy.port));
-        }
+        // Inject proxy env vars
+        env_vars.extend(proxy_env_vars(&config.host_ip, self.proxy.port));
 
         // Run the container (scoped so rt is dropped before any subsequent awaits)
         let cid = {
@@ -222,7 +220,15 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let cred_mgr = CredentialManager;
-        let mgr = ProcessManager::new(workspace.path().to_path_buf(), registry, cred_mgr, None);
+        let mgr = ProcessManager::new(
+            workspace.path().to_path_buf(),
+            registry,
+            cred_mgr,
+            ProxyConfig {
+                port: ur_config::DEFAULT_PROXY_PORT,
+                allowlist: vec!["api.anthropic.com".to_string()],
+            },
+        );
         (mgr, workspace)
     }
 
