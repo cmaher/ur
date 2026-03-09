@@ -1,5 +1,5 @@
 [tools]
-rust = "stable"
+rust = { version = "stable", profile = "default" }
 zig = "0.15.2"
 protoc = "latest"
 "cargo:cargo-make" = "0.37"
