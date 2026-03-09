@@ -13,6 +13,7 @@ case "$ARCH" in
 esac
 
 echo "Building ur-server for $TARGET"
+rustup target add "$TARGET" 2>/dev/null || true
 cargo zigbuild --release --target "$TARGET" -p ur-server
 
 DEST=containers/server
