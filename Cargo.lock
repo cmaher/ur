@@ -1329,6 +1329,8 @@ dependencies = [
  "anyhow",
  "clap",
  "container",
+ "dirs",
+ "tempfile",
  "tokio",
  "tonic",
  "ur_config",
