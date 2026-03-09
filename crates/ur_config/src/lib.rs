@@ -35,6 +35,7 @@ pub const DEFAULT_URD_HOSTNAME: &str = "urd";
 struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
+    compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
 }
@@ -88,6 +89,8 @@ pub struct Config {
     pub workspace: PathBuf,
     /// TCP port the main urd daemon listens on (default: 42069).
     pub daemon_port: u16,
+    /// Path to the Docker Compose file for starting urd (default: `<config_dir>/docker-compose.yml`).
+    pub compose_file: PathBuf,
     /// Forward proxy settings (always enabled with defaults).
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
@@ -121,6 +124,9 @@ impl Config {
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
+        let compose_file = raw
+            .compose_file
+            .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
         let proxy = match raw.proxy {
             Some(p) => ProxyConfig {
                 port: p.port.unwrap_or(DEFAULT_PROXY_PORT),
@@ -152,6 +158,7 @@ impl Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             daemon_port,
+            compose_file,
             proxy,
             network,
         })
