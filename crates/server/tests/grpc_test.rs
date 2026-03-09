@@ -33,7 +33,12 @@ async fn spawn_grpc_server(
 }
 
 /// Helper: create a CoreServiceHandler from a temp dir with workspace.
-fn make_grpc_handler(dir: &Path) -> (ur_server::grpc::CoreServiceHandler, Arc<ur_server::RepoRegistry>) {
+fn make_grpc_handler(
+    dir: &Path,
+) -> (
+    ur_server::grpc::CoreServiceHandler,
+    Arc<ur_server::RepoRegistry>,
+) {
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 

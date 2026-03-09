@@ -14,7 +14,8 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let server_addr = std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
     let addr = format!("http://{server_addr}");
 
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {

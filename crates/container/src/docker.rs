@@ -196,7 +196,10 @@ mod tests {
                 PathBuf::from("/workspace"),
             )],
             port_maps: vec![],
-            env_vars: vec![(ur_config::UR_SERVER_ADDR_ENV.into(), "ur-server:55000".into())],
+            env_vars: vec![(
+                ur_config::UR_SERVER_ADDR_ENV.into(),
+                "ur-server:55000".into(),
+            )],
             workdir: Some(PathBuf::from("/workspace")),
             command: vec![],
             network: None,
