@@ -44,6 +44,12 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         "--force or --force-compose",
     )?;
     write_file(
+        &squid_dir.join("squid.conf"),
+        ur_config::SQUID_CONF,
+        should_force_squid,
+        "--force or --force-squid",
+    )?;
+    write_file(
         &squid_dir.join("allowlist.txt"),
         DEFAULT_ALLOWLIST,
         should_force_squid,
@@ -101,6 +107,7 @@ mod tests {
         assert!(tmp.path().join("squid").is_dir());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("docker-compose.yml").exists());
+        assert!(tmp.path().join("squid/squid.conf").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());
     }
 
@@ -120,6 +127,16 @@ mod tests {
 
         let content = fs::read_to_string(tmp.path().join("docker-compose.yml")).unwrap();
         assert!(content.contains("ur-server"));
+    }
+
+    #[test]
+    fn squid_conf_contains_embedded_content() {
+        let tmp = TempDir::new().unwrap();
+        run_with_dir(tmp.path(), flags(false, false, false, false)).unwrap();
+
+        let content = fs::read_to_string(tmp.path().join("squid/squid.conf")).unwrap();
+        assert!(content.contains("http_port 3128"));
+        assert!(content.contains("allowlist.txt"));
     }
 
     #[test]
@@ -195,11 +212,12 @@ mod tests {
     }
 
     #[test]
-    fn force_squid_only_overwrites_allowlist() {
+    fn force_squid_overwrites_squid_dir() {
         let tmp = TempDir::new().unwrap();
         run_with_dir(tmp.path(), flags(false, false, false, false)).unwrap();
 
         fs::write(tmp.path().join("squid/allowlist.txt"), "custom.com\n").unwrap();
+        fs::write(tmp.path().join("squid/squid.conf"), "custom conf").unwrap();
         fs::write(tmp.path().join("ur.toml"), "daemon_port = 9999\n").unwrap();
         run_with_dir(tmp.path(), flags(false, false, false, true)).unwrap();
 
@@ -208,6 +226,12 @@ mod tests {
             allowlist.trim(),
             "api.anthropic.com",
             "allowlist should be overwritten"
+        );
+
+        let squid_conf = fs::read_to_string(tmp.path().join("squid/squid.conf")).unwrap();
+        assert!(
+            squid_conf.contains("http_port 3128"),
+            "squid.conf should be overwritten"
         );
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();

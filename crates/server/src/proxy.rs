@@ -8,24 +8,6 @@ use tracing::info;
 /// Squid proxy container name on the Docker network.
 pub const SQUID_CONTAINER_NAME: &str = "ur-squid";
 
-const SQUID_CONF: &str = "\
-# Ur forward proxy — managed by urd. Do not edit manually.
-http_port 3128
-
-acl allowed_domains dstdomain \"/etc/squid/allowlist.txt\"
-acl CONNECT method CONNECT
-
-http_access allow CONNECT allowed_domains
-http_access allow allowed_domains
-http_access deny all
-
-access_log stdio:/dev/stdout
-cache_log stdio:/dev/stderr
-cache deny all
-via off
-forwarded_for delete
-";
-
 /// Manages Squid proxy config files and runtime allowlist.
 ///
 /// Config files live in a host directory (`$UR_CONFIG/squid/`) mounted into the
@@ -54,7 +36,7 @@ impl SquidManager {
         std::fs::create_dir_all(&self.config_dir)
             .with_context(|| format!("create squid config dir: {}", self.config_dir.display()))?;
 
-        std::fs::write(self.config_dir.join("squid.conf"), SQUID_CONF)
+        std::fs::write(self.config_dir.join("squid.conf"), ur_config::SQUID_CONF)
             .context("write squid.conf")?;
 
         self.write_allowlist_file()?;

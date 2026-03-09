@@ -38,7 +38,7 @@ enum Commands {
         /// Overwrite docker-compose.yml only
         #[arg(long)]
         force_compose: bool,
-        /// Overwrite squid/allowlist.txt only
+        /// Overwrite squid/ files (squid.conf, allowlist.txt)
         #[arg(long)]
         force_squid: bool,
     },

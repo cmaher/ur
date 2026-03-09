@@ -27,6 +27,29 @@ pub const SQUID_PORT: u16 = 3128;
 /// Default Docker network name for ur-managed containers.
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
 
+/// Static squid.conf written to `$UR_CONFIG/squid/squid.conf`.
+pub const SQUID_CONF: &str = "\
+# Ur forward proxy — managed by urd. Do not edit manually.
+http_port 3128
+
+# Disable default MIME table — not needed for a forward proxy,
+# and the default /etc/squid/mime.conf is shadowed by the volume mount.
+mime_table none
+
+acl allowed_domains dstdomain \"/etc/squid/allowlist.txt\"
+acl CONNECT method CONNECT
+
+http_access allow CONNECT allowed_domains
+http_access allow allowed_domains
+http_access deny all
+
+access_log stdio:/dev/stdout
+cache_log stdio:/dev/stderr
+cache deny all
+via off
+forwarded_for delete
+";
+
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 
