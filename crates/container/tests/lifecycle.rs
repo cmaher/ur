@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use container::{BuildOpts, ExecOpts, RunOpts, runtime_from_env};
+use container::{BuildOpts, ContainerRuntime, ExecOpts, RunOpts, runtime_from_env};
 
 fn test_context() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

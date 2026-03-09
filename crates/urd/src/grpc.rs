@@ -9,6 +9,8 @@ use ur_rpc::proto::core::{
     ProcessStopResponse,
 };
 
+use container::ContainerRuntime;
+
 use crate::{ProcessManager, RepoRegistry};
 
 /// gRPC implementation of the CoreService.

@@ -90,7 +90,7 @@ fn kill_and_wait(mut child: Child) {
 }
 
 /// Detect the container runtime available on this system.
-/// Returns the command name for the runtime (e.g., "container", "docker", or "nerdctl").
+/// Returns the command name for the runtime (e.g., "docker" or "nerdctl").
 fn detect_container_runtime() -> String {
     if let Ok(val) = std::env::var("UR_CONTAINER") {
         // Normalize "containerd" to the actual CLI command.
@@ -100,8 +100,7 @@ fn detect_container_runtime() -> String {
             val
         };
     }
-    // Check for Apple `container` CLI first, then docker, then nerdctl.
-    for cmd in ["container", "docker", "nerdctl"] {
+    for cmd in ["docker", "nerdctl"] {
         if Command::new(cmd)
             .arg("--version")
             .stdout(Stdio::null())

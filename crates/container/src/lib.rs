@@ -1,11 +1,9 @@
-mod apple;
 mod docker;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 
-pub use apple::AppleRuntime;
 pub use docker::DockerRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,31 +76,17 @@ pub trait ContainerRuntime {
     fn host_gateway_ip(&self) -> Result<String>;
 }
 
-fn has_command(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
-pub fn runtime_from_env() -> Box<dyn ContainerRuntime> {
+/// Create a Docker-based container runtime.
+///
+/// Checks `UR_CONTAINER` env var for `nerdctl`/`containerd` to use nerdctl;
+/// otherwise defaults to `docker`.
+pub fn runtime_from_env() -> DockerRuntime {
     match std::env::var("UR_CONTAINER").as_deref() {
-        Ok("apple") => Box::new(apple::AppleRuntime),
-        Ok("docker") => Box::new(docker::DockerRuntime {
-            command: "docker".into(),
-        }),
-        Ok("nerdctl") | Ok("containerd") => Box::new(docker::DockerRuntime {
+        Ok("nerdctl") | Ok("containerd") => DockerRuntime {
             command: "nerdctl".into(),
-        }),
-        _ if has_command("container") => Box::new(apple::AppleRuntime),
-        _ if has_command("docker") => Box::new(docker::DockerRuntime {
+        },
+        _ => DockerRuntime {
             command: "docker".into(),
-        }),
-        _ if has_command("nerdctl") => Box::new(docker::DockerRuntime {
-            command: "nerdctl".into(),
-        }),
-        _ => Box::new(docker::DockerRuntime {
-            command: "docker".into(),
-        }),
+        },
     }
 }

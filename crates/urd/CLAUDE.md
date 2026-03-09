@@ -2,7 +2,7 @@
 
 Long-running daemon process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workercmd` binaries).
 
-- Runtime backend is selected via `UR_CONTAINER` env var or PATH detection (`container::runtime_from_env()`) — do not hardcode a backend
+- Docker runtime is created via `container::runtime_from_env()` (supports docker and nerdctl)
 - Each RPC handler instantiates its own runtime via `runtime_from_env()` — there is no shared runtime state yet
 - Main gRPC server runs on `127.0.0.1:$daemon_port` (TCP, default 42069); per-agent gRPC servers bind to the host gateway IP on an OS-assigned port
 - `CoreServiceHandler` is `Clone` — keep it stateless or use `Arc` for shared state

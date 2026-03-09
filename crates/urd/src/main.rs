@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::info;
 
+use container::ContainerRuntime;
 use urd::{Config, CredentialManager, ProcessManager, ProxyManager, RepoRegistry};
 
 #[derive(Parser)]
@@ -39,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.proxy.clone(),
     );
 
-    // Start the forward proxy on the host gateway IP (bridge100 for Apple containers).
+    // Start the forward proxy on the host gateway IP.
     // The proxy binds to the gateway IP so containers can reach it, but localhost cannot.
     let rt = container::runtime_from_env();
     let host_ip = rt.host_gateway_ip()?;

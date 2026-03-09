@@ -7,6 +7,8 @@ use tracing::info;
 
 use ur_config::ProxyConfig;
 
+use container::ContainerRuntime;
+
 use crate::RepoRegistry;
 use crate::credential::CredentialManager;
 
