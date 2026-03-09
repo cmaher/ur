@@ -8,7 +8,7 @@
 
 **Tech Stack:** Alpine Linux + Squid (apk), Docker Compose, Rust (container crate, urd)
 
-**Ticket:** ur-usca (epic), closes ur-5hsk (runtime allowlist update)
+**Ticket:** ur-as7t (epic, replaces ur-usca), closes ur-5hsk (runtime allowlist update)
 
 **Relationship to ur-19t0 (OrbStack migration):**
 
