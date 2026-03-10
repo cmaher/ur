@@ -1543,6 +1543,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
  "ur_config",
  "ur_rpc",
 ]

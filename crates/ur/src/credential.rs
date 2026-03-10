@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
+use tracing::{debug, info, instrument, warn};
 
 /// macOS Keychain service name where Claude Code stores OAuth credentials.
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
@@ -35,9 +36,10 @@ impl CredentialManager {
     /// Ensure credentials exist on disk for container mounting.
     ///
     /// Seeds OAuth credentials from the macOS Keychain if no credentials file
-    /// exists yet. After seeding, containers own their session independently —
+    /// exists yet. After seeding, containers own their session independently --
     /// token refreshes in containers write back to the shared mount without
     /// touching the host Keychain.
+    #[instrument(skip(self))]
     pub fn ensure_credentials(&self) -> Result<()> {
         let creds_path = Self::host_credentials_path()?;
 
@@ -48,7 +50,10 @@ impl CredentialManager {
         if !creds_path.exists()
             && let Ok(creds_json) = read_keychain_credentials()
         {
+            info!(path = %creds_path.display(), "seeding credentials from Keychain");
             write_file(&creds_path, &creds_json)?;
+        } else {
+            debug!(path = %creds_path.display(), exists = creds_path.exists(), "credentials check complete");
         }
 
         Ok(())
@@ -58,6 +63,7 @@ impl CredentialManager {
     ///
     /// Reads both `.credentials.json` and `.claude.json` from the container and
     /// writes them to `$UR_CONFIG/claude/`.
+    #[instrument(skip(self, runtime), fields(container = %container_id.0))]
     pub fn save_from_container(
         &self,
         runtime: &impl ContainerRuntime,
@@ -83,10 +89,12 @@ impl CredentialManager {
         )?;
         saved.push(config_path);
 
+        info!(count = saved.len(), "credentials saved from container");
         Ok(saved)
     }
 
     /// Read a file from the container and write it to the host path.
+    #[instrument(skip(self, runtime), fields(container = %container_id.0))]
     fn save_file_from_container(
         &self,
         runtime: &impl ContainerRuntime,
@@ -94,6 +102,7 @@ impl CredentialManager {
         container_path: &str,
         host_path: &Path,
     ) -> Result<PathBuf> {
+        debug!(container_path, host_path = %host_path.display(), "reading file from container");
         let opts = ExecOpts {
             command: vec!["cat".into(), container_path.into()],
             workdir: None,
@@ -112,6 +121,7 @@ impl CredentialManager {
             anyhow::bail!("{container_path} in container is empty");
         }
         write_file(host_path, contents)?;
+        info!(host_path = %host_path.display(), "saved file from container");
         Ok(host_path.to_path_buf())
     }
 
@@ -133,12 +143,15 @@ impl CredentialManager {
 }
 
 /// Read Claude Code OAuth credentials from the macOS Keychain.
+#[instrument]
 fn read_keychain_credentials() -> Result<String> {
+    debug!("reading credentials from macOS Keychain");
     let output = Command::new("security")
         .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
         .output()
         .context("failed to run `security` command")?;
     if !output.status.success() {
+        warn!("no credentials found in macOS Keychain");
         anyhow::bail!(
             "no credentials in macOS Keychain for service {KEYCHAIN_SERVICE:?} — \
              log in to Claude Code on this machine first"
@@ -148,8 +161,10 @@ fn read_keychain_credentials() -> Result<String> {
         String::from_utf8(output.stdout).context("keychain credentials are not valid UTF-8")?;
     let trimmed = json.trim().to_string();
     if trimmed.is_empty() {
+        warn!("keychain credentials are empty");
         anyhow::bail!("keychain credentials are empty");
     }
+    info!("credentials read from macOS Keychain");
     Ok(trimmed)
 }
 
