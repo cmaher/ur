@@ -78,7 +78,10 @@ impl SquidManager {
         if output.exit_code != 0 {
             anyhow::bail!("squid reconfigure failed: {}", output.stderr);
         }
-        info!(container = SQUID_CONTAINER_NAME, "squid reconfigure signaled");
+        info!(
+            container = SQUID_CONTAINER_NAME,
+            "squid reconfigure signaled"
+        );
         Ok(())
     }
 

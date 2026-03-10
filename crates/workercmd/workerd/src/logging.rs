@@ -9,11 +9,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// and parsing by Docker logging drivers.
 pub fn init() {
     tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .json()
-                .with_target(true)
-                .with_thread_ids(true),
-        )
+        .with(fmt::layer().json().with_target(true).with_thread_ids(true))
         .init();
 }

@@ -318,10 +318,7 @@ async fn process_launch(
     let container_id = resp.into_inner().container_id;
     info!(
         ticket_id,
-        container_name,
-        container_id,
-        image_id,
-        "agent process launched"
+        container_name, container_id, image_id, "agent process launched"
     );
     println!("Agent {container_name} running (container {container_id})");
     Ok(())
