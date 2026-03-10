@@ -4,8 +4,6 @@ RUN apk add --no-cache \
     docker-cli \
     ca-certificates \
     tini \
-    git \
-    github-cli \
     netcat-openbsd
 
 # Copy the cross-compiled ur-server binary (staged by the build script)

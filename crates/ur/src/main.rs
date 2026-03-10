@@ -1,5 +1,6 @@
 mod compose;
 mod credential;
+mod hostd;
 mod init;
 mod proxy;
 
@@ -131,7 +132,8 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
     Some(CoreServiceClient::new(channel))
 }
 
-fn start_server(compose: &ComposeManager) -> Result<()> {
+fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
+    hostd::start_hostd(config)?;
     compose
         .up()
         .context("failed to start server via docker compose")?;
@@ -151,7 +153,7 @@ fn start_server(compose: &ComposeManager) -> Result<()> {
     Ok(())
 }
 
-fn stop_server(compose: &ComposeManager) -> Result<()> {
+fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
     kill_all_containers()?;
     if !compose.is_running()? {
         println!("server is not running");
@@ -159,6 +161,7 @@ fn stop_server(compose: &ComposeManager) -> Result<()> {
     }
     compose.down()?;
     println!("server stopped");
+    hostd::stop_hostd(config)?;
     Ok(())
 }
 
@@ -340,8 +343,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { .. } => unreachable!(),
-        Commands::Start => start_server(&compose)?,
-        Commands::Stop => stop_server(&compose)?,
+        Commands::Start => start_server(&config, &compose)?,
+        Commands::Stop => stop_server(&config, &compose)?,
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => handle_process(command, port).await?,
         Commands::Proxy { command } => {

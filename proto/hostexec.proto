@@ -1,0 +1,20 @@
+syntax = "proto3";
+package ur.hostexec;
+import "core.proto";
+
+service HostExecService {
+  rpc Exec(HostExecRequest) returns (stream ur.core.CommandOutput);
+  rpc ListCommands(ListHostExecCommandsRequest) returns (ListHostExecCommandsResponse);
+}
+
+message HostExecRequest {
+  string command = 1;
+  repeated string args = 2;
+  string working_dir = 3;
+}
+
+message ListHostExecCommandsRequest {}
+
+message ListHostExecCommandsResponse {
+  repeated string commands = 1;
+}

@@ -59,11 +59,23 @@ async fn main() -> anyhow::Result<()> {
         cfg.network.clone(),
     );
 
+    #[cfg(feature = "hostexec")]
+    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir)
+        .expect("failed to load hostexec config");
+
+    #[cfg(feature = "hostexec")]
+    let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
+
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_registry,
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
+        #[cfg(feature = "hostexec")]
+        hostexec_config,
+        #[cfg(feature = "hostexec")]
+        hostd_addr,
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 

@@ -1,16 +1,16 @@
 pub mod config;
-pub mod git_exec;
 pub mod grpc;
-#[cfg(feature = "gh")]
-pub mod grpc_gh;
-#[cfg(feature = "git")]
-pub mod grpc_git;
+#[cfg(feature = "hostexec")]
+pub mod grpc_hostexec;
 pub mod grpc_server;
+#[cfg(feature = "hostexec")]
+pub mod hostexec;
 pub mod process;
 pub mod proxy;
+pub mod registry;
 pub mod stream;
 
 pub use config::Config;
-pub use git_exec::RepoRegistry;
 pub use process::{ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;
+pub use registry::RepoRegistry;

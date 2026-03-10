@@ -39,8 +39,12 @@ services:
       # Host-side config path for constructing agent container volume mounts
       - UR_HOST_CONFIG=${UR_CONFIG:-~/.ur}
       # GitHub authentication (forwarded from host)
+      - UR_HOSTD_ADDR=http://host.docker.internal:${UR_HOSTD_PORT:-42070}
       - GH_TOKEN=${GH_TOKEN:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
     # Healthcheck so `docker compose up --wait` waits for the gRPC server to be ready,
     # not just the container to be in "running" state.

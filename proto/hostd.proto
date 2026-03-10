@@ -1,0 +1,13 @@
+syntax = "proto3";
+package ur.hostd;
+import "core.proto";
+
+service HostDaemonService {
+  rpc Exec(HostDaemonExecRequest) returns (stream ur.core.CommandOutput);
+}
+
+message HostDaemonExecRequest {
+  string command = 1;
+  repeated string args = 2;
+  string working_dir = 3;
+}

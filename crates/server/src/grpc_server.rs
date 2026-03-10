@@ -12,22 +12,18 @@ fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Rou
     let mut builder = Routes::builder();
     builder.add_service(CoreServiceServer::new(core_handler.clone()));
 
-    #[cfg(feature = "git")]
+    #[cfg(feature = "hostexec")]
     {
-        use ur_rpc::proto::git::git_service_server::GitServiceServer;
-        builder.add_service(GitServiceServer::new(crate::grpc_git::GitServiceHandler {
-            repo_registry: core_handler.repo_registry.clone(),
-            process_id: process_id.to_owned(),
-        }));
-    }
-
-    #[cfg(feature = "gh")]
-    {
-        use ur_rpc::proto::gh::gh_service_server::GhServiceServer;
-        builder.add_service(GhServiceServer::new(crate::grpc_gh::GhServiceHandler {
-            repo_registry: core_handler.repo_registry.clone(),
-            process_id: process_id.to_owned(),
-        }));
+        use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
+        builder.add_service(HostExecServiceServer::new(
+            crate::grpc_hostexec::HostExecServiceHandler {
+                config: core_handler.hostexec_config.clone(),
+                lua: crate::hostexec::LuaTransformManager::new(),
+                repo_registry: core_handler.repo_registry.clone(),
+                process_id: process_id.to_owned(),
+                hostd_addr: core_handler.hostd_addr.clone(),
+            },
+        ));
     }
 
     builder.routes()

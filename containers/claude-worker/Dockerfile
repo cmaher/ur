@@ -6,10 +6,15 @@ RUN chmod +x /entrypoint.sh
 # Copy pre-built worker command binaries into the image
 COPY ur-ping /usr/local/bin/ur-ping
 RUN chmod +x /usr/local/bin/ur-ping
-COPY git /usr/local/bin/git
-RUN chmod +x /usr/local/bin/git
-COPY gh /usr/local/bin/gh
-RUN chmod +x /usr/local/bin/gh
+COPY ur-tools /usr/local/bin/ur-tools
+RUN chmod +x /usr/local/bin/ur-tools
+
+COPY ur-workerd /usr/local/bin/ur-workerd
+RUN chmod +x /usr/local/bin/ur-workerd
+
+# Shim directory — ur-workerd writes shims here at startup
+RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
+ENV PATH="/home/worker/.local/bin:${PATH}"
 
 COPY tk /usr/local/bin/tk
 RUN chmod +x /usr/local/bin/tk
@@ -24,6 +29,8 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
 RUN chown worker:worker /home/worker/.claude.json
+COPY claude-settings.json /home/worker/.claude/settings.json
+RUN chown worker:worker /home/worker/.claude/settings.json
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.

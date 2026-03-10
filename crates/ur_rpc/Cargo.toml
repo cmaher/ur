@@ -5,14 +5,17 @@ version.workspace = true
 
 [dependencies]
 prost = { workspace = true }
+tokio = { workspace = true, optional = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
+tracing = { version = "0.1", optional = true }
 
 [features]
 default = ["core"]
 core = []
-git = []
-gh = []
+hostexec = []
+hostd = []
+stream = ["dep:tokio", "dep:tracing"]
 temporal = []
 
 [build-dependencies]

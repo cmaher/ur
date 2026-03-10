@@ -14,16 +14,19 @@ tonic = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc" }
+mlua = { workspace = true }
+serde = { workspace = true }
+toml = "0.8"
+ur_rpc = { path = "../ur_rpc", features = ["stream"] }
 
 [features]
-default = ["core", "git", "gh"]
+default = ["core", "hostexec", "hostd"]
 core = ["ur_rpc/core"]
-git = ["ur_rpc/git"]
-gh = ["ur_rpc/gh"]
+hostexec = ["ur_rpc/hostexec", "hostd"]
+hostd = ["ur_rpc/hostd"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "git", "gh"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "hostd"] }

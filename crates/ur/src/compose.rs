@@ -193,6 +193,7 @@ mod tests {
                 worker_name: "ur-workers".to_string(),
                 server_hostname: "ur-server".to_string(),
             },
+            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
         };
 
         let manager = compose_manager_from_config(&config);

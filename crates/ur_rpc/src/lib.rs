@@ -1,17 +1,20 @@
+#[cfg(feature = "stream")]
+pub mod stream;
+
 pub mod proto {
     // Generated tonic code triggers excessive_nesting in deeply nested impl blocks.
     #[allow(clippy::excessive_nesting)]
     pub mod core {
         tonic::include_proto!("ur.core");
     }
-    #[cfg(feature = "git")]
+    #[cfg(feature = "hostexec")]
     #[allow(clippy::excessive_nesting)]
-    pub mod git {
-        tonic::include_proto!("ur.git");
+    pub mod hostexec {
+        tonic::include_proto!("ur.hostexec");
     }
-    #[cfg(feature = "gh")]
+    #[cfg(feature = "hostd")]
     #[allow(clippy::excessive_nesting)]
-    pub mod gh {
-        tonic::include_proto!("ur.gh");
+    pub mod hostd {
+        tonic::include_proto!("ur.hostd");
     }
 }

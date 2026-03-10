@@ -39,6 +39,21 @@ pub const WORKER_HOME: &str = "/home/worker";
 /// Default TCP port for the server (ur→server communication).
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
+/// Default TCP port for the host execution daemon (hostd).
+pub const DEFAULT_HOSTD_PORT: u16 = 42070;
+
+/// PID file for the hostd process, stored in the config directory.
+pub const HOSTD_PID_FILE: &str = "hostd.pid";
+
+/// Environment variable: `host:port` address for worker→hostd gRPC connections.
+pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";
+
+/// Subdirectory under `config_dir` for host execution configuration.
+pub const HOSTEXEC_DIR: &str = "hostexec";
+
+/// Allowlist configuration filename within `HOSTEXEC_DIR`.
+pub const HOSTEXEC_ALLOWLIST_FILE: &str = "allowlist.toml";
+
 /// Default hostname for the Squid proxy container on the Docker network.
 pub const DEFAULT_PROXY_HOSTNAME: &str = "ur-squid";
 
@@ -71,6 +86,7 @@ fn default_proxy_allowlist() -> Vec<String> {
 struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
+    hostd_port: Option<u16>,
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
@@ -122,6 +138,8 @@ pub struct Config {
     pub workspace: PathBuf,
     /// TCP port the server listens on (default: 42069).
     pub daemon_port: u16,
+    /// TCP port the host execution daemon listens on (default: 42070).
+    pub hostd_port: u16,
     /// Path to the Docker Compose file for starting the server (default: `<config_dir>/docker-compose.yml`).
     pub compose_file: PathBuf,
     /// Forward proxy settings (always enabled with defaults).
@@ -148,6 +166,11 @@ impl Config {
         self.config_dir.join("squid")
     }
 
+    /// Path to the host execution config directory: `$UR_CONFIG/hostexec/`.
+    pub fn hostexec_dir(&self) -> PathBuf {
+        self.config_dir.join(HOSTEXEC_DIR)
+    }
+
     /// Load configuration using an explicit config directory.
     /// Useful for testing.
     pub fn load_from(config_dir: &Path) -> anyhow::Result<Self> {
@@ -167,6 +190,7 @@ impl Config {
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
+        let hostd_port = raw.hostd_port.unwrap_or(DEFAULT_HOSTD_PORT);
         let compose_file = raw
             .compose_file
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
@@ -203,6 +227,7 @@ impl Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             daemon_port,
+            hostd_port,
             compose_file,
             proxy,
             network,
