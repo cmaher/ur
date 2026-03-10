@@ -93,8 +93,11 @@ fn write_test_config(config_dir: &Path, daemon_port: u16) {
 
     let squid_dir = config_dir.join("squid");
     std::fs::create_dir_all(&squid_dir).expect("failed to create squid dir");
-    std::fs::write(squid_dir.join("allowlist.txt"), "api.anthropic.com\n")
-        .expect("failed to write allowlist.txt");
+    std::fs::write(
+        squid_dir.join("allowlist.txt"),
+        "api.anthropic.com\nplatform.claude.com\nraw.githubusercontent.com\n",
+    )
+    .expect("failed to write allowlist.txt");
 
     let compose_file = config_dir.join("docker-compose.yml");
     let toml_content = format!(

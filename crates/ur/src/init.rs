@@ -3,7 +3,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-const DEFAULT_ALLOWLIST: &str = "api.anthropic.com\n";
+const DEFAULT_ALLOWLIST: &str = "\
+api.anthropic.com
+platform.claude.com
+raw.githubusercontent.com
+";
 
 pub struct InitFlags {
     pub force: bool,
@@ -108,7 +112,9 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
-        assert_eq!(content.trim(), "api.anthropic.com");
+        assert!(content.contains("api.anthropic.com"));
+        assert!(content.contains("platform.claude.com"));
+        assert!(content.contains("raw.githubusercontent.com"));
     }
 
     #[test]
@@ -158,9 +164,12 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, true)).unwrap();
 
         let allowlist = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
-        assert_eq!(
-            allowlist.trim(),
-            "api.anthropic.com",
+        assert!(
+            allowlist.contains("api.anthropic.com"),
+            "allowlist should be overwritten"
+        );
+        assert!(
+            allowlist.contains("platform.claude.com"),
             "allowlist should be overwritten"
         );
 

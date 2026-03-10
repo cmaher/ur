@@ -53,13 +53,8 @@ enum Commands {
     },
     /// Start the server
     Start,
-    /// Stop the server
+    /// Kill all containers and stop the server
     Stop,
-    /// Kill server, containers, or everything
-    Kill {
-        #[command(subcommand)]
-        command: KillCommands,
-    },
     /// Manage the forward proxy domain allowlist
     Proxy {
         #[command(subcommand)]
@@ -78,22 +73,6 @@ enum ProxyCommands {
 }
 
 #[derive(Subcommand)]
-enum KillCommands {
-    /// Stop the server (docker compose down)
-    Server,
-    /// Kill a specific container, or all ur-agent containers with --all
-    Container {
-        /// Container name (without the ur-agent- prefix)
-        name: Option<String>,
-        /// Kill all ur-agent containers
-        #[arg(long)]
-        all: bool,
-    },
-    /// Kill all containers and the server
-    All,
-}
-
-#[derive(Subcommand)]
 enum ProcessCommands {
     /// Launch a new agent process
     Launch {
@@ -101,6 +80,12 @@ enum ProcessCommands {
         /// Mount a host directory as the container workspace
         #[arg(short = 'w', long = "workspace")]
         workspace: Option<PathBuf>,
+        /// Attach to the process after launching
+        #[arg(short = 'a', long = "attach")]
+        attach: bool,
+        /// Kill existing container with this ID before launching
+        #[arg(short = 'f', long = "force")]
+        force: bool,
     },
     /// Show process status
     Status { process_id: Option<String> },
@@ -108,6 +93,8 @@ enum ProcessCommands {
     Attach { process_id: String },
     /// Stop a running agent process
     Stop { process_id: String },
+    /// Force-remove a container (docker rm -f)
+    Kill { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -150,6 +137,7 @@ fn start_server(compose: &ComposeManager) -> Result<()> {
 }
 
 fn stop_server(compose: &ComposeManager) -> Result<()> {
+    kill_all_containers()?;
     if !compose.is_running()? {
         println!("server is not running");
         return Ok(());
@@ -196,25 +184,6 @@ fn kill_all_containers() -> Result<()> {
         println!("Killed {}", id.0);
     }
     Ok(())
-}
-
-fn handle_kill(command: KillCommands, compose: &ComposeManager) -> Result<()> {
-    match command {
-        KillCommands::Server => stop_server(compose),
-        KillCommands::Container { name, all } => {
-            if all {
-                kill_all_containers()
-            } else if let Some(name) = name {
-                kill_container(&name)
-            } else {
-                bail!("specify a container name or --all")
-            }
-        }
-        KillCommands::All => {
-            kill_all_containers()?;
-            stop_server(compose)
-        }
-    }
 }
 
 fn process_attach(process_id: &str) -> Result<()> {
@@ -271,6 +240,37 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
     Ok(())
 }
 
+async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
+    match command {
+        ProcessCommands::Attach { process_id } => process_attach(&process_id),
+        ProcessCommands::Kill { process_id } => kill_container(&process_id),
+        ProcessCommands::Launch {
+            ticket_id,
+            workspace,
+            attach,
+            force,
+        } => {
+            if force {
+                let _ = kill_container(&ticket_id);
+            }
+            let mut client = connect(port).await?;
+            process_launch(&mut client, &ticket_id, workspace).await?;
+            if attach {
+                process_attach(&ticket_id)?;
+            }
+            Ok(())
+        }
+        ProcessCommands::Status { process_id } => {
+            println!("Status: {process_id:?}");
+            Ok(())
+        }
+        ProcessCommands::Stop { process_id } => {
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &process_id).await
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -297,31 +297,8 @@ async fn main() -> Result<()> {
         Commands::Init { .. } => unreachable!(),
         Commands::Start => start_server(&compose)?,
         Commands::Stop => stop_server(&compose)?,
-        Commands::Kill { command } => return handle_kill(command, &compose),
         Commands::Tui => println!("Launching TUI..."),
-        Commands::Process { command } => match command {
-            ProcessCommands::Attach { process_id } => {
-                process_attach(&process_id)?;
-            }
-            other => {
-                let mut client = connect(port).await?;
-                match other {
-                    ProcessCommands::Launch {
-                        ticket_id,
-                        workspace,
-                    } => {
-                        process_launch(&mut client, &ticket_id, workspace).await?;
-                    }
-                    ProcessCommands::Status { process_id } => {
-                        println!("Status: {process_id:?}");
-                    }
-                    ProcessCommands::Stop { process_id } => {
-                        process_stop(&mut client, &process_id).await?;
-                    }
-                    ProcessCommands::Attach { .. } => unreachable!(),
-                }
-            }
-        },
+        Commands::Process { command } => handle_process(command, port).await?,
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
             let allowlist_path = squid_dir.join("allowlist.txt");
