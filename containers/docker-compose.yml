@@ -36,6 +36,8 @@ services:
     environment:
       # Point server at the mounted config directory inside the container
       - UR_CONFIG=/config
+      # Host-side config path for constructing agent container volume mounts
+      - UR_HOST_CONFIG=${UR_CONFIG:-~/.ur}
       # GitHub authentication (forwarded from host)
       - GH_TOKEN=${GH_TOKEN:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}

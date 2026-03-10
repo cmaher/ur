@@ -1,0 +1,9 @@
+{
+  "hasCompletedOnboarding": true,
+  "projects": {
+    "/workspace": {
+      "hasTrustDialogAccepted": true,
+      "allowedTools": []
+    }
+  }
+}

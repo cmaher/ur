@@ -29,6 +29,11 @@ echo "Base image built: ur-worker-base:latest"
 build_image ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
 echo "Worker image built: ur-worker:latest"
 
+RUST_WORKER_CONTEXT=containers/claude-worker-rust
+
+build_image ur-worker-rust:latest "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
+echo "Rust worker image built: ur-worker-rust:latest"
+
 build_image ur-server:latest containers/server/Dockerfile containers/server
 echo "ur-server image built: ur-server:latest"
 

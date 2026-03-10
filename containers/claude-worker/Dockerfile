@@ -20,6 +20,11 @@ RUN chmod +x /usr/local/bin/claude
 
 RUN mkdir -p /workspace && chown worker:worker /workspace
 
+# Bake in minimal Claude Code config to skip onboarding/login prompts.
+# Credentials (.credentials.json) are mounted at runtime; this file is static.
+COPY claude.json /home/worker/.claude.json
+RUN chown worker:worker /home/worker/.claude.json
+
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.
 

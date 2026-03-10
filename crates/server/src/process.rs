@@ -10,7 +10,6 @@ use ur_config::NetworkConfig;
 use container::{ContainerRuntime, NetworkManager};
 
 use crate::RepoRegistry;
-use crate::credential::CredentialManager;
 
 /// Tracks a running agent process.
 struct ProcessEntry {
@@ -37,8 +36,10 @@ pub struct ProcessConfig {
 #[derive(Clone)]
 pub struct ProcessManager {
     workspace: PathBuf,
+    /// Host-side config directory path, used to construct volume mounts for
+    /// agent containers (e.g., shared credentials file).
+    host_config_dir: PathBuf,
     repo_registry: Arc<RepoRegistry>,
-    credential_manager: CredentialManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
@@ -47,15 +48,15 @@ pub struct ProcessManager {
 impl ProcessManager {
     pub fn new(
         workspace: PathBuf,
+        host_config_dir: PathBuf,
         repo_registry: Arc<RepoRegistry>,
-        credential_manager: CredentialManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
     ) -> Self {
         Self {
             workspace,
+            host_config_dir,
             repo_registry,
-            credential_manager,
             network_manager,
             network_config,
             processes: Arc::new(RwLock::new(HashMap::new())),
@@ -125,16 +126,30 @@ impl ProcessManager {
         let server_addr = format!("{server_hostname}:{}", config.grpc_port);
 
         // Build volume mounts
-        let volumes = match &config.workspace_dir {
-            Some(ws_dir) => vec![(ws_dir.clone(), PathBuf::from("/workspace"))],
-            None => vec![],
-        };
-
-        // Build env vars, injecting Claude credentials when available
-        let mut env_vars = vec![(ur_config::UR_SERVER_ADDR_ENV.into(), server_addr)];
-        if let Some(creds) = self.credential_manager.read_claude_credentials() {
-            env_vars.push((ur_config::CLAUDE_CREDENTIALS_ENV.into(), creds));
+        let mut volumes: Vec<(PathBuf, PathBuf)> = Vec::new();
+        if let Some(ws_dir) = &config.workspace_dir {
+            volumes.push((ws_dir.clone(), PathBuf::from("/workspace")));
         }
+
+        // Mount shared credentials file so all containers share one OAuth session.
+        // Claude Code reads/writes this file for token refresh, keeping all
+        // containers in sync without per-launch credential injection.
+        // (.claude.json is baked into the image — only credentials need mounting.)
+        let host_creds = self
+            .host_config_dir
+            .join(ur_config::CLAUDE_DIR)
+            .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
+        ensure_file_exists(&host_creds)
+            .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
+        let worker_home = PathBuf::from(ur_config::WORKER_HOME);
+        volumes.push((
+            host_creds,
+            worker_home
+                .join(".claude")
+                .join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
+        ));
+
+        let mut env_vars = vec![(ur_config::UR_SERVER_ADDR_ENV.into(), server_addr)];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
         env_vars.extend(proxy_env_vars(&config.proxy_hostname));
@@ -212,6 +227,20 @@ impl ProcessManager {
     }
 }
 
+/// Ensure a file exists on disk, creating it (and parent dirs) if missing.
+/// Docker bind-mounts require the source to exist as a file; if missing, Docker
+/// creates a directory instead, causing an OCI runtime error.
+fn ensure_file_exists(path: &PathBuf) -> Result<(), std::io::Error> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, "{}")?;
+    Ok(())
+}
+
 /// Build `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` env var pairs for container injection.
 ///
 /// Uses `http://` scheme even for `HTTPS_PROXY` — this tells the client to speak plain HTTP
@@ -232,7 +261,6 @@ mod tests {
     fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
-        let cred_mgr = CredentialManager;
         let network_manager = NetworkManager::new(
             "docker".into(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -244,8 +272,8 @@ mod tests {
         };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
             registry,
-            cred_mgr,
             network_manager,
             network_config,
         );

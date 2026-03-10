@@ -42,3 +42,4 @@ Cargo workspace:
 - **Tests**: NEVER `#[ignore]` or skip tests to make them pass. Fix the underlying issue.
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Apple backend tested locally on macOS, Docker backend tested in CI (ubuntu-latest).
+- **Codeflows** (`docs/codeflows/`): Detailed flow diagrams for cross-cutting concerns (credential injection, process launch, etc.). Consult these before modifying multi-component flows.

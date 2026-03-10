@@ -29,6 +29,8 @@ message ProcessLaunchRequest {
   uint32 cpus = 3;
   string memory = 4;
   string workspace_dir = 5;
+  // Claude Code credentials JSON blob, read from the host keychain by the CLI.
+  string claude_credentials = 6;
 }
 
 message ProcessLaunchResponse {

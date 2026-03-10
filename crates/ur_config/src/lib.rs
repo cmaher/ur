@@ -13,6 +13,27 @@ pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 
+/// Environment variable: host-side config directory path.
+///
+/// The server container sees its config at `/config` (bind mount), but needs the
+/// original host path when constructing volume mounts for agent containers
+/// (which go through the Docker socket and use host paths).
+pub const UR_HOST_CONFIG_ENV: &str = "UR_HOST_CONFIG";
+
+/// Subdirectory under `config_dir` for Claude-related files.
+pub const CLAUDE_DIR: &str = "claude";
+
+/// Credentials filename within `CLAUDE_DIR`.
+pub const CLAUDE_CREDENTIALS_FILENAME: &str = ".credentials.json";
+
+/// Claude Code app config filename (lives in the user's home directory, NOT inside `CLAUDE_DIR`).
+/// Contains onboarding state, oauthAccount, project trust settings, and feature flags.
+/// Without this file, Claude Code prompts for login even when credentials exist.
+pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
+
+/// Home directory of the worker user inside agent containers.
+pub const WORKER_HOME: &str = "/home/worker";
+
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
