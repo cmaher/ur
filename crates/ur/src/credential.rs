@@ -142,8 +142,8 @@ fn read_keychain_credentials() -> Result<String> {
              log in to Claude Code on this machine first"
         );
     }
-    let json = String::from_utf8(output.stdout)
-        .context("keychain credentials are not valid UTF-8")?;
+    let json =
+        String::from_utf8(output.stdout).context("keychain credentials are not valid UTF-8")?;
     let trimmed = json.trim().to_string();
     if trimmed.is_empty() {
         anyhow::bail!("keychain credentials are empty");
