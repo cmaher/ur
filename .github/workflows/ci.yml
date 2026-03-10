@@ -49,13 +49,7 @@ jobs:
         run: docker build -t ur-worker:latest containers/claude-worker
 
       - name: Build Rust worker container image
-        uses: docker/build-push-action@v6
-        with:
-          context: containers/claude-worker-rust
-          tags: ur-worker-rust:latest
-          load: true
-          cache-from: type=gha,scope=worker-rust
-          cache-to: type=gha,mode=max,scope=worker-rust
+        run: docker build -t ur-worker-rust:latest containers/claude-worker-rust
 
       - name: Build server container image
         uses: docker/build-push-action@v6
