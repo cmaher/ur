@@ -30,7 +30,7 @@ MISE_INSTALLER="$RUST_WORKER_CONTEXT/install-mise.sh"
 
 if [ ! -f "$CLAUDE_INSTALLER" ]; then
     echo "Downloading Claude Code installer..."
-    curl -fsSL -o "$CLAUDE_INSTALLER" https://storage.googleapis.com/anthropic-claude-code/claude-code-installer.sh
+    curl -fsSL -o "$CLAUDE_INSTALLER" https://claude.ai/install.sh
 fi
 
 if [ ! -f "$MISE_INSTALLER" ]; then
