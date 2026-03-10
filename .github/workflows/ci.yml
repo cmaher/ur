@@ -27,6 +27,11 @@ jobs:
       - name: Stage server binary
         run: cargo make stage-server-native
 
+      - name: Download installer scripts
+        run: |
+          [ -f containers/claude-worker/install-claude.sh ] || curl -fsSL -o containers/claude-worker/install-claude.sh https://storage.googleapis.com/anthropic-claude-code/claude-code-installer.sh
+          [ -f containers/claude-worker-rust/install-mise.sh ] || curl -fsSL -o containers/claude-worker-rust/install-mise.sh https://mise.jdx.dev/install.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
