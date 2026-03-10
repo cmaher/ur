@@ -90,7 +90,7 @@ impl CredentialManager {
         runtime: &impl ContainerRuntime,
         container_id: &ContainerId,
         container_path: &str,
-        host_path: &PathBuf,
+        host_path: &Path,
     ) -> Result<PathBuf> {
         let opts = ExecOpts {
             command: vec!["cat".into(), container_path.into()],
@@ -110,7 +110,7 @@ impl CredentialManager {
             anyhow::bail!("{container_path} in container is empty");
         }
         write_file(host_path, contents)?;
-        Ok(host_path.clone())
+        Ok(host_path.to_path_buf())
     }
 
     /// Resolve the host-side credentials file path.
