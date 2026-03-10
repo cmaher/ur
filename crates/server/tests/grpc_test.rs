@@ -43,7 +43,6 @@ fn make_grpc_handler(
     std::fs::create_dir_all(&workspace).unwrap();
 
     let repo_registry = Arc::new(ur_server::RepoRegistry::new(workspace.clone()));
-    let credential_manager = ur_server::CredentialManager;
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
@@ -53,8 +52,8 @@ fn make_grpc_handler(
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
+        workspace.clone(),
         repo_registry.clone(),
-        credential_manager,
         network_manager,
         network_config,
     );

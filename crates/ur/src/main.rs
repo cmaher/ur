@@ -1,4 +1,5 @@
 mod compose;
+mod credential;
 mod init;
 mod proxy;
 
@@ -95,6 +96,8 @@ enum ProcessCommands {
     Stop { process_id: String },
     /// Force-remove a container (docker rm -f)
     Kill { process_id: String },
+    /// Save credentials from a running container for reuse
+    SaveCredentials { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -133,6 +136,18 @@ fn start_server(compose: &ComposeManager) -> Result<()> {
         .up()
         .context("failed to start server via docker compose")?;
     println!("server started");
+
+    // Check if shared credentials exist; if not, hint about Keychain seeding.
+    let has_credentials = credential::CredentialManager::host_credentials_path()
+        .ok()
+        .and_then(|p| std::fs::metadata(&p).ok())
+        .is_some_and(|m| m.len() > 0);
+    if !has_credentials {
+        println!();
+        println!("No shared credentials found. Log in to Claude Code on this machine first.");
+        println!("Credentials will be seeded from the macOS Keychain on first process launch.");
+    }
+
     Ok(())
 }
 
@@ -189,7 +204,18 @@ fn kill_all_containers() -> Result<()> {
 fn process_attach(process_id: &str) -> Result<()> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("ur-agent-{process_id}"));
-    let command: Vec<String> = vec!["tmux".into(), "attach".into(), "-t".into(), "agent".into()];
+    // Create an independent tmux session instead of attaching to "agent".
+    // `tmux attach -t agent` kills the session if the user exits the shell,
+    // preventing reconnection. A separate session survives agent-session death
+    // and vice versa. `-A` reattaches if the session already exists.
+    let command: Vec<String> = vec![
+        "tmux".into(),
+        "-u".into(),
+        "new-session".into(),
+        "-A".into(),
+        "-s".into(),
+        "attach".into(),
+    ];
     let status = runtime.exec_interactive(&id, &command)?;
     process::exit(status.code().unwrap_or(1));
 }
@@ -199,6 +225,10 @@ async fn process_launch(
     ticket_id: &str,
     workspace: Option<PathBuf>,
 ) -> Result<()> {
+    // Refresh credentials from macOS Keychain and ensure config exists
+    let cred_mgr = credential::CredentialManager;
+    cred_mgr.ensure_credentials()?;
+
     // Resolve workspace to an absolute path if provided
     let workspace_dir = match workspace {
         Some(path) => {
@@ -209,7 +239,7 @@ async fn process_launch(
         None => String::new(),
     };
 
-    let image_id = "ur-worker:latest";
+    let image_id = "ur-worker-rust:latest";
     let container_name = format!("ur-agent-{ticket_id}");
     println!("Launching agent {container_name}...");
     let resp = client
@@ -219,6 +249,7 @@ async fn process_launch(
             cpus: 2,
             memory: "8G".into(),
             workspace_dir,
+            claude_credentials: String::new(),
         })
         .await?;
 
@@ -244,6 +275,20 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
     match command {
         ProcessCommands::Attach { process_id } => process_attach(&process_id),
         ProcessCommands::Kill { process_id } => kill_container(&process_id),
+        ProcessCommands::SaveCredentials { process_id } => {
+            let runtime = container::runtime_from_env();
+            let id = container::ContainerId(format!(
+                "{}{}",
+                container::AGENT_CONTAINER_PREFIX,
+                process_id
+            ));
+            let cred_mgr = credential::CredentialManager;
+            let paths = cred_mgr.save_from_container(&runtime, &id)?;
+            for path in &paths {
+                println!("Saved {}", path.display());
+            }
+            Ok(())
+        }
         ProcessCommands::Launch {
             ticket_id,
             workspace,

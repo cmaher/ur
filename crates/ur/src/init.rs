@@ -7,6 +7,8 @@ const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
 platform.claude.com
 raw.githubusercontent.com
+mcp-proxy.anthropic.com
+storage.googleapis.com
 ";
 
 pub struct InitFlags {
@@ -29,6 +31,9 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
     let squid_dir = config_dir.join("squid");
     init_dir(&squid_dir)?;
 
+    let claude_dir = config_dir.join(ur_config::CLAUDE_DIR);
+    init_dir(&claude_dir)?;
+
     let should_force_config = flags.force || flags.force_config;
     let should_force_squid = flags.force || flags.force_squid;
 
@@ -43,6 +48,15 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         DEFAULT_ALLOWLIST,
         should_force_squid,
         "--force or --force-squid",
+    )?;
+
+    // Credentials file must exist on the host for Docker file mounts to work
+    // (otherwise Docker creates a directory at the mount path).
+    write_file(
+        &claude_dir.join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
+        "",
+        false,
+        "--force",
     )?;
 
     Ok(())
@@ -115,6 +129,8 @@ mod tests {
         assert!(content.contains("api.anthropic.com"));
         assert!(content.contains("platform.claude.com"));
         assert!(content.contains("raw.githubusercontent.com"));
+        assert!(content.contains("mcp-proxy.anthropic.com"));
+        assert!(content.contains("storage.googleapis.com"));
     }
 
     #[test]

@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_server::{Config, CredentialManager, ProcessManager, RepoRegistry};
+use ur_server::{Config, ProcessManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -41,11 +42,19 @@ async fn main() -> anyhow::Result<()> {
     };
     let network_manager = NetworkManager::new(docker_command, cfg.network.worker_name.clone());
 
-    let credential_manager = CredentialManager;
+    // UR_HOST_CONFIG is the host-side config directory path, needed for
+    // constructing volume mounts in agent containers (which use host paths
+    // via the Docker socket). Falls back to the server's own config_dir
+    // (only correct when the server runs directly on the host, not in a container).
+    let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cfg.config_dir.clone());
+    info!("host config: {}", host_config_dir.display());
+
     let process_manager = ProcessManager::new(
         cfg.workspace.clone(),
+        host_config_dir,
         repo_registry.clone(),
-        credential_manager,
         network_manager,
         cfg.network.clone(),
     );

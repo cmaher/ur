@@ -8,15 +8,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     coreutils \
     jq \
     less \
+    locales \
     make \
     python3 \
     ripgrep \
+    && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
+    && locale-gen \
     && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
 
 # Create a non-root user (Claude Code refuses --dangerously-skip-permissions as root)
 RUN useradd -m -s /bin/bash worker
 
-# Install Claude Code CLI as root (script is cached locally, binary downloaded at build time)
+# Install Claude Code CLI as worker user
 COPY install-claude.sh /tmp/install-claude.sh
-RUN bash /tmp/install-claude.sh && rm /tmp/install-claude.sh \
-    && chmod -R o+rX /root/.local
+USER worker
+RUN bash /tmp/install-claude.sh
+USER root
+RUN rm /tmp/install-claude.sh
