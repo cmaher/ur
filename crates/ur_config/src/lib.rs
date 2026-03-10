@@ -24,27 +24,12 @@ pub const DEFAULT_PROXY_HOSTNAME: &str = "ur-squid";
 /// Squid listening port inside the container (standard Squid default).
 pub const SQUID_PORT: u16 = 3128;
 
-/// Default Docker network name for ur-managed containers.
+/// Default Docker network name for infrastructure (server + squid, internet-connected).
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
 
-/// Static squid.conf written to `$UR_CONFIG/squid/squid.conf`.
-pub const SQUID_CONF: &str = "\
-# Ur forward proxy — managed by urd. Do not edit manually.
-http_port 3128
-
-acl allowed_domains dstdomain \"/etc/squid/allowlist.txt\"
-acl CONNECT method CONNECT
-
-http_access allow CONNECT allowed_domains
-http_access allow allowed_domains
-http_access deny all
-
-access_log stdio:/dev/stdout
-cache_log stdio:/dev/stderr
-cache deny all
-via off
-forwarded_for delete
-";
+/// Default Docker network name for workers (internal, no internet).
+/// Workers reach server + squid via Docker DNS on this network.
+pub const DEFAULT_WORKER_NETWORK_NAME: &str = "ur-workers";
 
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
@@ -72,6 +57,7 @@ struct RawProxyConfig {
 #[derive(Debug, Deserialize)]
 struct RawNetworkConfig {
     name: Option<String>,
+    worker_name: Option<String>,
     server_hostname: Option<String>,
 }
 
@@ -87,8 +73,11 @@ pub struct ProxyConfig {
 /// Docker network configuration for container networking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkConfig {
-    /// Docker network name that ur-managed containers join (default: "ur").
+    /// Infrastructure network name — internet-connected bridge for server + squid (default: "ur").
     pub name: String,
+    /// Worker network name — internal bridge with no internet (default: "ur-workers").
+    /// Workers join this network and reach the internet only through the squid proxy.
+    pub worker_name: String,
     /// Hostname containers use to reach the server via Docker DNS (default: "ur-server").
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
@@ -168,12 +157,16 @@ impl Config {
         let network = match raw.network {
             Some(n) => NetworkConfig {
                 name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
+                worker_name: n
+                    .worker_name
+                    .unwrap_or_else(|| DEFAULT_WORKER_NETWORK_NAME.to_string()),
                 server_hostname: n
                     .server_hostname
                     .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
             },
             None => NetworkConfig {
                 name: DEFAULT_NETWORK_NAME.to_string(),
+                worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
                 server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
             },
         };
@@ -311,6 +304,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
@@ -320,6 +314,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "[network]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
@@ -328,11 +323,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nserver_hostname = \"my-server\"\n",
+            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, "custom-net");
+        assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
     }
 }

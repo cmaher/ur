@@ -96,8 +96,12 @@ fn generate_test_compose(config_dir: &Path, test_name: &str) -> PathBuf {
             "container_name: ur-server",
             &format!("container_name: ur-server-{test_name}"),
         )
-        // Unique network name to isolate the test network
-        .replace("name: ur", &format!("name: ur-{test_name}"));
+        // Fill in template placeholders with test-specific network names
+        .replace("{{NETWORK_NAME}}", &format!("ur-{test_name}"))
+        .replace(
+            "{{WORKER_NETWORK_NAME}}",
+            &format!("ur-workers-{test_name}"),
+        );
 
     let compose_path = config_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, compose_content).expect("failed to write test compose file");
@@ -116,6 +120,7 @@ fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
          \n\
          [network]\n\
          name = \"ur-acceptance\"\n\
+         worker_name = \"ur-workers-acceptance\"\n\
          server_hostname = \"ur-server\"\n",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),

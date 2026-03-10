@@ -2,15 +2,16 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-/// Manages the lifecycle of a Docker network used by ur-managed containers.
+/// Verifies the Docker network that ur worker containers join.
 ///
-/// All containers (server + workers) join this shared network so they can
-/// communicate via Docker internal DNS.
+/// Networks are owned by docker-compose (the worker network uses `internal: true`
+/// for isolation). This manager only checks existence; it never creates or removes
+/// networks.
 #[derive(Clone, Debug)]
 pub struct NetworkManager {
     /// Docker-compatible CLI command (`docker` or `nerdctl`).
     docker_command: String,
-    /// Name of the Docker network to manage.
+    /// Name of the Docker network to verify.
     network_name: String,
 }
 
@@ -27,89 +28,30 @@ impl NetworkManager {
         &self.network_name
     }
 
-    /// Ensure the Docker network exists, creating it if necessary.
+    /// Verify the Docker network exists (created by docker compose).
     ///
-    /// Uses `docker network inspect` to check existence, then
-    /// `docker network create` with the `bridge` driver if missing.
-    /// Returns `Ok(true)` if the network was created, `Ok(false)` if it
-    /// already existed.
-    pub fn ensure(&self) -> Result<bool> {
-        if self.exists()? {
-            return Ok(false);
+    /// Networks are owned by docker-compose — the worker network uses
+    /// `internal: true` for isolation, which `docker network create` cannot
+    /// express. This method only checks; it never creates.
+    pub fn ensure(&self) -> Result<()> {
+        if !self.exists()? {
+            bail!(
+                "Docker network '{}' does not exist — is docker compose running?",
+                self.network_name
+            );
         }
-        self.create()?;
-        Ok(true)
+        Ok(())
     }
 
     /// Check whether the managed network already exists.
     pub fn exists(&self) -> Result<bool> {
-        let args = Self::inspect_args(&self.network_name);
         let output = Command::new(&self.docker_command)
-            .args(&args)
+            .args(["network", "inspect", &self.network_name])
             .output()
             .with_context(|| {
                 format!("failed to execute {} network inspect", self.docker_command)
             })?;
         Ok(output.status.success())
-    }
-
-    /// Create the managed network with the bridge driver.
-    pub fn create(&self) -> Result<()> {
-        let args = Self::create_args(&self.network_name);
-        let output = Command::new(&self.docker_command)
-            .args(&args)
-            .output()
-            .with_context(|| format!("failed to execute {} network create", self.docker_command))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "{} network create failed: {}",
-                self.docker_command,
-                stderr.trim()
-            );
-        }
-        Ok(())
-    }
-
-    /// Remove the managed network.
-    ///
-    /// Fails if containers are still connected. The caller should stop/disconnect
-    /// all containers before calling this.
-    pub fn remove(&self) -> Result<()> {
-        let args = Self::remove_args(&self.network_name);
-        let output = Command::new(&self.docker_command)
-            .args(&args)
-            .output()
-            .with_context(|| format!("failed to execute {} network rm", self.docker_command))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "{} network rm failed: {}",
-                self.docker_command,
-                stderr.trim()
-            );
-        }
-        Ok(())
-    }
-
-    // -- Arg builders (public for unit testing) --
-
-    pub fn inspect_args(network_name: &str) -> Vec<String> {
-        vec!["network".into(), "inspect".into(), network_name.into()]
-    }
-
-    pub fn create_args(network_name: &str) -> Vec<String> {
-        vec![
-            "network".into(),
-            "create".into(),
-            "--driver".into(),
-            "bridge".into(),
-            network_name.into(),
-        ]
-    }
-
-    pub fn remove_args(network_name: &str) -> Vec<String> {
-        vec!["network".into(), "rm".into(), network_name.into()]
     }
 }
 
@@ -117,42 +59,8 @@ impl NetworkManager {
 mod tests {
     use super::*;
 
-    fn s(v: &str) -> String {
-        v.to_string()
-    }
-
     fn test_manager() -> NetworkManager {
-        NetworkManager::new("docker".into(), "ur".into())
-    }
-
-    #[test]
-    fn inspect_args_correct() {
-        assert_eq!(
-            NetworkManager::inspect_args("ur"),
-            vec![s("network"), s("inspect"), s("ur")]
-        );
-    }
-
-    #[test]
-    fn create_args_correct() {
-        assert_eq!(
-            NetworkManager::create_args("ur"),
-            vec![
-                s("network"),
-                s("create"),
-                s("--driver"),
-                s("bridge"),
-                s("ur"),
-            ]
-        );
-    }
-
-    #[test]
-    fn remove_args_correct() {
-        assert_eq!(
-            NetworkManager::remove_args("my-net"),
-            vec![s("network"), s("rm"), s("my-net")]
-        );
+        NetworkManager::new("docker".into(), "ur-workers".into())
     }
 
     #[test]
@@ -163,7 +71,7 @@ mod tests {
 
     #[test]
     fn custom_docker_command() {
-        let mgr = NetworkManager::new("nerdctl".into(), "ur".into());
+        let mgr = NetworkManager::new("nerdctl".into(), "ur-workers".into());
         assert_eq!(mgr.docker_command, "nerdctl");
     }
 
@@ -173,11 +81,5 @@ mod tests {
         let cloned = mgr.clone();
         assert_eq!(cloned.network_name(), mgr.network_name());
         assert_eq!(cloned.docker_command, mgr.docker_command);
-    }
-
-    #[test]
-    fn create_args_with_special_chars() {
-        let args = NetworkManager::create_args("ur-test-123");
-        assert_eq!(args[4], "ur-test-123");
     }
 }

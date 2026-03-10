@@ -35,10 +35,7 @@ enum Commands {
         /// Overwrite ur.toml only
         #[arg(long)]
         force_config: bool,
-        /// Overwrite docker-compose.yml only
-        #[arg(long)]
-        force_compose: bool,
-        /// Overwrite squid/ files (squid.conf, allowlist.txt)
+        /// Overwrite squid/ files (allowlist.txt)
         #[arg(long)]
         force_squid: bool,
     },
@@ -282,14 +279,12 @@ async fn main() -> Result<()> {
     if let Commands::Init {
         force,
         force_config,
-        force_compose,
         force_squid,
     } = cli.command
     {
         return init::run(init::InitFlags {
             force,
             force_config,
-            force_compose,
             force_squid,
         });
     }
