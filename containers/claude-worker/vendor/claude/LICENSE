@@ -1,0 +1,5 @@
+Copyright (c) 2025 Anthropic, PBC. All rights reserved.
+
+This installer script is provided by Anthropic for the installation of
+Claude Code. It is vendored here for build reproducibility and to prevent
+supply-chain attacks. Redistribution is subject to Anthropic's terms of service.

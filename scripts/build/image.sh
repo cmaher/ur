@@ -24,19 +24,8 @@ build_image() {
 WORKER_CONTEXT=containers/claude-worker
 RUST_WORKER_CONTEXT=containers/claude-worker-rust
 
-# Download installer scripts if not present (gitignored, cached locally)
-CLAUDE_INSTALLER="$WORKER_CONTEXT/install-claude.sh"
-MISE_INSTALLER="$RUST_WORKER_CONTEXT/install-mise.sh"
-
-if [ ! -f "$CLAUDE_INSTALLER" ]; then
-    echo "Downloading Claude Code installer..."
-    curl -fsSL -o "$CLAUDE_INSTALLER" https://claude.ai/install.sh
-fi
-
-if [ ! -f "$MISE_INSTALLER" ]; then
-    echo "Downloading mise installer..."
-    curl -fsSL -o "$MISE_INSTALLER" https://mise.jdx.dev/install.sh
-fi
+# Stage vendored mise installer into rust worker build context
+cp "$WORKER_CONTEXT/vendor/mise/install.sh" "$RUST_WORKER_CONTEXT/install-mise.sh"
 
 build_image ur-worker-base:latest "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
 echo "Base image built: ur-worker-base:latest"

@@ -1925,6 +1925,8 @@ dependencies = [
  "clap",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-subscriber",
  "ur_config",
  "ur_rpc",
 ]

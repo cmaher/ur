@@ -25,7 +25,7 @@ COPY .tmux.conf /etc/tmux.conf
 RUN useradd -m -s /bin/bash worker
 
 # Install Claude Code CLI as worker user
-COPY install-claude.sh /tmp/install-claude.sh
+COPY vendor/claude/install.sh /tmp/install-claude.sh
 USER worker
 RUN bash /tmp/install-claude.sh
 USER root
