@@ -23,17 +23,31 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::load()?;
     info!("config dir: {}", cfg.config_dir.display());
-    info!("workspace:  {}", cfg.workspace.display());
     info!("daemon port: {}", cfg.daemon_port);
     info!("network:    {}", cfg.network.name);
     info!("workers:    {}", cfg.network.worker_name);
-    tokio::fs::create_dir_all(&cfg.workspace).await?;
+
+    // When running in a container, the workspace is mounted at /workspace.
+    // Use UR_HOST_WORKSPACE for host-side paths (ur-hostd CWD mapping),
+    // and the mount point for local filesystem operations (mkdir, git init).
+    let host_workspace = std::env::var(ur_config::UR_HOST_WORKSPACE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cfg.workspace.clone());
+    let local_workspace = if std::env::var(ur_config::UR_HOST_WORKSPACE_ENV).is_ok() {
+        PathBuf::from(ur_config::WORKSPACE_MOUNT)
+    } else {
+        cfg.workspace.clone()
+    };
+    info!("workspace (local): {}", local_workspace.display());
+    info!("workspace (host):  {}", host_workspace.display());
+
+    tokio::fs::create_dir_all(&local_workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
 
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
-    let repo_registry = Arc::new(RepoRegistry::new(cfg.workspace.clone()));
+    let repo_registry = Arc::new(RepoRegistry::new(host_workspace));
 
     // Determine the Docker command from env (docker vs nerdctl)
     let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
@@ -52,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
     info!("host config: {}", host_config_dir.display());
 
     let process_manager = ProcessManager::new(
-        cfg.workspace.clone(),
+        local_workspace,
         host_config_dir,
         repo_registry.clone(),
         network_manager,

@@ -38,6 +38,8 @@ services:
       - UR_CONFIG=/config
       # Host-side config path for constructing agent container volume mounts
       - UR_HOST_CONFIG=${UR_CONFIG:-~/.ur}
+      # Host-side workspace path for ur-hostd CWD mapping
+      - UR_HOST_WORKSPACE=${UR_WORKSPACE:-~/.ur/workspace}
       # GitHub authentication (forwarded from host)
       - UR_HOSTD_ADDR=http://host.docker.internal:${UR_HOSTD_PORT:-42070}
       - GH_TOKEN=${GH_TOKEN:-}

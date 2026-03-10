@@ -34,6 +34,16 @@ pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
 /// Home directory of the worker user inside agent containers.
 pub const WORKER_HOME: &str = "/home/worker";
 
+/// Container-internal mount point for the workspace volume.
+/// The compose template mounts `$UR_WORKSPACE` (host path) at this path.
+pub const WORKSPACE_MOUNT: &str = "/workspace";
+
+/// Environment variable: host-side workspace directory path.
+///
+/// Like `UR_HOST_CONFIG`, the server container needs the original host path when
+/// constructing paths for ur-hostd (which runs on the host).
+pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
+
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
