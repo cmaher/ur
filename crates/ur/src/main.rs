@@ -2,6 +2,7 @@ mod compose;
 mod credential;
 mod hostd;
 mod init;
+mod lifecycle_log;
 mod proxy;
 
 use std::path::PathBuf;
@@ -133,11 +134,27 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
 }
 
 fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
-    hostd::start_hostd(config)?;
-    compose
-        .up()
-        .context("failed to start server via docker compose")?;
+    let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
+    log.info("ur start: beginning");
+
+    match hostd::start_hostd(config) {
+        Ok(()) => log.info("ur start: hostd started"),
+        Err(e) => {
+            log.error(&format!("ur start: hostd failed: {e}"));
+            return Err(e);
+        }
+    }
+
+    match compose.up() {
+        Ok(()) => log.info("ur start: compose up succeeded"),
+        Err(e) => {
+            log.error(&format!("ur start: compose up failed: {e}"));
+            return Err(e);
+        }
+    }
+
     println!("server started");
+    log.info("ur start: complete");
 
     // Check if shared credentials exist; if not, hint about Keychain seeding.
     let has_credentials = credential::CredentialManager::host_credentials_path()
@@ -154,14 +171,22 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
 }
 
 fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
+    let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
+    log.info("ur stop: beginning");
+
     kill_all_containers()?;
     if !compose.is_running()? {
         println!("server is not running");
+        log.info("ur stop: server was not running");
         return Ok(());
     }
     compose.down()?;
     println!("server stopped");
+    log.info("ur stop: compose down succeeded");
+
     hostd::stop_hostd(config)?;
+    log.info("ur stop: hostd stopped");
+    log.info("ur stop: complete");
     Ok(())
 }
 
