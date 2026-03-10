@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::hostd::HostDaemonExecRequest;
@@ -41,6 +41,11 @@ impl HostExecService for HostExecServiceHandler {
 
         // 1. Allowlist check
         let cmd_config = self.config.get(&req.command).ok_or_else(|| {
+            warn!(
+                command = req.command,
+                process_id = self.process_id,
+                "host exec command denied: not in allowlist"
+            );
             Status::permission_denied(format!("command not allowed: {}", req.command))
         })?;
 
@@ -60,7 +65,8 @@ impl HostExecService for HostExecServiceHandler {
             command = req.command,
             process_id = self.process_id,
             host_working_dir,
-            "host exec"
+            args_count = args.len(),
+            "host exec forwarding to hostd"
         );
 
         // 4. Forward to ur-hostd
@@ -100,6 +106,11 @@ impl HostExecService for HostExecServiceHandler {
         _req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
         let commands = self.config.command_names();
+        info!(
+            process_id = self.process_id,
+            command_count = commands.len(),
+            "list_commands request"
+        );
         Ok(Response::new(ListHostExecCommandsResponse { commands }))
     }
 }

@@ -17,15 +17,18 @@ struct Cli {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    ur_server::logging::init();
 
     let _cli = Cli::parse();
 
     let cfg = Config::load()?;
-    info!("config dir: {}", cfg.config_dir.display());
-    info!("daemon port: {}", cfg.daemon_port);
-    info!("network:    {}", cfg.network.name);
-    info!("workers:    {}", cfg.network.worker_name);
+    info!(
+        config_dir = %cfg.config_dir.display(),
+        daemon_port = cfg.daemon_port,
+        network = cfg.network.name,
+        workers = cfg.network.worker_name,
+        "server config loaded"
+    );
 
     // When running in a container, the workspace is mounted at /workspace.
     // Use UR_HOST_WORKSPACE for host-side paths (ur-hostd CWD mapping),
@@ -38,8 +41,11 @@ async fn main() -> anyhow::Result<()> {
     } else {
         cfg.workspace.clone()
     };
-    info!("workspace (local): {}", local_workspace.display());
-    info!("workspace (host):  {}", host_workspace.display());
+    info!(
+        local_workspace = %local_workspace.display(),
+        host_workspace = %host_workspace.display(),
+        "workspace paths resolved"
+    );
 
     tokio::fs::create_dir_all(&local_workspace).await?;
     tokio::fs::create_dir_all(&cfg.config_dir).await?;
@@ -63,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| cfg.config_dir.clone());
-    info!("host config: {}", host_config_dir.display());
+    info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
     let process_manager = ProcessManager::new(
         local_workspace,
