@@ -43,9 +43,11 @@ impl CredentialManager {
 
         // Seed credentials from Keychain only if missing — containers manage
         // their own token lifecycle after the initial copy.
-        if !creds_path.exists() {
-            let creds_json = read_keychain_credentials()
-                .context("failed to read Claude credentials from macOS Keychain")?;
+        // If Keychain is unavailable (e.g. Linux CI), skip silently —
+        // the server creates an empty stub for the Docker mount.
+        if !creds_path.exists()
+            && let Ok(creds_json) = read_keychain_credentials()
+        {
             write_file(&creds_path, &creds_json)?;
         }
 
