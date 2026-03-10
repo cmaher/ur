@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build the ur CLI binary and install to ~/bin.
-# ur-server runs in a container (built by container-image task), not installed locally.
+# ur-server runs in a container (built by image task), not installed locally.
 # Set UR_BUILD_PROFILE=debug for debug builds (default: release).
 
 PROFILE="${UR_BUILD_PROFILE:-release}"

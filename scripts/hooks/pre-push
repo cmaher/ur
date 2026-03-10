@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-push hook: run CI checks, build images, and run acceptance tests.
+# Install with: cargo make install-hooks
+
+echo "==> Running CI checks..."
+cargo make ci
+
+echo "==> Building container images..."
+cargo make image
+
+echo "==> Running acceptance tests..."
+cargo test -p acceptance --features acceptance

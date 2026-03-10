@@ -53,30 +53,41 @@ description = "Build ur-server binary for linux-musl (Alpine) and stage for Dock
 script_runner = "@shell"
 script = ["scripts/build/stage-server-native.sh"]
 
-[tasks.container-image]
+[tasks.image]
 description = "Build all container images (worker + server)"
 dependencies = ["stage-workercmd", "stage-server"]
 script_runner = "@shell"
-script = ["scripts/build/container-image.sh"]
+script = ["scripts/build/image.sh"]
 
-[tasks.container-image-native]
+[tasks.image-native]
 description = "Build all container images using native compilation (for Linux CI)"
 dependencies = ["stage-workercmd-native", "stage-server-native"]
 script_runner = "@shell"
-script = ["scripts/build/container-image.sh"]
+script = ["scripts/build/image.sh"]
 
 [tasks.install]
 description = "Build ur CLI, install to ~/bin, and build all container images"
-dependencies = ["container-image"]
+dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
 [tasks.install-debug]
 description = "Same as install but with debug builds"
-dependencies = ["container-image"]
+dependencies = ["image"]
 env = { "UR_BUILD_PROFILE" = "debug" }
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
+
+[tasks.acceptance]
+description = "Build container images and run acceptance tests"
+dependencies = ["image"]
+command = "cargo"
+args = ["test", "-p", "acceptance", "--features", "acceptance"]
+
+[tasks.install-hooks]
+description = "Install git hooks (pre-push runs acceptance tests)"
+script_runner = "@shell"
+script = ["cp scripts/hooks/* .git/hooks/"]
 
 [tasks.ci]
 description = "Run all CI checks"
