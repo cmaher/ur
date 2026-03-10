@@ -1,12 +1,12 @@
 //! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
 //!
 //! These tests exercise the full user-facing workflow via Docker Compose:
-//!   1. `ur compose up` starts the server in a container via docker compose
+//!   1. `ur start` starts the server + squid in containers via docker compose
 //!   2. `ur process launch` launches a worker container via the server
 //!   3. Worker commands inside the container (`ur-ping`, `git`) connect to the server
 //!      via tonic gRPC over TCP using `UR_SERVER_ADDR`
 //!   4. `ur process stop` tears down the worker container
-//!   5. `ur compose down` stops the server container
+//!   5. `ur stop` stops the server + squid containers
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
@@ -81,38 +81,22 @@ fn force_remove_container(runtime: &str, name: &str) {
         .status();
 }
 
-/// Generate a test-specific docker-compose.yml from the project template.
+/// Write a test-specific ur.toml and supporting files.
 ///
-/// Replaces the container name and network name to avoid colliding with
-/// production or other test instances.
-fn generate_test_compose(config_dir: &Path, test_name: &str) -> PathBuf {
-    let template_path = workspace_root().join("containers/docker-compose.yml");
-    let template = std::fs::read_to_string(&template_path)
-        .unwrap_or_else(|e| panic!("failed to read compose template: {e}"));
-
-    let compose_content = template
-        // Unique container name so tests don't collide with production server
-        .replace(
-            "container_name: ur-server",
-            &format!("container_name: ur-server-{test_name}"),
-        )
-        // Fill in template placeholders with test-specific network names
-        .replace("{{NETWORK_NAME}}", &format!("ur-{test_name}"))
-        .replace(
-            "{{WORKER_NETWORK_NAME}}",
-            &format!("ur-workers-{test_name}"),
-        );
-
-    let compose_path = config_dir.join("docker-compose.yml");
-    std::fs::write(&compose_path, compose_content).expect("failed to write test compose file");
-    compose_path
-}
-
-/// Write a test-specific ur.toml pointing at the generated compose file.
-fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
+/// `ur start` renders the compose file from its embedded template, replacing
+/// network name placeholders with values from the config. Container names
+/// come from the template defaults (ur-server, ur-squid). The compose_file
+/// path in ur.toml tells `ur start` where to write the rendered file.
+fn write_test_config(config_dir: &Path, daemon_port: u16) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
 
+    let squid_dir = config_dir.join("squid");
+    std::fs::create_dir_all(&squid_dir).expect("failed to create squid dir");
+    std::fs::write(squid_dir.join("allowlist.txt"), "api.anthropic.com\n")
+        .expect("failed to write allowlist.txt");
+
+    let compose_file = config_dir.join("docker-compose.yml");
     let toml_content = format!(
         "daemon_port = {daemon_port}\n\
          workspace = \"{workspace}\"\n\
@@ -128,11 +112,11 @@ fn write_test_config(config_dir: &Path, daemon_port: u16, compose_file: &Path) {
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
 }
 
-/// Run `ur compose down` for cleanup, ignoring errors.
-fn compose_down(ur: &Path, config_dir: &Path) {
+/// Run `ur stop` for cleanup, ignoring errors.
+fn stop_server(ur: &Path, config_dir: &Path) {
     let _ = run_cmd(
         ur,
-        &["compose", "down"],
+        &["stop"],
         &[("UR_CONFIG", config_dir.to_str().unwrap())],
     );
 }
@@ -140,22 +124,23 @@ fn compose_down(ur: &Path, config_dir: &Path) {
 #[test]
 fn e2e_ping_and_git() {
     let runtime = detect_container_runtime();
-    let test_name = "acceptance";
     let ticket_id = "acceptance-test";
     let container_name = format!("ur-agent-{ticket_id}");
-    let server_container = format!("ur-server-{test_name}");
+    // Container names come from the compose template defaults
+    let server_container = "ur-server";
+    let squid_container = "ur-squid";
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
-    force_remove_container(&runtime, &server_container);
+    force_remove_container(&runtime, server_container);
+    force_remove_container(&runtime, squid_container);
 
     // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
     let daemon_port = 19876u16;
 
-    let compose_file = generate_test_compose(config_path, test_name);
-    write_test_config(config_path, daemon_port, &compose_file);
+    write_test_config(config_path, daemon_port);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -164,11 +149,11 @@ fn e2e_ping_and_git() {
 
     // Use catch_unwind so we always clean up via compose down even on panic.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- (2) ur compose up ----
-        let up_output = run_cmd(&ur, &["compose", "up"], &env);
+        // ---- (2) ur start ----
+        let up_output = run_cmd(&ur, &["start"], &env);
         assert!(
             up_output.status.success(),
-            "ur compose up failed.\nstdout: {}\nstderr: {}",
+            "ur start failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&up_output.stdout),
             String::from_utf8_lossy(&up_output.stderr),
         );
@@ -246,7 +231,64 @@ fn e2e_ping_and_git() {
             "error should mention -C.\nstderr: {blocked_stderr}"
         );
 
-        // ---- (6) ur process stop ----
+        // ---- (6) Squid proxy: blocked domain returns 403 ----
+        // Use %{http_connect} to capture the proxy's CONNECT response code.
+        // %{http_code} reports the final destination response which is 000 when
+        // the CONNECT tunnel is denied (no destination connection is made).
+        let blocked_curl = Command::new(&runtime)
+            .args([
+                "exec",
+                &container_name,
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_connect}",
+                "--max-time",
+                "10",
+                "https://google.com",
+            ])
+            .output()
+            .expect("failed to exec curl (blocked) in container");
+
+        let blocked_code = String::from_utf8_lossy(&blocked_curl.stdout);
+        assert_eq!(
+            blocked_code.trim(),
+            "403",
+            "blocked domain should get 403 from squid.\nhttp_connect: {blocked_code}\nstderr: {}",
+            String::from_utf8_lossy(&blocked_curl.stderr),
+        );
+
+        // ---- (6b) Squid proxy: allowed domain connects through ----
+        // Use %{http_connect} to verify the CONNECT tunnel is established (200).
+        let allowed_curl = Command::new(&runtime)
+            .args([
+                "exec",
+                &container_name,
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_connect}",
+                "--max-time",
+                "10",
+                "https://api.anthropic.com",
+            ])
+            .output()
+            .expect("failed to exec curl (allowed) in container");
+
+        let allowed_code = String::from_utf8_lossy(&allowed_curl.stdout);
+        let allowed_code_num: u16 = allowed_code.trim().parse().unwrap_or(0);
+        assert!(
+            allowed_code_num > 0 && allowed_code_num != 403,
+            "allowed domain should connect through squid (not 000/403).\n\
+             http_connect: {allowed_code}\nstderr: {}",
+            String::from_utf8_lossy(&allowed_curl.stderr),
+        );
+
+        // ---- (7) ur process stop ----
         let stop_output = run_cmd(&ur, &["process", "stop", ticket_id], &env);
         assert!(
             stop_output.status.success(),
@@ -256,8 +298,8 @@ fn e2e_ping_and_git() {
         );
     }));
 
-    // ---- (7) Always tear down server via compose down ----
-    compose_down(&ur, config_path);
+    // ---- (8) Always tear down server ----
+    stop_server(&ur, config_path);
 
     // Re-raise any panic from the test body.
     if let Err(e) = result {

@@ -48,6 +48,8 @@ impl ComposeManager {
     /// Start the server via `docker compose up -d`.
     ///
     /// Renders and writes the compose file before invoking docker compose.
+    /// Runs `docker compose down` first to clean up stale networks/containers
+    /// from a previous run that wasn't shut down cleanly.
     pub fn up(&self) -> Result<()> {
         fs::write(&self.compose_file, &self.compose_content).with_context(|| {
             format!(
@@ -55,6 +57,10 @@ impl ComposeManager {
                 self.compose_file.display()
             )
         })?;
+
+        // Clean up stale networks/containers from a previous run so `up` doesn't
+        // fail with "network already exists".
+        let _ = self.base_command().args(["down"]).output();
 
         let output = self
             .base_command()
