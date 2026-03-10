@@ -36,6 +36,9 @@ jobs:
       - name: Build server container image
         run: docker build -t ur-server:latest containers/server
 
+      - name: Build squid container image
+        run: docker build -t ur-squid:latest containers/squid
+
       - name: Run acceptance tests
         run: cargo test -p acceptance --features acceptance
         env:

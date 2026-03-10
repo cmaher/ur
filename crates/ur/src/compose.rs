@@ -1,31 +1,41 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::fs;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
+/// Embedded compose template with `{{NETWORK_NAME}}` and `{{WORKER_NETWORK_NAME}}` placeholders.
+const COMPOSE_TEMPLATE: &str = include_str!("../../../containers/docker-compose.yml");
+
 /// Manages server lifecycle via Docker Compose.
 ///
-/// Wraps `docker compose` CLI commands targeting the project's compose file.
-/// The compose file path is resolved from `ur_config::Config::compose_file`.
+/// Wraps `docker compose` CLI commands targeting a rendered compose file.
+/// The compose file is written on `up()` and removed on `down()`.
 #[derive(Debug, Clone)]
 pub struct ComposeManager {
     compose_file: PathBuf,
     /// Environment variables passed to `docker compose` (forwarded to the compose file's
     /// variable interpolation, e.g. `${UR_SERVER_PORT}`, `${UR_CONFIG}`).
     env_vars: Vec<(String, String)>,
+    /// Rendered compose file content (template with network names filled in).
+    compose_content: String,
 }
 
 impl ComposeManager {
-    pub fn new(compose_file: PathBuf, env_vars: Vec<(String, String)>) -> Self {
+    pub fn new(
+        compose_file: PathBuf,
+        env_vars: Vec<(String, String)>,
+        compose_content: String,
+    ) -> Self {
         Self {
             compose_file,
             env_vars,
+            compose_content,
         }
     }
 
     /// Build the base `docker compose -f <file>` command with environment variables.
-    fn base_command(&self) -> Command {
-        let mut cmd = Command::new("docker");
+    fn base_command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new("docker");
         cmd.arg("compose");
         cmd.arg("-f");
         cmd.arg(&self.compose_file);
@@ -37,9 +47,20 @@ impl ComposeManager {
 
     /// Start the server via `docker compose up -d`.
     ///
-    /// Validates that the compose file exists before invoking docker compose.
+    /// Renders and writes the compose file before invoking docker compose.
+    /// Runs `docker compose down` first to clean up stale networks/containers
+    /// from a previous run that wasn't shut down cleanly.
     pub fn up(&self) -> Result<()> {
-        self.validate_compose_file()?;
+        fs::write(&self.compose_file, &self.compose_content).with_context(|| {
+            format!(
+                "failed to write compose file: {}",
+                self.compose_file.display()
+            )
+        })?;
+
+        // Clean up stale networks/containers from a previous run so `up` doesn't
+        // fail with "network already exists".
+        let _ = self.base_command().args(["down"]).output();
 
         let output = self
             .base_command()
@@ -56,8 +77,15 @@ impl ComposeManager {
     }
 
     /// Stop and remove server containers/networks via `docker compose down`.
+    ///
+    /// Removes the compose file after a successful teardown.
     pub fn down(&self) -> Result<()> {
-        self.validate_compose_file()?;
+        if !self.compose_file.exists() {
+            bail!(
+                "compose file not found: {} — is the server running?",
+                self.compose_file.display()
+            );
+        }
 
         let output = self
             .base_command()
@@ -69,6 +97,9 @@ impl ComposeManager {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("docker compose down failed: {stderr}");
         }
+
+        // Clean up the rendered compose file
+        let _ = fs::remove_file(&self.compose_file);
 
         Ok(())
     }
@@ -95,21 +126,13 @@ impl ComposeManager {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(!stdout.trim().is_empty())
     }
+}
 
-    fn validate_compose_file(&self) -> Result<()> {
-        if !self.compose_file.exists() {
-            bail!(
-                "compose file not found: {}\n\
-                 Set compose_file in ur.toml or copy docker-compose.yml to {}",
-                self.compose_file.display(),
-                self.compose_file
-                    .parent()
-                    .unwrap_or(Path::new("/"))
-                    .display()
-            );
-        }
-        Ok(())
-    }
+/// Render the compose template with resolved network names.
+pub fn render_compose(network: &ur_config::NetworkConfig) -> String {
+    COMPOSE_TEMPLATE
+        .replace("{{NETWORK_NAME}}", &network.name)
+        .replace("{{WORKER_NETWORK_NAME}}", &network.worker_name)
 }
 
 /// Build a `ComposeManager` from the resolved ur config.
@@ -134,37 +157,23 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         env_vars.push(("UR_CONTAINER".to_string(), val));
     }
 
-    ComposeManager::new(config.compose_file.clone(), env_vars)
+    let compose_content = render_compose(&config.network);
+
+    ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
 
     #[test]
-    fn validate_compose_file_missing() {
-        let manager = ComposeManager::new(PathBuf::from("/nonexistent/docker-compose.yml"), vec![]);
-        let err = manager.validate_compose_file().unwrap_err();
-        assert!(
-            err.to_string().contains("compose file not found"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn validate_compose_file_exists() {
-        let tmp = TempDir::new().unwrap();
-        let compose_path = tmp.path().join("docker-compose.yml");
-        fs::write(&compose_path, "services: {}").unwrap();
-        let manager = ComposeManager::new(compose_path, vec![]);
-        manager.validate_compose_file().unwrap();
-    }
-
-    #[test]
     fn is_running_returns_false_when_file_missing() {
-        let manager = ComposeManager::new(PathBuf::from("/nonexistent/docker-compose.yml"), vec![]);
+        let manager = ComposeManager::new(
+            PathBuf::from("/nonexistent/docker-compose.yml"),
+            vec![],
+            String::new(),
+        );
         assert!(!manager.is_running().unwrap());
     }
 
@@ -181,6 +190,7 @@ mod tests {
             },
             network: ur_config::NetworkConfig {
                 name: "ur".to_string(),
+                worker_name: "ur-workers".to_string(),
                 server_hostname: "ur-server".to_string(),
             },
         };
@@ -205,5 +215,32 @@ mod tests {
                 .env_vars
                 .contains(&("UR_SERVER_PORT".to_string(), "9999".to_string()))
         );
+    }
+
+    #[test]
+    fn render_compose_replaces_placeholders() {
+        let network = ur_config::NetworkConfig {
+            name: "test-net".to_string(),
+            worker_name: "test-workers".to_string(),
+            server_hostname: "test-server".to_string(),
+        };
+        let rendered = render_compose(&network);
+        assert!(rendered.contains("name: test-net"));
+        assert!(rendered.contains("name: test-workers"));
+        assert!(!rendered.contains("{{NETWORK_NAME}}"));
+        assert!(!rendered.contains("{{WORKER_NETWORK_NAME}}"));
+    }
+
+    #[test]
+    fn up_writes_compose_file() {
+        let tmp = TempDir::new().unwrap();
+        let compose_path = tmp.path().join("docker-compose.yml");
+        let content = "services: {}".to_string();
+        let manager = ComposeManager::new(compose_path.clone(), vec![], content.clone());
+
+        // up() will fail on docker compose, but should still write the file
+        let _ = manager.up();
+        assert!(compose_path.exists());
+        assert_eq!(fs::read_to_string(&compose_path).unwrap(), content);
     }
 }

@@ -46,10 +46,11 @@ fn make_grpc_handler(
     let credential_manager = ur_server::CredentialManager;
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
+        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
     };
     let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.name.clone());
+        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         repo_registry.clone(),

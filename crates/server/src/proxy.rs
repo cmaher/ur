@@ -8,24 +8,6 @@ use tracing::info;
 /// Squid proxy container name on the Docker network.
 pub const SQUID_CONTAINER_NAME: &str = "ur-squid";
 
-const SQUID_CONF: &str = "\
-# Ur forward proxy — managed by urd. Do not edit manually.
-http_port 3128
-
-acl allowed_domains dstdomain \"/etc/squid/allowlist.txt\"
-acl CONNECT method CONNECT
-
-http_access allow CONNECT allowed_domains
-http_access allow allowed_domains
-http_access deny all
-
-access_log stdio:/dev/stdout
-cache_log stdio:/dev/stderr
-cache deny all
-via off
-forwarded_for delete
-";
-
 /// Manages Squid proxy config files and runtime allowlist.
 ///
 /// Config files live in a host directory (`$UR_CONFIG/squid/`) mounted into the
@@ -46,20 +28,6 @@ impl SquidManager {
             config_dir,
             allowlist: Arc::new(RwLock::new(allowlist)),
         }
-    }
-
-    /// Write `squid.conf` and `allowlist.txt` to the config directory.
-    /// Called once at server startup, before compose brings up the Squid service.
-    pub fn write_config(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.config_dir)
-            .with_context(|| format!("create squid config dir: {}", self.config_dir.display()))?;
-
-        std::fs::write(self.config_dir.join("squid.conf"), SQUID_CONF)
-            .context("write squid.conf")?;
-
-        self.write_allowlist_file()?;
-        info!(dir = %self.config_dir.display(), "squid config written");
-        Ok(())
     }
 
     /// Replace the entire allowlist and write to disk.
@@ -132,22 +100,10 @@ mod tests {
     }
 
     #[test]
-    fn writes_squid_conf() {
-        let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
-
-        let conf = std::fs::read_to_string(tmp.path().join("squid.conf")).unwrap();
-        assert!(conf.contains("http_port 3128"));
-        assert!(conf.contains("allowlist.txt"));
-        assert!(conf.contains("http_access deny all"));
-    }
-
-    #[test]
     fn writes_allowlist_file() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
+        manager.update_allowlist(test_allowlist()).unwrap();
 
         let allowlist = std::fs::read_to_string(tmp.path().join("allowlist.txt")).unwrap();
         assert!(allowlist.contains("api.anthropic.com"));
@@ -158,7 +114,7 @@ mod tests {
     fn update_allowlist_rewrites_file() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
+        manager.update_allowlist(test_allowlist()).unwrap();
 
         manager
             .update_allowlist(vec!["new.example.com".into()])
@@ -173,7 +129,7 @@ mod tests {
     fn add_domain_appends() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
+        manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.add_domain("new.example.com").unwrap();
 
@@ -186,7 +142,7 @@ mod tests {
     fn add_domain_deduplicates() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
+        manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.add_domain("api.anthropic.com").unwrap();
 
@@ -197,7 +153,7 @@ mod tests {
     fn remove_domain() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
-        manager.write_config().unwrap();
+        manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.remove_domain("example.com").unwrap();
 

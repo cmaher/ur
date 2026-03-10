@@ -1,4 +1,5 @@
 mod compose;
+mod init;
 mod proxy;
 
 use std::path::PathBuf;
@@ -26,6 +27,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Bootstrap the ~/.ur/ config directory
+    Init {
+        /// Overwrite all files
+        #[arg(long)]
+        force: bool,
+        /// Overwrite ur.toml only
+        #[arg(long)]
+        force_config: bool,
+        /// Overwrite squid/ files (allowlist.txt)
+        #[arg(long)]
+        force_squid: bool,
+    },
     /// Launch the TUI dashboard
     Tui,
     /// Manage processes
@@ -38,11 +51,10 @@ enum Commands {
         #[command(subcommand)]
         command: TicketCommands,
     },
-    /// Manage the server via Docker Compose
-    Compose {
-        #[command(subcommand)]
-        command: ComposeCommands,
-    },
+    /// Start the server
+    Start,
+    /// Stop the server
+    Stop,
     /// Kill server, containers, or everything
     Kill {
         #[command(subcommand)]
@@ -63,14 +75,6 @@ enum ProxyCommands {
     Block { domain: String },
     /// List allowed domains
     List,
-}
-
-#[derive(Subcommand)]
-enum ComposeCommands {
-    /// Start the server via docker compose up
-    Up,
-    /// Stop the server via docker compose down
-    Down,
 }
 
 #[derive(Subcommand)]
@@ -120,25 +124,8 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
-fn load_config() -> ur_config::Config {
-    ur_config::Config::load().unwrap_or_else(|_| {
-        let home = dirs::home_dir().expect("cannot determine home directory");
-        let config_dir = home.join(".ur");
-        ur_config::Config {
-            config_dir: config_dir.clone(),
-            workspace: config_dir.join("workspace"),
-            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-            compose_file: config_dir.join("docker-compose.yml"),
-            proxy: ur_config::ProxyConfig {
-                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
-                allowlist: vec!["api.anthropic.com".to_string()],
-            },
-            network: ur_config::NetworkConfig {
-                name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
-                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-            },
-        }
-    })
+fn load_config() -> Result<ur_config::Config> {
+    ur_config::Config::load().context("failed to load config")
 }
 
 fn resolve_daemon_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
@@ -154,52 +141,31 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
     Some(CoreServiceClient::new(channel))
 }
 
-/// Start the server via Docker Compose and return the compose manager used.
-fn start_server_compose(compose: &ComposeManager) -> Result<()> {
+fn start_server(compose: &ComposeManager) -> Result<()> {
     compose
         .up()
-        .context("failed to start server via docker compose")
+        .context("failed to start server via docker compose")?;
+    println!("server started");
+    Ok(())
 }
 
-async fn connect(port: u16, compose: &ComposeManager) -> Result<CoreServiceClient<Channel>> {
-    let addr = format!("http://127.0.0.1:{port}");
-
-    // Fast path: server is already running and accepting connections
-    if let Some(client) = try_connect(&addr).await {
-        return Ok(client);
-    }
-
-    // Start server via docker compose (includes --wait for health/readiness)
-    eprintln!("Starting server via docker compose...");
-    start_server_compose(compose)?;
-
-    // Poll for gRPC readiness after compose reports the service is up.
-    // The --wait flag handles container health checks, but the gRPC server
-    // inside the container may need a moment after the container is "healthy".
-    for i in 0..30 {
-        tokio::time::sleep(std::time::Duration::from_millis(if i < 5 {
-            100
-        } else {
-            250
-        }))
-        .await;
-        if let Some(client) = try_connect(&addr).await {
-            return Ok(client);
-        }
-    }
-
-    bail!("server did not become reachable within timeout — check docker compose logs")
-}
-
-fn kill_daemon(compose: &ComposeManager) -> Result<()> {
+fn stop_server(compose: &ComposeManager) -> Result<()> {
     if !compose.is_running()? {
         println!("server is not running");
         return Ok(());
     }
-
     compose.down()?;
-    println!("Stopped server (docker compose down)");
+    println!("server stopped");
     Ok(())
+}
+
+async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
+    let addr = format!("http://127.0.0.1:{port}");
+
+    match try_connect(&addr).await {
+        Some(client) => Ok(client),
+        None => bail!("server is not running — run 'ur start' first"),
+    }
 }
 
 fn kill_container(name: &str) -> Result<()> {
@@ -234,7 +200,7 @@ fn kill_all_containers() -> Result<()> {
 
 fn handle_kill(command: KillCommands, compose: &ComposeManager) -> Result<()> {
     match command {
-        KillCommands::Server => kill_daemon(compose),
+        KillCommands::Server => stop_server(compose),
         KillCommands::Container { name, all } => {
             if all {
                 kill_all_containers()
@@ -246,7 +212,7 @@ fn handle_kill(command: KillCommands, compose: &ComposeManager) -> Result<()> {
         }
         KillCommands::All => {
             kill_all_containers()?;
-            kill_daemon(compose)
+            stop_server(compose)
         }
     }
 }
@@ -308,20 +274,29 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = load_config();
+
+    // Init bypasses config loading — it creates the config files.
+    if let Commands::Init {
+        force,
+        force_config,
+        force_squid,
+    } = cli.command
+    {
+        return init::run(init::InitFlags {
+            force,
+            force_config,
+            force_squid,
+        });
+    }
+
+    let config = load_config()?;
     let port = resolve_daemon_port(cli.port, &config);
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
-        Commands::Compose { command } => match command {
-            ComposeCommands::Up => {
-                start_server_compose(&compose)?;
-                println!("server started (docker compose up)");
-            }
-            ComposeCommands::Down => {
-                kill_daemon(&compose)?;
-            }
-        },
+        Commands::Init { .. } => unreachable!(),
+        Commands::Start => start_server(&compose)?,
+        Commands::Stop => stop_server(&compose)?,
         Commands::Kill { command } => return handle_kill(command, &compose),
         Commands::Tui => println!("Launching TUI..."),
         Commands::Process { command } => match command {
@@ -329,7 +304,7 @@ async fn main() -> Result<()> {
                 process_attach(&process_id)?;
             }
             other => {
-                let mut client = connect(port, &compose).await?;
+                let mut client = connect(port).await?;
                 match other {
                     ProcessCommands::Launch {
                         ticket_id,

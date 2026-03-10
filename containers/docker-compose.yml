@@ -3,14 +3,25 @@
 # Worker containers are NOT defined here — they are launched dynamically
 # by the server via ProcessManager using the Docker socket.
 #
-# Usage:
-#   docker compose -f containers/docker-compose.yml up -d
+# `ur init` renders this template, replacing {{NETWORK_NAME}} and
+# {{WORKER_NETWORK_NAME}} with values from ur.toml (or defaults).
 #
-# The ur-server service name doubles as its Docker DNS hostname, which must match
-# ur_config::DEFAULT_SERVER_HOSTNAME ("ur-server") so worker containers can reach
-# the server and proxy via Docker internal DNS on the shared "ur" network.
+# Network topology:
+#   {{NETWORK_NAME}}        — internet-connected bridge (server + squid)
+#   {{WORKER_NETWORK_NAME}} — internal bridge, no internet (server + squid + workers)
+# Workers only join the worker network; all outbound traffic goes through squid.
 
 services:
+  ur-squid:
+    image: ur-squid:latest
+    container_name: ur-squid
+    volumes:
+      - ${UR_CONFIG:-~/.ur}/squid/allowlist.txt:/etc/squid/allowlist.txt:ro
+    networks:
+      - infra
+      - workers
+    restart: unless-stopped
+
   ur-server:
     image: ur-server:latest
     container_name: ur-server
@@ -43,11 +54,17 @@ services:
       - "${UR_SERVER_PORT:-42069}:${UR_SERVER_PORT:-42069}"
 
     networks:
-      - ur
+      - infra
+      - workers
 
 networks:
-  # Shared bridge network for server + dynamically launched worker containers.
-  # Name matches ur_config::DEFAULT_NETWORK_NAME.
-  ur:
+  # Internet-connected bridge for server + squid upstream access.
+  infra:
     driver: bridge
-    name: ur
+    name: {{NETWORK_NAME}}
+  # Internal bridge for workers — no outbound internet.
+  # Workers reach server + squid via Docker DNS here.
+  workers:
+    driver: bridge
+    name: {{WORKER_NETWORK_NAME}}
+    internal: true

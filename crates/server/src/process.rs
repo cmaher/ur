@@ -233,10 +233,13 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let cred_mgr = CredentialManager;
-        let network_manager =
-            NetworkManager::new("docker".into(), ur_config::DEFAULT_NETWORK_NAME.into());
+        let network_manager = NetworkManager::new(
+            "docker".into(),
+            ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+        );
         let network_config = NetworkConfig {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
+            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
         };
         let mgr = ProcessManager::new(

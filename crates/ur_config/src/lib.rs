@@ -24,8 +24,12 @@ pub const DEFAULT_PROXY_HOSTNAME: &str = "ur-squid";
 /// Squid listening port inside the container (standard Squid default).
 pub const SQUID_PORT: u16 = 3128;
 
-/// Default Docker network name for ur-managed containers.
+/// Default Docker network name for infrastructure (server + squid, internet-connected).
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
+
+/// Default Docker network name for workers (internal, no internet).
+/// Workers reach server + squid via Docker DNS on this network.
+pub const DEFAULT_WORKER_NETWORK_NAME: &str = "ur-workers";
 
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
@@ -53,6 +57,7 @@ struct RawProxyConfig {
 #[derive(Debug, Deserialize)]
 struct RawNetworkConfig {
     name: Option<String>,
+    worker_name: Option<String>,
     server_hostname: Option<String>,
 }
 
@@ -68,8 +73,11 @@ pub struct ProxyConfig {
 /// Docker network configuration for container networking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkConfig {
-    /// Docker network name that ur-managed containers join (default: "ur").
+    /// Infrastructure network name — internet-connected bridge for server + squid (default: "ur").
     pub name: String,
+    /// Worker network name — internal bridge with no internet (default: "ur-workers").
+    /// Workers join this network and reach the internet only through the squid proxy.
+    pub worker_name: String,
     /// Hostname containers use to reach the server via Docker DNS (default: "ur-server").
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
@@ -116,7 +124,12 @@ impl Config {
         let toml_path = config_dir.join("ur.toml");
         let raw = match std::fs::read_to_string(&toml_path) {
             Ok(contents) => toml::from_str::<RawConfig>(&contents)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => RawConfig::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "ur.toml not found in {} — run 'ur init'",
+                    config_dir.display()
+                );
+            }
             Err(e) => return Err(e.into()),
         };
 
@@ -144,12 +157,16 @@ impl Config {
         let network = match raw.network {
             Some(n) => NetworkConfig {
                 name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
+                worker_name: n
+                    .worker_name
+                    .unwrap_or_else(|| DEFAULT_WORKER_NETWORK_NAME.to_string()),
                 server_hostname: n
                     .server_hostname
                     .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
             },
             None => NetworkConfig {
                 name: DEFAULT_NETWORK_NAME.to_string(),
+                worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
                 server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
             },
         };
@@ -169,7 +186,7 @@ impl Config {
 pub const SERVER_PID_FILE: &str = "server.pid";
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
-fn resolve_config_dir() -> anyhow::Result<PathBuf> {
+pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
         return Ok(PathBuf::from(val));
     }
@@ -184,16 +201,12 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn defaults_when_no_file() {
+    fn errors_when_no_toml_file() {
         let tmp = TempDir::new().unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.config_dir, tmp.path());
-        assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
-        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
-        assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
-        assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
-        assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ur.toml not found"), "unexpected error: {msg}");
+        assert!(msg.contains("run 'ur init'"), "unexpected error: {msg}");
     }
 
     #[test]
@@ -280,6 +293,7 @@ mod tests {
     #[test]
     fn squid_dir_returns_correct_path() {
         let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.squid_dir(), tmp.path().join("squid"));
     }
@@ -290,6 +304,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
@@ -299,6 +314,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "[network]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
+        assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
     }
 
@@ -307,11 +323,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nserver_hostname = \"my-server\"\n",
+            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, "custom-net");
+        assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
     }
 }
