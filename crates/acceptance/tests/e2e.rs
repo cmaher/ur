@@ -196,7 +196,9 @@ fn e2e_ping_and_git() {
             "ur-ping should return 'pong', got: {ping_stdout}"
         );
 
-        // ---- (5) Test git commands via git proxy ----
+        // ---- (5) Test hostexec: git commands via worker → server → hostd → host ----
+        // The git shim calls ur-tools host-exec git, which goes through the full
+        // hostexec pipeline. This verifies ur-hostd is running and reachable.
         let git_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "status"])
             .output()
@@ -205,7 +207,8 @@ fn e2e_ping_and_git() {
         assert_eq!(
             git_output.status.code(),
             Some(0),
-            "git status should exit 0.\nstdout: {}\nstderr: {}",
+            "git status should exit 0 (hostexec pipeline: worker → server → hostd → host).\n\
+             stdout: {}\nstderr: {}",
             String::from_utf8_lossy(&git_output.stdout),
             String::from_utf8_lossy(&git_output.stderr),
         );
@@ -216,7 +219,7 @@ fn e2e_ping_and_git() {
             "git status should show repo info.\nGot: {git_stdout}"
         );
 
-        // ---- (5b) Test -C flag blocking ----
+        // ---- (5b) Test hostexec Lua validation: -C flag blocking ----
         let blocked_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
             .output()
