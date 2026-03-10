@@ -1,5 +1,17 @@
 use anyhow::{Context, Result};
 
+/// Resolve the ur-hostd binary path. Looks next to the current executable first
+/// (handles target/debug/ during development), then falls back to PATH lookup.
+fn hostd_bin() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        let sibling = exe.with_file_name("ur-hostd");
+        if sibling.exists() {
+            return sibling;
+        }
+    }
+    std::path::PathBuf::from("ur-hostd")
+}
+
 pub fn start_hostd(config: &ur_config::Config) -> Result<()> {
     let pid_file = config.config_dir.join(ur_config::HOSTD_PID_FILE);
 
@@ -20,7 +32,7 @@ pub fn start_hostd(config: &ur_config::Config) -> Result<()> {
         }
     }
 
-    let child = std::process::Command::new("ur-hostd")
+    let child = std::process::Command::new(hostd_bin())
         .args(["--port", &config.hostd_port.to_string()])
         .stdout(std::fs::File::create(config.config_dir.join("hostd.log"))?)
         .stderr(std::fs::File::create(config.config_dir.join("hostd.err"))?)
