@@ -34,6 +34,15 @@ pub const DEFAULT_WORKER_NETWORK_NAME: &str = "ur-workers";
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 
+/// Domains required by Claude Code for normal operation.
+fn default_proxy_allowlist() -> Vec<String> {
+    vec![
+        "api.anthropic.com".to_string(),
+        "platform.claude.com".to_string(),
+        "raw.githubusercontent.com".to_string(),
+    ]
+}
+
 // ---- Config ----
 
 /// Raw TOML representation — all fields optional so missing keys use defaults.
@@ -145,13 +154,11 @@ impl Config {
                 hostname: p
                     .hostname
                     .unwrap_or_else(|| DEFAULT_PROXY_HOSTNAME.to_string()),
-                allowlist: p
-                    .allowlist
-                    .unwrap_or_else(|| vec!["api.anthropic.com".to_string()]),
+                allowlist: p.allowlist.unwrap_or_else(default_proxy_allowlist),
             },
             None => ProxyConfig {
                 hostname: DEFAULT_PROXY_HOSTNAME.to_string(),
-                allowlist: vec!["api.anthropic.com".to_string()],
+                allowlist: default_proxy_allowlist(),
             },
         };
         let network = match raw.network {
@@ -264,7 +271,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "[proxy]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
-        assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
+        assert_eq!(cfg.proxy.allowlist, default_proxy_allowlist());
     }
 
     #[test]
@@ -287,7 +294,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
-        assert_eq!(cfg.proxy.allowlist, vec!["api.anthropic.com"]);
+        assert_eq!(cfg.proxy.allowlist, default_proxy_allowlist());
     }
 
     #[test]
