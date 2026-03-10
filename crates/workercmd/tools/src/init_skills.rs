@@ -43,7 +43,10 @@ impl InitSkillsManager {
         let skill_names = match std::env::var(SKILLS_ENV) {
             Ok(val) if !val.trim().is_empty() => val,
             _ => {
-                info!(env = SKILLS_ENV, "env var empty or missing, no skills to copy");
+                info!(
+                    env = SKILLS_ENV,
+                    "env var empty or missing, no skills to copy"
+                );
                 return Ok(());
             }
         };
