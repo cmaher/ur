@@ -4,7 +4,7 @@ use std::process::Stdio;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use tracing::info;
+use tracing::{error, info};
 
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::hostd::HostDaemonExecRequest;
@@ -26,10 +26,14 @@ impl HostDaemonService for HostDaemonHandler {
     ) -> Result<Response<Self::ExecStream>, Status> {
         let req = req.into_inner();
 
+        let arg_count = req.args.len();
+
         info!(
-            command = req.command,
-            working_dir = req.working_dir,
-            "host exec"
+            command = %req.command,
+            working_dir = %req.working_dir,
+            arg_count,
+            args = ?req.args,
+            "host exec request received"
         );
 
         let child = tokio::process::Command::new(&req.command)
@@ -38,7 +42,15 @@ impl HostDaemonService for HostDaemonHandler {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| Status::internal(format!("failed to spawn {}: {e}", req.command)))?;
+            .map_err(|e| {
+                error!(
+                    command = %req.command,
+                    working_dir = %req.working_dir,
+                    error = %e,
+                    "failed to spawn process"
+                );
+                Status::internal(format!("failed to spawn {}: {e}", req.command))
+            })?;
 
         let (tx, rx) = mpsc::channel(32);
         ur_rpc::stream::spawn_child_output_stream(child, tx);
