@@ -83,9 +83,11 @@ impl ProcessManager {
 
         if let Some(ws_dir) = workspace_dir {
             // External workspace: register the absolute path directly, skip git init
+            info!(process_id, workspace_dir = %ws_dir.display(), "registering external workspace");
             self.repo_registry.register_absolute(process_id, ws_dir);
         } else {
             // Default: create repo dir and git init
+            info!(process_id, "creating repo directory and initializing git");
             let repo_dir = self.workspace.join(process_id);
             tokio::fs::create_dir_all(&repo_dir)
                 .await
@@ -206,6 +208,12 @@ impl ProcessManager {
                 .remove(process_id)
                 .ok_or_else(|| format!("unknown process: {process_id}"))?
         };
+
+        info!(
+            process_id,
+            container_id = entry.container_id,
+            "stopping container"
+        );
 
         // 1. Stop + remove container (scoped so rt is dropped before await)
         {

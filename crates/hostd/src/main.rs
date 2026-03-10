@@ -7,6 +7,7 @@ use tracing::info;
 use ur_rpc::proto::hostd::host_daemon_service_server::HostDaemonServiceServer;
 
 mod handler;
+mod logging;
 
 #[derive(Parser)]
 #[command(name = "ur-hostd", about = "Ur host execution daemon")]
@@ -17,11 +18,17 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let config_dir = ur_config::resolve_config_dir()?;
+    let _log_guard = logging::init(&config_dir);
+
     let cli = Cli::parse();
 
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
-    info!(%addr, "ur-hostd starting");
+    info!(
+        %addr,
+        config_dir = %config_dir.display(),
+        "ur-hostd starting"
+    );
 
     Server::builder()
         .add_service(HostDaemonServiceServer::new(handler::HostDaemonHandler))

@@ -33,7 +33,7 @@ fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Rou
 ///
 /// Used for the main host CLI path (ur -> server).
 pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
-    tracing::info!("gRPC server listening on {addr}");
+    tracing::info!(addr = %addr, "main gRPC server listening");
 
     let routes = build_agent_routes(handler, "");
 
@@ -59,7 +59,7 @@ pub async fn serve_agent_grpc(
     let addr = listener.local_addr()?;
     let port = addr.port();
 
-    tracing::info!("per-agent gRPC server listening on {addr}");
+    tracing::info!(addr = %addr, port, process_id, "per-agent gRPC server listening");
 
     let routes = build_agent_routes(core_handler, process_id);
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
@@ -71,7 +71,7 @@ pub async fn serve_agent_grpc(
             .await;
 
         if let Err(e) = result {
-            tracing::warn!("per-agent gRPC server error: {e}");
+            tracing::warn!(error = %e, "per-agent gRPC server error");
         }
     });
 

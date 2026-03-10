@@ -14,7 +14,7 @@ RUN chmod +x /usr/local/bin/ur-workerd
 
 # Shim directory — ur-workerd writes shims here at startup
 RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
-ENV PATH="/home/worker/.local/bin:${PATH}"
+ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 
 COPY tk /usr/local/bin/tk
 RUN chmod +x /usr/local/bin/tk
@@ -28,9 +28,9 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Bake in minimal Claude Code config to skip onboarding/login prompts.
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
-RUN chown worker:worker /home/worker/.claude.json
 COPY claude-settings.json /home/worker/.claude/settings.json
-RUN chown worker:worker /home/worker/.claude/settings.json
+COPY skills/code /home/worker/.claude/skills/
+RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /home/worker/.claude
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.

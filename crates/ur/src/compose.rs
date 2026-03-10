@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use tracing::{debug, error, info, instrument, warn};
 
 /// Embedded compose template with `{{NETWORK_NAME}}` and `{{WORKER_NETWORK_NAME}}` placeholders.
 const COMPOSE_TEMPLATE: &str = include_str!("../../../containers/docker-compose.yml");
@@ -50,7 +51,9 @@ impl ComposeManager {
     /// Renders and writes the compose file before invoking docker compose.
     /// Runs `docker compose down` first to clean up stale networks/containers
     /// from a previous run that wasn't shut down cleanly.
+    #[instrument(skip(self), fields(compose_file = %self.compose_file.display()))]
     pub fn up(&self) -> Result<()> {
+        debug!(compose_file = %self.compose_file.display(), "writing compose file");
         fs::write(&self.compose_file, &self.compose_content).with_context(|| {
             format!(
                 "failed to write compose file: {}",
@@ -60,8 +63,10 @@ impl ComposeManager {
 
         // Clean up stale networks/containers from a previous run so `up` doesn't
         // fail with "network already exists".
+        debug!("running pre-up cleanup (docker compose down)");
         let _ = self.base_command().args(["down"]).output();
 
+        info!("running docker compose up");
         let output = self
             .base_command()
             .args(["up", "-d", "--wait"])
@@ -70,23 +75,28 @@ impl ComposeManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            error!(stderr = %stderr, "docker compose up failed");
             bail!("docker compose up failed: {stderr}");
         }
 
+        info!("docker compose up succeeded");
         Ok(())
     }
 
     /// Stop and remove server containers/networks via `docker compose down`.
     ///
     /// Removes the compose file after a successful teardown.
+    #[instrument(skip(self), fields(compose_file = %self.compose_file.display()))]
     pub fn down(&self) -> Result<()> {
         if !self.compose_file.exists() {
+            warn!(compose_file = %self.compose_file.display(), "compose file not found");
             bail!(
                 "compose file not found: {} — is the server running?",
                 self.compose_file.display()
             );
         }
 
+        info!("running docker compose down");
         let output = self
             .base_command()
             .args(["down"])
@@ -95,11 +105,13 @@ impl ComposeManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            error!(stderr = %stderr, "docker compose down failed");
             bail!("docker compose down failed: {stderr}");
         }
 
         // Clean up the rendered compose file
         let _ = fs::remove_file(&self.compose_file);
+        info!("docker compose down succeeded");
 
         Ok(())
     }
@@ -107,8 +119,10 @@ impl ComposeManager {
     /// Check if the server service is running via `docker compose ps`.
     ///
     /// Returns `true` if at least one container for the server service is running.
+    #[instrument(skip(self))]
     pub fn is_running(&self) -> Result<bool> {
         if !self.compose_file.exists() {
+            debug!("compose file does not exist, server is not running");
             return Ok(false);
         }
 
@@ -120,11 +134,14 @@ impl ComposeManager {
 
         if !output.status.success() {
             // compose ps can fail if the project was never started; treat as not running
+            debug!("docker compose ps failed, treating as not running");
             return Ok(false);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(!stdout.trim().is_empty())
+        let running = !stdout.trim().is_empty();
+        debug!(running, "compose service status");
+        Ok(running)
     }
 }
 

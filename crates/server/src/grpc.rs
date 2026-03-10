@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
+use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
@@ -37,6 +38,13 @@ impl CoreService for CoreServiceHandler {
         req: Request<ProcessLaunchRequest>,
     ) -> Result<Response<ProcessLaunchResponse>, Status> {
         let req = req.into_inner();
+
+        info!(
+            process_id = req.process_id,
+            image_id = req.image_id,
+            workspace_dir = req.workspace_dir,
+            "process_launch request received"
+        );
 
         // Parse workspace_dir: empty string means None
         let workspace_dir = if req.workspace_dir.is_empty() {
@@ -94,6 +102,7 @@ impl CoreService for CoreServiceHandler {
         req: Request<ProcessStopRequest>,
     ) -> Result<Response<ProcessStopResponse>, Status> {
         let req = req.into_inner();
+        info!(process_id = req.process_id, "process_stop request received");
         self.process_manager
             .stop(&req.process_id)
             .await

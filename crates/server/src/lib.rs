@@ -5,6 +5,7 @@ pub mod grpc_hostexec;
 pub mod grpc_server;
 #[cfg(feature = "hostexec")]
 pub mod hostexec;
+pub mod logging;
 pub mod process;
 pub mod proxy;
 pub mod registry;

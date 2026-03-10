@@ -3,6 +3,7 @@ mod credential;
 mod hostd;
 mod init;
 mod lifecycle_log;
+mod logging;
 mod proxy;
 
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use container::{ContainerId, ContainerRuntime};
 use tonic::transport::{Channel, Endpoint};
+use tracing::{debug, error, info, instrument, warn};
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
 
@@ -121,21 +123,28 @@ fn load_config() -> Result<ur_config::Config> {
 }
 
 fn resolve_daemon_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
-    cli_port.unwrap_or(config.daemon_port)
+    let port = cli_port.unwrap_or(config.daemon_port);
+    debug!(cli_port = ?cli_port, config_port = config.daemon_port, resolved_port = port, "resolved daemon port");
+    port
 }
 
+#[instrument(skip_all, fields(addr))]
 async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
+    debug!(addr, "attempting gRPC connection");
     let channel = Endpoint::try_from(addr.to_string())
         .ok()?
         .connect()
         .await
         .ok()?;
+    info!(addr, "gRPC connection established");
     Some(CoreServiceClient::new(channel))
 }
 
+#[instrument(skip(config, compose))]
 fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur start: beginning");
+    info!("starting server");
 
     match hostd::start_hostd(config) {
         Ok(()) => log.info("ur start: hostd started"),
@@ -153,6 +162,7 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
         }
     }
 
+    info!("server started successfully");
     println!("server started");
     log.info("ur start: complete");
 
@@ -162,6 +172,7 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
         .and_then(|p| std::fs::metadata(&p).ok())
         .is_some_and(|m| m.len() > 0);
     if !has_credentials {
+        warn!("no shared credentials found");
         println!();
         println!("No shared credentials found. Log in to Claude Code on this machine first.");
         println!("Credentials will be seeded from the macOS Keychain on first process launch.");
@@ -170,17 +181,20 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
     Ok(())
 }
 
+#[instrument(skip(config, compose))]
 fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
-
+    info!("stopping server");
     kill_all_containers()?;
     if !compose.is_running()? {
+        info!("server is not running, nothing to stop");
         println!("server is not running");
         log.info("ur stop: server was not running");
         return Ok(());
     }
     compose.down()?;
+    info!("server stopped successfully");
     println!("server stopped");
     log.info("ur stop: compose down succeeded");
 
@@ -190,48 +204,63 @@ fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<(
     Ok(())
 }
 
+#[instrument]
 async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
     let addr = format!("http://127.0.0.1:{port}");
 
     match try_connect(&addr).await {
         Some(client) => Ok(client),
-        None => bail!("server is not running — run 'ur start' first"),
+        None => {
+            error!(port, "server is not running");
+            bail!("server is not running — run 'ur start' first")
+        }
     }
 }
 
+#[instrument]
 fn kill_container(name: &str) -> Result<()> {
     let rt = container::runtime_from_env();
     let id = ContainerId(format!("{}{name}", container::AGENT_CONTAINER_PREFIX));
+    info!(container = %id.0, "killing container");
     rt.stop(&id)
         .with_context(|| format!("failed to stop container {}", id.0))?;
     rt.rm(&id)
         .with_context(|| format!("failed to remove container {}", id.0))?;
+    info!(container = %id.0, "container killed");
     println!("Killed {}", id.0);
     Ok(())
 }
 
+#[instrument]
 fn kill_all_containers() -> Result<()> {
     let rt = container::runtime_from_env();
     let containers = rt.list_by_prefix(container::AGENT_CONTAINER_PREFIX)?;
     if containers.is_empty() {
+        debug!("no ur-agent containers running");
         println!("No ur-agent containers running");
         return Ok(());
     }
+    info!(count = containers.len(), "killing all agent containers");
     for id in &containers {
         if let Err(e) = rt.stop(id) {
+            warn!(container = %id.0, error = %e, "failed to stop container");
             eprintln!("Warning: failed to stop {}: {e}", id.0);
         }
         if let Err(e) = rt.rm(id) {
+            warn!(container = %id.0, error = %e, "failed to remove container");
             eprintln!("Warning: failed to remove {}: {e}", id.0);
         }
+        info!(container = %id.0, "container killed");
         println!("Killed {}", id.0);
     }
     Ok(())
 }
 
+#[instrument]
 fn process_attach(process_id: &str) -> Result<()> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("ur-agent-{process_id}"));
+    info!(container = %id.0, "attaching to process");
     // Create an independent tmux session instead of attaching to "agent".
     // `tmux attach -t agent` kills the session if the user exits the shell,
     // preventing reconnection. A separate session survives agent-session death
@@ -248,20 +277,25 @@ fn process_attach(process_id: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
+#[instrument(skip(client), fields(ticket_id, workspace = ?workspace))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
 ) -> Result<()> {
+    info!(ticket_id, "launching agent process");
+
     // Refresh credentials from macOS Keychain and ensure config exists
     let cred_mgr = credential::CredentialManager;
     cred_mgr.ensure_credentials()?;
+    debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
     let workspace_dir = match workspace {
         Some(path) => {
             let abs = std::fs::canonicalize(&path)
                 .with_context(|| format!("failed to resolve workspace path: {}", path.display()))?;
+            debug!(workspace = %abs.display(), "resolved workspace path");
             abs.to_string_lossy().into_owned()
         }
         None => String::new(),
@@ -281,29 +315,36 @@ async fn process_launch(
         })
         .await?;
 
-    println!(
-        "Agent {container_name} running (container {})",
-        resp.into_inner().container_id
+    let container_id = resp.into_inner().container_id;
+    info!(
+        ticket_id,
+        container_name, container_id, image_id, "agent process launched"
     );
+    println!("Agent {container_name} running (container {container_id})");
     Ok(())
 }
 
+#[instrument(skip(client))]
 async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str) -> Result<()> {
+    info!(process_id, "stopping agent process");
     println!("Stopping {process_id}...");
     client
         .process_stop(ProcessStopRequest {
             process_id: process_id.into(),
         })
         .await?;
+    info!(process_id, "agent process stopped");
     println!("Agent {process_id} stopped.");
     Ok(())
 }
 
+#[instrument(skip(command), fields(command_name = command_name(&command)))]
 async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
     match command {
         ProcessCommands::Attach { process_id } => process_attach(&process_id),
         ProcessCommands::Kill { process_id } => kill_container(&process_id),
         ProcessCommands::SaveCredentials { process_id } => {
+            info!(process_id = %process_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
             let id = container::ContainerId(format!(
                 "{}{}",
@@ -313,6 +354,7 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
             let cred_mgr = credential::CredentialManager;
             let paths = cred_mgr.save_from_container(&runtime, &id)?;
             for path in &paths {
+                info!(path = %path.display(), "saved credential file");
                 println!("Saved {}", path.display());
             }
             Ok(())
@@ -324,6 +366,7 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
             force,
         } => {
             if force {
+                debug!(ticket_id = %ticket_id, "force-killing existing container before launch");
                 let _ = kill_container(&ticket_id);
             }
             let mut client = connect(port).await?;
@@ -334,6 +377,7 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
             Ok(())
         }
         ProcessCommands::Status { process_id } => {
+            debug!(process_id = ?process_id, "querying process status");
             println!("Status: {process_id:?}");
             Ok(())
         }
@@ -341,6 +385,18 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
         }
+    }
+}
+
+/// Extract the subcommand name for span fields.
+fn command_name(cmd: &ProcessCommands) -> &'static str {
+    match cmd {
+        ProcessCommands::Attach { .. } => "attach",
+        ProcessCommands::Kill { .. } => "kill",
+        ProcessCommands::SaveCredentials { .. } => "save_credentials",
+        ProcessCommands::Launch { .. } => "launch",
+        ProcessCommands::Status { .. } => "status",
+        ProcessCommands::Stop { .. } => "stop",
     }
 }
 
@@ -363,6 +419,18 @@ async fn main() -> Result<()> {
     }
 
     let config = load_config()?;
+
+    // Initialize structured JSON file logging after config is loaded so we
+    // know where to write the log file. The guard must live until main exits.
+    let _log_guard = logging::init(&config.config_dir);
+
+    info!(
+        config_dir = %config.config_dir.display(),
+        daemon_port = config.daemon_port,
+        hostd_port = config.hostd_port,
+        "ur CLI started"
+    );
+
     let port = resolve_daemon_port(cli.port, &config);
     let compose = compose_manager_from_config(&config);
 
@@ -370,23 +438,29 @@ async fn main() -> Result<()> {
         Commands::Init { .. } => unreachable!(),
         Commands::Start => start_server(&config, &compose)?,
         Commands::Stop => stop_server(&config, &compose)?,
-        Commands::Tui => println!("Launching TUI..."),
+        Commands::Tui => {
+            info!("launching TUI");
+            println!("Launching TUI...");
+        }
         Commands::Process { command } => handle_process(command, port).await?,
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
             let allowlist_path = squid_dir.join("allowlist.txt");
             match command {
                 ProxyCommands::Allow { domain } => {
+                    info!(domain = %domain, "allowing domain through proxy");
                     let domains = proxy::allow_domain(&allowlist_path, &domain)?;
                     proxy::signal_reconfigure();
                     proxy::print_domains(&domains);
                 }
                 ProxyCommands::Block { domain } => {
+                    info!(domain = %domain, "blocking domain from proxy");
                     let domains = proxy::block_domain(&allowlist_path, &domain)?;
                     proxy::signal_reconfigure();
                     proxy::print_domains(&domains);
                 }
                 ProxyCommands::List => {
+                    debug!("listing proxy domains");
                     let domains = proxy::read_allowlist(&allowlist_path)?;
                     proxy::print_domains(&domains);
                 }
@@ -394,10 +468,15 @@ async fn main() -> Result<()> {
         }
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
+                info!(title = %title, parent = ?parent, "creating ticket");
                 println!("Creating ticket: {title} (parent: {parent:?})");
             }
-            TicketCommands::Ls => println!("Listing tickets..."),
+            TicketCommands::Ls => {
+                debug!("listing tickets");
+                println!("Listing tickets...");
+            }
             TicketCommands::Show { ticket_id } => {
+                debug!(ticket_id = %ticket_id, "showing ticket");
                 println!("Showing ticket {ticket_id}...");
             }
         },
