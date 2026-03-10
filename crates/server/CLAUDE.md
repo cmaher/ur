@@ -8,5 +8,5 @@ Long-running server process. Auto-spawned by `ur` on first use (not a launchd se
 - `CoreServiceHandler` is `Clone` — keep it stateless or use `Arc` for shared state
 - Config and constants are in the `ur_config` crate, re-exported via `ur_server::config`
 - `stream::spawn_child_output_stream` is the shared helper for streaming child process output as `CommandOutput` gRPC frames
-- `git_exec::validate_args` blocks `-C`, `--git-dir`, and `--work-tree` with errors
+- `registry::RepoRegistry` maps process_id to repo directory paths (used by HostExecServiceHandler for CWD mapping)
 - Squid proxy: `SquidManager` writes config to `$UR_CONFIG/squid/` (`squid.conf` + `allowlist.txt`) and signals reconfigure via `docker exec ur-squid squid -k reconfigure`. Compose manages the Squid container lifecycle — SquidManager only handles config files and reload signals.

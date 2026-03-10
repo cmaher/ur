@@ -18,6 +18,10 @@ pub struct CoreServiceHandler {
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
+    #[cfg(feature = "hostexec")]
+    pub hostexec_config: crate::hostexec::HostExecConfigManager,
+    #[cfg(feature = "hostexec")]
+    pub hostd_addr: String,
 }
 
 #[tonic::async_trait]
@@ -54,6 +58,10 @@ impl CoreService for CoreServiceHandler {
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
             proxy_hostname: self.proxy_hostname.clone(),
+            #[cfg(feature = "hostexec")]
+            hostexec_config: self.hostexec_config.clone(),
+            #[cfg(feature = "hostexec")]
+            hostd_addr: self.hostd_addr.clone(),
         };
 
         let bind_host = "0.0.0.0";

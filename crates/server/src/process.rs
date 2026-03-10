@@ -291,12 +291,9 @@ mod tests {
         let repo_dir = workspace.path().join(process_id);
         assert!(repo_dir.join(".git").exists());
 
-        // Verify registry resolves and git works
-        let resp = mgr
-            .repo_registry
-            .exec_git(process_id, &["status".into()])
-            .await;
-        assert!(resp.is_ok());
+        // Verify registry resolves
+        let resolved = mgr.repo_registry.resolve(process_id);
+        assert!(resolved.is_ok());
     }
 
     #[tokio::test]

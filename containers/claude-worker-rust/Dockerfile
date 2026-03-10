@@ -10,10 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# The gRPC git proxy at /usr/local/bin/git has no server during build.
-# Move it aside so real git (/usr/bin/git) is used for tool installation.
-RUN mv /usr/local/bin/git /usr/local/bin/git-proxy
-
 USER worker
 
 # Install mise
@@ -35,9 +31,3 @@ RUN --mount=type=cache,target=/home/worker/.cargo/registry,uid=1000 \
 
 # Activate mise in interactive shells so all tools are on PATH
 RUN echo 'eval "$(/home/worker/.local/bin/mise activate bash)"' >> /home/worker/.bashrc
-
-# Restore the git proxy for runtime (worker network has no direct internet)
-USER root
-RUN mv /usr/local/bin/git-proxy /usr/local/bin/git
-
-USER worker

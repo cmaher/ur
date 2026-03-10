@@ -137,8 +137,8 @@ pub fn render_compose(network: &ur_config::NetworkConfig) -> String {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, and `UR_SERVER_PORT` as environment variables
-/// so the compose file's variable interpolation picks them up.
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, and `UR_HOSTD_PORT`
+/// as environment variables so the compose file's variable interpolation picks them up.
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
     let mut env_vars = vec![
         (
@@ -150,6 +150,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             config.workspace.to_string_lossy().into_owned(),
         ),
         ("UR_SERVER_PORT".to_string(), config.daemon_port.to_string()),
+        ("UR_HOSTD_PORT".to_string(), config.hostd_port.to_string()),
     ];
 
     // Forward UR_CONTAINER if set so compose can potentially use it
@@ -193,6 +194,7 @@ mod tests {
                 worker_name: "ur-workers".to_string(),
                 server_hostname: "ur-server".to_string(),
             },
+            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
         };
 
         let manager = compose_manager_from_config(&config);

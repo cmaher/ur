@@ -12,12 +12,12 @@ case "$ARCH" in
 esac
 
 echo "Cross-compiling workercmd binaries for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-git -p workercmd-gh
+cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-tools -p ur-workerd
 
 DEST=containers/claude-worker
 cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
-cp "target/$TARGET/release/git" "$DEST/git"
-cp "target/$TARGET/release/gh" "$DEST/gh"
+cp "target/$TARGET/release/ur-tools" "$DEST/ur-tools"
+cp "target/$TARGET/release/ur-workerd" "$DEST/ur-workerd"
 
 rm -f "$DEST/tk"
 TK_PATH=$(which tk 2>/dev/null || true)

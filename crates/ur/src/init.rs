@@ -9,6 +9,9 @@ platform.claude.com
 raw.githubusercontent.com
 mcp-proxy.anthropic.com
 storage.googleapis.com
+index.crates.io
+static.crates.io
+static.rust-lang.org
 ";
 
 pub struct InitFlags {
@@ -33,6 +36,9 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
 
     let claude_dir = config_dir.join(ur_config::CLAUDE_DIR);
     init_dir(&claude_dir)?;
+
+    let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
+    init_dir(&hostexec_dir)?;
 
     let should_force_config = flags.force || flags.force_config;
     let should_force_squid = flags.force || flags.force_squid;
@@ -107,6 +113,7 @@ mod tests {
 
         assert!(tmp.path().join("workspace").is_dir());
         assert!(tmp.path().join("squid").is_dir());
+        assert!(tmp.path().join("hostexec").is_dir());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());
     }
@@ -131,6 +138,9 @@ mod tests {
         assert!(content.contains("raw.githubusercontent.com"));
         assert!(content.contains("mcp-proxy.anthropic.com"));
         assert!(content.contains("storage.googleapis.com"));
+        assert!(content.contains("index.crates.io"));
+        assert!(content.contains("static.crates.io"));
+        assert!(content.contains("static.rust-lang.org"));
     }
 
     #[test]
