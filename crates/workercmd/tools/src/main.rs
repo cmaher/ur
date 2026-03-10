@@ -7,6 +7,9 @@ use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::hostexec::HostExecRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 
+mod init_skills;
+mod logging;
+
 #[derive(Parser)]
 #[command(name = "ur-tools", about = "Ur worker toolkit")]
 struct Cli {
@@ -24,6 +27,8 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Initialize skills from potential-skills based on UR_WORKER_SKILLS env var
+    InitSkills,
 }
 
 #[tokio::main]
@@ -33,6 +38,11 @@ async fn main() {
     match cli.command {
         Commands::HostExec { command, args } => {
             std::process::exit(run_host_exec(&command, args).await);
+        }
+        Commands::InitSkills => {
+            logging::init();
+            let manager = init_skills::InitSkillsManager::from_env();
+            std::process::exit(manager.run().await);
         }
     }
 }
