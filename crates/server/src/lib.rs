@@ -14,7 +14,7 @@ pub mod registry;
 pub mod stream;
 
 pub use config::Config;
-pub use hostd_client::HostDaemonClientManager;
+pub use hostd_client::HostdClient;
 pub use pool::RepoPoolManager;
 pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;

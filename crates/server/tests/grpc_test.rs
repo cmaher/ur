@@ -68,7 +68,7 @@ fn make_grpc_handler(
         &config,
         workspace.clone(),
         workspace.clone(),
-        ur_server::HostDaemonClientManager::new(format!(
+        ur_server::HostdClient::new(format!(
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_HOSTD_PORT
         )),

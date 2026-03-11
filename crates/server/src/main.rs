@@ -7,7 +7,7 @@ use tracing::info;
 
 use container::NetworkManager;
 use ur_server::process::PromptTemplatesConfig;
-use ur_server::{Config, HostDaemonClientManager, ProcessManager, RepoPoolManager, RepoRegistry};
+use ur_server::{Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
 
-    let hostd_client = HostDaemonClientManager::new(hostd_addr.clone());
+    let hostd_client = HostdClient::new(hostd_addr.clone());
     let repo_pool_manager =
         RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, hostd_client);
     let process_manager = ProcessManager::new(

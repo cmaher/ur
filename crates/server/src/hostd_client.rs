@@ -9,12 +9,12 @@ use ur_rpc::proto::hostd::host_daemon_service_client::HostDaemonServiceClient;
 /// and checks the exit code. Used by `RepoPoolManager` for git operations
 /// and potentially other server-side code that needs host execution.
 #[derive(Clone)]
-pub struct HostDaemonClientManager {
+pub struct HostdClient {
     /// Address of the ur-hostd daemon (e.g., `http://host.docker.internal:42070`).
     hostd_addr: String,
 }
 
-impl HostDaemonClientManager {
+impl HostdClient {
     pub fn new(hostd_addr: String) -> Self {
         Self { hostd_addr }
     }

@@ -6,7 +6,7 @@ use tracing::info;
 
 use ur_config::{Config, ProjectConfig};
 
-use crate::HostDaemonClientManager;
+use crate::HostdClient;
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
@@ -26,7 +26,7 @@ pub struct RepoPoolManager {
     /// mounts and ur-hostd CWD). e.g., `~/.ur/workspace`.
     host_workspace: PathBuf,
     /// Client for executing commands on the host via ur-hostd.
-    hostd_client: HostDaemonClientManager,
+    hostd_client: HostdClient,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
     /// Set of slot paths (host-side) currently in use by running agents.
@@ -38,7 +38,7 @@ impl RepoPoolManager {
         config: &Config,
         local_workspace: PathBuf,
         host_workspace: PathBuf,
-        hostd_client: HostDaemonClientManager,
+        hostd_client: HostdClient,
     ) -> Self {
         Self {
             local_workspace,
@@ -273,7 +273,7 @@ mod tests {
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
-            hostd_client: HostDaemonClientManager::new("http://localhost:42070".into()),
+            hostd_client: HostdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
         };
@@ -406,7 +406,7 @@ mod tests {
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
-            hostd_client: HostDaemonClientManager::new("http://localhost:42070".into()),
+            hostd_client: HostdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
         };

@@ -17,8 +17,8 @@ are routed through ur-hostd, which runs on the host with full credential access.
    c. No available slot found → `clone_slot()`
 3. `clone_slot()`:
    a. Creates parent directory locally (`create_dir_all` on container-side bind mount)
-   b. Calls `HostDaemonClientManager::exec_and_check("git", ["clone", url, slot_path], parent_dir)`
-4. `HostDaemonClientManager` (shared helper):
+   b. Calls `HostdClient::exec_and_check("git", ["clone", url, slot_path], parent_dir)`
+4. `HostdClient` (shared helper):
    a. Connects to ur-hostd gRPC at `http://host.docker.internal:42070`
    b. Sends `HostDaemonExecRequest { command: "git", args, working_dir }`
    c. Streams response, collects stderr, checks exit code
@@ -34,7 +34,7 @@ are routed through ur-hostd, which runs on the host with full credential access.
    - `git checkout master`
    - `git reset --hard origin/master`
    - `git clean -fd`
-3. Each command goes through `HostDaemonClientManager::exec_and_check()`
+3. Each command goes through `HostdClient::exec_and_check()`
 4. Slot marked in-use on success
 
 ### Release Slot
@@ -58,7 +58,7 @@ host `~/.ur/workspace/` and container `/workspace/`.
 ## Key Files
 
 - `crates/server/src/pool.rs` — `RepoPoolManager` (acquire, release, slot management)
-- `crates/server/src/hostd_client.rs` — `HostDaemonClientManager` (shared hostd exec helper)
+- `crates/server/src/hostd_client.rs` — `HostdClient` (shared hostd exec helper)
 - `crates/server/src/grpc_hostexec.rs` — `HostExecServiceHandler` (worker → server → hostd streaming)
 - `crates/hostd/src/handler.rs` — ur-hostd exec handler (spawns processes on host)
 
