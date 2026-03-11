@@ -391,7 +391,15 @@ async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str)
                 let _ = kill_container(&ticket_id, agent_prefix);
             }
             let mut client = connect(port).await?;
-            process_launch(&mut client, &ticket_id, workspace, agent_prefix, &template, &skills_vec).await?;
+            process_launch(
+                &mut client,
+                &ticket_id,
+                workspace,
+                agent_prefix,
+                &template,
+                &skills_vec,
+            )
+            .await?;
             if attach {
                 process_attach(&ticket_id, agent_prefix)?;
             }

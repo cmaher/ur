@@ -27,11 +27,7 @@ fn default_code_skills() -> Vec<String> {
 
 /// Default skills for the "design" prompt template.
 fn default_design_skills() -> Vec<String> {
-    vec![
-        "tk".into(),
-        "brainstorming".into(),
-        "writing-skills".into(),
-    ]
+    vec!["tk".into(), "brainstorming".into(), "writing-skills".into()]
 }
 
 /// Returns the hardcoded default prompt templates.
@@ -276,10 +272,7 @@ impl ProcessManager {
 
         // Inject resolved skills as comma-separated list
         if !config.skills.is_empty() {
-            env_vars.push((
-                "UR_WORKER_SKILLS".into(),
-                config.skills.join(","),
-            ));
+            env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
         }
 
         // Run the container on the shared Docker network
