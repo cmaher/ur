@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -83,6 +84,9 @@ pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 /// Default container name prefix for agent containers (e.g., `ur-agent-myticket`).
 pub const DEFAULT_AGENT_PREFIX: &str = "ur-agent-";
 
+/// Default maximum number of cached repo clones per project.
+pub const DEFAULT_POOL_LIMIT: u32 = 10;
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -103,6 +107,16 @@ struct RawConfig {
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
+    #[serde(default)]
+    projects: HashMap<String, RawProjectConfig>,
+}
+
+/// Raw TOML representation for a `[projects.<key>]` entry.
+#[derive(Debug, Deserialize)]
+struct RawProjectConfig {
+    repo: String,
+    name: Option<String>,
+    pool_limit: Option<u32>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -146,6 +160,19 @@ pub struct NetworkConfig {
     pub agent_prefix: String,
 }
 
+/// Resolved project configuration for a single project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectConfig {
+    /// Structural identifier (the TOML table key, e.g. "ur").
+    pub key: String,
+    /// Git remote URL (required).
+    pub repo: String,
+    /// Display-friendly label (defaults to the key).
+    pub name: String,
+    /// Maximum number of cached repo clones in the pool (default: 10).
+    pub pool_limit: u32,
+}
+
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -163,6 +190,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
+    /// Configured projects, keyed by project key.
+    pub projects: HashMap<String, ProjectConfig>,
 }
 
 impl Config {
@@ -244,6 +273,20 @@ impl Config {
             },
         };
 
+        let projects = raw
+            .projects
+            .into_iter()
+            .map(|(key, raw_proj)| {
+                let resolved = ProjectConfig {
+                    name: raw_proj.name.unwrap_or_else(|| key.clone()),
+                    repo: raw_proj.repo,
+                    pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
+                    key: key.clone(),
+                };
+                (key, resolved)
+            })
+            .collect();
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -252,6 +295,7 @@ impl Config {
             compose_file,
             proxy,
             network,
+            projects,
         })
     }
 }
@@ -407,5 +451,90 @@ mod tests {
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
         assert_eq!(cfg.network.agent_prefix, "test-agent-");
+    }
+
+    #[test]
+    fn no_projects_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects.is_empty());
+    }
+
+    #[test]
+    fn parses_single_project_with_defaults() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects.len(), 1);
+        let proj = &cfg.projects["ur"];
+        assert_eq!(proj.key, "ur");
+        assert_eq!(proj.repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(proj.name, "ur");
+        assert_eq!(proj.pool_limit, DEFAULT_POOL_LIMIT);
+    }
+
+    #[test]
+    fn parses_project_with_custom_name_and_pool_limit() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.swa]
+repo = "git@github.com:cmaher/swa.git"
+name = "Swa App"
+pool_limit = 5
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["swa"];
+        assert_eq!(proj.key, "swa");
+        assert_eq!(proj.repo, "git@github.com:cmaher/swa.git");
+        assert_eq!(proj.name, "Swa App");
+        assert_eq!(proj.pool_limit, 5);
+    }
+
+    #[test]
+    fn parses_multiple_projects() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+
+[projects.swa]
+repo = "git@github.com:cmaher/swa.git"
+name = "Swa App"
+pool_limit = 5
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects.len(), 2);
+        assert!(cfg.projects.contains_key("ur"));
+        assert!(cfg.projects.contains_key("swa"));
+    }
+
+    #[test]
+    fn project_missing_repo_is_error() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.bad]
+name = "Missing Repo"
+"#,
+        )
+        .unwrap();
+        assert!(Config::load_from(tmp.path()).is_err());
     }
 }
