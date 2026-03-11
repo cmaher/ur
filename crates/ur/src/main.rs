@@ -240,7 +240,10 @@ fn kill_all_containers(agent_prefix: &str) -> Result<()> {
         println!("No agent containers running (prefix: {agent_prefix})");
         return Ok(());
     }
-    info!(count = containers.len(), agent_prefix, "killing all agent containers");
+    info!(
+        count = containers.len(),
+        agent_prefix, "killing all agent containers"
+    );
     for id in &containers {
         if let Err(e) = rt.stop(id) {
             warn!(container = %id.0, error = %e, "failed to stop container");
