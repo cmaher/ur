@@ -8,6 +8,7 @@ anyhow = "1"
 clap = { workspace = true }
 container = { path = "../container" }
 dirs = "6"
+fs4 = "0.12"
 tokio = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }

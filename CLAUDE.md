@@ -22,7 +22,7 @@ Cargo workspace:
 
 ## Development
 
-- `cargo make ci` - Run all CI checks (fmt, clippy, build, test)
+- **CI runs via the pre-push git hook** — avoid running `cargo make ci` manually.
 - `cargo make fmt-fix` - Fix formatting
 - `cargo make clippy` - Run clippy lints
 - `cargo make audit` - Check dependency vulnerabilities
