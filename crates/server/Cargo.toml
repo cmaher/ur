@@ -11,8 +11,8 @@ prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "registry"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 ur_config = { path = "../ur_config" }
 mlua = { workspace = true }
 serde = { workspace = true }
