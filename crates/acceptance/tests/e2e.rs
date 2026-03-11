@@ -168,7 +168,13 @@ fn e2e_ping_and_git() {
         );
 
         // ---- (3) ur process launch ----
+        // With -w, the server skips git init, so we must init the workspace ourselves.
         let workspace_dir = config_path.join("workspace");
+        let git_init = Command::new("git")
+            .args(["init", workspace_dir.to_str().unwrap()])
+            .output()
+            .expect("failed to run git init");
+        assert!(git_init.status.success(), "git init failed");
         let workspace_str = workspace_dir.to_str().unwrap();
         let launch_output = run_cmd(
             &ur,
