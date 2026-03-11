@@ -316,6 +316,8 @@ async fn process_launch(
             memory: "8G".into(),
             workspace_dir,
             claude_credentials: String::new(),
+            template: String::new(),
+            skills: Vec::new(),
         })
         .await?;
 
