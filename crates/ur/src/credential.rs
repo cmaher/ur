@@ -169,6 +169,7 @@ fn read_keychain_credentials() -> Result<String> {
 }
 
 /// Write content to a file, creating parent directories as needed.
+#[instrument(skip(contents), fields(path = %path.display()))]
 fn write_file(path: &Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

@@ -124,7 +124,9 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
+#[instrument]
 fn load_config() -> Result<ur_config::Config> {
+    debug!("loading ur config");
     ur_config::Config::load().context("failed to load config")
 }
 

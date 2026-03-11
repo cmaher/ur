@@ -1,9 +1,11 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use tracing::{debug, info, instrument, warn};
 
 /// Read the allowlist file, returning one domain per line.
 /// Returns an empty vec if the file does not exist.
+#[instrument(fields(path = %path.display()))]
 pub fn read_allowlist(path: &Path) -> Result<Vec<String>> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(contents
@@ -17,6 +19,7 @@ pub fn read_allowlist(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Write the domain list back to the allowlist file, one domain per line.
+#[instrument(skip(domains), fields(path = %path.display(), count = domains.len()))]
 fn write_allowlist(path: &Path, domains: &[String]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -27,9 +30,13 @@ fn write_allowlist(path: &Path, domains: &[String]) -> Result<()> {
 }
 
 /// Add a domain to the allowlist if not already present. Returns the updated list.
+#[instrument(fields(path = %path.display()))]
 pub fn allow_domain(path: &Path, domain: &str) -> Result<Vec<String>> {
     let mut domains = read_allowlist(path)?;
-    if !domains.iter().any(|d| d == domain) {
+    if domains.iter().any(|d| d == domain) {
+        debug!(domain, "domain already in allowlist, skipping");
+    } else {
+        info!(domain, "adding domain to allowlist");
         domains.push(domain.to_string());
     }
     write_allowlist(path, &domains)?;
@@ -37,24 +44,36 @@ pub fn allow_domain(path: &Path, domain: &str) -> Result<Vec<String>> {
 }
 
 /// Remove a domain from the allowlist. Returns the updated list.
+#[instrument(fields(path = %path.display()))]
 pub fn block_domain(path: &Path, domain: &str) -> Result<Vec<String>> {
     let mut domains = read_allowlist(path)?;
+    let before = domains.len();
     domains.retain(|d| d != domain);
+    if domains.len() < before {
+        info!(domain, "removed domain from allowlist");
+    } else {
+        debug!(domain, "domain not in allowlist, nothing to remove");
+    }
     write_allowlist(path, &domains)?;
     Ok(domains)
 }
 
 /// Signal the Squid container to reconfigure. Prints a warning on failure
 /// but does not error out (the allowlist file was already updated).
+#[instrument]
 pub fn signal_reconfigure(squid_hostname: &str) {
+    debug!(squid_hostname, "signaling Squid to reconfigure");
     let status = std::process::Command::new("docker")
         .args(["exec", squid_hostname, "squid", "-k", "reconfigure"])
         .status();
     match status {
         Ok(s) if s.success() => {
+            info!(squid_hostname, "Squid reconfigured successfully");
             eprintln!("Squid reconfigured.");
         }
         Ok(s) => {
+            let code = s.code();
+            warn!(squid_hostname, exit_code = ?code, "squid reconfigure exited with non-zero status");
             eprintln!(
                 "Warning: squid reconfigure exited with status {}. \
                  The allowlist file was updated but Squid may not have reloaded.",
@@ -62,6 +81,7 @@ pub fn signal_reconfigure(squid_hostname: &str) {
             );
         }
         Err(e) => {
+            warn!(squid_hostname, error = %e, "failed to run docker exec for squid reconfigure");
             eprintln!(
                 "Warning: failed to run docker exec: {e}. \
                  The allowlist file was updated but Squid was not reconfigured."
