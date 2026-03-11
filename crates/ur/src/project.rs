@@ -200,12 +200,8 @@ mod tests {
     }
 
     /// Create a temporary git repo with a configured remote origin.
-    ///
-    /// Uses a directory under /workspace/target/ so the git proxy allows access.
     fn make_git_repo(remote_url: &str) -> TempDir {
-        let base = Path::new("/workspace/target/test-repos");
-        std::fs::create_dir_all(base).unwrap();
-        let repo_dir = TempDir::new_in(base).unwrap();
+        let repo_dir = TempDir::new().unwrap();
         std::process::Command::new("git")
             .args(["init", "--initial-branch=main"])
             .current_dir(repo_dir.path())
