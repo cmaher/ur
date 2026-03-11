@@ -78,6 +78,12 @@ impl CoreService for CoreServiceHandler {
                 .await
                 .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
+        // Resolve skills from request template/skills fields
+        let skills = self
+            .process_manager
+            .resolve_skills(&req.template, &req.skills)
+            .map_err(Status::invalid_argument)?;
+
         // Phase 2: run container
         let config = crate::ProcessConfig {
             process_id: req.process_id,
@@ -87,6 +93,7 @@ impl CoreService for CoreServiceHandler {
             grpc_port,
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
+            skills,
         };
         let container_id = self
             .process_manager

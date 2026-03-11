@@ -57,6 +57,7 @@ fn make_grpc_handler(
         repo_registry.clone(),
         network_manager,
         network_config,
+        ur_server::process::PromptTemplatesConfig::default(),
     );
     let hostexec_config =
         ur_server::hostexec::HostExecConfigManager::load(Path::new("/nonexistent")).unwrap();
