@@ -12,6 +12,6 @@ pub mod registry;
 pub mod stream;
 
 pub use config::Config;
-pub use process::{ProcessConfig, ProcessManager};
+pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;
 pub use registry::RepoRegistry;

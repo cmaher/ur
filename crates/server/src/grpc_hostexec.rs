@@ -37,6 +37,14 @@ impl HostExecService for HostExecServiceHandler {
         &self,
         req: Request<HostExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
+        // Validate agent ID from metadata header (if present)
+        if let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) {
+            let agent_id_str = agent_id_val
+                .to_str()
+                .map_err(|_| Status::invalid_argument("invalid ur-agent-id header encoding"))?;
+            crate::AgentId::parse(agent_id_str).map_err(Status::invalid_argument)?;
+        }
+
         let req = req.into_inner();
 
         // 1. Allowlist check
@@ -103,8 +111,16 @@ impl HostExecService for HostExecServiceHandler {
 
     async fn list_commands(
         &self,
-        _req: Request<ListHostExecCommandsRequest>,
+        req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
+        // Validate agent ID from metadata header (if present)
+        if let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) {
+            let agent_id_str = agent_id_val
+                .to_str()
+                .map_err(|_| Status::invalid_argument("invalid ur-agent-id header encoding"))?;
+            crate::AgentId::parse(agent_id_str).map_err(Status::invalid_argument)?;
+        }
+
         let commands = self.config.command_names();
         info!(
             process_id = self.process_id,

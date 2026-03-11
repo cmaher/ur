@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use rand::Rng;
 use serde::Deserialize;
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -11,6 +12,59 @@ use ur_config::NetworkConfig;
 use container::{ContainerRuntime, NetworkManager};
 
 use crate::RepoRegistry;
+
+/// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
+///
+/// The random suffix prevents collisions when the same process_id is reused
+/// across launches (e.g. after a stop/start cycle).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentId(pub String);
+
+impl std::fmt::Display for AgentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AgentId {
+    /// Generate a new agent ID from a process_id by appending `-{4 random [a-z0-9]}`.
+    pub fn generate(process_id: &str) -> Self {
+        let mut rng = rand::rng();
+        let suffix: String = (0..4)
+            .map(|_| {
+                let idx = rng.random_range(0..36u8);
+                if idx < 10 {
+                    (b'0' + idx) as char
+                } else {
+                    (b'a' + idx - 10) as char
+                }
+            })
+            .collect();
+        Self(format!("{process_id}-{suffix}"))
+    }
+
+    /// Validate that a string matches the expected agent ID format:
+    /// non-empty prefix, a dash, then exactly 4 alphanumeric lowercase chars.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let Some(dash_pos) = s.rfind('-') else {
+            return Err(format!("invalid agent ID (no dash): {s}"));
+        };
+        if dash_pos == 0 {
+            return Err(format!("invalid agent ID (empty process_id): {s}"));
+        }
+        let suffix = &s[dash_pos + 1..];
+        if suffix.len() != 4
+            || !suffix
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return Err(format!(
+                "invalid agent ID suffix (expected 4 [a-z0-9] chars): {s}"
+            ));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
 
 /// Default skills for the "code" prompt template.
 fn default_code_skills() -> Vec<String> {
@@ -115,8 +169,18 @@ impl PromptTemplatesConfig {
     }
 }
 
-/// Tracks a running agent process.
+/// Tracks a running agent process, keyed by `AgentId` in the process table.
 struct ProcessEntry {
+    /// The original process_id (without random suffix).
+    process_id: String,
+    /// Project key if launched with `--project`, or empty for raw workspace launches.
+    /// Used by repo pool acquire/release (wor-7joz) and Lua transform context (wor-5tdp).
+    #[allow(dead_code)]
+    project_key: String,
+    /// Host path to the repo slot (workspace dir or pool slot).
+    /// Used by repo pool release (wor-7joz) and Lua transform context (wor-5tdp).
+    #[allow(dead_code)]
+    slot_path: Option<PathBuf>,
     container_id: String,
     /// Host-side TCP port the per-agent gRPC server is bound to.
     grpc_port: u16,
@@ -127,12 +191,15 @@ struct ProcessEntry {
 /// Configuration for launching a container process.
 pub struct ProcessConfig {
     pub process_id: String,
+    pub agent_id: AgentId,
     pub image_id: String,
     pub cpus: u32,
     pub memory: String,
     pub grpc_port: u16,
     pub workspace_dir: Option<PathBuf>,
     pub proxy_hostname: String,
+    /// Project key if launched with `--project` (empty string for raw workspace launches).
+    pub project_key: String,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
 }
@@ -149,7 +216,7 @@ pub struct ProcessManager {
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     prompt_templates: PromptTemplatesConfig,
-    processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
+    processes: Arc<RwLock<HashMap<AgentId, ProcessEntry>>>,
 }
 
 impl ProcessManager {
@@ -177,6 +244,20 @@ impl ProcessManager {
         self.prompt_templates.resolve_skills(template, skills)
     }
 
+    /// Generate a new unique agent ID for the given process_id.
+    pub fn generate_agent_id(&self, process_id: &str) -> AgentId {
+        AgentId::generate(process_id)
+    }
+
+    /// Look up a process entry by agent ID and return the associated process_id.
+    pub fn resolve_process_id(&self, agent_id: &AgentId) -> Result<String, String> {
+        let procs = self.processes.read().expect("process lock poisoned");
+        procs
+            .get(agent_id)
+            .map(|entry| entry.process_id.clone())
+            .ok_or_else(|| format!("unknown agent: {agent_id}"))
+    }
+
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
     /// When `workspace_dir` is Some, the directory is used as-is (no git init)
     /// and registered via `register_absolute`.
@@ -185,23 +266,24 @@ impl ProcessManager {
     pub async fn prepare(
         &self,
         process_id: &str,
+        agent_id: &AgentId,
         workspace_dir: Option<PathBuf>,
     ) -> Result<(), String> {
-        // Check for duplicate
+        // Check for duplicate agent ID
         {
             let procs = self.processes.read().expect("process lock poisoned");
-            if procs.contains_key(process_id) {
-                return Err(format!("process already running: {process_id}"));
+            if procs.contains_key(agent_id) {
+                return Err(format!("agent already running: {agent_id}"));
             }
         }
 
         if let Some(ws_dir) = workspace_dir {
             // External workspace: register the absolute path directly, skip git init
-            info!(process_id, workspace_dir = %ws_dir.display(), "registering external workspace");
+            info!(process_id, %agent_id, workspace_dir = %ws_dir.display(), "registering external workspace");
             self.repo_registry.register_absolute(process_id, ws_dir);
         } else {
             // Default: create repo dir and git init
-            info!(process_id, "creating repo directory and initializing git");
+            info!(process_id, %agent_id, "creating repo directory and initializing git");
             let repo_dir = self.workspace.join(process_id);
             tokio::fs::create_dir_all(&repo_dir)
                 .await
@@ -265,7 +347,10 @@ impl ProcessManager {
                 .join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
         ));
 
-        let mut env_vars = vec![(ur_config::UR_SERVER_ADDR_ENV.into(), server_addr)];
+        let mut env_vars = vec![
+            (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
+            (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
+        ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
         env_vars.extend(proxy_env_vars(&config.proxy_hostname));
@@ -298,17 +383,21 @@ impl ProcessManager {
 
         info!(
             process_id = config.process_id,
+            agent_id = %config.agent_id,
             container_id = cid.0,
             grpc_port = config.grpc_port,
             "process launched"
         );
 
-        // Record in process map
+        // Record in process map keyed by agent ID
         {
             let mut procs = self.processes.write().expect("process lock poisoned");
             procs.insert(
-                config.process_id,
+                config.agent_id,
                 ProcessEntry {
+                    process_id: config.process_id,
+                    project_key: config.project_key,
+                    slot_path: config.workspace_dir,
                     container_id: cid.0.clone(),
                     grpc_port: config.grpc_port,
                     server_handle,
@@ -319,18 +408,19 @@ impl ProcessManager {
         Ok(cid.0)
     }
 
-    /// Stop a running agent process. Stops + removes the container,
+    /// Stop a running agent process by agent ID. Stops + removes the container,
     /// unregisters from RepoRegistry, aborts the per-agent gRPC server task.
-    pub async fn stop(&self, process_id: &str) -> Result<(), String> {
+    pub async fn stop_by_agent_id(&self, agent_id: &AgentId) -> Result<(), String> {
         let entry = {
             let mut procs = self.processes.write().expect("process lock poisoned");
             procs
-                .remove(process_id)
-                .ok_or_else(|| format!("unknown process: {process_id}"))?
+                .remove(agent_id)
+                .ok_or_else(|| format!("unknown agent: {agent_id}"))?
         };
 
         info!(
-            process_id,
+            process_id = entry.process_id,
+            %agent_id,
             container_id = entry.container_id,
             "stopping container"
         );
@@ -344,14 +434,33 @@ impl ProcessManager {
         }
 
         // 2. Unregister from RepoRegistry
-        self.repo_registry.unregister(process_id);
+        self.repo_registry.unregister(&entry.process_id);
 
         // 3. Abort the per-agent gRPC server task
         entry.server_handle.abort();
 
-        info!(process_id, grpc_port = entry.grpc_port, "process stopped");
+        info!(
+            process_id = entry.process_id,
+            %agent_id,
+            grpc_port = entry.grpc_port,
+            "process stopped"
+        );
 
         Ok(())
+    }
+
+    /// Stop a running agent process by process_id (searches all entries).
+    /// Used by the CLI which only knows the process_id, not the agent_id.
+    pub async fn stop(&self, process_id: &str) -> Result<(), String> {
+        let agent_id = {
+            let procs = self.processes.read().expect("process lock poisoned");
+            procs
+                .iter()
+                .find(|(_, entry)| entry.process_id == process_id)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| format!("unknown process: {process_id}"))?
+        };
+        self.stop_by_agent_id(&agent_id).await
     }
 }
 
@@ -414,8 +523,9 @@ mod tests {
     async fn prepare_creates_repo_and_registers() {
         let (mgr, workspace) = test_manager();
         let process_id = "test-proc";
+        let agent_id = mgr.generate_agent_id(process_id);
 
-        mgr.prepare(process_id, None).await.unwrap();
+        mgr.prepare(process_id, &agent_id, None).await.unwrap();
 
         // Verify repo dir exists and has .git
         let repo_dir = workspace.path().join(process_id);
@@ -430,12 +540,13 @@ mod tests {
     async fn prepare_with_workspace_skips_git_init() {
         let (mgr, _workspace) = test_manager();
         let process_id = "ws-proc";
+        let agent_id = mgr.generate_agent_id(process_id);
 
         // Create a temp dir to act as the external workspace
         let ext_workspace = tempfile::tempdir().unwrap();
         let ext_path = ext_workspace.path().to_path_buf();
 
-        mgr.prepare(process_id, Some(ext_path.clone()))
+        mgr.prepare(process_id, &agent_id, Some(ext_path.clone()))
             .await
             .unwrap();
 
@@ -448,16 +559,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_duplicate_returns_error() {
+    async fn prepare_duplicate_agent_returns_error() {
         let (mgr, _workspace) = test_manager();
 
+        let agent_id = AgentId("dup-proc-ab12".into());
         // Manually insert a process entry
         let noop_handle = tokio::spawn(std::future::ready(()));
         {
             let mut procs = mgr.processes.write().unwrap();
             procs.insert(
-                "dup-proc".into(),
+                agent_id.clone(),
                 ProcessEntry {
+                    process_id: "dup-proc".into(),
+                    project_key: String::new(),
+                    slot_path: None,
                     container_id: "fake-cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
@@ -465,7 +580,7 @@ mod tests {
             );
         }
 
-        let result = mgr.prepare("dup-proc", None).await;
+        let result = mgr.prepare("dup-proc", &agent_id, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already running"));
     }
@@ -476,6 +591,72 @@ mod tests {
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown process"));
+    }
+
+    #[test]
+    fn agent_id_generate_format() {
+        let id = AgentId::generate("deploy");
+        assert!(
+            id.0.starts_with("deploy-"),
+            "expected deploy- prefix: {}",
+            id.0
+        );
+        let suffix = &id.0["deploy-".len()..];
+        assert_eq!(suffix.len(), 4, "expected 4-char suffix: {suffix}");
+        assert!(
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "suffix must be [a-z0-9]: {suffix}"
+        );
+    }
+
+    #[test]
+    fn agent_id_parse_valid() {
+        let id = AgentId::parse("deploy-x7q2").unwrap();
+        assert_eq!(id.0, "deploy-x7q2");
+    }
+
+    #[test]
+    fn agent_id_parse_rejects_bad_suffix() {
+        assert!(AgentId::parse("deploy-ABCD").is_err());
+        assert!(AgentId::parse("deploy-abc").is_err());
+        assert!(AgentId::parse("deploy-abcde").is_err());
+        assert!(AgentId::parse("nodash").is_err());
+        assert!(AgentId::parse("-ab12").is_err());
+    }
+
+    #[test]
+    fn agent_id_parse_with_multiple_dashes() {
+        // process_id itself can contain dashes; we use rfind for the last dash
+        let id = AgentId::parse("my-proc-x7q2").unwrap();
+        assert_eq!(id.0, "my-proc-x7q2");
+    }
+
+    #[tokio::test]
+    async fn resolve_process_id_works() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("test-ab12".into());
+        let noop_handle = tokio::spawn(std::future::ready(()));
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "test".into(),
+                    project_key: "myproject".into(),
+                    slot_path: None,
+                    container_id: "cid".into(),
+                    grpc_port: 0,
+                    server_handle: noop_handle,
+                },
+            );
+        }
+        assert_eq!(mgr.resolve_process_id(&agent_id).unwrap(), "test");
+        assert!(
+            mgr.resolve_process_id(&AgentId("unknown-ab12".into()))
+                .is_err()
+        );
     }
 
     #[test]

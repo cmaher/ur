@@ -11,6 +11,15 @@ pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 /// Environment variable: `host:port` address for worker→server gRPC connections.
 pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 
+/// Environment variable: unique agent ID injected into containers at launch.
+/// Format: `{process_id}-{4 random [a-z0-9]}`, e.g. `deploy-x7q2`.
+pub const UR_AGENT_ID_ENV: &str = "UR_AGENT_ID";
+
+/// gRPC metadata header key for the agent ID.
+/// Sent by ur-tools and workerd on every request so the server can identify
+/// which agent is making the call.
+pub const AGENT_ID_HEADER: &str = "ur-agent-id";
+
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 

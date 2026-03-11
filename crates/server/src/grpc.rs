@@ -53,9 +53,17 @@ impl CoreService for CoreServiceHandler {
             Some(PathBuf::from(&req.workspace_dir))
         };
 
+        // Generate unique agent ID for this launch
+        let agent_id = self.process_manager.generate_agent_id(&req.process_id);
+        info!(
+            process_id = req.process_id,
+            agent_id = %agent_id,
+            "generated agent ID"
+        );
+
         // Phase 1: prepare (create repo, git init, register)
         self.process_manager
-            .prepare(&req.process_id, workspace_dir.clone())
+            .prepare(&req.process_id, &agent_id, workspace_dir.clone())
             .await
             .map_err(Status::internal)?;
 
@@ -87,12 +95,14 @@ impl CoreService for CoreServiceHandler {
         // Phase 2: run container
         let config = crate::ProcessConfig {
             process_id: req.process_id,
+            agent_id,
             image_id: req.image_id,
             cpus: req.cpus,
             memory: req.memory,
             grpc_port,
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
+            project_key: String::new(),
             skills,
         };
         let container_id = self
