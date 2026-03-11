@@ -233,6 +233,7 @@ mod tests {
                 repo: String::new(),
                 name: "Test Project".into(),
                 pool_limit,
+                hostexec: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {

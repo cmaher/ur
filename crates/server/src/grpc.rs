@@ -20,6 +20,7 @@ pub struct CoreServiceHandler {
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
+    pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")]
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     #[cfg(feature = "hostexec")]
@@ -91,6 +92,7 @@ impl CoreService for CoreServiceHandler {
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
             proxy_hostname: self.proxy_hostname.clone(),
+            projects: self.projects.clone(),
             #[cfg(feature = "hostexec")]
             hostexec_config: self.hostexec_config.clone(),
             #[cfg(feature = "hostexec")]

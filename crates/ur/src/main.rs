@@ -87,12 +87,11 @@ enum ProxyCommands {
 enum ProjectCommands {
     /// List all configured projects with pool usage
     List,
-    /// Add a new project
+    /// Add a new project from a local git directory
     Add {
-        /// Git remote URL (required)
-        #[arg(long)]
-        repo: String,
-        /// Project key (derived from repo URL if omitted)
+        /// Path to a git repository directory (e.g. "." for current directory)
+        path: PathBuf,
+        /// Project key (derived from repo name if omitted)
         #[arg(long)]
         key: Option<String>,
         /// Display-friendly project name
@@ -576,11 +575,11 @@ async fn main() -> Result<()> {
         Commands::Project { command } => match command {
             ProjectCommands::List => project::list(&config)?,
             ProjectCommands::Add {
-                repo,
+                path,
                 key,
                 name,
                 pool_limit,
-            } => project::add(&config, &repo, key.as_deref(), name.as_deref(), pool_limit)?,
+            } => project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit)?,
             ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
         },
         Commands::Ticket { command } => match command {

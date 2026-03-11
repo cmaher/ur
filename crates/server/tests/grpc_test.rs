@@ -82,6 +82,7 @@ fn make_grpc_handler(
         repo_registry: repo_registry.clone(),
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+        projects: std::collections::HashMap::new(),
         hostexec_config,
         hostd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_HOSTD_PORT),
     };

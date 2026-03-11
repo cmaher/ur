@@ -19,9 +19,25 @@ fn build_agent_routes(
     #[cfg(feature = "hostexec")]
     {
         use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
+
+        // Merge per-project passthrough hostexec commands from ur.toml.
+        let hostexec_config = match &agent_context {
+            Some(ctx) if !ctx.project_key.is_empty() => {
+                let extra = core_handler
+                    .projects
+                    .get(&ctx.project_key)
+                    .map(|p| p.hostexec.as_slice())
+                    .unwrap_or_default();
+                core_handler
+                    .hostexec_config
+                    .with_passthrough_commands(extra)
+            }
+            _ => core_handler.hostexec_config.clone(),
+        };
+
         builder.add_service(HostExecServiceServer::new(
             crate::grpc_hostexec::HostExecServiceHandler {
-                config: core_handler.hostexec_config.clone(),
+                config: hostexec_config,
                 lua: crate::hostexec::LuaTransformManager::new(),
                 repo_registry: core_handler.repo_registry.clone(),
                 process_id: process_id.to_owned(),
