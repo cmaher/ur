@@ -238,6 +238,112 @@ mod tests {
     }
 
     #[test]
+    fn test_git_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "status".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                "-C",
+                "/home/user/.ur/workspace/pool/ur/0",
+                "status",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_git_dash_c_rewrite_with_workspace() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "status".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                "-C",
+                "/home/user/.ur/workspace/pool/ur/0",
+                "status",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_git_dash_c_rewrite_bare_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "ur".into(), "log".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result, vec!["-C", "/pool/ur/0", "log"]);
+    }
+
+    #[test]
+    fn test_git_dash_c_rewrite_trailing_slash() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/workspace/".into(), "status".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result, vec!["-C", "/pool/ur/0", "status"]);
+    }
+
+    #[test]
+    fn test_git_dash_c_rejected_wrong_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "status".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_git_dash_c_blocked_without_agent_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "status".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -C"));
+    }
+
+    #[test]
     fn test_existing_scripts_ignore_extra_arg() {
         // Verify that existing Lua scripts (git.lua, gh.lua) work fine with
         // the new 4th argument — Lua silently ignores extra arguments.
