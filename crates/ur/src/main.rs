@@ -4,6 +4,7 @@ mod hostd;
 mod init;
 mod lifecycle_log;
 mod logging;
+mod project;
 mod proxy;
 
 use std::path::PathBuf;
@@ -65,6 +66,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
+    /// Manage projects
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -78,13 +84,45 @@ enum ProxyCommands {
 }
 
 #[derive(Subcommand)]
+enum ProjectCommands {
+    /// List all configured projects with pool usage
+    List,
+    /// Add a new project
+    Add {
+        /// Git remote URL (required)
+        #[arg(long)]
+        repo: String,
+        /// Project key (derived from repo URL if omitted)
+        #[arg(long)]
+        key: Option<String>,
+        /// Display-friendly project name
+        #[arg(long)]
+        name: Option<String>,
+        /// Maximum number of cached repo clones (default: 10)
+        #[arg(long)]
+        pool_limit: Option<u32>,
+    },
+    /// Remove a project and delete all pool clones
+    Remove {
+        /// Project key to remove
+        key: String,
+        /// Required to confirm deletion of pool clones
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ProcessCommands {
     /// Launch a new agent process
     Launch {
         ticket_id: String,
-        /// Mount a host directory as the container workspace
-        #[arg(short = 'w', long = "workspace")]
+        /// Mount a host directory as the container workspace (mutually exclusive with -p)
+        #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
         workspace: Option<PathBuf>,
+        /// Project key for repo pool launch (mutually exclusive with -w)
+        #[arg(short = 'p', long = "project", conflicts_with = "workspace")]
+        project: Option<String>,
         /// Attach to the process after launching
         #[arg(short = 'a', long = "attach")]
         attach: bool,
@@ -288,16 +326,17 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, template, skills = ?skills))]
+#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, template, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
+    project_key: &str,
     agent_prefix: &str,
     template: &str,
     skills: &[String],
 ) -> Result<()> {
-    info!(ticket_id, "launching agent process");
+    info!(ticket_id, project_key, "launching agent process");
 
     // Refresh credentials from macOS Keychain and ensure config exists
     let cred_mgr = credential::CredentialManager;
@@ -328,6 +367,7 @@ async fn process_launch(
             claude_credentials: String::new(),
             template: template.to_owned(),
             skills: skills.to_vec(),
+            project_key: project_key.to_owned(),
         })
         .await?;
 
@@ -354,8 +394,13 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
     Ok(())
 }
 
-#[instrument(skip(command), fields(command_name = command_name(&command)))]
-async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str) -> Result<()> {
+#[instrument(skip(command, project_keys), fields(command_name = command_name(&command)))]
+async fn handle_process(
+    command: ProcessCommands,
+    port: u16,
+    agent_prefix: &str,
+    project_keys: &[String],
+) -> Result<()> {
     match command {
         ProcessCommands::Attach { process_id } => process_attach(&process_id, agent_prefix),
         ProcessCommands::Kill { process_id } => kill_container(&process_id, agent_prefix),
@@ -374,6 +419,7 @@ async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str)
         ProcessCommands::Launch {
             ticket_id,
             workspace,
+            project,
             attach,
             force,
             template,
@@ -386,6 +432,34 @@ async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str)
                 .filter(|s| !s.is_empty())
                 .collect();
 
+            // Resolve project key: explicit -p flag, or derive from cwd name
+            // when neither -p nor -w is specified.
+            let resolved_project = if let Some(p) = project {
+                p
+            } else if workspace.is_none() {
+                // Derive from current working directory name
+                let cwd =
+                    std::env::current_dir().context("failed to get current working directory")?;
+                let dir_name = cwd
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+                    .to_owned();
+                if project_keys.contains(&dir_name) {
+                    debug!(project_key = %dir_name, "derived project from cwd");
+                    dir_name
+                } else {
+                    bail!(
+                        "could not derive project from cwd directory name '{}' \
+                         (not a configured project key). Use -p <project> or -w <path>.",
+                        dir_name
+                    );
+                }
+            } else {
+                // -w specified: no project association
+                String::new()
+            };
+
             if force {
                 debug!(ticket_id = %ticket_id, "force-killing existing container before launch");
                 let _ = kill_container(&ticket_id, agent_prefix);
@@ -395,6 +469,7 @@ async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str)
                 &mut client,
                 &ticket_id,
                 workspace,
+                &resolved_project,
                 agent_prefix,
                 &template,
                 &skills_vec,
@@ -472,7 +547,8 @@ async fn main() -> Result<()> {
             println!("Launching TUI...");
         }
         Commands::Process { command } => {
-            handle_process(command, port, &config.network.agent_prefix).await?
+            let project_keys: Vec<String> = config.projects.keys().cloned().collect();
+            handle_process(command, port, &config.network.agent_prefix, &project_keys).await?
         }
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
@@ -497,6 +573,16 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Project { command } => match command {
+            ProjectCommands::List => project::list(&config)?,
+            ProjectCommands::Add {
+                repo,
+                key,
+                name,
+                pool_limit,
+            } => project::add(&config, &repo, key.as_deref(), name.as_deref(), pool_limit)?,
+            ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
+        },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
                 info!(title = %title, parent = ?parent, "creating ticket");

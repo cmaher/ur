@@ -51,10 +51,25 @@ fn make_grpc_handler(
     };
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
+    let config = ur_config::Config {
+        config_dir: dir.to_path_buf(),
+        workspace: workspace.clone(),
+        daemon_port: ur_config::DEFAULT_DAEMON_PORT,
+        hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+        compose_file: dir.join("docker-compose.yml"),
+        proxy: ur_config::ProxyConfig {
+            hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+            allowlist: vec![],
+        },
+        network: network_config.clone(),
+        projects: std::collections::HashMap::new(),
+    };
+    let repo_pool_manager = ur_server::RepoPoolManager::new(&config);
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),
         repo_registry.clone(),
+        repo_pool_manager.clone(),
         network_manager,
         network_config,
         ur_server::process::PromptTemplatesConfig::default(),
@@ -63,6 +78,7 @@ fn make_grpc_handler(
         ur_server::hostexec::HostExecConfigManager::load(Path::new("/nonexistent")).unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
+        repo_pool_manager,
         repo_registry: repo_registry.clone(),
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),

@@ -8,6 +8,7 @@ anyhow = "1"
 container = { path = "../container" }
 clap = { workspace = true }
 prost = { workspace = true }
+rand = "0.9"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }

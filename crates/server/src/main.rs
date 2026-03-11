@@ -7,7 +7,7 @@ use tracing::info;
 
 use container::NetworkManager;
 use ur_server::process::PromptTemplatesConfig;
-use ur_server::{Config, ProcessManager, RepoRegistry};
+use ur_server::{Config, ProcessManager, RepoPoolManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -82,10 +82,12 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    let repo_pool_manager = RepoPoolManager::new(&cfg);
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
         repo_registry.clone(),
+        repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),
         prompt_templates,
@@ -101,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
+        repo_pool_manager,
         repo_registry,
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,

@@ -15,7 +15,7 @@ use ur_rpc::proto::hostexec::{
 };
 
 use crate::RepoRegistry;
-use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
+use crate::hostexec::{AgentContext, HostExecConfigManager, LuaTransformManager};
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -27,6 +27,8 @@ pub struct HostExecServiceHandler {
     pub repo_registry: Arc<RepoRegistry>,
     pub process_id: String,
     pub hostd_addr: String,
+    /// Agent context for Lua transforms. `None` for raw workspace mounts (no project association).
+    pub agent_context: Option<AgentContext>,
 }
 
 #[tonic::async_trait]
@@ -37,6 +39,14 @@ impl HostExecService for HostExecServiceHandler {
         &self,
         req: Request<HostExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
+        // Validate agent ID from metadata header (if present)
+        if let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) {
+            let agent_id_str = agent_id_val
+                .to_str()
+                .map_err(|_| Status::invalid_argument("invalid ur-agent-id header encoding"))?;
+            crate::AgentId::parse(agent_id_str).map_err(Status::invalid_argument)?;
+        }
+
         let req = req.into_inner();
 
         // 1. Allowlist check
@@ -55,7 +65,13 @@ impl HostExecService for HostExecServiceHandler {
         // 3. Lua transform (if configured)
         let args = if let Some(lua_source) = &cmd_config.lua_source {
             self.lua
-                .run_transform(lua_source, &req.command, &req.args, &host_working_dir)
+                .run_transform(
+                    lua_source,
+                    &req.command,
+                    &req.args,
+                    &host_working_dir,
+                    self.agent_context.as_ref(),
+                )
                 .map_err(|e| Status::invalid_argument(format!("transform rejected: {e}")))?
         } else {
             req.args
@@ -103,8 +119,16 @@ impl HostExecService for HostExecServiceHandler {
 
     async fn list_commands(
         &self,
-        _req: Request<ListHostExecCommandsRequest>,
+        req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
+        // Validate agent ID from metadata header (if present)
+        if let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) {
+            let agent_id_str = agent_id_val
+                .to_str()
+                .map_err(|_| Status::invalid_argument("invalid ur-agent-id header encoding"))?;
+            crate::AgentId::parse(agent_id_str).map_err(Status::invalid_argument)?;
+        }
+
         let commands = self.config.command_names();
         info!(
             process_id = self.process_id,
@@ -167,6 +191,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         let result = handler.map_working_dir("/workspace").unwrap();
@@ -182,6 +207,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         let result = handler.map_working_dir("/workspace/src/main").unwrap();
@@ -197,6 +223,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         assert!(handler.map_working_dir("/tmp").is_err());

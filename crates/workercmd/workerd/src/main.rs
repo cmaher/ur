@@ -91,7 +91,19 @@ async fn fetch_commands_with_retry() -> Result<Vec<String>> {
 async fn try_fetch_commands(addr: &str) -> Result<Vec<String>> {
     let channel = Endpoint::try_from(addr.to_string())?.connect().await?;
     let mut client = HostExecServiceClient::new(channel);
-    let resp = client.list_commands(ListHostExecCommandsRequest {}).await?;
+
+    let mut request = tonic::Request::new(ListHostExecCommandsRequest {});
+
+    // Inject agent ID metadata header if available
+    if let Ok(agent_id) = std::env::var(ur_config::UR_AGENT_ID_ENV)
+        && let Ok(val) = agent_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_ID_HEADER, val);
+    }
+
+    let resp = client.list_commands(request).await?;
     Ok(resp.into_inner().commands)
 }
 

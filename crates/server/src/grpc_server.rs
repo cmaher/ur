@@ -8,7 +8,11 @@ use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 use crate::grpc::CoreServiceHandler;
 
 /// Build a Routes collection with all enabled services.
-fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Routes {
+fn build_agent_routes(
+    core_handler: CoreServiceHandler,
+    process_id: &str,
+    #[cfg(feature = "hostexec")] agent_context: Option<crate::hostexec::AgentContext>,
+) -> Routes {
     let mut builder = Routes::builder();
     builder.add_service(CoreServiceServer::new(core_handler.clone()));
 
@@ -22,6 +26,7 @@ fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Rou
                 repo_registry: core_handler.repo_registry.clone(),
                 process_id: process_id.to_owned(),
                 hostd_addr: core_handler.hostd_addr.clone(),
+                agent_context,
             },
         ));
     }
@@ -35,7 +40,12 @@ fn build_agent_routes(core_handler: CoreServiceHandler, process_id: &str) -> Rou
 pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "main gRPC server listening");
 
-    let routes = build_agent_routes(handler, "");
+    let routes = build_agent_routes(
+        handler,
+        "",
+        #[cfg(feature = "hostexec")]
+        None,
+    );
 
     Server::builder().add_routes(routes).serve(addr).await?;
 
@@ -54,6 +64,7 @@ pub async fn serve_agent_grpc(
     bind_host: &str,
     core_handler: CoreServiceHandler,
     process_id: &str,
+    #[cfg(feature = "hostexec")] agent_context: Option<crate::hostexec::AgentContext>,
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind(format!("{bind_host}:0")).await?;
     let addr = listener.local_addr()?;
@@ -61,7 +72,12 @@ pub async fn serve_agent_grpc(
 
     tracing::info!(addr = %addr, port, process_id, "per-agent gRPC server listening");
 
-    let routes = build_agent_routes(core_handler, process_id);
+    let routes = build_agent_routes(
+        core_handler,
+        process_id,
+        #[cfg(feature = "hostexec")]
+        agent_context,
+    );
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let handle = tokio::spawn(async move {

@@ -66,14 +66,22 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/workspace".into());
 
-    let response = match client
-        .exec(HostExecRequest {
-            command: command.into(),
-            args,
-            working_dir,
-        })
-        .await
+    let mut request = tonic::Request::new(HostExecRequest {
+        command: command.into(),
+        args,
+        working_dir,
+    });
+
+    // Inject agent ID metadata header if available
+    if let Ok(agent_id) = std::env::var(ur_config::UR_AGENT_ID_ENV)
+        && let Ok(val) = agent_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
     {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_ID_HEADER, val);
+    }
+
+    let response = match client.exec(request).await {
         Ok(resp) => resp,
         Err(status) => {
             eprintln!("{command}: {}", status.message());
