@@ -15,7 +15,7 @@ use ur_rpc::proto::hostexec::{
 };
 
 use crate::RepoRegistry;
-use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
+use crate::hostexec::{AgentContext, HostExecConfigManager, LuaTransformManager};
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -27,6 +27,8 @@ pub struct HostExecServiceHandler {
     pub repo_registry: Arc<RepoRegistry>,
     pub process_id: String,
     pub hostd_addr: String,
+    /// Agent context for Lua transforms. `None` for raw workspace mounts (no project association).
+    pub agent_context: Option<AgentContext>,
 }
 
 #[tonic::async_trait]
@@ -63,7 +65,13 @@ impl HostExecService for HostExecServiceHandler {
         // 3. Lua transform (if configured)
         let args = if let Some(lua_source) = &cmd_config.lua_source {
             self.lua
-                .run_transform(lua_source, &req.command, &req.args, &host_working_dir)
+                .run_transform(
+                    lua_source,
+                    &req.command,
+                    &req.args,
+                    &host_working_dir,
+                    self.agent_context.as_ref(),
+                )
                 .map_err(|e| Status::invalid_argument(format!("transform rejected: {e}")))?
         } else {
             req.args
@@ -183,6 +191,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         let result = handler.map_working_dir("/workspace").unwrap();
@@ -198,6 +207,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         let result = handler.map_working_dir("/workspace/src/main").unwrap();
@@ -213,6 +223,7 @@ mod tests {
             repo_registry: registry,
             process_id: "test".into(),
             hostd_addr: "http://localhost:42070".into(),
+            agent_context: None,
         };
 
         assert!(handler.map_working_dir("/tmp").is_err());

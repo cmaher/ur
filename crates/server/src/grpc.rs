@@ -81,10 +81,37 @@ impl CoreService for CoreServiceHandler {
         };
 
         let bind_host = "0.0.0.0";
-        let (grpc_port, server_handle) =
-            crate::grpc_server::serve_agent_grpc(bind_host, core_handler, &req.process_id)
-                .await
-                .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
+
+        // Build agent context for Lua transforms. For raw workspace mounts
+        // (no project association), agent_context is None.
+        #[cfg(feature = "hostexec")]
+        let agent_context = {
+            let agent_id_str = agent_id.0.clone();
+            // project_key is empty for raw workspace mounts — no context in that case
+            // Future: wor-3r2m will pass project_key from --project flag
+            let project_key = String::new();
+            if !project_key.is_empty() {
+                workspace_dir.as_ref().map(|ws_dir| {
+                    crate::hostexec::AgentContext {
+                        agent_id: agent_id_str,
+                        project_key,
+                        slot_path: ws_dir.clone(),
+                    }
+                })
+            } else {
+                None
+            }
+        };
+
+        let (grpc_port, server_handle) = crate::grpc_server::serve_agent_grpc(
+            bind_host,
+            core_handler,
+            &req.process_id,
+            #[cfg(feature = "hostexec")]
+            agent_context,
+        )
+        .await
+        .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
         // Resolve skills from request template/skills fields
         let skills = self
