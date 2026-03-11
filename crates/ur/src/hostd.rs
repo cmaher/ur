@@ -1,4 +1,7 @@
+use std::os::unix::process::CommandExt;
+
 use anyhow::{Context, Result};
+use fs4::fs_std::FileExt;
 use tracing::{debug, info, instrument, warn};
 
 /// Resolve the ur-hostd binary path. Looks next to the current executable first
@@ -16,20 +19,37 @@ fn hostd_bin() -> std::path::PathBuf {
     std::path::PathBuf::from("ur-hostd")
 }
 
+/// Check whether a process with the given PID is alive.
+fn is_pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 #[instrument(skip(config), fields(hostd_port = config.hostd_port))]
 pub fn start_hostd(config: &ur_config::Config) -> Result<()> {
     let pid_file = config.config_dir.join(ur_config::HOSTD_PID_FILE);
 
-    // Check for stale PID
+    // Take an exclusive lock on a lock file to prevent races between concurrent
+    // `ur start` invocations. The lock is held only while we check + spawn.
+    let lock_path = config.config_dir.join("hostd.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)
+        .context("failed to open hostd lock file")?;
+    lock_file
+        .lock_exclusive()
+        .context("failed to acquire hostd lock")?;
+
+    // Check for existing process (under lock so no race)
     if pid_file.exists() {
         let pid_str = std::fs::read_to_string(&pid_file)?;
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if alive {
+            if is_pid_alive(pid) {
                 info!(pid, "ur-hostd already running");
                 println!("ur-hostd already running (pid {pid})");
                 return Ok(());
@@ -45,6 +65,9 @@ pub fn start_hostd(config: &ur_config::Config) -> Result<()> {
         .args(["--port", &config.hostd_port.to_string()])
         .stdout(std::fs::File::create(config.config_dir.join("hostd.log"))?)
         .stderr(std::fs::File::create(config.config_dir.join("hostd.err"))?)
+        // Put hostd in its own process group so signals sent to the ur CLI
+        // (e.g. Ctrl-C) don't propagate to the daemon.
+        .process_group(0)
         .spawn()
         .context("failed to spawn ur-hostd — is it installed and on PATH?")?;
 
@@ -53,6 +76,7 @@ pub fn start_hostd(config: &ur_config::Config) -> Result<()> {
     info!(pid, "ur-hostd started");
     println!("ur-hostd started (pid {pid})");
 
+    // Lock is released when lock_file is dropped
     Ok(())
 }
 

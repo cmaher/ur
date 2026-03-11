@@ -66,7 +66,7 @@ script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.install]
-description = "Build ur CLI, install to ~/bin, and build all container images"
+description = "Build ur CLI + ur-hostd, install to UR_INSTALL_DIR (default ~/bin), and build all container images"
 dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
