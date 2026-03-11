@@ -64,7 +64,12 @@ fn make_grpc_handler(
         network: network_config.clone(),
         projects: std::collections::HashMap::new(),
     };
-    let repo_pool_manager = ur_server::RepoPoolManager::new(&config);
+    let repo_pool_manager = ur_server::RepoPoolManager::new(
+        &config,
+        workspace.clone(),
+        workspace.clone(),
+        format!("http://127.0.0.1:{}", ur_config::DEFAULT_HOSTD_PORT),
+    );
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),

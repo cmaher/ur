@@ -81,13 +81,19 @@ fn force_remove_container(runtime: &str, name: &str) {
         .status();
 }
 
+/// Extra project entries to append to ur.toml.
+struct ProjectEntry {
+    key: String,
+    repo: String,
+}
+
 /// Write a test-specific ur.toml and supporting files.
 ///
 /// `ur start` renders the compose file from its embedded template, replacing
 /// network name and container name placeholders with values from the config.
 /// Uses unique container names (`ur-server-test`, `ur-squid-test`) so the
 /// acceptance test stack never collides with a real running ur stack.
-fn write_test_config(config_dir: &Path, daemon_port: u16) {
+fn write_test_config(config_dir: &Path, daemon_port: u16, projects: &[ProjectEntry]) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
 
@@ -100,6 +106,16 @@ fn write_test_config(config_dir: &Path, daemon_port: u16) {
     .expect("failed to write allowlist.txt");
 
     let compose_file = config_dir.join("docker-compose.yml");
+
+    let mut projects_toml = String::new();
+    for proj in projects {
+        projects_toml.push_str(&format!(
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n",
+            key = proj.key,
+            repo = proj.repo,
+        ));
+    }
+
     let toml_content = format!(
         "daemon_port = {daemon_port}\n\
          workspace = \"{workspace}\"\n\
@@ -112,11 +128,72 @@ fn write_test_config(config_dir: &Path, daemon_port: u16) {
          name = \"ur-test\"\n\
          worker_name = \"ur-test-workers\"\n\
          server_hostname = \"ur-test-server\"\n\
-         agent_prefix = \"ur-test-agent-\"\n",
+         agent_prefix = \"ur-test-agent-\"\n\
+         {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
+}
+
+/// Create a bare git repository with one commit, suitable as a clone source.
+/// Returns the path to the bare repo directory.
+fn create_bare_repo(parent_dir: &Path) -> PathBuf {
+    let bare_repo = parent_dir.join("test-repo.git");
+    let staging = parent_dir.join("staging");
+
+    // Create the bare repo
+    let output = Command::new("git")
+        .args(["init", "--bare", bare_repo.to_str().unwrap()])
+        .output()
+        .expect("failed to run git init --bare");
+    assert!(output.status.success(), "git init --bare failed");
+
+    // Clone it into a staging dir, add a commit, push back
+    let output = Command::new("git")
+        .args(["clone", bare_repo.to_str().unwrap(), staging.to_str().unwrap()])
+        .output()
+        .expect("failed to clone bare repo into staging");
+    assert!(output.status.success(), "git clone failed");
+
+    // Configure git user for the commit
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&staging)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&staging)
+        .output();
+
+    // Create a file and commit
+    std::fs::write(staging.join("README.md"), "# Test repo\n").expect("failed to write README");
+    let output = Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git add");
+    assert!(output.status.success(), "git add failed");
+
+    let output = Command::new("git")
+        .args(["commit", "-m", "initial commit"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git commit");
+    assert!(output.status.success(), "git commit failed");
+
+    let output = Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git push");
+    assert!(
+        output.status.success(),
+        "git push failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    bare_repo
 }
 
 /// Run `ur stop` for cleanup, ignoring errors.
@@ -149,7 +226,7 @@ fn e2e_ping_and_git() {
     let config_path = config_dir.path();
     let daemon_port = 19876u16;
 
-    write_test_config(config_path, daemon_port);
+    write_test_config(config_path, daemon_port, &[]);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -326,6 +403,155 @@ fn e2e_ping_and_git() {
     stop_server(&ur, config_path);
 
     // Re-raise any panic from the test body.
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// End-to-end test for project pool launches (`-p` flag).
+///
+/// Exercises the full workflow:
+///   1. Create a bare git repo as clone source
+///   2. Configure it as a project in ur.toml
+///   3. `ur start` starts the server + hostd
+///   4. `ur process launch <ticket> -p <project>` acquires a pool slot via hostd git clone
+///   5. Verify the cloned workspace has the expected content
+///   6. Verify git commands work inside the container (hostexec pipeline)
+///   7. `ur process stop` releases the pool slot
+///   8. `ur stop` tears down the server
+#[test]
+fn e2e_project_pool_launch() {
+    let runtime = detect_container_runtime();
+    let ticket_id = "pool-test";
+    let project_key = "poolproj";
+    let agent_prefix = "ur-test-agent-";
+    let container_name = format!("{agent_prefix}{ticket_id}");
+    let server_container = "ur-test-server";
+    let squid_container = "ur-test-squid";
+
+    // ---- (0) Clean up stale containers from prior failed runs ----
+    force_remove_container(&runtime, &container_name);
+    force_remove_container(&runtime, server_container);
+    force_remove_container(&runtime, squid_container);
+
+    // ---- (1) Create bare git repo and test config with project ----
+    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
+    let config_path = config_dir.path();
+    let daemon_port = 19877u16; // different port from e2e_ping_and_git
+
+    // Create bare repo before writing config (config needs the repo path)
+    let bare_repo = create_bare_repo(config_path);
+
+    write_test_config(
+        config_path,
+        daemon_port,
+        &[ProjectEntry {
+            key: project_key.into(),
+            repo: bare_repo.to_string_lossy().into_owned(),
+        }],
+    );
+
+    let ur = bin("ur");
+    assert!(ur.exists(), "ur binary not found at {}", ur.display());
+    let config_str = config_path.to_str().unwrap();
+    let env = [("UR_CONFIG", config_str)];
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- (2) ur start ----
+        let up_output = run_cmd(&ur, &["start"], &env);
+        assert!(
+            up_output.status.success(),
+            "ur start failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
+
+        // ---- (3) ur process launch -p <project> ----
+        let launch_output = run_cmd(
+            &ur,
+            &["process", "launch", "-p", project_key, ticket_id],
+            &env,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur process launch -p {project_key} failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        // ---- (4) Verify workspace has cloned content ----
+        // The pool slot should have the README.md from the bare repo
+        let ls_output = Command::new(&runtime)
+            .args(["exec", &container_name, "ls", "/workspace/README.md"])
+            .output()
+            .expect("failed to exec ls in container");
+        assert_eq!(
+            ls_output.status.code(),
+            Some(0),
+            "pool slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output.stdout),
+            String::from_utf8_lossy(&ls_output.stderr),
+        );
+
+        // ---- (5) Verify git commands work via hostexec ----
+        let git_output = Command::new(&runtime)
+            .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
+            .output()
+            .expect("failed to exec git log in container");
+        assert_eq!(
+            git_output.status.code(),
+            Some(0),
+            "git log should work in pool slot.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&git_output.stdout),
+            String::from_utf8_lossy(&git_output.stderr),
+        );
+
+        let git_stdout = String::from_utf8_lossy(&git_output.stdout);
+        assert!(
+            git_stdout.contains("initial commit"),
+            "git log should show our commit.\nGot: {git_stdout}"
+        );
+
+        // ---- (6) Verify pool directory structure on host ----
+        // The slot should be at $WORKSPACE/pool/<project-key>/0/
+        let pool_slot = config_path
+            .join("workspace")
+            .join("pool")
+            .join(project_key)
+            .join("0");
+        assert!(
+            pool_slot.exists(),
+            "pool slot directory should exist at {}",
+            pool_slot.display()
+        );
+        assert!(
+            pool_slot.join(".git").exists(),
+            "pool slot should be a git repo (have .git)"
+        );
+        assert!(
+            pool_slot.join("README.md").exists(),
+            "pool slot should contain README.md from clone"
+        );
+
+        // ---- (7) ur process stop ----
+        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id], &env);
+        assert!(
+            stop_output.status.success(),
+            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    // ---- (8) Always tear down server ----
+    stop_server(&ur, config_path);
+
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
