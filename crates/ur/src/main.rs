@@ -186,7 +186,7 @@ fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<(
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
     info!("stopping server");
-    kill_all_containers()?;
+    kill_all_containers(&config.network.agent_prefix)?;
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
         println!("server is not running");
@@ -218,9 +218,9 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
 }
 
 #[instrument]
-fn kill_container(name: &str) -> Result<()> {
+fn kill_container(name: &str, agent_prefix: &str) -> Result<()> {
     let rt = container::runtime_from_env();
-    let id = ContainerId(format!("{}{name}", container::AGENT_CONTAINER_PREFIX));
+    let id = ContainerId(format!("{agent_prefix}{name}"));
     info!(container = %id.0, "killing container");
     rt.stop(&id)
         .with_context(|| format!("failed to stop container {}", id.0))?;
@@ -232,15 +232,15 @@ fn kill_container(name: &str) -> Result<()> {
 }
 
 #[instrument]
-fn kill_all_containers() -> Result<()> {
+fn kill_all_containers(agent_prefix: &str) -> Result<()> {
     let rt = container::runtime_from_env();
-    let containers = rt.list_by_prefix(container::AGENT_CONTAINER_PREFIX)?;
+    let containers = rt.list_by_prefix(agent_prefix)?;
     if containers.is_empty() {
-        debug!("no ur-agent containers running");
-        println!("No ur-agent containers running");
+        debug!(agent_prefix, "no agent containers running");
+        println!("No agent containers running (prefix: {agent_prefix})");
         return Ok(());
     }
-    info!(count = containers.len(), "killing all agent containers");
+    info!(count = containers.len(), agent_prefix, "killing all agent containers");
     for id in &containers {
         if let Err(e) = rt.stop(id) {
             warn!(container = %id.0, error = %e, "failed to stop container");
@@ -257,9 +257,9 @@ fn kill_all_containers() -> Result<()> {
 }
 
 #[instrument]
-fn process_attach(process_id: &str) -> Result<()> {
+fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
     let runtime = container::runtime_from_env();
-    let id = ContainerId(format!("ur-agent-{process_id}"));
+    let id = ContainerId(format!("{agent_prefix}{process_id}"));
     info!(container = %id.0, "attaching to process");
     // Create an independent tmux session instead of attaching to "agent".
     // `tmux attach -t agent` kills the session if the user exits the shell,
@@ -282,6 +282,7 @@ async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
+    agent_prefix: &str,
 ) -> Result<()> {
     info!(ticket_id, "launching agent process");
 
@@ -302,7 +303,7 @@ async fn process_launch(
     };
 
     let image_id = "ur-worker-rust:latest";
-    let container_name = format!("ur-agent-{ticket_id}");
+    let container_name = format!("{agent_prefix}{ticket_id}");
     println!("Launching agent {container_name}...");
     let resp = client
         .process_launch(ProcessLaunchRequest {
@@ -339,18 +340,14 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
 }
 
 #[instrument(skip(command), fields(command_name = command_name(&command)))]
-async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
+async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str) -> Result<()> {
     match command {
-        ProcessCommands::Attach { process_id } => process_attach(&process_id),
-        ProcessCommands::Kill { process_id } => kill_container(&process_id),
+        ProcessCommands::Attach { process_id } => process_attach(&process_id, agent_prefix),
+        ProcessCommands::Kill { process_id } => kill_container(&process_id, agent_prefix),
         ProcessCommands::SaveCredentials { process_id } => {
             info!(process_id = %process_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
-            let id = container::ContainerId(format!(
-                "{}{}",
-                container::AGENT_CONTAINER_PREFIX,
-                process_id
-            ));
+            let id = container::ContainerId(format!("{agent_prefix}{process_id}"));
             let cred_mgr = credential::CredentialManager;
             let paths = cred_mgr.save_from_container(&runtime, &id)?;
             for path in &paths {
@@ -367,12 +364,12 @@ async fn handle_process(command: ProcessCommands, port: u16) -> Result<()> {
         } => {
             if force {
                 debug!(ticket_id = %ticket_id, "force-killing existing container before launch");
-                let _ = kill_container(&ticket_id);
+                let _ = kill_container(&ticket_id, agent_prefix);
             }
             let mut client = connect(port).await?;
-            process_launch(&mut client, &ticket_id, workspace).await?;
+            process_launch(&mut client, &ticket_id, workspace, agent_prefix).await?;
             if attach {
-                process_attach(&ticket_id)?;
+                process_attach(&ticket_id, agent_prefix)?;
             }
             Ok(())
         }
@@ -442,7 +439,9 @@ async fn main() -> Result<()> {
             info!("launching TUI");
             println!("Launching TUI...");
         }
-        Commands::Process { command } => handle_process(command, port).await?,
+        Commands::Process { command } => {
+            handle_process(command, port, &config.network.agent_prefix).await?
+        }
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
             let allowlist_path = squid_dir.join("allowlist.txt");
@@ -450,13 +449,13 @@ async fn main() -> Result<()> {
                 ProxyCommands::Allow { domain } => {
                     info!(domain = %domain, "allowing domain through proxy");
                     let domains = proxy::allow_domain(&allowlist_path, &domain)?;
-                    proxy::signal_reconfigure();
+                    proxy::signal_reconfigure(&config.proxy.hostname);
                     proxy::print_domains(&domains);
                 }
                 ProxyCommands::Block { domain } => {
                     info!(domain = %domain, "blocking domain from proxy");
                     let domains = proxy::block_domain(&allowlist_path, &domain)?;
-                    proxy::signal_reconfigure();
+                    proxy::signal_reconfigure(&config.proxy.hostname);
                     proxy::print_domains(&domains);
                 }
                 ProxyCommands::List => {

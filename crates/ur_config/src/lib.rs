@@ -80,6 +80,9 @@ pub const DEFAULT_WORKER_NETWORK_NAME: &str = "ur-workers";
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 
+/// Default container name prefix for agent containers (e.g., `ur-agent-myticket`).
+pub const DEFAULT_AGENT_PREFIX: &str = "ur-agent-";
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -115,6 +118,7 @@ struct RawNetworkConfig {
     name: Option<String>,
     worker_name: Option<String>,
     server_hostname: Option<String>,
+    agent_prefix: Option<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -137,6 +141,9 @@ pub struct NetworkConfig {
     /// Hostname containers use to reach the server via Docker DNS (default: "ur-server").
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
+    /// Container name prefix for agent containers (default: "ur-agent-").
+    /// Agent containers are named `{agent_prefix}{process_id}`.
+    pub agent_prefix: String,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -225,11 +232,15 @@ impl Config {
                 server_hostname: n
                     .server_hostname
                     .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
+                agent_prefix: n
+                    .agent_prefix
+                    .unwrap_or_else(|| DEFAULT_AGENT_PREFIX.to_string()),
             },
             None => NetworkConfig {
                 name: DEFAULT_NETWORK_NAME.to_string(),
                 worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
                 server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
+                agent_prefix: DEFAULT_AGENT_PREFIX.to_string(),
             },
         };
 
@@ -369,6 +380,7 @@ mod tests {
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
+        assert_eq!(cfg.network.agent_prefix, DEFAULT_AGENT_PREFIX);
     }
 
     #[test]
@@ -379,6 +391,7 @@ mod tests {
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
+        assert_eq!(cfg.network.agent_prefix, DEFAULT_AGENT_PREFIX);
     }
 
     #[test]
@@ -386,12 +399,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\n",
+            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\nagent_prefix = \"test-agent-\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, "custom-net");
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
+        assert_eq!(cfg.network.agent_prefix, "test-agent-");
     }
 }

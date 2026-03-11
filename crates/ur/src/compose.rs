@@ -215,6 +215,7 @@ mod tests {
                 name: "ur".to_string(),
                 worker_name: "ur-workers".to_string(),
                 server_hostname: "ur-server".to_string(),
+                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
             },
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
         };
@@ -247,6 +248,7 @@ mod tests {
             name: "test-net".to_string(),
             worker_name: "test-workers".to_string(),
             server_hostname: "test-server".to_string(),
+            agent_prefix: "test-agent-".to_string(),
         };
         let proxy = ur_config::ProxyConfig {
             hostname: "test-squid".to_string(),
