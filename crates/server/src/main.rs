@@ -6,6 +6,7 @@ use clap::Parser;
 use tracing::info;
 
 use container::NetworkManager;
+use ur_server::process::PromptTemplatesConfig;
 use ur_server::{Config, ProcessManager, RepoRegistry};
 
 #[derive(Parser)]
@@ -71,12 +72,23 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| cfg.config_dir.clone());
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
+    // Load prompt templates from ur.toml (falls back to hardcoded defaults)
+    let prompt_templates = {
+        let toml_path = cfg.config_dir.join("ur.toml");
+        match std::fs::read_to_string(&toml_path) {
+            Ok(contents) => PromptTemplatesConfig::from_toml(&contents)
+                .map_err(|e| anyhow::anyhow!("failed to parse prompt_templates: {e}"))?,
+            Err(_) => PromptTemplatesConfig::default(),
+        }
+    };
+
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
         repo_registry.clone(),
         network_manager,
         cfg.network.clone(),
+        prompt_templates,
     );
 
     #[cfg(feature = "hostexec")]

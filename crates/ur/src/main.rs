@@ -91,6 +91,12 @@ enum ProcessCommands {
         /// Kill existing container with this ID before launching
         #[arg(short = 'f', long = "force")]
         force: bool,
+        /// Prompt template name (default: "code")
+        #[arg(short = 't', long = "template", default_value = "code")]
+        template: String,
+        /// Comma-separated skill list; overrides template when provided
+        #[arg(short = 's', long = "skills")]
+        skills: Option<String>,
     },
     /// Show process status
     Status { process_id: Option<String> },
@@ -118,7 +124,9 @@ enum TicketCommands {
     Show { ticket_id: String },
 }
 
+#[instrument]
 fn load_config() -> Result<ur_config::Config> {
+    debug!("loading ur config");
     ur_config::Config::load().context("failed to load config")
 }
 
@@ -280,12 +288,14 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-#[instrument(skip(client), fields(ticket_id, workspace = ?workspace))]
+#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, template, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
     agent_prefix: &str,
+    template: &str,
+    skills: &[String],
 ) -> Result<()> {
     info!(ticket_id, "launching agent process");
 
@@ -316,6 +326,8 @@ async fn process_launch(
             memory: "8G".into(),
             workspace_dir,
             claude_credentials: String::new(),
+            template: template.to_owned(),
+            skills: skills.to_vec(),
         })
         .await?;
 
@@ -364,13 +376,30 @@ async fn handle_process(command: ProcessCommands, port: u16, agent_prefix: &str)
             workspace,
             attach,
             force,
+            template,
+            skills,
         } => {
+            // Parse comma-separated skills; when provided they override the template server-side
+            let skills_vec: Vec<String> = skills
+                .iter()
+                .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
+                .filter(|s| !s.is_empty())
+                .collect();
+
             if force {
                 debug!(ticket_id = %ticket_id, "force-killing existing container before launch");
                 let _ = kill_container(&ticket_id, agent_prefix);
             }
             let mut client = connect(port).await?;
-            process_launch(&mut client, &ticket_id, workspace, agent_prefix).await?;
+            process_launch(
+                &mut client,
+                &ticket_id,
+                workspace,
+                agent_prefix,
+                &template,
+                &skills_vec,
+            )
+            .await?;
             if attach {
                 process_attach(&ticket_id, agent_prefix)?;
             }

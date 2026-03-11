@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use serde::Deserialize;
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -10,6 +11,109 @@ use ur_config::NetworkConfig;
 use container::{ContainerRuntime, NetworkManager};
 
 use crate::RepoRegistry;
+
+/// Default skills for the "code" prompt template.
+fn default_code_skills() -> Vec<String> {
+    vec![
+        "tk".into(),
+        "ship".into(),
+        "tk:agents".into(),
+        "tk:start".into(),
+        "systematic-debugging".into(),
+        "test-driven-development".into(),
+        "writing-skills".into(),
+    ]
+}
+
+/// Default skills for the "design" prompt template.
+fn default_design_skills() -> Vec<String> {
+    vec!["tk".into(), "brainstorming".into(), "writing-skills".into()]
+}
+
+/// Returns the hardcoded default prompt templates.
+fn default_prompt_templates() -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    map.insert("code".into(), default_code_skills());
+    map.insert("design".into(), default_design_skills());
+    map
+}
+
+/// Raw TOML representation for the `[prompt_templates]` section.
+/// Each key is a template name mapping to a table with a `skills` list.
+#[derive(Debug, Default, Deserialize)]
+struct RawPromptTemplates {
+    #[serde(flatten)]
+    templates: HashMap<String, RawTemplateEntry>,
+}
+
+/// A single prompt template entry with its skills list.
+#[derive(Debug, Deserialize)]
+struct RawTemplateEntry {
+    skills: Vec<String>,
+}
+
+/// Resolved prompt templates configuration mapping template names to skill lists.
+#[derive(Debug, Clone)]
+pub struct PromptTemplatesConfig {
+    templates: HashMap<String, Vec<String>>,
+}
+
+impl Default for PromptTemplatesConfig {
+    fn default() -> Self {
+        Self {
+            templates: default_prompt_templates(),
+        }
+    }
+}
+
+impl PromptTemplatesConfig {
+    /// Parse prompt_templates from a TOML string.
+    /// If no `[prompt_templates]` section exists, hardcoded defaults are used.
+    /// Any templates defined in the config replace the defaults entirely.
+    pub fn from_toml(toml_content: &str) -> Result<Self, String> {
+        // Parse the full TOML to extract just the prompt_templates section
+        let value: toml::Value =
+            toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
+
+        match value.get("prompt_templates") {
+            Some(section) => {
+                let raw: RawPromptTemplates = section
+                    .clone()
+                    .try_into()
+                    .map_err(|e| format!("invalid prompt_templates config: {e}"))?;
+                let mut templates = default_prompt_templates();
+                for (name, entry) in raw.templates {
+                    templates.insert(name, entry.skills);
+                }
+                Ok(Self { templates })
+            }
+            None => Ok(Self::default()),
+        }
+    }
+
+    /// Resolve skills for a launch request.
+    ///
+    /// Priority:
+    /// 1. If `skills` is non-empty, use it directly.
+    /// 2. If `template` is non-empty, look up `prompt_templates.<template>.skills`.
+    /// 3. Otherwise, use `prompt_templates.code` (default).
+    ///
+    /// Returns an error if the requested template name is not found.
+    pub fn resolve_skills(&self, template: &str, skills: &[String]) -> Result<Vec<String>, String> {
+        if !skills.is_empty() {
+            return Ok(skills.to_vec());
+        }
+        let template_name = if template.is_empty() {
+            "code"
+        } else {
+            template
+        };
+        self.templates
+            .get(template_name)
+            .cloned()
+            .ok_or_else(|| format!("unknown prompt template: {template_name}"))
+    }
+}
 
 /// Tracks a running agent process.
 struct ProcessEntry {
@@ -29,6 +133,8 @@ pub struct ProcessConfig {
     pub grpc_port: u16,
     pub workspace_dir: Option<PathBuf>,
     pub proxy_hostname: String,
+    /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
+    pub skills: Vec<String>,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -42,6 +148,7 @@ pub struct ProcessManager {
     repo_registry: Arc<RepoRegistry>,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
+    prompt_templates: PromptTemplatesConfig,
     processes: Arc<RwLock<HashMap<String, ProcessEntry>>>,
 }
 
@@ -52,6 +159,7 @@ impl ProcessManager {
         repo_registry: Arc<RepoRegistry>,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
+        prompt_templates: PromptTemplatesConfig,
     ) -> Self {
         Self {
             workspace,
@@ -59,8 +167,14 @@ impl ProcessManager {
             repo_registry,
             network_manager,
             network_config,
+            prompt_templates,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Resolve skills for a launch request using the configured prompt templates.
+    pub fn resolve_skills(&self, template: &str, skills: &[String]) -> Result<Vec<String>, String> {
+        self.prompt_templates.resolve_skills(template, skills)
     }
 
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
@@ -155,6 +269,11 @@ impl ProcessManager {
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
         env_vars.extend(proxy_env_vars(&config.proxy_hostname));
+
+        // Inject resolved skills as comma-separated list
+        if !config.skills.is_empty() {
+            env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
+        }
 
         // Run the container on the shared Docker network
         let cid = {
@@ -286,6 +405,7 @@ mod tests {
             registry,
             network_manager,
             network_config,
+            PromptTemplatesConfig::default(),
         );
         (mgr, workspace)
     }
@@ -381,5 +501,58 @@ mod tests {
             https_val.starts_with("http://"),
             "HTTPS_PROXY must use http:// scheme (proxy speaks plain HTTP, tunnels via CONNECT)"
         );
+    }
+
+    #[test]
+    fn prompt_templates_default_has_code_and_design() {
+        let cfg = PromptTemplatesConfig::default();
+        let code = cfg.resolve_skills("", &[]).unwrap();
+        assert!(code.contains(&"tk".to_string()));
+        assert!(code.contains(&"ship".to_string()));
+        let design = cfg.resolve_skills("design", &[]).unwrap();
+        assert!(design.contains(&"brainstorming".to_string()));
+    }
+
+    #[test]
+    fn prompt_templates_explicit_skills_override() {
+        let cfg = PromptTemplatesConfig::default();
+        let skills = vec!["custom-skill".to_string()];
+        let resolved = cfg.resolve_skills("code", &skills).unwrap();
+        assert_eq!(resolved, vec!["custom-skill"]);
+    }
+
+    #[test]
+    fn prompt_templates_unknown_template_errors() {
+        let cfg = PromptTemplatesConfig::default();
+        let result = cfg.resolve_skills("nonexistent", &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown prompt template"));
+    }
+
+    #[test]
+    fn prompt_templates_from_toml_overrides_defaults() {
+        let toml = r#"
+[prompt_templates.code]
+skills = ["only-one"]
+
+[prompt_templates.custom]
+skills = ["a", "b"]
+"#;
+        let cfg = PromptTemplatesConfig::from_toml(toml).unwrap();
+        let code = cfg.resolve_skills("code", &[]).unwrap();
+        assert_eq!(code, vec!["only-one"]);
+        let custom = cfg.resolve_skills("custom", &[]).unwrap();
+        assert_eq!(custom, vec!["a", "b"]);
+        // design default should still be present
+        let design = cfg.resolve_skills("design", &[]).unwrap();
+        assert!(design.contains(&"brainstorming".to_string()));
+    }
+
+    #[test]
+    fn prompt_templates_from_toml_no_section_uses_defaults() {
+        let toml = "daemon_port = 5000\n";
+        let cfg = PromptTemplatesConfig::from_toml(toml).unwrap();
+        let code = cfg.resolve_skills("", &[]).unwrap();
+        assert!(code.contains(&"tk".to_string()));
     }
 }

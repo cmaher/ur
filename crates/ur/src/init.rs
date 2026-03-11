@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use tracing::{debug, info, instrument};
 
 const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
@@ -20,11 +21,14 @@ pub struct InitFlags {
     pub force_squid: bool,
 }
 
+#[instrument(skip(flags), fields(force = flags.force, force_config = flags.force_config, force_squid = flags.force_squid))]
 pub fn run(flags: InitFlags) -> Result<()> {
     let config_dir = ur_config::resolve_config_dir()?;
+    info!(config_dir = %config_dir.display(), "initializing config directory");
     run_in(config_dir, flags)
 }
 
+#[instrument(skip(flags), fields(config_dir = %config_dir.display()))]
 fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
     init_dir(&config_dir)?;
 
@@ -69,6 +73,7 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
 }
 
 fn init_dir(path: &Path) -> Result<()> {
+    debug!(path = %path.display(), "creating directory");
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create directory {}", path.display()))?;
     println!("Created {}", path.display());
@@ -77,6 +82,7 @@ fn init_dir(path: &Path) -> Result<()> {
 
 fn write_file(path: &PathBuf, content: &str, force: bool, force_hint: &str) -> Result<()> {
     if path.exists() && !force {
+        debug!(path = %path.display(), "skipping existing file");
         println!(
             "Skipped {} (exists, use {} to overwrite)",
             path.display(),
@@ -84,6 +90,7 @@ fn write_file(path: &PathBuf, content: &str, force: bool, force_hint: &str) -> R
         );
         return Ok(());
     }
+    debug!(path = %path.display(), force, "writing file");
     fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
     println!("Created {}", path.display());
     Ok(())

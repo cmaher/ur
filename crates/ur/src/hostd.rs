@@ -3,13 +3,16 @@ use tracing::{debug, info, instrument, warn};
 
 /// Resolve the ur-hostd binary path. Looks next to the current executable first
 /// (handles target/debug/ during development), then falls back to PATH lookup.
+#[instrument]
 fn hostd_bin() -> std::path::PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe.with_file_name("ur-hostd");
         if sibling.exists() {
+            debug!(path = %sibling.display(), "found ur-hostd next to current executable");
             return sibling;
         }
     }
+    debug!("falling back to PATH lookup for ur-hostd");
     std::path::PathBuf::from("ur-hostd")
 }
 

@@ -146,6 +146,7 @@ impl ComposeManager {
 }
 
 /// Render the compose template with resolved network and container names.
+#[instrument(fields(network_name = %network.name, worker_network = %network.worker_name))]
 pub fn render_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
@@ -161,6 +162,7 @@ pub fn render_compose(
 ///
 /// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, and `UR_HOSTD_PORT`
 /// as environment variables so the compose file's variable interpolation picks them up.
+#[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
     let mut env_vars = vec![
         (
