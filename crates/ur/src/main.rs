@@ -87,12 +87,11 @@ enum ProxyCommands {
 enum ProjectCommands {
     /// List all configured projects with pool usage
     List,
-    /// Add a new project
+    /// Add a new project from a local git directory
     Add {
-        /// Git remote URL (required)
-        #[arg(long)]
-        repo: String,
-        /// Project key (derived from repo URL if omitted)
+        /// Path to a git repository directory (e.g. "." for current directory)
+        path: PathBuf,
+        /// Project key (derived from repo name if omitted)
         #[arg(long)]
         key: Option<String>,
         /// Display-friendly project name
@@ -126,7 +125,7 @@ enum ProcessCommands {
         /// Attach to the process after launching
         #[arg(short = 'a', long = "attach")]
         attach: bool,
-        /// Kill existing container with this ID before launching
+        /// Stop existing process with this ID before launching
         #[arg(short = 'f', long = "force")]
         force: bool,
         /// Prompt template name (default: "code")
@@ -142,7 +141,7 @@ enum ProcessCommands {
     Attach { process_id: String },
     /// Stop a running agent process
     Stop { process_id: String },
-    /// Force-remove a container (docker rm -f)
+    /// Force-stop a running agent process (via server)
     Kill { process_id: String },
     /// Save credentials from a running container for reuse
     SaveCredentials { process_id: String },
@@ -261,20 +260,6 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
             bail!("server is not running — run 'ur start' first")
         }
     }
-}
-
-#[instrument]
-fn kill_container(name: &str, agent_prefix: &str) -> Result<()> {
-    let rt = container::runtime_from_env();
-    let id = ContainerId(format!("{agent_prefix}{name}"));
-    info!(container = %id.0, "killing container");
-    rt.stop(&id)
-        .with_context(|| format!("failed to stop container {}", id.0))?;
-    rt.rm(&id)
-        .with_context(|| format!("failed to remove container {}", id.0))?;
-    info!(container = %id.0, "container killed");
-    println!("Killed {}", id.0);
-    Ok(())
 }
 
 #[instrument]
@@ -403,7 +388,10 @@ async fn handle_process(
 ) -> Result<()> {
     match command {
         ProcessCommands::Attach { process_id } => process_attach(&process_id, agent_prefix),
-        ProcessCommands::Kill { process_id } => kill_container(&process_id, agent_prefix),
+        ProcessCommands::Kill { process_id } => {
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &process_id).await
+        }
         ProcessCommands::SaveCredentials { process_id } => {
             info!(process_id = %process_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
@@ -460,11 +448,11 @@ async fn handle_process(
                 String::new()
             };
 
-            if force {
-                debug!(ticket_id = %ticket_id, "force-killing existing container before launch");
-                let _ = kill_container(&ticket_id, agent_prefix);
-            }
             let mut client = connect(port).await?;
+            if force {
+                debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
+                let _ = process_stop(&mut client, &ticket_id).await;
+            }
             process_launch(
                 &mut client,
                 &ticket_id,
@@ -576,11 +564,11 @@ async fn main() -> Result<()> {
         Commands::Project { command } => match command {
             ProjectCommands::List => project::list(&config)?,
             ProjectCommands::Add {
-                repo,
+                path,
                 key,
                 name,
                 pool_limit,
-            } => project::add(&config, &repo, key.as_deref(), name.as_deref(), pool_limit)?,
+            } => project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit)?,
             ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
         },
         Commands::Ticket { command } => match command {

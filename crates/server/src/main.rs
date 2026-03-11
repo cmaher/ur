@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         repo_registry,
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
+        projects: cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,
         #[cfg(feature = "hostexec")]

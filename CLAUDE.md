@@ -36,6 +36,7 @@ Cargo workspace:
 
 ## Conventions
 
+- **Single config file**: All user configuration lives in `ur.toml` (`$UR_CONFIG/ur.toml`, default `~/.ur/ur.toml`). Do NOT create separate config files for new features — extend `ur.toml` instead. The only exception is `~/.ur/hostexec/allowlist.toml` for global hostexec Lua transforms (and associated `.lua` scripts), which predates this convention.
 - **Plans** (`docs/plans/`): Filenames and content MUST include the relevant ticket number (e.g., `ur-a1b2c`).
 - **PR descriptions**: MUST reference the ticket number being addressed.
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.

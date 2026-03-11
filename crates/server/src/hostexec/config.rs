@@ -36,23 +36,38 @@ impl HostExecConfigManager {
             .join(ur_config::HOSTEXEC_DIR)
             .join(ur_config::HOSTEXEC_ALLOWLIST_FILE);
 
-        if !allowlist_path.exists() {
-            return Ok(Self { commands });
-        }
+        if allowlist_path.exists() {
+            let content = std::fs::read_to_string(&allowlist_path)
+                .with_context(|| format!("reading {}", allowlist_path.display()))?;
+            let raw: RawAllowlist = toml::from_str(&content)
+                .with_context(|| format!("parsing {}", allowlist_path.display()))?;
 
-        let content = std::fs::read_to_string(&allowlist_path)
-            .with_context(|| format!("reading {}", allowlist_path.display()))?;
-        let raw: RawAllowlist = toml::from_str(&content)
-            .with_context(|| format!("parsing {}", allowlist_path.display()))?;
+            let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
 
-        let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
-
-        for (name, raw_cfg) in raw.commands {
-            let lua_source = Self::resolve_lua_source(&name, &raw_cfg, &hostexec_dir)?;
-            commands.insert(name, CommandConfig { lua_source });
+            for (name, raw_cfg) in raw.commands {
+                let lua_source = Self::resolve_lua_source(&name, &raw_cfg, &hostexec_dir)?;
+                commands.insert(name, CommandConfig { lua_source });
+            }
         }
 
         Ok(Self { commands })
+    }
+
+    /// Create a new config manager with additional passthrough commands merged in.
+    ///
+    /// Per-project passthrough commands (from `ur.toml` `[projects.<key>]` `hostexec` list)
+    /// are added as passthrough (no Lua transform). Existing commands are not overridden.
+    pub fn with_passthrough_commands(&self, extra_commands: &[String]) -> Self {
+        if extra_commands.is_empty() {
+            return self.clone();
+        }
+        let mut commands = self.commands.clone();
+        for name in extra_commands {
+            commands
+                .entry(name.clone())
+                .or_insert(CommandConfig { lua_source: None });
+        }
+        Self { commands }
     }
 
     fn resolve_lua_source(
@@ -185,5 +200,64 @@ mod tests {
 
         let git_cfg = mgr.get("git").unwrap();
         assert!(git_cfg.lua_source.as_ref().unwrap().contains("blocked"));
+    }
+
+    #[test]
+    fn test_with_passthrough_commands_adds_new() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+
+        let extra = vec!["tk".into(), "make".into()];
+        let merged = mgr.with_passthrough_commands(&extra);
+
+        assert!(merged.is_allowed("git"));
+        assert!(merged.is_allowed("gh"));
+        assert!(merged.is_allowed("tk"));
+        assert!(merged.is_allowed("make"));
+        assert!(merged.get("tk").unwrap().lua_source.is_none());
+        assert!(merged.get("make").unwrap().lua_source.is_none());
+    }
+
+    #[test]
+    fn test_with_passthrough_commands_does_not_override_existing() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+
+        // git already exists with a Lua script — passthrough should not replace it
+        let extra = vec!["git".into(), "tk".into()];
+        let merged = mgr.with_passthrough_commands(&extra);
+
+        assert!(merged.get("git").unwrap().lua_source.is_some());
+        assert!(merged.get("tk").unwrap().lua_source.is_none());
+    }
+
+    #[test]
+    fn test_with_passthrough_commands_empty_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let merged = mgr.with_passthrough_commands(&[]);
+
+        assert_eq!(merged.command_names(), mgr.command_names());
+    }
+
+    #[test]
+    fn test_with_passthrough_commands_preserves_global_user_config() {
+        let tmp = TempDir::new().unwrap();
+        let hostexec_dir = tmp.path().join(ur_config::HOSTEXEC_DIR);
+        fs::create_dir_all(&hostexec_dir).unwrap();
+        fs::write(
+            hostexec_dir.join(ur_config::HOSTEXEC_ALLOWLIST_FILE),
+            "[commands]\ntk = {}\n",
+        )
+        .unwrap();
+
+        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let extra = vec!["make".into()];
+        let merged = mgr.with_passthrough_commands(&extra);
+
+        assert!(merged.is_allowed("git"));
+        assert!(merged.is_allowed("gh"));
+        assert!(merged.is_allowed("tk"));
+        assert!(merged.is_allowed("make"));
     }
 }

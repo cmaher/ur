@@ -268,11 +268,11 @@ impl ProcessManager {
         agent_id: &AgentId,
         workspace_dir: Option<PathBuf>,
     ) -> Result<(), String> {
-        // Check for duplicate agent ID
+        // Check for duplicate process ID
         {
             let procs = self.processes.read().expect("process lock poisoned");
-            if procs.contains_key(agent_id) {
-                return Err(format!("agent already running: {agent_id}"));
+            if procs.values().any(|e| e.process_id == process_id) {
+                return Err(format!("process already running: {process_id}"));
             }
         }
 
@@ -595,16 +595,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_duplicate_agent_returns_error() {
+    async fn prepare_duplicate_process_id_returns_error() {
         let (mgr, _workspace) = test_manager();
 
-        let agent_id = AgentId("dup-proc-ab12".into());
+        let existing_agent_id = AgentId("dup-proc-ab12".into());
         // Manually insert a process entry
         let noop_handle = tokio::spawn(std::future::ready(()));
         {
             let mut procs = mgr.processes.write().unwrap();
             procs.insert(
-                agent_id.clone(),
+                existing_agent_id,
                 ProcessEntry {
                     process_id: "dup-proc".into(),
                     project_key: String::new(),
@@ -616,9 +616,12 @@ mod tests {
             );
         }
 
-        let result = mgr.prepare("dup-proc", &agent_id, None).await;
+        // A new agent_id with a different suffix should still be rejected
+        // because the process_id matches.
+        let new_agent_id = AgentId("dup-proc-zz99".into());
+        let result = mgr.prepare("dup-proc", &new_agent_id, None).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("already running"));
+        assert!(result.unwrap_err().contains("process already running"));
     }
 
     #[tokio::test]

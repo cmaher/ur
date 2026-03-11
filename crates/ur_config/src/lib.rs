@@ -126,6 +126,8 @@ struct RawProjectConfig {
     repo: String,
     name: Option<String>,
     pool_limit: Option<u32>,
+    #[serde(default)]
+    hostexec: Vec<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -180,6 +182,9 @@ pub struct ProjectConfig {
     pub name: String,
     /// Maximum number of cached repo clones in the pool (default: 10).
     pub pool_limit: u32,
+    /// Additional passthrough hostexec commands for this project.
+    /// These are added to the global allowlist when agents run against this project.
+    pub hostexec: Vec<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -291,6 +296,7 @@ impl Config {
                     repo: raw_proj.repo,
                     pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
                     key: key.clone(),
+                    hostexec: raw_proj.hostexec,
                 };
                 (key, resolved)
             })
@@ -531,6 +537,39 @@ pool_limit = 5
         assert_eq!(cfg.projects.len(), 2);
         assert!(cfg.projects.contains_key("ur"));
         assert!(cfg.projects.contains_key("swa"));
+    }
+
+    #[test]
+    fn parses_project_with_hostexec_commands() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+hostexec = ["tk", "make", "cargo"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["ur"];
+        assert_eq!(proj.hostexec, vec!["tk", "make", "cargo"]);
+    }
+
+    #[test]
+    fn hostexec_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["ur"];
+        assert!(proj.hostexec.is_empty());
     }
 
     #[test]

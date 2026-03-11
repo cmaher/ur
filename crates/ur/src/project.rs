@@ -3,6 +3,31 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
+/// Resolve the git remote "origin" URL for a repository directory.
+fn git_remote_origin(path: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(path)
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "failed to get git remote origin for '{}': {}",
+            path.display(),
+            stderr.trim()
+        );
+    }
+    let url = String::from_utf8(output.stdout)
+        .context("git remote URL is not valid UTF-8")?
+        .trim()
+        .to_string();
+    if url.is_empty() {
+        bail!("git remote origin is empty for '{}'", path.display());
+    }
+    Ok(url)
+}
+
 /// Derive a project key from a git remote URL.
 ///
 /// Takes the last path segment and strips a trailing `.git` suffix.
@@ -62,19 +87,22 @@ fn count_pool_slots(pool_dir: &Path) -> usize {
     }
 }
 
-/// Add a new project to `ur.toml`.
+/// Add a new project to `ur.toml` by resolving the git remote origin from a directory.
 pub fn add(
     config: &ur_config::Config,
-    repo: &str,
+    path: &Path,
     key: Option<&str>,
     name: Option<&str>,
     pool_limit: Option<u32>,
 ) -> Result<()> {
+    let path = std::fs::canonicalize(path)
+        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
+    let repo = git_remote_origin(&path)?;
     let key = match key {
         Some(k) => k.to_string(),
-        None => derive_key_from_repo(repo)?,
+        None => derive_key_from_repo(&repo)?,
     };
-    info!(key = %key, repo = %repo, "adding project");
+    info!(key = %key, repo = %repo, path = %path.display(), "adding project");
 
     if config.projects.contains_key(&key) {
         bail!("project '{key}' already exists — remove it first or choose a different key");
@@ -98,7 +126,7 @@ pub fn add(
         .ok_or_else(|| anyhow::anyhow!("'projects' in ur.toml is not a table"))?;
 
     let mut proj_table = toml_edit::Table::new();
-    proj_table.insert("repo", toml_edit::value(repo));
+    proj_table.insert("repo", toml_edit::value(&repo));
     if let Some(n) = name {
         proj_table.insert("name", toml_edit::value(n));
     }
@@ -171,6 +199,22 @@ mod tests {
         ur_config::Config::load_from(tmp.path()).unwrap()
     }
 
+    /// Create a temporary git repo with a configured remote origin.
+    fn make_git_repo(remote_url: &str) -> TempDir {
+        let repo_dir = TempDir::new().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", remote_url])
+            .current_dir(repo_dir.path())
+            .output()
+            .unwrap();
+        repo_dir
+    }
+
     #[test]
     fn derive_key_from_ssh_url() {
         assert_eq!(
@@ -196,10 +240,25 @@ mod tests {
     }
 
     #[test]
+    fn git_remote_origin_extracts_url() {
+        let repo = make_git_repo("git@github.com:cmaher/ur.git");
+        let url = git_remote_origin(repo.path()).unwrap();
+        assert_eq!(url, "git@github.com:cmaher/ur.git");
+    }
+
+    #[test]
+    fn git_remote_origin_fails_for_non_repo() {
+        let tmp = TempDir::new().unwrap();
+        let err = git_remote_origin(tmp.path()).unwrap_err();
+        assert!(err.to_string().contains("failed to get git remote origin"));
+    }
+
+    #[test]
     fn add_project_creates_entry() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
-        add(&config, "git@github.com:cmaher/ur.git", None, None, None).unwrap();
+        let repo = make_git_repo("git@github.com:cmaher/ur.git");
+        add(&config, repo.path(), None, None, None).unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(updated.projects.contains_key("ur"));
@@ -210,9 +269,10 @@ mod tests {
     fn add_project_with_explicit_key_and_options() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
+        let repo = make_git_repo("git@github.com:cmaher/ur.git");
         add(
             &config,
-            "git@github.com:cmaher/ur.git",
+            repo.path(),
             Some("mykey"),
             Some("My Project"),
             Some(5),
@@ -236,7 +296,8 @@ mod tests {
 repo = "git@github.com:cmaher/ur.git"
 "#,
         );
-        let err = add(&config, "git@github.com:other/ur.git", None, None, None).unwrap_err();
+        let repo = make_git_repo("git@github.com:other/ur.git");
+        let err = add(&config, repo.path(), None, None, None).unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 

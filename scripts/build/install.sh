@@ -23,6 +23,11 @@ if [ -x "$INSTALL_DIR/ur" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR" "$HOME/.ur/logs"
+
+# Remove before copying: macOS caches code signature page hashes for running
+# binaries. Overwriting in-place (cp) invalidates the cache, causing the kernel
+# to SIGKILL the new binary on exec. Removing first creates a new inode.
+rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/ur-hostd"
 cp "$TARGET_DIR/ur" "$INSTALL_DIR/ur"
 cp "$TARGET_DIR/ur-hostd" "$INSTALL_DIR/ur-hostd"
 echo "Installed ur and ur-hostd to $INSTALL_DIR/"

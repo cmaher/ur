@@ -26,9 +26,11 @@ creates bash shims in `/home/worker/.local/bin/` (on PATH, writable by worker us
 ## Configuration
 
 - Built-in defaults: git (with git.lua), gh (with gh.lua)
-- User extensions: ~/.ur/hostexec/allowlist.toml
-- Custom Lua scripts: ~/.ur/hostexec/<name>.lua
+- Global user extensions: ~/.ur/hostexec/allowlist.toml (commands with optional Lua transforms)
+- Per-project passthrough commands: `hostexec = ["tk", "make"]` in `ur.toml` `[projects.<key>]`
+- Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from allowlist.toml)
 - Passthrough commands: `command = {}` in allowlist (no Lua transform)
+- Merge order: built-in defaults → global allowlist.toml → per-project hostexec list (passthrough only, does not override existing commands)
 
 ## Key Files
 
