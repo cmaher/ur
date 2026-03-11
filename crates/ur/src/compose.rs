@@ -146,7 +146,10 @@ impl ComposeManager {
 }
 
 /// Render the compose template with resolved network and container names.
-pub fn render_compose(network: &ur_config::NetworkConfig, proxy: &ur_config::ProxyConfig) -> String {
+pub fn render_compose(
+    network: &ur_config::NetworkConfig,
+    proxy: &ur_config::ProxyConfig,
+) -> String {
     COMPOSE_TEMPLATE
         .replace("{{NETWORK_NAME}}", &network.name)
         .replace("{{WORKER_NETWORK_NAME}}", &network.worker_name)
