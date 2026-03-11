@@ -8,6 +8,10 @@ End-to-end acceptance tests that exercise the full stack: server, container life
 - Tests use pre-built binaries from `target/` (ur-server, ur) and worker commands (ur-ping, git) baked into the container image
 - Each test creates a temp UR_CONFIG dir and starts its own server instance to avoid conflicts
 
+## Test isolation
+
+Each test must use its own `TestNames` const with unique container/network names (e.g., `DEFAULT_TEST_NAMES`, `POOL_TEST_NAMES`) and a unique `daemon_port` to avoid collisions when tests run concurrently. Never reuse another test's names or port.
+
 ## Design principle
 
 Tests MUST use only CLI commands (`ur-server`, `ur`, `ur-ping`, `git`) — never programmatic/in-process wiring. The point of acceptance tests is to validate the real user-facing workflow. If a test scenario requires manual setup that the CLI doesn't support, that means the CLI is incomplete and needs a new feature — not that the test should work around it with code.
