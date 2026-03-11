@@ -159,7 +159,8 @@ impl ProcessManager {
         // Run the container on the shared Docker network
         let cid = {
             let rt = container::runtime_from_env();
-            let container_name = format!("ur-agent-{}", config.process_id);
+            let container_name =
+                format!("{}{}", self.network_config.agent_prefix, config.process_id);
             let opts = container::RunOpts {
                 image: container::ImageId(config.image_id.clone()),
                 name: container_name,
@@ -277,6 +278,7 @@ mod tests {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
             worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+            agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
         };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),

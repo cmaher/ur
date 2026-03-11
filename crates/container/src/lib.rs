@@ -58,9 +58,6 @@ pub struct ExecOutput {
     pub stderr: String,
 }
 
-/// Container name prefix used for all ur-managed agent containers.
-pub const AGENT_CONTAINER_PREFIX: &str = "ur-agent-";
-
 pub trait ContainerRuntime {
     fn build(&self, opts: &BuildOpts) -> Result<ImageId>;
     fn run(&self, opts: &RunOpts) -> Result<ContainerId>;

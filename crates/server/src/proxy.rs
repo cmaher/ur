@@ -5,9 +5,6 @@ use anyhow::{Context, Result};
 use container::ContainerRuntime;
 use tracing::info;
 
-/// Squid proxy container name on the Docker network.
-pub const SQUID_CONTAINER_NAME: &str = "ur-squid";
-
 /// Manages Squid proxy config files and runtime allowlist.
 ///
 /// Config files live in a host directory (`$UR_CONFIG/squid/`) mounted into the
@@ -19,13 +16,16 @@ pub const SQUID_CONTAINER_NAME: &str = "ur-squid";
 #[derive(Clone)]
 pub struct SquidManager {
     config_dir: PathBuf,
+    /// Container name used to exec `squid -k reconfigure` (e.g., "ur-squid").
+    container_name: String,
     allowlist: Arc<RwLock<Vec<String>>>,
 }
 
 impl SquidManager {
-    pub fn new(config_dir: PathBuf, allowlist: Vec<String>) -> Self {
+    pub fn new(config_dir: PathBuf, container_name: String, allowlist: Vec<String>) -> Self {
         Self {
             config_dir,
+            container_name,
             allowlist: Arc::new(RwLock::new(allowlist)),
         }
     }
@@ -69,7 +69,7 @@ impl SquidManager {
     /// preserved; new connections use the updated allowlist.
     pub fn signal_reconfigure(&self) -> Result<()> {
         let rt = container::runtime_from_env();
-        let cid = container::ContainerId(SQUID_CONTAINER_NAME.to_string());
+        let cid = container::ContainerId(self.container_name.clone());
         let opts = container::ExecOpts {
             command: vec!["squid".into(), "-k".into(), "reconfigure".into()],
             workdir: None,
@@ -79,7 +79,7 @@ impl SquidManager {
             anyhow::bail!("squid reconfigure failed: {}", output.stderr);
         }
         info!(
-            container = SQUID_CONTAINER_NAME,
+            container = %self.container_name,
             "squid reconfigure signaled"
         );
         Ok(())
@@ -105,7 +105,11 @@ mod tests {
     #[test]
     fn writes_allowlist_file() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         manager.update_allowlist(test_allowlist()).unwrap();
 
         let allowlist = std::fs::read_to_string(tmp.path().join("allowlist.txt")).unwrap();
@@ -116,7 +120,11 @@ mod tests {
     #[test]
     fn update_allowlist_rewrites_file() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         manager.update_allowlist(test_allowlist()).unwrap();
 
         manager
@@ -131,7 +139,11 @@ mod tests {
     #[test]
     fn add_domain_appends() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.add_domain("new.example.com").unwrap();
@@ -144,7 +156,11 @@ mod tests {
     #[test]
     fn add_domain_deduplicates() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.add_domain("api.anthropic.com").unwrap();
@@ -155,7 +171,11 @@ mod tests {
     #[test]
     fn remove_domain() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         manager.update_allowlist(test_allowlist()).unwrap();
 
         manager.remove_domain("example.com").unwrap();
@@ -168,7 +188,11 @@ mod tests {
     #[test]
     fn list_domains_returns_current() {
         let tmp = TempDir::new().unwrap();
-        let manager = SquidManager::new(tmp.path().to_path_buf(), test_allowlist());
+        let manager = SquidManager::new(
+            tmp.path().to_path_buf(),
+            "ur-squid".into(),
+            test_allowlist(),
+        );
         assert_eq!(manager.list_domains().len(), 2);
     }
 }

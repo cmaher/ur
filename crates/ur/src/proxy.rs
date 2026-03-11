@@ -46,9 +46,9 @@ pub fn block_domain(path: &Path, domain: &str) -> Result<Vec<String>> {
 
 /// Signal the Squid container to reconfigure. Prints a warning on failure
 /// but does not error out (the allowlist file was already updated).
-pub fn signal_reconfigure() {
+pub fn signal_reconfigure(squid_hostname: &str) {
     let status = std::process::Command::new("docker")
-        .args(["exec", "ur-squid", "squid", "-k", "reconfigure"])
+        .args(["exec", squid_hostname, "squid", "-k", "reconfigure"])
         .status();
     match status {
         Ok(s) if s.success() => {

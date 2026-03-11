@@ -29,7 +29,9 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
 COPY claude-settings.json /home/worker/.claude/settings.json
-COPY skills/code /home/worker/.claude/skills/
+COPY all-skills/ /home/worker/.claude/potential-skills/
+COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
+RUN mkdir -p /home/worker/.claude/skills
 RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /home/worker/.claude
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.

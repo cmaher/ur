@@ -11,5 +11,7 @@ path = "src/main.rs"
 clap = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 ur_config = { path = "../../ur_config" }
 ur_rpc = { path = "../../ur_rpc", features = ["core", "hostexec"] }

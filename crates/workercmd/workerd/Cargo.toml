@@ -7,7 +7,7 @@ version.workspace = true
 anyhow = "1"
 tokio = { workspace = true }
 tonic = { workspace = true }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "registry"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 ur_config = { path = "../../ur_config" }
 ur_rpc = { path = "../../ur_rpc", features = ["core", "hostexec"] }
