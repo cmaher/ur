@@ -151,7 +151,11 @@ fn create_bare_repo(parent_dir: &Path) -> PathBuf {
 
     // Clone it into a staging dir, add a commit, push back
     let output = Command::new("git")
-        .args(["clone", bare_repo.to_str().unwrap(), staging.to_str().unwrap()])
+        .args([
+            "clone",
+            bare_repo.to_str().unwrap(),
+            staging.to_str().unwrap(),
+        ])
         .output()
         .expect("failed to clone bare repo into staging");
     assert!(output.status.success(), "git clone failed");
