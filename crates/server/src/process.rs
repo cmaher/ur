@@ -536,7 +536,7 @@ mod tests {
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
-            "http://localhost:42070".into(),
+            crate::HostDaemonClientManager::new("http://localhost:42070".into()),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),

@@ -2,13 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use tokio_stream::StreamExt;
 use tracing::info;
 
 use ur_config::{Config, ProjectConfig};
-use ur_rpc::proto::core::command_output::Payload;
-use ur_rpc::proto::hostd::HostDaemonExecRequest;
-use ur_rpc::proto::hostd::host_daemon_service_client::HostDaemonServiceClient;
+
+use crate::HostDaemonClientManager;
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
@@ -27,8 +25,8 @@ pub struct RepoPoolManager {
     /// Host-side workspace path for returned slot paths (used in Docker volume
     /// mounts and ur-hostd CWD). e.g., `~/.ur/workspace`.
     host_workspace: PathBuf,
-    /// Address of the ur-hostd daemon (e.g., `http://host.docker.internal:42070`).
-    hostd_addr: String,
+    /// Client for executing commands on the host via ur-hostd.
+    hostd_client: HostDaemonClientManager,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
     /// Set of slot paths (host-side) currently in use by running agents.
@@ -40,12 +38,12 @@ impl RepoPoolManager {
         config: &Config,
         local_workspace: PathBuf,
         host_workspace: PathBuf,
-        hostd_addr: String,
+        hostd_client: HostDaemonClientManager,
     ) -> Self {
         Self {
             local_workspace,
             host_workspace,
-            hostd_addr,
+            hostd_client,
             projects: config.projects.clone(),
             in_use: Arc::new(RwLock::new(HashSet::new())),
         }
@@ -201,12 +199,14 @@ impl RepoPoolManager {
         let host_slot = self.host_slot_path(project_key, slot_index);
         let host_parent = self.host_project_pool_dir(project_key);
 
-        self.exec_hostd_git(
-            &["clone", repo_url, &host_slot.to_string_lossy()],
-            &host_parent.to_string_lossy(),
-        )
-        .await
-        .map_err(|e| format!("git clone failed for {repo_url}: {e}"))
+        self.hostd_client
+            .exec_and_check(
+                "git",
+                &["clone", repo_url, &host_slot.to_string_lossy()],
+                &host_parent.to_string_lossy(),
+            )
+            .await
+            .map_err(|e| format!("git clone failed for {repo_url}: {e}"))
     }
 
     /// Reset an existing slot to a clean origin/master state via ur-hostd.
@@ -223,58 +223,19 @@ impl RepoPoolManager {
 
         let cwd = host_slot_path.to_string_lossy();
         for args in commands {
-            self.exec_hostd_git(args, &cwd).await.map_err(|e| {
-                format!(
-                    "git {} failed in {}: {e}",
-                    args.join(" "),
-                    host_slot_path.display()
-                )
-            })?;
+            self.hostd_client
+                .exec_and_check("git", args, &cwd)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "git {} failed in {}: {e}",
+                        args.join(" "),
+                        host_slot_path.display()
+                    )
+                })?;
         }
 
         Ok(())
-    }
-
-    /// Execute a git command on the host via ur-hostd, collecting output and
-    /// checking the exit code. Returns an error if hostd is unreachable, the
-    /// command exits non-zero, or the stream ends without an exit code.
-    async fn exec_hostd_git(&self, args: &[&str], working_dir: &str) -> Result<(), String> {
-        let mut client = HostDaemonServiceClient::connect(self.hostd_addr.clone())
-            .await
-            .map_err(|e| format!("hostd unavailable: {e}"))?;
-
-        let req = HostDaemonExecRequest {
-            command: "git".into(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            working_dir: working_dir.to_string(),
-        };
-
-        let response = client
-            .exec(req)
-            .await
-            .map_err(|e| format!("hostd exec failed: {e}"))?;
-
-        let mut stream = response.into_inner();
-        let mut stderr_buf = Vec::new();
-        let mut exit_code: Option<i32> = None;
-
-        while let Some(msg) = stream.next().await {
-            let msg = msg.map_err(|e| format!("hostd stream error: {e}"))?;
-            match msg.payload {
-                Some(Payload::Stderr(data)) => stderr_buf.extend(data),
-                Some(Payload::ExitCode(code)) => exit_code = Some(code),
-                _ => {}
-            }
-        }
-
-        match exit_code {
-            Some(0) => Ok(()),
-            Some(code) => {
-                let stderr = String::from_utf8_lossy(&stderr_buf);
-                Err(format!("exit code {code}: {stderr}"))
-            }
-            None => Err("hostd stream ended without exit code".into()),
-        }
     }
 
     /// Mark a slot path as in-use (host-side path).
@@ -312,7 +273,7 @@ mod tests {
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
-            hostd_addr: "http://localhost:42070".into(),
+            hostd_client: HostDaemonClientManager::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
         };
@@ -439,12 +400,13 @@ mod tests {
                 repo: String::new(),
                 name: "Proj".into(),
                 pool_limit: 10,
+                hostexec: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
-            hostd_addr: "http://localhost:42070".into(),
+            hostd_client: HostDaemonClientManager::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
         };
