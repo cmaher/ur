@@ -87,13 +87,44 @@ struct ProjectEntry {
     repo: String,
 }
 
+/// Configuration names for a test stack, preventing container/network collisions
+/// between tests that may run concurrently.
+struct TestNames {
+    squid_hostname: &'static str,
+    network: &'static str,
+    worker_network: &'static str,
+    server_hostname: &'static str,
+    agent_prefix: &'static str,
+}
+
+const DEFAULT_TEST_NAMES: TestNames = TestNames {
+    squid_hostname: "ur-test-squid",
+    network: "ur-test",
+    worker_network: "ur-test-workers",
+    server_hostname: "ur-test-server",
+    agent_prefix: "ur-test-agent-",
+};
+
+const POOL_TEST_NAMES: TestNames = TestNames {
+    squid_hostname: "ur-pool-squid",
+    network: "ur-pool-test",
+    worker_network: "ur-pool-workers",
+    server_hostname: "ur-pool-server",
+    agent_prefix: "ur-pool-agent-",
+};
+
 /// Write a test-specific ur.toml and supporting files.
 ///
 /// `ur start` renders the compose file from its embedded template, replacing
 /// network name and container name placeholders with values from the config.
-/// Uses unique container names (`ur-server-test`, `ur-squid-test`) so the
-/// acceptance test stack never collides with a real running ur stack.
-fn write_test_config(config_dir: &Path, daemon_port: u16, projects: &[ProjectEntry]) {
+/// Uses unique container names so the acceptance test stack never collides
+/// with a real running ur stack or other test stacks.
+fn write_test_config(
+    config_dir: &Path,
+    daemon_port: u16,
+    names: &TestNames,
+    projects: &[ProjectEntry],
+) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
 
@@ -122,16 +153,21 @@ fn write_test_config(config_dir: &Path, daemon_port: u16, projects: &[ProjectEnt
          compose_file = \"{compose}\"\n\
          \n\
          [proxy]\n\
-         hostname = \"ur-test-squid\"\n\
+         hostname = \"{squid}\"\n\
          \n\
          [network]\n\
-         name = \"ur-test\"\n\
-         worker_name = \"ur-test-workers\"\n\
-         server_hostname = \"ur-test-server\"\n\
-         agent_prefix = \"ur-test-agent-\"\n\
+         name = \"{network}\"\n\
+         worker_name = \"{worker_network}\"\n\
+         server_hostname = \"{server}\"\n\
+         agent_prefix = \"{agent_prefix}\"\n\
          {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
+        squid = names.squid_hostname,
+        network = names.network,
+        worker_network = names.worker_network,
+        server = names.server_hostname,
+        agent_prefix = names.agent_prefix,
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
 }
@@ -230,7 +266,7 @@ fn e2e_ping_and_git() {
     let config_path = config_dir.path();
     let daemon_port = 19876u16;
 
-    write_test_config(config_path, daemon_port, &[]);
+    write_test_config(config_path, daemon_port, &DEFAULT_TEST_NAMES, &[]);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -428,10 +464,10 @@ fn e2e_project_pool_launch() {
     let runtime = detect_container_runtime();
     let ticket_id = "pool-test";
     let project_key = "poolproj";
-    let agent_prefix = "ur-test-agent-";
+    let agent_prefix = POOL_TEST_NAMES.agent_prefix;
     let container_name = format!("{agent_prefix}{ticket_id}");
-    let server_container = "ur-test-server";
-    let squid_container = "ur-test-squid";
+    let server_container = POOL_TEST_NAMES.server_hostname;
+    let squid_container = POOL_TEST_NAMES.squid_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
@@ -449,6 +485,7 @@ fn e2e_project_pool_launch() {
     write_test_config(
         config_path,
         daemon_port,
+        &POOL_TEST_NAMES,
         &[ProjectEntry {
             key: project_key.into(),
             repo: bare_repo.to_string_lossy().into_owned(),
