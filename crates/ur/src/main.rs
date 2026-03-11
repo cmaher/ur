@@ -4,6 +4,7 @@ mod hostd;
 mod init;
 mod lifecycle_log;
 mod logging;
+mod project;
 mod proxy;
 
 use std::path::PathBuf;
@@ -65,6 +66,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
+    /// Manage projects
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -75,6 +81,35 @@ enum ProxyCommands {
     Block { domain: String },
     /// List allowed domains
     List,
+}
+
+#[derive(Subcommand)]
+enum ProjectCommands {
+    /// List all configured projects with pool usage
+    List,
+    /// Add a new project
+    Add {
+        /// Git remote URL (required)
+        #[arg(long)]
+        repo: String,
+        /// Project key (derived from repo URL if omitted)
+        #[arg(long)]
+        key: Option<String>,
+        /// Display-friendly project name
+        #[arg(long)]
+        name: Option<String>,
+        /// Maximum number of cached repo clones (default: 10)
+        #[arg(long)]
+        pool_limit: Option<u32>,
+    },
+    /// Remove a project and delete all pool clones
+    Remove {
+        /// Project key to remove
+        key: String,
+        /// Required to confirm deletion of pool clones
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -497,6 +532,22 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Project { command } => match command {
+            ProjectCommands::List => project::list(&config)?,
+            ProjectCommands::Add {
+                repo,
+                key,
+                name,
+                pool_limit,
+            } => project::add(
+                &config,
+                &repo,
+                key.as_deref(),
+                name.as_deref(),
+                pool_limit,
+            )?,
+            ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
+        },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
                 info!(title = %title, parent = ?parent, "creating ticket");

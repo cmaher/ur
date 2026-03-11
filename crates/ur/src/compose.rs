@@ -220,6 +220,7 @@ mod tests {
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
             },
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+            projects: std::collections::HashMap::new(),
         };
 
         let manager = compose_manager_from_config(&config);
