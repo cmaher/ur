@@ -145,11 +145,13 @@ impl ComposeManager {
     }
 }
 
-/// Render the compose template with resolved network names.
-pub fn render_compose(network: &ur_config::NetworkConfig) -> String {
+/// Render the compose template with resolved network and container names.
+pub fn render_compose(network: &ur_config::NetworkConfig, proxy: &ur_config::ProxyConfig) -> String {
     COMPOSE_TEMPLATE
         .replace("{{NETWORK_NAME}}", &network.name)
         .replace("{{WORKER_NETWORK_NAME}}", &network.worker_name)
+        .replace("{{SERVER_CONTAINER_NAME}}", &network.server_hostname)
+        .replace("{{SQUID_CONTAINER_NAME}}", &proxy.hostname)
 }
 
 /// Build a `ComposeManager` from the resolved ur config.
@@ -175,7 +177,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         env_vars.push(("UR_CONTAINER".to_string(), val));
     }
 
-    let compose_content = render_compose(&config.network);
+    let compose_content = render_compose(&config.network, &config.proxy);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -243,11 +245,19 @@ mod tests {
             worker_name: "test-workers".to_string(),
             server_hostname: "test-server".to_string(),
         };
-        let rendered = render_compose(&network);
+        let proxy = ur_config::ProxyConfig {
+            hostname: "test-squid".to_string(),
+            allowlist: vec![],
+        };
+        let rendered = render_compose(&network, &proxy);
         assert!(rendered.contains("name: test-net"));
         assert!(rendered.contains("name: test-workers"));
+        assert!(rendered.contains("container_name: test-server"));
+        assert!(rendered.contains("container_name: test-squid"));
         assert!(!rendered.contains("{{NETWORK_NAME}}"));
         assert!(!rendered.contains("{{WORKER_NETWORK_NAME}}"));
+        assert!(!rendered.contains("{{SERVER_CONTAINER_NAME}}"));
+        assert!(!rendered.contains("{{SQUID_CONTAINER_NAME}}"));
     }
 
     #[test]

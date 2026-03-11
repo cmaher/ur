@@ -14,7 +14,7 @@
 services:
   ur-squid:
     image: ur-squid:latest
-    container_name: ur-squid
+    container_name: {{SQUID_CONTAINER_NAME}}
     volumes:
       - ${UR_CONFIG:-~/.ur}/squid/allowlist.txt:/etc/squid/allowlist.txt:ro
     networks:
@@ -24,7 +24,7 @@ services:
 
   ur-server:
     image: ur-server:latest
-    container_name: ur-server
+    container_name: {{SERVER_CONTAINER_NAME}}
     restart: unless-stopped
 
     # Docker socket — server shells out to `docker` CLI to manage worker containers

@@ -84,9 +84,9 @@ fn force_remove_container(runtime: &str, name: &str) {
 /// Write a test-specific ur.toml and supporting files.
 ///
 /// `ur start` renders the compose file from its embedded template, replacing
-/// network name placeholders with values from the config. Container names
-/// come from the template defaults (ur-server, ur-squid). The compose_file
-/// path in ur.toml tells `ur start` where to write the rendered file.
+/// network name and container name placeholders with values from the config.
+/// Uses unique container names (`ur-server-test`, `ur-squid-test`) so the
+/// acceptance test stack never collides with a real running ur stack.
 fn write_test_config(config_dir: &Path, daemon_port: u16) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
@@ -105,10 +105,13 @@ fn write_test_config(config_dir: &Path, daemon_port: u16) {
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
          \n\
+         [proxy]\n\
+         hostname = \"ur-squid-test\"\n\
+         \n\
          [network]\n\
          name = \"ur-acceptance\"\n\
          worker_name = \"ur-workers-acceptance\"\n\
-         server_hostname = \"ur-server\"\n",
+         server_hostname = \"ur-server-test\"\n",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
     );
@@ -129,9 +132,10 @@ fn e2e_ping_and_git() {
     let runtime = detect_container_runtime();
     let ticket_id = "acceptance-test";
     let container_name = format!("ur-agent-{ticket_id}");
-    // Container names come from the compose template defaults
-    let server_container = "ur-server";
-    let squid_container = "ur-squid";
+    // Container names match the test config (NOT the defaults, to avoid
+    // colliding with a real running ur stack)
+    let server_container = "ur-server-test";
+    let squid_container = "ur-squid-test";
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
