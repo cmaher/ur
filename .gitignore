@@ -11,5 +11,8 @@ containers/claude-worker/gh
 containers/claude-worker/tk
 containers/server/ur-server
 
+# Claude Code local skills
+.claude/skills/
+
 # Bacon
 .bacon-locations
