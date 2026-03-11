@@ -7,7 +7,7 @@ use tracing::info;
 
 use container::NetworkManager;
 use ur_server::process::PromptTemplatesConfig;
-use ur_server::{Config, ProcessManager, RepoPoolManager, RepoRegistry};
+use ur_server::{Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry};
 
 #[derive(Parser)]
 #[command(
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
-    let repo_registry = Arc::new(RepoRegistry::new(host_workspace));
+    let repo_registry = Arc::new(RepoRegistry::new(host_workspace.clone()));
 
     // Determine the Docker command from env (docker vs nerdctl)
     let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
@@ -82,7 +82,12 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let repo_pool_manager = RepoPoolManager::new(&cfg);
+    let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
+
+    let hostd_client = HostdClient::new(hostd_addr.clone());
+    let repo_pool_manager =
+        RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, hostd_client);
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
@@ -96,10 +101,6 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "hostexec")]
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir)
         .expect("failed to load hostexec config");
-
-    #[cfg(feature = "hostexec")]
-    let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,

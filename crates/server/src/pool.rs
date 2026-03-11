@@ -6,44 +6,72 @@ use tracing::info;
 
 use ur_config::{Config, ProjectConfig};
 
+use crate::HostdClient;
+
 /// Manages a pool of pre-cloned git repositories per project.
 ///
 /// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-index>/`
+///
+/// Git operations (clone, fetch, reset) are executed on the host via ur-hostd,
+/// since the server runs inside a Docker container without SSH keys or git credentials.
 ///
 /// Slots are acquired for agent processes and released when processes stop.
 /// In-memory tracking only — state is lost on restart.
 #[derive(Clone)]
 pub struct RepoPoolManager {
-    /// Workspace root path (contains `pool/` subdirectory).
-    workspace: PathBuf,
+    /// Container-local workspace path for filesystem operations (scanning, mkdir).
+    /// Inside the server container this is `/workspace`.
+    local_workspace: PathBuf,
+    /// Host-side workspace path for returned slot paths (used in Docker volume
+    /// mounts and ur-hostd CWD). e.g., `~/.ur/workspace`.
+    host_workspace: PathBuf,
+    /// Client for executing commands on the host via ur-hostd.
+    hostd_client: HostdClient,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
-    /// Set of slot paths currently in use by running agents.
+    /// Set of slot paths (host-side) currently in use by running agents.
     in_use: Arc<RwLock<HashSet<PathBuf>>>,
 }
 
 impl RepoPoolManager {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(
+        config: &Config,
+        local_workspace: PathBuf,
+        host_workspace: PathBuf,
+        hostd_client: HostdClient,
+    ) -> Self {
         Self {
-            workspace: config.workspace.clone(),
+            local_workspace,
+            host_workspace,
+            hostd_client,
             projects: config.projects.clone(),
             in_use: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
-    /// Root directory for all pool slots: `$WORKSPACE/pool/`.
-    fn pool_root(&self) -> PathBuf {
-        self.workspace.join("pool")
+    /// Local pool root for filesystem operations: `$LOCAL_WORKSPACE/pool/`.
+    fn local_pool_root(&self) -> PathBuf {
+        self.local_workspace.join("pool")
     }
 
-    /// Directory for a specific project's pool: `$WORKSPACE/pool/<project-key>/`.
-    fn project_pool_dir(&self, project_key: &str) -> PathBuf {
-        self.pool_root().join(project_key)
+    /// Local project pool directory: `$LOCAL_WORKSPACE/pool/<project-key>/`.
+    fn local_project_pool_dir(&self, project_key: &str) -> PathBuf {
+        self.local_pool_root().join(project_key)
     }
 
-    /// Full path for a specific slot: `$WORKSPACE/pool/<project-key>/<slot-index>/`.
-    fn slot_path(&self, project_key: &str, slot_index: u32) -> PathBuf {
-        self.project_pool_dir(project_key)
+    /// Host-side pool root: `$HOST_WORKSPACE/pool/`.
+    fn host_pool_root(&self) -> PathBuf {
+        self.host_workspace.join("pool")
+    }
+
+    /// Host-side project pool directory: `$HOST_WORKSPACE/pool/<project-key>/`.
+    fn host_project_pool_dir(&self, project_key: &str) -> PathBuf {
+        self.host_pool_root().join(project_key)
+    }
+
+    /// Host-side path for a specific slot (returned for Docker mounts and hostd CWD).
+    fn host_slot_path(&self, project_key: &str, slot_index: u32) -> PathBuf {
+        self.host_project_pool_dir(project_key)
             .join(slot_index.to_string())
     }
 
@@ -54,33 +82,33 @@ impl RepoPoolManager {
     /// 3. If found, resets it to origin/master and marks it in-use.
     /// 4. If none available, clones a new slot (if under pool_limit).
     ///
-    /// Returns the host path to the acquired slot directory.
+    /// Returns the host-side path to the acquired slot directory (for Docker volume mounts).
     pub async fn acquire(&self, project_key: &str) -> Result<PathBuf, String> {
         let project = self
             .projects
             .get(project_key)
             .ok_or_else(|| format!("unknown project: {project_key}"))?;
 
-        let pool_dir = self.project_pool_dir(project_key);
+        let local_pool_dir = self.local_project_pool_dir(project_key);
 
-        // Scan existing slots
-        let existing_slots = self.scan_slots(&pool_dir).await;
+        // Scan existing slots (using local filesystem)
+        let existing_slots = self.scan_slots(&local_pool_dir).await;
 
-        // Find an available (not in-use) slot
+        // Find an available (not in-use) slot (tracked by host paths)
         let available_slot = {
             let in_use = self.in_use.read().expect("pool lock poisoned");
             existing_slots
                 .iter()
-                .find(|idx| !in_use.contains(&self.slot_path(project_key, **idx)))
+                .find(|idx| !in_use.contains(&self.host_slot_path(project_key, **idx)))
                 .copied()
         };
 
         if let Some(slot_index) = available_slot {
-            let path = self.slot_path(project_key, slot_index);
-            info!(project_key, slot_index, path = %path.display(), "resetting existing pool slot");
-            self.reset_slot(&path).await?;
-            self.mark_in_use(&path);
-            return Ok(path);
+            let host_path = self.host_slot_path(project_key, slot_index);
+            info!(project_key, slot_index, path = %host_path.display(), "resetting existing pool slot");
+            self.reset_slot(&host_path).await?;
+            self.mark_in_use(&host_path);
+            return Ok(host_path);
         }
 
         // No available slot — check pool_limit
@@ -94,25 +122,27 @@ impl RepoPoolManager {
 
         // Find next slot index (fill gaps or use max + 1)
         let next_index = self.next_slot_index(&existing_slots);
-        let path = self.slot_path(project_key, next_index);
+        let host_path = self.host_slot_path(project_key, next_index);
 
         info!(
             project_key,
             slot_index = next_index,
             repo = %project.repo,
-            path = %path.display(),
-            "cloning new pool slot"
+            host_path = %host_path.display(),
+            "cloning new pool slot via hostd"
         );
 
-        self.clone_slot(&project.repo, &path).await?;
-        self.mark_in_use(&path);
+        self.clone_slot(&project.repo, project_key, next_index)
+            .await?;
+        self.mark_in_use(&host_path);
 
-        Ok(path)
+        Ok(host_path)
     }
 
     /// Release a previously acquired slot, resetting it to a clean state.
     ///
     /// Fetches, checks out master, resets to origin/master, and cleans.
+    /// `slot_path` is a host-side path.
     pub async fn release(&self, slot_path: &Path) -> Result<(), String> {
         info!(path = %slot_path.display(), "releasing pool slot");
         self.reset_slot(slot_path).await?;
@@ -121,10 +151,11 @@ impl RepoPoolManager {
     }
 
     /// Scan the project pool directory for existing slot indices.
+    /// Uses the local (container-side) filesystem path for directory listing.
     /// Returns a sorted vec of slot indices found on disk.
-    async fn scan_slots(&self, pool_dir: &Path) -> Vec<u32> {
+    async fn scan_slots(&self, local_pool_dir: &Path) -> Vec<u32> {
         let mut slots = Vec::new();
-        let Ok(mut entries) = tokio::fs::read_dir(pool_dir).await else {
+        let Ok(mut entries) = tokio::fs::read_dir(local_pool_dir).await else {
             return slots;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -149,34 +180,40 @@ impl RepoPoolManager {
         existing.len() as u32
     }
 
-    /// Clone a repo into a new slot directory.
-    async fn clone_slot(&self, repo_url: &str, slot_path: &Path) -> Result<(), String> {
-        if let Some(parent) = slot_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("failed to create pool directory: {e}"))?;
-        }
-
-        let output = tokio::process::Command::new("git")
-            .args(["clone", repo_url, &slot_path.to_string_lossy()])
-            .output()
+    /// Clone a repo into a new slot directory via ur-hostd.
+    ///
+    /// Creates the parent directory locally (container-side, bind-mounted),
+    /// then sends `git clone` to hostd which runs on the host with SSH credentials.
+    async fn clone_slot(
+        &self,
+        repo_url: &str,
+        project_key: &str,
+        slot_index: u32,
+    ) -> Result<(), String> {
+        // Create parent directory locally (visible on host via bind mount)
+        let local_parent = self.local_project_pool_dir(project_key);
+        tokio::fs::create_dir_all(&local_parent)
             .await
-            .map_err(|e| format!("failed to run git clone: {e}"))?;
+            .map_err(|e| format!("failed to create pool directory: {e}"))?;
 
-        if !output.status.success() {
-            return Err(format!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
+        let host_slot = self.host_slot_path(project_key, slot_index);
+        let host_parent = self.host_project_pool_dir(project_key);
 
-        Ok(())
+        self.hostd_client
+            .exec_and_check(
+                "git",
+                &["clone", repo_url, &host_slot.to_string_lossy()],
+                &host_parent.to_string_lossy(),
+            )
+            .await
+            .map_err(|e| format!("git clone failed for {repo_url}: {e}"))
     }
 
-    /// Reset an existing slot to a clean origin/master state.
+    /// Reset an existing slot to a clean origin/master state via ur-hostd.
     ///
-    /// Runs: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fd`
-    async fn reset_slot(&self, slot_path: &Path) -> Result<(), String> {
+    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fd`
+    /// `host_slot_path` is the host-side path to the slot.
+    async fn reset_slot(&self, host_slot_path: &Path) -> Result<(), String> {
         let commands: &[&[&str]] = &[
             &["fetch", "origin"],
             &["checkout", "master"],
@@ -184,34 +221,30 @@ impl RepoPoolManager {
             &["clean", "-fd"],
         ];
 
+        let cwd = host_slot_path.to_string_lossy();
         for args in commands {
-            let output = tokio::process::Command::new("git")
-                .args(*args)
-                .current_dir(slot_path)
-                .output()
+            self.hostd_client
+                .exec_and_check("git", args, &cwd)
                 .await
-                .map_err(|e| format!("failed to run git {}: {e}", args[0]))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "git {} failed in {}: {}",
-                    args.join(" "),
-                    slot_path.display(),
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
+                .map_err(|e| {
+                    format!(
+                        "git {} failed in {}: {e}",
+                        args.join(" "),
+                        host_slot_path.display()
+                    )
+                })?;
         }
 
         Ok(())
     }
 
-    /// Mark a slot path as in-use.
+    /// Mark a slot path as in-use (host-side path).
     fn mark_in_use(&self, slot_path: &Path) {
         let mut in_use = self.in_use.write().expect("pool lock poisoned");
         in_use.insert(slot_path.to_path_buf());
     }
 
-    /// Mark a slot path as available (no longer in-use).
+    /// Mark a slot path as available (host-side path).
     fn mark_available(&self, slot_path: &Path) {
         let mut in_use = self.in_use.write().expect("pool lock poisoned");
         in_use.remove(slot_path);
@@ -223,6 +256,7 @@ mod tests {
     use super::*;
 
     /// Create a RepoPoolManager backed by a temp directory with a fake project config.
+    /// Both local and host workspace point to the same temp path (no container split in tests).
     fn test_pool(tmp: &Path, pool_limit: u32) -> (RepoPoolManager, PathBuf) {
         let workspace = tmp.join("workspace");
         let mut projects = HashMap::new();
@@ -237,7 +271,9 @@ mod tests {
             },
         );
         let mgr = RepoPoolManager {
-            workspace: workspace.clone(),
+            local_workspace: workspace.clone(),
+            host_workspace: workspace.clone(),
+            hostd_client: HostdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
         };
@@ -341,14 +377,55 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
-        assert_eq!(mgr.pool_root(), workspace.join("pool"));
+        // In tests, local and host paths are the same
+        assert_eq!(mgr.local_pool_root(), workspace.join("pool"));
+        assert_eq!(mgr.host_pool_root(), workspace.join("pool"));
         assert_eq!(
-            mgr.project_pool_dir("myproj"),
+            mgr.local_project_pool_dir("myproj"),
             workspace.join("pool").join("myproj")
         );
         assert_eq!(
-            mgr.slot_path("myproj", 3),
+            mgr.host_slot_path("myproj", 3),
             workspace.join("pool").join("myproj").join("3")
+        );
+    }
+
+    #[test]
+    fn dual_workspace_paths() {
+        let mut projects = HashMap::new();
+        projects.insert(
+            "proj".into(),
+            ProjectConfig {
+                key: "proj".into(),
+                repo: String::new(),
+                name: "Proj".into(),
+                pool_limit: 10,
+                hostexec: Vec::new(),
+            },
+        );
+        let mgr = RepoPoolManager {
+            local_workspace: PathBuf::from("/workspace"),
+            host_workspace: PathBuf::from("/home/user/.ur/workspace"),
+            hostd_client: HostdClient::new("http://localhost:42070".into()),
+            projects,
+            in_use: Arc::new(RwLock::new(HashSet::new())),
+        };
+
+        // Local paths for filesystem ops
+        assert_eq!(mgr.local_pool_root(), PathBuf::from("/workspace/pool"));
+        assert_eq!(
+            mgr.local_project_pool_dir("proj"),
+            PathBuf::from("/workspace/pool/proj")
+        );
+
+        // Host paths for Docker mounts and hostd
+        assert_eq!(
+            mgr.host_pool_root(),
+            PathBuf::from("/home/user/.ur/workspace/pool")
+        );
+        assert_eq!(
+            mgr.host_slot_path("proj", 0),
+            PathBuf::from("/home/user/.ur/workspace/pool/proj/0")
         );
     }
 
@@ -365,15 +442,15 @@ mod tests {
         std::fs::create_dir_all(&slot1).unwrap();
         std::fs::create_dir_all(&slot2).unwrap();
 
-        // Mark slots 0 and 1 as in-use
+        // Mark slots 0 and 1 as in-use (host paths = local paths in tests)
         mgr.mark_in_use(&slot0);
         mgr.mark_in_use(&slot1);
 
-        // Acquire should try slot 2, which will fail on git reset (expected in
+        // Acquire should try slot 2, which will fail on hostd connection (expected in
         // unit tests — the important thing is it selects the right slot).
         // We test the selection logic by checking what the error says.
         let result = mgr.acquire("testproj").await;
-        // The git reset will fail because these aren't real git repos,
+        // The git reset via hostd will fail because there's no hostd running,
         // but the error should reference slot 2's path (proving correct selection).
         match result {
             Ok(path) => assert_eq!(path, slot2),
@@ -389,14 +466,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
-        // No slots exist on disk. Acquire should attempt git clone into slot 0.
-        // The clone will fail (no real repo URL), but we verify the correct path is targeted.
+        // No slots exist on disk. Acquire should attempt git clone via hostd into slot 0.
+        // The clone will fail (no hostd running), but we verify the error propagates.
         let result = mgr.acquire("testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        // Should be a git clone error (not "pool limit" or "unknown project")
+        // Should be a hostd/clone error (not "pool limit" or "unknown project")
         assert!(
-            err.contains("git clone failed") || err.contains("failed to run git clone"),
+            err.contains("git clone failed"),
             "expected clone error, got: {err}"
         );
         // The slot should NOT be marked in-use since clone failed

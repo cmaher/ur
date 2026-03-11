@@ -3,6 +3,7 @@ pub mod grpc;
 #[cfg(feature = "hostexec")]
 pub mod grpc_hostexec;
 pub mod grpc_server;
+pub mod hostd_client;
 #[cfg(feature = "hostexec")]
 pub mod hostexec;
 pub mod logging;
@@ -13,6 +14,7 @@ pub mod registry;
 pub mod stream;
 
 pub use config::Config;
+pub use hostd_client::HostdClient;
 pub use pool::RepoPoolManager;
 pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;

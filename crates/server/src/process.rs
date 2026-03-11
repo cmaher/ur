@@ -532,7 +532,12 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let config = test_config(workspace.path());
-        let repo_pool_manager = RepoPoolManager::new(&config);
+        let repo_pool_manager = RepoPoolManager::new(
+            &config,
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            crate::HostdClient::new("http://localhost:42070".into()),
+        );
         let network_manager = NetworkManager::new(
             "docker".into(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
