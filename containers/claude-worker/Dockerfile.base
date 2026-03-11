@@ -30,3 +30,7 @@ USER worker
 RUN bash /tmp/install-claude.sh
 USER root
 RUN rm /tmp/install-claude.sh
+
+# Rename the installer's launcher so it doesn't shadow our wrapper at
+# /usr/local/bin/claude (which adds --dangerously-skip-permissions).
+RUN mv /home/worker/.local/bin/claude /home/worker/.local/bin/claude-real
