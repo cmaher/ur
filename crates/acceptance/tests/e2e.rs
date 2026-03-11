@@ -170,7 +170,11 @@ fn e2e_ping_and_git() {
         // ---- (3) ur process launch ----
         let workspace_dir = config_path.join("workspace");
         let workspace_str = workspace_dir.to_str().unwrap();
-        let launch_output = run_cmd(&ur, &["process", "launch", "-w", workspace_str, ticket_id], &env);
+        let launch_output = run_cmd(
+            &ur,
+            &["process", "launch", "-w", workspace_str, ticket_id],
+            &env,
+        );
         assert!(
             launch_output.status.success(),
             "ur process launch failed.\nstdout: {}\nstderr: {}",
