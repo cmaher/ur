@@ -116,8 +116,13 @@ mod tests {
     fn test_git_default_blocks_dash_c() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let result =
-            mgr.run_transform(script, "git", &["-C".into(), "/tmp".into()], "/workspace", None);
+        let result = mgr.run_transform(
+            script,
+            "git",
+            &["-C".into(), "/tmp".into()],
+            "/workspace",
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("blocked flag: -C"));
     }
@@ -212,11 +217,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![
-                "deploy-x7q2",
-                "ur",
-                "/home/user/.ur/workspace/pool/ur/0",
-            ]
+            vec!["deploy-x7q2", "ur", "/home/user/.ur/workspace/pool/ur/0",]
         );
     }
 
@@ -252,11 +253,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![
-                "-C",
-                "/home/user/.ur/workspace/pool/ur/0",
-                "status",
-            ]
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "status",]
         );
     }
 
@@ -275,11 +272,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec![
-                "-C",
-                "/home/user/.ur/workspace/pool/ur/0",
-                "status",
-            ]
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "status",]
         );
     }
 
@@ -327,10 +320,12 @@ mod tests {
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "status".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("does not match project key"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
     }
 
     #[test]

@@ -1628,6 +1628,7 @@ dependencies = [
  "fs4",
  "tempfile",
  "tokio",
+ "toml_edit",
  "tonic",
  "tracing",
  "tracing-appender",

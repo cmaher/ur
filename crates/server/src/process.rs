@@ -11,7 +11,7 @@ use ur_config::NetworkConfig;
 
 use container::{ContainerRuntime, NetworkManager};
 
-use crate::RepoRegistry;
+use crate::{RepoPoolManager, RepoRegistry};
 
 /// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
@@ -174,12 +174,8 @@ struct ProcessEntry {
     /// The original process_id (without random suffix).
     process_id: String,
     /// Project key if launched with `--project`, or empty for raw workspace launches.
-    /// Used by repo pool acquire/release (wor-7joz) and Lua transform context (wor-5tdp).
-    #[allow(dead_code)]
     project_key: String,
     /// Host path to the repo slot (workspace dir or pool slot).
-    /// Used by repo pool release (wor-7joz) and Lua transform context (wor-5tdp).
-    #[allow(dead_code)]
     slot_path: Option<PathBuf>,
     container_id: String,
     /// Host-side TCP port the per-agent gRPC server is bound to.
@@ -213,6 +209,7 @@ pub struct ProcessManager {
     /// agent containers (e.g., shared credentials file).
     host_config_dir: PathBuf,
     repo_registry: Arc<RepoRegistry>,
+    repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
     prompt_templates: PromptTemplatesConfig,
@@ -224,6 +221,7 @@ impl ProcessManager {
         workspace: PathBuf,
         host_config_dir: PathBuf,
         repo_registry: Arc<RepoRegistry>,
+        repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
         prompt_templates: PromptTemplatesConfig,
@@ -232,6 +230,7 @@ impl ProcessManager {
             workspace,
             host_config_dir,
             repo_registry,
+            repo_pool_manager,
             network_manager,
             network_config,
             prompt_templates,
@@ -433,10 +432,23 @@ impl ProcessManager {
             rt.rm(&cid).map_err(|e| e.to_string())?;
         }
 
-        // 2. Unregister from RepoRegistry
+        // 2. Release pool slot if this was a project-based launch
+        if !entry.project_key.is_empty()
+            && let Some(ref slot_path) = entry.slot_path
+        {
+            info!(
+                process_id = entry.process_id,
+                project_key = entry.project_key,
+                slot_path = %slot_path.display(),
+                "releasing pool slot"
+            );
+            self.repo_pool_manager.release(slot_path).await?;
+        }
+
+        // 3. Unregister from RepoRegistry
         self.repo_registry.unregister(&entry.process_id);
 
-        // 3. Abort the per-agent gRPC server task
+        // 4. Abort the per-agent gRPC server task
         entry.server_handle.abort();
 
         info!(
@@ -495,9 +507,32 @@ fn proxy_env_vars(proxy_hostname: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
+    fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
+        ur_config::Config {
+            config_dir: workspace_path.to_path_buf(),
+            workspace: workspace_path.to_path_buf(),
+            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
+            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+            compose_file: workspace_path.join("docker-compose.yml"),
+            proxy: ur_config::ProxyConfig {
+                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
+                allowlist: vec![],
+            },
+            network: NetworkConfig {
+                name: ur_config::DEFAULT_NETWORK_NAME.into(),
+                worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
+            },
+            projects: std::collections::HashMap::new(),
+        }
+    }
+
     fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
+        let config = test_config(workspace.path());
+        let repo_pool_manager = RepoPoolManager::new(&config);
         let network_manager = NetworkManager::new(
             "docker".into(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
@@ -512,6 +547,7 @@ mod tests {
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
             registry,
+            repo_pool_manager,
             network_manager,
             network_config,
             PromptTemplatesConfig::default(),

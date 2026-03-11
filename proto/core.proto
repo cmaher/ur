@@ -35,6 +35,8 @@ message ProcessLaunchRequest {
   string template = 7;
   // Skills to install in the worker container.
   repeated string skills = 8;
+  // Project key for repo pool launches (empty for raw workspace mounts).
+  string project_key = 9;
 }
 
 message ProcessLaunchResponse {

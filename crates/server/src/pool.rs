@@ -43,7 +43,8 @@ impl RepoPoolManager {
 
     /// Full path for a specific slot: `$WORKSPACE/pool/<project-key>/<slot-index>/`.
     fn slot_path(&self, project_key: &str, slot_index: u32) -> PathBuf {
-        self.project_pool_dir(project_key).join(slot_index.to_string())
+        self.project_pool_dir(project_key)
+            .join(slot_index.to_string())
     }
 
     /// Acquire a repo slot for the given project.

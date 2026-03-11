@@ -10,12 +10,13 @@ use ur_rpc::proto::core::{
     ProcessStopResponse,
 };
 
-use crate::{ProcessManager, RepoRegistry};
+use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
 
 /// gRPC implementation of the CoreService.
 #[derive(Clone)]
 pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
+    pub repo_pool_manager: RepoPoolManager,
     pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
@@ -43,14 +44,29 @@ impl CoreService for CoreServiceHandler {
             process_id = req.process_id,
             image_id = req.image_id,
             workspace_dir = req.workspace_dir,
+            project_key = req.project_key,
             "process_launch request received"
         );
 
-        // Parse workspace_dir: empty string means None
-        let workspace_dir = if req.workspace_dir.is_empty() {
-            None
+        // Resolve workspace: project_key triggers pool acquire, otherwise use
+        // the explicit workspace_dir from the request.
+        let (workspace_dir, project_key) = if !req.project_key.is_empty() {
+            let slot_path = self
+                .repo_pool_manager
+                .acquire(&req.project_key)
+                .await
+                .map_err(Status::internal)?;
+            info!(
+                process_id = req.process_id,
+                project_key = req.project_key,
+                slot_path = %slot_path.display(),
+                "acquired pool slot"
+            );
+            (Some(slot_path), req.project_key.clone())
+        } else if !req.workspace_dir.is_empty() {
+            (Some(PathBuf::from(&req.workspace_dir)), String::new())
         } else {
-            Some(PathBuf::from(&req.workspace_dir))
+            (None, String::new())
         };
 
         // Generate unique agent ID for this launch
@@ -71,6 +87,7 @@ impl CoreService for CoreServiceHandler {
         // Docker network; network isolation handled by Docker network membership).
         let core_handler = CoreServiceHandler {
             process_manager: self.process_manager.clone(),
+            repo_pool_manager: self.repo_pool_manager.clone(),
             repo_registry: self.repo_registry.clone(),
             workspace: self.workspace.clone(),
             proxy_hostname: self.proxy_hostname.clone(),
@@ -87,17 +104,14 @@ impl CoreService for CoreServiceHandler {
         #[cfg(feature = "hostexec")]
         let agent_context = {
             let agent_id_str = agent_id.0.clone();
-            // project_key is empty for raw workspace mounts — no context in that case
-            // Future: wor-3r2m will pass project_key from --project flag
-            let project_key = String::new();
             if !project_key.is_empty() {
-                workspace_dir.as_ref().map(|ws_dir| {
-                    crate::hostexec::AgentContext {
+                workspace_dir
+                    .as_ref()
+                    .map(|ws_dir| crate::hostexec::AgentContext {
                         agent_id: agent_id_str,
-                        project_key,
+                        project_key: project_key.clone(),
                         slot_path: ws_dir.clone(),
-                    }
-                })
+                    })
             } else {
                 None
             }
@@ -129,7 +143,7 @@ impl CoreService for CoreServiceHandler {
             grpc_port,
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
-            project_key: String::new(),
+            project_key,
             skills,
         };
         let container_id = self
