@@ -4,6 +4,14 @@ set -euo pipefail
 # Pre-push hook: run CI checks, build images, and run acceptance tests.
 # Install with: cargo make install-hooks
 
+echo "==> Checking Cargo.lock is up to date..."
+if ! cargo check --locked --quiet 2>/dev/null; then
+    echo "Cargo.lock is out of date. Updating dependencies..."
+    cargo update
+    echo "ERROR: Cargo.lock was out of date and has been updated. Please review, commit the changes, and push again."
+    exit 1
+fi
+
 echo "==> Running CI checks..."
 cargo make ci
 
