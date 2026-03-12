@@ -8,6 +8,8 @@ pub mod hostd_client;
 pub mod hostexec;
 pub mod logging;
 pub mod pool;
+#[cfg(feature = "rag")]
+pub mod rag;
 pub mod process;
 pub mod proxy;
 pub mod registry;
