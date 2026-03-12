@@ -113,6 +113,14 @@ const POOL_TEST_NAMES: TestNames = TestNames {
     agent_prefix: "ur-pool-agent-",
 };
 
+const DESIGN_TEST_NAMES: TestNames = TestNames {
+    squid_hostname: "ur-design-squid",
+    network: "ur-design-test",
+    worker_network: "ur-design-workers",
+    server_hostname: "ur-design-server",
+    agent_prefix: "ur-design-agent-",
+};
+
 /// Write a test-specific ur.toml and supporting files.
 ///
 /// `ur start` renders the compose file from its embedded template, replacing
@@ -591,6 +599,209 @@ fn e2e_project_pool_launch() {
     }));
 
     // ---- (8) Always tear down server ----
+    stop_server(&ur, config_path);
+
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// End-to-end test for design mode pool launches (`-p <project> -m design`).
+///
+/// Exercises:
+///   1. Create a bare git repo as clone source, configure as project
+///   2. `ur start` starts the server + hostd
+///   3. `ur process launch -p <project> -m design <ticket>` acquires a shared design slot
+///   4. Verify the `design/` slot directory is created under the pool path
+///   5. Worker launches successfully
+///   6. Stop first worker, launch a second design worker — reuses same slot path
+///   7. Design launches do not consume exclusive pool slots (pool limit unaffected)
+///   8. Tear down
+#[test]
+fn e2e_design_mode_pool_launch() {
+    let runtime = detect_container_runtime();
+    let ticket_id_1 = "design-test-1";
+    let ticket_id_2 = "design-test-2";
+    let code_ticket_id = "design-code-test";
+    let project_key = "designproj";
+    let agent_prefix = DESIGN_TEST_NAMES.agent_prefix;
+    let container_name_1 = format!("{agent_prefix}{ticket_id_1}");
+    let container_name_2 = format!("{agent_prefix}{ticket_id_2}");
+    let code_container_name = format!("{agent_prefix}{code_ticket_id}");
+    let server_container = DESIGN_TEST_NAMES.server_hostname;
+    let squid_container = DESIGN_TEST_NAMES.squid_hostname;
+
+    // ---- (0) Clean up stale containers from prior failed runs ----
+    force_remove_container(&runtime, &container_name_1);
+    force_remove_container(&runtime, &container_name_2);
+    force_remove_container(&runtime, &code_container_name);
+    force_remove_container(&runtime, server_container);
+    force_remove_container(&runtime, squid_container);
+
+    // ---- (1) Create bare git repo and test config with project ----
+    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
+    let config_path = config_dir.path();
+    let daemon_port = 19878u16; // unique port for this test
+
+    let bare_repo = create_bare_repo(config_path);
+
+    write_test_config(
+        config_path,
+        daemon_port,
+        &DESIGN_TEST_NAMES,
+        &[ProjectEntry {
+            key: project_key.into(),
+            repo: bare_repo.to_string_lossy().into_owned(),
+        }],
+    );
+
+    let ur = bin("ur");
+    assert!(ur.exists(), "ur binary not found at {}", ur.display());
+    let config_str = config_path.to_str().unwrap();
+    let env = [("UR_CONFIG", config_str)];
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- (2) ur start ----
+        let up_output = run_cmd(&ur, &["start"], &env);
+        assert!(
+            up_output.status.success(),
+            "ur start failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
+
+        // ---- (3) Launch first design worker: ur process launch -p <project> -m design ----
+        let launch_output = run_cmd(
+            &ur,
+            &["process", "launch", "-p", project_key, "-m", "design", ticket_id_1],
+            &env,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur process launch -p {project_key} -m design failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name_1),
+            "launch output should contain container name '{container_name_1}'.\nGot: {launch_stdout}"
+        );
+
+        // ---- (4) Verify design/ slot directory exists on host ----
+        let design_slot = config_path
+            .join("workspace")
+            .join("pool")
+            .join(project_key)
+            .join("design");
+        assert!(
+            design_slot.exists(),
+            "design slot directory should exist at {}",
+            design_slot.display()
+        );
+        assert!(
+            design_slot.join(".git").exists(),
+            "design slot should be a git repo (have .git)"
+        );
+        assert!(
+            design_slot.join("README.md").exists(),
+            "design slot should contain README.md from clone"
+        );
+
+        // ---- (5) Verify worker has cloned content ----
+        let ls_output = Command::new(&runtime)
+            .args(["exec", &container_name_1, "ls", "/workspace/README.md"])
+            .output()
+            .expect("failed to exec ls in container");
+        assert_eq!(
+            ls_output.status.code(),
+            Some(0),
+            "design slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output.stdout),
+            String::from_utf8_lossy(&ls_output.stderr),
+        );
+
+        // ---- (6) Stop first worker ----
+        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id_1], &env);
+        assert!(
+            stop_output.status.success(),
+            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- (7) Launch second design worker — should reuse same slot path ----
+        let launch2_output = run_cmd(
+            &ur,
+            &["process", "launch", "-p", project_key, "-m", "design", ticket_id_2],
+            &env,
+        );
+        assert!(
+            launch2_output.status.success(),
+            "second design launch failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch2_output.stdout),
+            String::from_utf8_lossy(&launch2_output.stderr),
+        );
+
+        // The design/ slot should still exist (reused, not a new numbered slot)
+        assert!(
+            design_slot.exists(),
+            "design slot should still exist after second launch at {}",
+            design_slot.display()
+        );
+
+        // No numbered slots should have been created for design launches
+        let slot_0 = config_path
+            .join("workspace")
+            .join("pool")
+            .join(project_key)
+            .join("0");
+        assert!(
+            !slot_0.exists(),
+            "numbered slot 0 should NOT exist — design mode uses shared 'design/' slot, not exclusive numbered slots"
+        );
+
+        // ---- (8) Design launches don't consume exclusive pool slots ----
+        // Launch a code worker — it should succeed because design didn't consume any exclusive slots
+        let code_launch = run_cmd(
+            &ur,
+            &["process", "launch", "-p", project_key, "-m", "code", code_ticket_id],
+            &env,
+        );
+        assert!(
+            code_launch.status.success(),
+            "code launch should succeed (design didn't consume exclusive slots).\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&code_launch.stdout),
+            String::from_utf8_lossy(&code_launch.stderr),
+        );
+
+        // Now the numbered slot 0 should exist (created by the code launch)
+        assert!(
+            slot_0.exists(),
+            "numbered slot 0 should exist after code launch at {}",
+            slot_0.display()
+        );
+
+        // Stop both workers
+        let stop2_output = run_cmd(&ur, &["process", "stop", ticket_id_2], &env);
+        assert!(
+            stop2_output.status.success(),
+            "ur process stop (second design) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop2_output.stdout),
+            String::from_utf8_lossy(&stop2_output.stderr),
+        );
+
+        let stop_code = run_cmd(&ur, &["process", "stop", code_ticket_id], &env);
+        assert!(
+            stop_code.status.success(),
+            "ur process stop (code) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_code.stdout),
+            String::from_utf8_lossy(&stop_code.stderr),
+        );
+    }));
+
+    // ---- (9) Always tear down server ----
     stop_server(&ur, config_path);
 
     if let Err(e) = result {
