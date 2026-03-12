@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use ur_config::{Config, ProjectConfig};
 
@@ -106,7 +106,14 @@ impl RepoPoolManager {
         if let Some(slot_index) = available_slot {
             let host_path = self.host_slot_path(project_key, slot_index);
             info!(project_key, slot_index, path = %host_path.display(), "resetting existing pool slot");
-            self.reset_slot(&host_path).await?;
+            if let Err(e) = self.reset_slot(&host_path).await {
+                warn!(
+                    project_key, slot_index, path = %host_path.display(),
+                    error = %e, "reset failed, re-cloning corrupted pool slot"
+                );
+                self.reclone_slot(&project.repo, project_key, slot_index)
+                    .await?;
+            }
             self.mark_in_use(&host_path);
             return Ok(host_path);
         }
@@ -145,7 +152,12 @@ impl RepoPoolManager {
     /// `slot_path` is a host-side path.
     pub async fn release(&self, slot_path: &Path) -> Result<(), String> {
         info!(path = %slot_path.display(), "releasing pool slot");
-        self.reset_slot(slot_path).await?;
+        if let Err(e) = self.reset_slot(slot_path).await {
+            // Mark available anyway so the next acquire can reclone it.
+            warn!(path = %slot_path.display(), error = %e, "reset failed during release, slot will be recloned on next acquire");
+            self.mark_available(slot_path);
+            return Ok(());
+        }
         self.mark_available(slot_path);
         Ok(())
     }
@@ -211,6 +223,40 @@ impl RepoPoolManager {
         self.init_submodules(&host_slot).await?;
 
         Ok(())
+    }
+
+    /// Delete a corrupted slot and re-clone it from scratch.
+    ///
+    /// Removes the slot directory via hostd (`rm -rf`), then clones fresh.
+    /// This recovers from any corruption (missing .git/config, partial clones, etc.).
+    async fn reclone_slot(
+        &self,
+        repo_url: &str,
+        project_key: &str,
+        slot_index: u32,
+    ) -> Result<(), String> {
+        let host_slot = self.host_slot_path(project_key, slot_index);
+        let host_parent = self.host_project_pool_dir(project_key);
+
+        // Remove the corrupted slot directory on the host
+        self.hostd_client
+            .exec_and_check(
+                "rm",
+                &["-rf", &host_slot.to_string_lossy()],
+                &host_parent.to_string_lossy(),
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "failed to remove corrupted slot {}: {e}",
+                    host_slot.display()
+                )
+            })?;
+
+        // Clone fresh
+        self.clone_slot(repo_url, project_key, slot_index)
+            .await
+            .map_err(|e| format!("reclone failed for slot {}: {e}", host_slot.display()))
     }
 
     /// Reset an existing slot to a clean origin/master state via ur-hostd.
