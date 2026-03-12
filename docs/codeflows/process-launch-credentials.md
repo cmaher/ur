@@ -87,14 +87,14 @@ Dockerfile.base (ur-worker-base:latest)
 Dockerfile (ur-worker:latest)
 ├── FROM ur-worker-base:latest
 ├── COPY entrypoint.sh, worker binaries (ur-ping, git, gh, tk)
-├── COPY claude-wrapper.sh → /usr/local/bin/claude
-│   └── exec /home/worker/.local/bin/claude --dangerously-skip-permissions "$@"
 ├── COPY claude.json → /home/worker/.claude.json (skip onboarding/login prompts)
+├── COPY claude-settings.json → /home/worker/.claude/settings.json
+│   └── permissions.defaultMode: "bypassPermissions" (skip permissions for non-interactive use)
 ├── USER worker
 └── ENTRYPOINT ["/entrypoint.sh"]
 ```
 
-The `claude` wrapper at `/usr/local/bin/claude` delegates to the real binary at `/home/worker/.local/bin/claude` with `--dangerously-skip-permissions` (required for non-interactive use).
+Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassPermissions"`) rather than a CLI flag, so no wrapper script is needed.
 
 ## Environment Variables
 
@@ -114,9 +114,9 @@ The `claude` wrapper at `/usr/local/bin/claude` delegates to the real binary at 
 | `crates/server/src/grpc.rs` | Server RPC handler, maps request to ProcessConfig |
 | `containers/claude-worker/claude.json` | Baked-in `.claude.json` (onboarding + project trust) |
 | `containers/claude-worker/entrypoint.sh` | Starts tmux, keeps container alive |
-| `containers/claude-worker/claude-wrapper.sh` | Wrapper invoking real claude binary |
+| `containers/claude-worker/claude-settings.json` | Baked-in settings (bypassPermissions mode) |
 | `containers/claude-worker/Dockerfile.base` | Base image with Claude Code installed as worker user |
-| `containers/claude-worker/Dockerfile` | Final image with worker binaries, wrapper, and claude.json |
+| `containers/claude-worker/Dockerfile` | Final image with worker binaries and config |
 
 ## Manual Credential Management
 
