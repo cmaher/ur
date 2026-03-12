@@ -33,7 +33,7 @@ are routed through ur-hostd, which runs on the host with full credential access.
    - `git fetch origin`
    - `git checkout master`
    - `git reset --hard origin/master`
-   - `git clean -fd`
+   - `git clean -fdx`
 3. Each command goes through `HostdClient::exec_and_check()`
 4. Slot marked in-use on success
 

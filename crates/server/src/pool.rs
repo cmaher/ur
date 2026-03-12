@@ -211,14 +211,14 @@ impl RepoPoolManager {
 
     /// Reset an existing slot to a clean origin/master state via ur-hostd.
     ///
-    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fd`
+    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx`
     /// `host_slot_path` is the host-side path to the slot.
     async fn reset_slot(&self, host_slot_path: &Path) -> Result<(), String> {
         let commands: &[&[&str]] = &[
             &["fetch", "origin"],
             &["checkout", "master"],
             &["reset", "--hard", "origin/master"],
-            &["clean", "-fd"],
+            &["clean", "-fdx"],
         ];
 
         let cwd = host_slot_path.to_string_lossy();
