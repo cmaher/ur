@@ -206,12 +206,16 @@ impl RepoPoolManager {
                 &host_parent.to_string_lossy(),
             )
             .await
-            .map_err(|e| format!("git clone failed for {repo_url}: {e}"))
+            .map_err(|e| format!("git clone failed for {repo_url}: {e}"))?;
+
+        self.init_submodules(&host_slot).await?;
+
+        Ok(())
     }
 
     /// Reset an existing slot to a clean origin/master state via ur-hostd.
     ///
-    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx`
+    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx && git submodule update --init --recursive`
     /// `host_slot_path` is the host-side path to the slot.
     async fn reset_slot(&self, host_slot_path: &Path) -> Result<(), String> {
         let commands: &[&[&str]] = &[
@@ -235,7 +239,47 @@ impl RepoPoolManager {
                 })?;
         }
 
+        self.init_submodules(host_slot_path).await?;
+
         Ok(())
+    }
+
+    /// Initialize/update git submodules recursively if the repo has a `.gitmodules` file.
+    ///
+    /// Uses the local (container-side) path to check for `.gitmodules` existence,
+    /// then runs `git submodule update --init --recursive` on the host via hostd.
+    async fn init_submodules(&self, host_slot_path: &Path) -> Result<(), String> {
+        // Convert host path to local path to check for .gitmodules on the container filesystem.
+        // host_workspace prefix is replaced with local_workspace prefix.
+        let host_prefix = self.host_workspace.to_string_lossy();
+        let slot_str = host_slot_path.to_string_lossy();
+        let local_slot_path = if let Some(suffix) = slot_str.strip_prefix(host_prefix.as_ref()) {
+            self.local_workspace.join(suffix.trim_start_matches('/'))
+        } else {
+            // Fallback: assume host and local paths are the same (e.g., in tests)
+            host_slot_path.to_path_buf()
+        };
+
+        let gitmodules = local_slot_path.join(".gitmodules");
+        if !tokio::fs::try_exists(&gitmodules).await.unwrap_or(false) {
+            return Ok(());
+        }
+
+        info!(path = %host_slot_path.display(), "initializing git submodules");
+        let cwd = host_slot_path.to_string_lossy();
+        self.hostd_client
+            .exec_and_check(
+                "git",
+                &["submodule", "update", "--init", "--recursive"],
+                &cwd,
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "git submodule update --init --recursive failed in {}: {e}",
+                    host_slot_path.display()
+                )
+            })
     }
 
     /// Mark a slot path as in-use (host-side path).

@@ -31,8 +31,8 @@ message ProcessLaunchRequest {
   string workspace_dir = 5;
   // Claude Code credentials JSON blob, read from the host keychain by the CLI.
   string claude_credentials = 6;
-  // Skills template to use for the worker.
-  string template = 7;
+  // Skills mode to use for the worker.
+  string mode = 7;
   // Skills to install in the worker container.
   repeated string skills = 8;
   // Project key for repo pool launches (empty for raw workspace mounts).

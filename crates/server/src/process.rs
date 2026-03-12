@@ -66,80 +66,94 @@ impl AgentId {
     }
 }
 
-/// Default skills for the "code" prompt template.
-fn default_code_skills() -> Vec<String> {
+/// Skills shared by all prompt modes.
+fn common_skills() -> Vec<String> {
     vec![
         "tk".into(),
         "ship".into(),
-        "tk:agents".into(),
-        "tk:start".into(),
-        "systematic-debugging".into(),
-        "test-driven-development".into(),
+        "green".into(),
+        "cli-design".into(),
+        "reclaude".into(),
         "writing-skills".into(),
     ]
 }
 
-/// Default skills for the "design" prompt template.
-fn default_design_skills() -> Vec<String> {
-    vec!["tk".into(), "brainstorming".into(), "writing-skills".into()]
+/// Default skills for the "code" prompt mode.
+fn default_code_skills() -> Vec<String> {
+    let mut skills = common_skills();
+    skills.extend([
+        "tk:agents".into(),
+        "tk:start".into(),
+        "bacon".into(),
+        "systematic-debugging".into(),
+        "test-driven-development".into(),
+    ]);
+    skills
 }
 
-/// Returns the hardcoded default prompt templates.
-fn default_prompt_templates() -> HashMap<String, Vec<String>> {
+/// Default skills for the "design" prompt mode.
+fn default_design_skills() -> Vec<String> {
+    let mut skills = common_skills();
+    skills.extend(["brainstorming".into()]);
+    skills
+}
+
+/// Returns the hardcoded default prompt modes.
+fn default_prompt_modes() -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     map.insert("code".into(), default_code_skills());
     map.insert("design".into(), default_design_skills());
     map
 }
 
-/// Raw TOML representation for the `[prompt_templates]` section.
-/// Each key is a template name mapping to a table with a `skills` list.
+/// Raw TOML representation for the `[prompt_modes]` section.
+/// Each key is a mode name mapping to a table with a `skills` list.
 #[derive(Debug, Default, Deserialize)]
-struct RawPromptTemplates {
+struct RawPromptModes {
     #[serde(flatten)]
-    templates: HashMap<String, RawTemplateEntry>,
+    modes: HashMap<String, RawModeEntry>,
 }
 
-/// A single prompt template entry with its skills list.
+/// A single prompt mode entry with its skills list.
 #[derive(Debug, Deserialize)]
-struct RawTemplateEntry {
+struct RawModeEntry {
     skills: Vec<String>,
 }
 
-/// Resolved prompt templates configuration mapping template names to skill lists.
+/// Resolved prompt modes configuration mapping mode names to skill lists.
 #[derive(Debug, Clone)]
-pub struct PromptTemplatesConfig {
-    templates: HashMap<String, Vec<String>>,
+pub struct PromptModesConfig {
+    modes: HashMap<String, Vec<String>>,
 }
 
-impl Default for PromptTemplatesConfig {
+impl Default for PromptModesConfig {
     fn default() -> Self {
         Self {
-            templates: default_prompt_templates(),
+            modes: default_prompt_modes(),
         }
     }
 }
 
-impl PromptTemplatesConfig {
-    /// Parse prompt_templates from a TOML string.
-    /// If no `[prompt_templates]` section exists, hardcoded defaults are used.
-    /// Any templates defined in the config replace the defaults entirely.
+impl PromptModesConfig {
+    /// Parse prompt_modes from a TOML string.
+    /// If no `[prompt_modes]` section exists, hardcoded defaults are used.
+    /// Any modes defined in the config replace the defaults entirely.
     pub fn from_toml(toml_content: &str) -> Result<Self, String> {
-        // Parse the full TOML to extract just the prompt_templates section
+        // Parse the full TOML to extract just the prompt_modes section
         let value: toml::Value =
             toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
 
-        match value.get("prompt_templates") {
+        match value.get("prompt_modes") {
             Some(section) => {
-                let raw: RawPromptTemplates = section
+                let raw: RawPromptModes = section
                     .clone()
                     .try_into()
-                    .map_err(|e| format!("invalid prompt_templates config: {e}"))?;
-                let mut templates = default_prompt_templates();
-                for (name, entry) in raw.templates {
-                    templates.insert(name, entry.skills);
+                    .map_err(|e| format!("invalid prompt_modes config: {e}"))?;
+                let mut modes = default_prompt_modes();
+                for (name, entry) in raw.modes {
+                    modes.insert(name, entry.skills);
                 }
-                Ok(Self { templates })
+                Ok(Self { modes })
             }
             None => Ok(Self::default()),
         }
@@ -149,23 +163,19 @@ impl PromptTemplatesConfig {
     ///
     /// Priority:
     /// 1. If `skills` is non-empty, use it directly.
-    /// 2. If `template` is non-empty, look up `prompt_templates.<template>.skills`.
-    /// 3. Otherwise, use `prompt_templates.code` (default).
+    /// 2. If `mode` is non-empty, look up `prompt_modes.<mode>.skills`.
+    /// 3. Otherwise, use `prompt_modes.code` (default).
     ///
-    /// Returns an error if the requested template name is not found.
-    pub fn resolve_skills(&self, template: &str, skills: &[String]) -> Result<Vec<String>, String> {
+    /// Returns an error if the requested mode name is not found.
+    pub fn resolve_skills(&self, mode: &str, skills: &[String]) -> Result<Vec<String>, String> {
         if !skills.is_empty() {
             return Ok(skills.to_vec());
         }
-        let template_name = if template.is_empty() {
-            "code"
-        } else {
-            template
-        };
-        self.templates
-            .get(template_name)
+        let mode_name = if mode.is_empty() { "code" } else { mode };
+        self.modes
+            .get(mode_name)
             .cloned()
-            .ok_or_else(|| format!("unknown prompt template: {template_name}"))
+            .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))
     }
 }
 
@@ -212,7 +222,7 @@ pub struct ProcessManager {
     repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
-    prompt_templates: PromptTemplatesConfig,
+    prompt_modes: PromptModesConfig,
     processes: Arc<RwLock<HashMap<AgentId, ProcessEntry>>>,
 }
 
@@ -224,7 +234,7 @@ impl ProcessManager {
         repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
-        prompt_templates: PromptTemplatesConfig,
+        prompt_modes: PromptModesConfig,
     ) -> Self {
         Self {
             workspace,
@@ -233,14 +243,14 @@ impl ProcessManager {
             repo_pool_manager,
             network_manager,
             network_config,
-            prompt_templates,
+            prompt_modes,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Resolve skills for a launch request using the configured prompt templates.
-    pub fn resolve_skills(&self, template: &str, skills: &[String]) -> Result<Vec<String>, String> {
-        self.prompt_templates.resolve_skills(template, skills)
+    /// Resolve skills for a launch request using the configured prompt modes.
+    pub fn resolve_skills(&self, mode: &str, skills: &[String]) -> Result<Vec<String>, String> {
+        self.prompt_modes.resolve_skills(mode, skills)
     }
 
     /// Generate a new unique agent ID for the given process_id.
@@ -555,7 +565,7 @@ mod tests {
             repo_pool_manager,
             network_manager,
             network_config,
-            PromptTemplatesConfig::default(),
+            PromptModesConfig::default(),
         );
         (mgr, workspace)
     }
@@ -729,8 +739,8 @@ mod tests {
     }
 
     #[test]
-    fn prompt_templates_default_has_code_and_design() {
-        let cfg = PromptTemplatesConfig::default();
+    fn prompt_modes_default_has_code_and_design() {
+        let cfg = PromptModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
         assert!(code.contains(&"tk".to_string()));
         assert!(code.contains(&"ship".to_string()));
@@ -739,31 +749,31 @@ mod tests {
     }
 
     #[test]
-    fn prompt_templates_explicit_skills_override() {
-        let cfg = PromptTemplatesConfig::default();
+    fn prompt_modes_explicit_skills_override() {
+        let cfg = PromptModesConfig::default();
         let skills = vec!["custom-skill".to_string()];
         let resolved = cfg.resolve_skills("code", &skills).unwrap();
         assert_eq!(resolved, vec!["custom-skill"]);
     }
 
     #[test]
-    fn prompt_templates_unknown_template_errors() {
-        let cfg = PromptTemplatesConfig::default();
+    fn prompt_modes_unknown_mode_errors() {
+        let cfg = PromptModesConfig::default();
         let result = cfg.resolve_skills("nonexistent", &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown prompt template"));
+        assert!(result.unwrap_err().contains("unknown prompt mode"));
     }
 
     #[test]
-    fn prompt_templates_from_toml_overrides_defaults() {
+    fn prompt_modes_from_toml_overrides_defaults() {
         let toml = r#"
-[prompt_templates.code]
+[prompt_modes.code]
 skills = ["only-one"]
 
-[prompt_templates.custom]
+[prompt_modes.custom]
 skills = ["a", "b"]
 "#;
-        let cfg = PromptTemplatesConfig::from_toml(toml).unwrap();
+        let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("code", &[]).unwrap();
         assert_eq!(code, vec!["only-one"]);
         let custom = cfg.resolve_skills("custom", &[]).unwrap();
@@ -774,9 +784,9 @@ skills = ["a", "b"]
     }
 
     #[test]
-    fn prompt_templates_from_toml_no_section_uses_defaults() {
+    fn prompt_modes_from_toml_no_section_uses_defaults() {
         let toml = "daemon_port = 5000\n";
-        let cfg = PromptTemplatesConfig::from_toml(toml).unwrap();
+        let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
         assert!(code.contains(&"tk".to_string()));
     }

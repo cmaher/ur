@@ -29,8 +29,8 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
 COPY claude-settings.json /home/worker/.claude/settings.json
-COPY all-skills/ /home/worker/.claude/potential-skills/
 COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
+COPY all-skills/ /home/worker/.claude/potential-skills/
 RUN mkdir -p /home/worker/.claude/skills
 RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /home/worker/.claude
 

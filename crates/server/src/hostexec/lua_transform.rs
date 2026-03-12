@@ -365,4 +365,88 @@ mod tests {
             .unwrap();
         assert_eq!(result, vec!["pr", "list"]);
     }
+
+    #[test]
+    fn test_gh_dash_c_blocks_without_agent_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "list".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -C"));
+    }
+
+    #[test]
+    fn test_gh_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+        };
+        let args: Vec<String> = vec![
+            "-C".into(),
+            "/some/path/ur".into(),
+            "pr".into(),
+            "list".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "pr", "list"]
+        );
+    }
+
+    #[test]
+    fn test_gh_dash_c_rewrite_with_workspace() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "list".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "pr", "list"]
+        );
+    }
+
+    #[test]
+    fn test_gh_dash_c_rejected_wrong_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "pr".into(), "list".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_normal_args() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "list".into(), "--state".into(), "open".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result, args);
+    }
 }

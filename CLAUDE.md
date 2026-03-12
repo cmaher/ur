@@ -40,7 +40,7 @@ Cargo workspace:
 - **Plans** (`docs/plans/`): Filenames and content MUST include the relevant ticket number (e.g., `ur-a1b2c`).
 - **PR descriptions**: MUST reference the ticket number being addressed.
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.
-- **Tests**: NEVER `#[ignore]` or skip tests to make them pass. Fix the underlying issue.
+- **Tests**: NEVER `#[ignore]` or skip tests to make them pass. NEVER push with `--no-verify` to bypass failing tests. Always fix the underlying issue — including pre-existing failures encountered during a push.
 - **Error propagation**: NEVER allow operations to fail silently. All errors from server-side operations (gRPC handlers, pool management, git operations, container lifecycle) MUST propagate back to the CLI and be displayed to the user. If an async operation can fail, its error must be surfaced — not swallowed, logged-only, or ignored. When adding new server-side functionality, verify the full error path: server error → gRPC Status → CLI display.
 - **Acceptance tests**: When adding a new launch mode, flag, or code path (e.g., `-p` project pool launches vs `-w` workspace mounts), the acceptance test suite MUST cover that path. Do not ship a feature whose primary flow is untested in the e2e acceptance tests.
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).

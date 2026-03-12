@@ -1,0 +1,92 @@
+# Skill Loading
+
+How skills get baked into the container image and selectively activated at runtime.
+
+## Skill Sources
+
+Two directories in the container build context supply skills:
+
+- `containers/claude-worker/vendor/superpowers/skills/` — upstream/third-party skills (brainstorming, writing-plans, systematic-debugging, etc.)
+- `containers/claude-worker/all-skills/` — project-specific skills and overrides (tk, bacon, ship, green, etc.)
+
+Both are merged into a single `potential-skills/` pool during the Docker build. **all-skills/ copies second, so project-specific versions override vendor skills with the same name.**
+
+## Build Time (Dockerfile)
+
+```
+COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
+COPY all-skills/               /home/worker/.claude/potential-skills/
+RUN mkdir -p /home/worker/.claude/skills
+```
+
+All skills land in `~/.claude/potential-skills/`. The `~/.claude/skills/` directory starts empty — skills are not active until explicitly selected at runtime.
+
+## Mode Resolution (ur-server)
+
+When a process launches, the server resolves which skills to activate.
+
+```
+ProcessLaunchRequest { mode, skills }
+    │
+    ▼
+ProcessManager::resolve_skills()                [crates/server/src/process.rs]
+    │   Priority:
+    │     1. If `skills` is non-empty → use directly
+    │     2. If `mode` is non-empty → look up prompt_modes.<mode>.skills
+    │     3. Otherwise → use prompt_modes.code (default)
+    │
+    ▼
+UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
+```
+
+### Default Modes (hardcoded, overridable via ur.toml)
+
+**code** (default): tk, ship, tk:agents, tk:start, bacon, green, cli-design, reclaude, systematic-debugging, test-driven-development, writing-skills
+
+**design**: tk, ship, green, brainstorming, cli-design, reclaude, writing-skills
+
+### ur.toml Override
+
+```toml
+[prompt_modes.code]
+skills = ["tk", "custom-skill"]
+
+[prompt_modes.my-mode]
+skills = ["a", "b", "c"]
+```
+
+Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved.
+
+## Container Startup (entrypoint.sh → ur-tools init-skills)
+
+```
+entrypoint.sh
+    │
+    ▼
+ur-tools init-skills                            [crates/workercmd/tools/src/init_skills.rs]
+    │   InitSkillsManager::init_skills()
+    │     1. Wipe ~/.claude/skills/ (remove + recreate)
+    │     2. Read UR_WORKER_SKILLS env var
+    │     3. For each comma-separated skill name:
+    │        - src: ~/.claude/potential-skills/<name>/
+    │        - dst: ~/.claude/skills/<name>/
+    │        - Recursive directory copy (preserves subdirs)
+    │        - Missing skills log a warning, don't fail
+    │
+    ▼
+~/.claude/skills/ now contains only the requested skills
+    │
+    ▼
+Claude Code reads ~/.claude/skills/ at session start
+```
+
+## Key Files
+
+| File | Role |
+|------|------|
+| `containers/claude-worker/Dockerfile` | Bakes both skill sources into potential-skills/ |
+| `containers/claude-worker/all-skills/` | Project-specific skills (override vendor) |
+| `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
+| `containers/claude-worker/entrypoint.sh` | Calls `ur-tools init-skills` at container start |
+| `crates/workercmd/tools/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
+| `crates/server/src/process.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |

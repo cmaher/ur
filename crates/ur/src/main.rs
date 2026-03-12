@@ -128,10 +128,10 @@ enum ProcessCommands {
         /// Stop existing process with this ID before launching
         #[arg(short = 'f', long = "force")]
         force: bool,
-        /// Prompt template name (default: "code")
-        #[arg(short = 't', long = "template", default_value = "code")]
-        template: String,
-        /// Comma-separated skill list; overrides template when provided
+        /// Prompt mode name (default: "code")
+        #[arg(short = 'm', long = "mode", default_value = "code")]
+        mode: String,
+        /// Comma-separated skill list; overrides mode when provided
         #[arg(short = 's', long = "skills")]
         skills: Option<String>,
     },
@@ -311,14 +311,14 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
     process::exit(status.code().unwrap_or(1));
 }
 
-#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, template, skills = ?skills))]
+#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
     workspace: Option<PathBuf>,
     project_key: &str,
     agent_prefix: &str,
-    template: &str,
+    mode: &str,
     skills: &[String],
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching agent process");
@@ -350,7 +350,7 @@ async fn process_launch(
             memory: "8G".into(),
             workspace_dir,
             claude_credentials: String::new(),
-            template: template.to_owned(),
+            mode: mode.to_owned(),
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
         })
@@ -410,10 +410,10 @@ async fn handle_process(
             project,
             attach,
             force,
-            template,
+            mode,
             skills,
         } => {
-            // Parse comma-separated skills; when provided they override the template server-side
+            // Parse comma-separated skills; when provided they override the mode server-side
             let skills_vec: Vec<String> = skills
                 .iter()
                 .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
@@ -459,7 +459,7 @@ async fn handle_process(
                 workspace,
                 &resolved_project,
                 agent_prefix,
-                &template,
+                &mode,
                 &skills_vec,
             )
             .await?;

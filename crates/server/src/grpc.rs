@@ -129,10 +129,10 @@ impl CoreService for CoreServiceHandler {
         .await
         .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
-        // Resolve skills from request template/skills fields
+        // Resolve skills from request mode/skills fields
         let skills = self
             .process_manager
-            .resolve_skills(&req.template, &req.skills)
+            .resolve_skills(&req.mode, &req.skills)
             .map_err(Status::invalid_argument)?;
 
         // Phase 2: run container
