@@ -6,6 +6,7 @@ mod lifecycle_log;
 mod logging;
 mod project;
 mod proxy;
+mod rag;
 
 use std::path::PathBuf;
 use std::process;
@@ -71,6 +72,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProjectCommands,
     },
+    /// RAG documentation and search
+    Rag {
+        #[command(subcommand)]
+        command: RagCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -109,6 +115,12 @@ enum ProjectCommands {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RagCommands {
+    /// Generate Rust documentation for RAG indexing
+    Docs,
 }
 
 #[derive(Subcommand)]
@@ -570,6 +582,9 @@ async fn main() -> Result<()> {
                 pool_limit,
             } => project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit)?,
             ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
+        },
+        Commands::Rag { command } => match command {
+            RagCommands::Docs => rag::generate_docs(&config.config_dir)?,
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
