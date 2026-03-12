@@ -25,6 +25,23 @@ impl SchemaManager {
         Ok(manager)
     }
 
+    /// Create a CozoDB instance backed by an SQLite file on disk with all relations defined.
+    pub fn create_with_sqlite(path: &std::path::Path) -> Result<Self, String> {
+        let path_str = path.to_str().ok_or("Invalid UTF-8 in database path")?;
+        let db = DbInstance::new("sqlite", path_str, "").map_err(|e| e.to_string())?;
+        let manager = Self { db };
+        manager.create_relations()?;
+        Ok(manager)
+    }
+
+    /// Open an existing CozoDB SQLite database without creating relations.
+    /// Use this to open a backup or previously-created database file.
+    pub fn open_sqlite(path: &std::path::Path) -> Result<Self, String> {
+        let path_str = path.to_str().ok_or("Invalid UTF-8 in database path")?;
+        let db = DbInstance::new("sqlite", path_str, "").map_err(|e| e.to_string())?;
+        Ok(Self { db })
+    }
+
     /// Define all six relations in the database.
     fn create_relations(&self) -> Result<(), String> {
         let statements = [
