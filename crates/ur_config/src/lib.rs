@@ -1,3 +1,7 @@
+mod template_path;
+
+pub use template_path::{ResolvedTemplatePath, resolve_template_path};
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -128,6 +132,9 @@ struct RawProjectConfig {
     pool_limit: Option<u32>,
     #[serde(default)]
     hostexec: Vec<String>,
+    git_hooks_dir: Option<String>,
+    #[serde(default)]
+    mounts: Vec<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -185,6 +192,15 @@ pub struct ProjectConfig {
     /// Additional passthrough hostexec commands for this project.
     /// These are added to the global allowlist when agents run against this project.
     pub hostexec: Vec<String>,
+    /// Optional template path to a directory of git hook scripts.
+    /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
+    /// Resolve with [`resolve_template_path`] at use time.
+    pub git_hooks_dir: Option<String>,
+    /// Additional volume mount paths for this project.
+    /// Each entry is a template path string supporting `%PROJECT%/...`, `%URCONFIG%/...`,
+    /// or absolute paths. Validated at config load time; resolved at use time via
+    /// [`resolve_template_path`].
+    pub mounts: Vec<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -291,16 +307,19 @@ impl Config {
             .projects
             .into_iter()
             .map(|(key, raw_proj)| {
+                validate_project_templates(&key, &raw_proj)?;
                 let resolved = ProjectConfig {
                     name: raw_proj.name.unwrap_or_else(|| key.clone()),
                     repo: raw_proj.repo,
                     pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
                     key: key.clone(),
                     hostexec: raw_proj.hostexec,
+                    git_hooks_dir: raw_proj.git_hooks_dir,
+                    mounts: raw_proj.mounts,
                 };
-                (key, resolved)
+                Ok((key, resolved))
             })
-            .collect();
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
@@ -319,6 +338,18 @@ impl Config {
 pub const SERVER_PID_FILE: &str = "server.pid";
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
+fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
+    if let Some(ref tpl) = raw_proj.git_hooks_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
+    }
+    for (i, mount) in raw_proj.mounts.iter().enumerate() {
+        template_path::validate_template_str(mount)
+            .map_err(|e| anyhow::anyhow!("project '{}': mounts[{}]: {}", key, i, e))?;
+    }
+    Ok(())
+}
+
 pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
         return Ok(PathBuf::from(val));
@@ -584,5 +615,148 @@ name = "Missing Repo"
         )
         .unwrap();
         assert!(Config::load_from(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn git_hooks_dir_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].git_hooks_dir, None);
+    }
+
+    #[test]
+    fn git_hooks_dir_stores_template_string() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+git_hooks_dir = "%PROJECT%/.git-hooks"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].git_hooks_dir.as_deref(),
+            Some("%PROJECT%/.git-hooks")
+        );
+    }
+
+    #[test]
+    fn git_hooks_dir_rejects_unrecognized_variable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+git_hooks_dir = "%BADVAR%/hooks"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unrecognized template variable"), "{msg}");
+        assert!(msg.contains("project 'ur'"), "{msg}");
+    }
+
+    #[test]
+    fn git_hooks_dir_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+git_hooks_dir = "/opt/hooks/ur"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].git_hooks_dir.as_deref(),
+            Some("/opt/hooks/ur")
+        );
+    }
+
+    #[test]
+    fn git_hooks_dir_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+git_hooks_dir = "%URCONFIG%/hooks/ur"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].git_hooks_dir.as_deref(),
+            Some("%URCONFIG%/hooks/ur")
+        );
+    }
+
+    #[test]
+    fn mounts_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects["ur"].mounts.is_empty());
+    }
+
+    #[test]
+    fn mounts_parses_multiple_entries() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["%PROJECT%/.cache", "%URCONFIG%/shared-data", "/opt/tools"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].mounts,
+            vec!["%PROJECT%/.cache", "%URCONFIG%/shared-data", "/opt/tools"]
+        );
+    }
+
+    #[test]
+    fn mounts_rejects_invalid_variable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["%PROJECT%/.cache", "%INVALID%/bad"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[1]"), "{msg}");
+        assert!(msg.contains("unrecognized template variable"), "{msg}");
+        assert!(msg.contains("project 'ur'"), "{msg}");
     }
 }

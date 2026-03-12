@@ -312,6 +312,8 @@ mod tests {
                 name: "Test Project".into(),
                 pool_limit,
                 hostexec: Vec::new(),
+                git_hooks_dir: None,
+                mounts: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {
@@ -445,6 +447,8 @@ mod tests {
                 name: "Proj".into(),
                 pool_limit: 10,
                 hostexec: Vec::new(),
+                git_hooks_dir: None,
+                mounts: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {

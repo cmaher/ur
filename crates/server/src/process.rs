@@ -11,6 +11,7 @@ use ur_config::NetworkConfig;
 
 use container::{ContainerRuntime, NetworkManager};
 
+use crate::run_opts_builder::RunOptsBuilder;
 use crate::{RepoPoolManager, RepoRegistry};
 
 /// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
@@ -208,6 +209,8 @@ pub struct ProcessConfig {
     pub project_key: String,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
+    /// Optional git hooks directory template string from project config.
+    pub git_hooks_dir: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -332,30 +335,7 @@ impl ProcessManager {
         let server_hostname = &self.network_config.server_hostname;
         let server_addr = format!("{server_hostname}:{}", config.grpc_port);
 
-        // Build volume mounts
-        let mut volumes: Vec<(PathBuf, PathBuf)> = Vec::new();
-        if let Some(ws_dir) = &config.workspace_dir {
-            volumes.push((ws_dir.clone(), PathBuf::from("/workspace")));
-        }
-
-        // Mount shared credentials file so all containers share one OAuth session.
-        // Claude Code reads/writes this file for token refresh, keeping all
-        // containers in sync without per-launch credential injection.
-        // (.claude.json is baked into the image — only credentials need mounting.)
-        let host_creds = self
-            .host_config_dir
-            .join(ur_config::CLAUDE_DIR)
-            .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
-        ensure_file_exists(&host_creds)
-            .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
-        let worker_home = PathBuf::from(ur_config::WORKER_HOME);
-        volumes.push((
-            host_creds,
-            worker_home
-                .join(".claude")
-                .join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
-        ));
-
+        // Build env vars
         let mut env_vars = vec![
             (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
             (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
@@ -369,24 +349,25 @@ impl ProcessManager {
             env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
         }
 
+        // Build RunOpts via the builder
+        let container_name = format!("{}{}", self.network_config.agent_prefix, config.process_id);
+        let opts = RunOptsBuilder::new(
+            config.image_id.clone(),
+            container_name,
+            self.network_manager.network_name().to_string(),
+        )
+        .cpus(config.cpus)
+        .memory(config.memory.clone())
+        .workdir("/workspace")
+        .add_workspace(&config.workspace_dir)
+        .add_credentials(&self.host_config_dir)?
+        .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
+        .add_env_vars(env_vars)
+        .build();
+
         // Run the container on the shared Docker network
         let cid = {
             let rt = container::runtime_from_env();
-            let container_name =
-                format!("{}{}", self.network_config.agent_prefix, config.process_id);
-            let opts = container::RunOpts {
-                image: container::ImageId(config.image_id.clone()),
-                name: container_name,
-                cpus: config.cpus,
-                memory: config.memory.clone(),
-                volumes,
-                port_maps: vec![],
-                env_vars,
-                workdir: Some(PathBuf::from("/workspace")),
-                command: vec![],
-                network: Some(self.network_manager.network_name().to_string()),
-                add_hosts: vec![],
-            };
             rt.run(&opts).map_err(|e| e.to_string())?
         };
 
@@ -489,7 +470,7 @@ impl ProcessManager {
 /// Ensure a file exists on disk, creating it (and parent dirs) if missing.
 /// Docker bind-mounts require the source to exist as a file; if missing, Docker
 /// creates a directory instead, causing an OCI runtime error.
-fn ensure_file_exists(path: &PathBuf) -> Result<(), std::io::Error> {
+pub(crate) fn ensure_file_exists(path: &PathBuf) -> Result<(), std::io::Error> {
     if path.exists() {
         return Ok(());
     }

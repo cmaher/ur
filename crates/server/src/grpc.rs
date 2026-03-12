@@ -136,6 +136,14 @@ impl CoreService for CoreServiceHandler {
             .map_err(Status::invalid_argument)?;
 
         // Phase 2: run container
+        let git_hooks_dir = if !project_key.is_empty() {
+            self.projects
+                .get(&project_key)
+                .and_then(|p| p.git_hooks_dir.clone())
+        } else {
+            None
+        };
+
         let config = crate::ProcessConfig {
             process_id: req.process_id,
             agent_id,
@@ -147,6 +155,7 @@ impl CoreService for CoreServiceHandler {
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
             skills,
+            git_hooks_dir,
         };
         let container_id = self
             .process_manager

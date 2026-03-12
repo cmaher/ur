@@ -7,6 +7,7 @@ use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::hostexec::HostExecRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 
+mod init_git_hooks;
 mod init_skills;
 mod logging;
 
@@ -27,8 +28,8 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Initialize skills from potential-skills based on UR_WORKER_SKILLS env var
-    InitSkills,
+    /// Run all container initialization (skills, git hooks)
+    Init,
 }
 
 #[tokio::main]
@@ -39,10 +40,21 @@ async fn main() {
         Commands::HostExec { command, args } => {
             std::process::exit(run_host_exec(&command, args).await);
         }
-        Commands::InitSkills => {
+        Commands::Init => {
             logging::init();
-            let manager = init_skills::InitSkillsManager::from_env();
-            std::process::exit(manager.run().await);
+            let skills_manager = init_skills::InitSkillsManager::from_env();
+            let exit_code = skills_manager.run().await;
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+
+            let git_hooks_manager = init_git_hooks::InitGitHooksManager;
+            if let Err(e) = git_hooks_manager.run().await {
+                eprintln!("init git hooks failed: {e}");
+                std::process::exit(1);
+            }
+
+            std::process::exit(0);
         }
     }
 }
