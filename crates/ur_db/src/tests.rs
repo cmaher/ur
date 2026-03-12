@@ -1,3 +1,4 @@
+use crate::query::QueryManager;
 use crate::schema::SchemaManager;
 
 /// Build a SchemaManager with all sample data populated.
@@ -379,4 +380,286 @@ fn joined_query_activity_with_metadata() {
         4,
         "should have 4 joined activity+meta rows"
     );
+}
+
+// === QueryManager tests ===
+
+fn query_mgr() -> QueryManager {
+    QueryManager::new(populated_db())
+}
+
+#[test]
+fn dispatchable_tickets_for_epic_a() {
+    let qm = query_mgr();
+
+    // Epic A children:
+    //   a.0: task, closed — not dispatchable (closed)
+    //   a.1: task, in_progress — not dispatchable (not open)
+    //   a.2: task, open, blocked by a.1 (in_progress) — not dispatchable
+    //   a.3: bug, open, no blockers — dispatchable!
+    let tickets = qm.dispatchable_tickets("ur.o79g.0.a").unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(tickets[0].id, "ur.o79g.0.a.3");
+    assert_eq!(tickets[0].title, "Fix nullable parent_id handling");
+}
+
+#[test]
+fn dispatchable_tickets_for_epic_b() {
+    let qm = query_mgr();
+
+    // Epic B children:
+    //   b.0: task, open, blocked by a.0 (closed) — a.0 is closed so not blocking!
+    //       Wait, the query checks status != "closed", and a.0 is closed, so b.0 is NOT blocked.
+    //   b.1: task, open, blocked by a.2 (open) — blocked!
+    //   b.2: design, open — not dispatchable (design is not task/bug)
+    let tickets = qm.dispatchable_tickets("ur.o79g.0.b").unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(tickets[0].id, "ur.o79g.0.b.0");
+}
+
+#[test]
+fn dispatchable_tickets_empty_when_none_qualify() {
+    let qm = query_mgr();
+
+    // No children of the initiative are dispatchable types at that level
+    let tickets = qm.dispatchable_tickets("ur.o79g").unwrap();
+    assert_eq!(tickets.len(), 0);
+}
+
+#[test]
+fn transitive_blockers_direct() {
+    let qm = query_mgr();
+
+    // a.1 is directly blocked by a.0
+    let blockers = qm.transitive_blockers("ur.o79g.0.a.1").unwrap();
+    assert_eq!(blockers, vec!["ur.o79g.0.a.0"]);
+}
+
+#[test]
+fn transitive_blockers_chain() {
+    let qm = query_mgr();
+
+    // b.1 is blocked by a.2, which is blocked by a.1, which is blocked by a.0
+    // So transitive blockers of b.1 = {a.2, a.1, a.0}
+    let blockers = qm.transitive_blockers("ur.o79g.0.b.1").unwrap();
+    assert_eq!(
+        blockers,
+        vec!["ur.o79g.0.a.0", "ur.o79g.0.a.1", "ur.o79g.0.a.2"]
+    );
+}
+
+#[test]
+fn transitive_blockers_none() {
+    let qm = query_mgr();
+
+    // a.0 has no blockers
+    let blockers = qm.transitive_blockers("ur.o79g.0.a.0").unwrap();
+    assert!(blockers.is_empty());
+}
+
+#[test]
+fn transitive_dependents_from_root() {
+    let qm = query_mgr();
+
+    // a.0 blocks a.1 and b.0 directly.
+    // a.1 blocks a.2. a.2 blocks b.1.
+    // So transitive dependents of a.0 = {a.1, a.2, b.0, b.1}
+    let deps = qm.transitive_dependents("ur.o79g.0.a.0").unwrap();
+    assert_eq!(
+        deps,
+        vec![
+            "ur.o79g.0.a.1",
+            "ur.o79g.0.a.2",
+            "ur.o79g.0.b.0",
+            "ur.o79g.0.b.1"
+        ]
+    );
+}
+
+#[test]
+fn transitive_dependents_leaf() {
+    let qm = query_mgr();
+
+    // b.1 has no dependents (nothing is blocked by it)
+    let deps = qm.transitive_dependents("ur.o79g.0.b.1").unwrap();
+    assert!(deps.is_empty());
+}
+
+#[test]
+fn epic_rollup_not_all_closed() {
+    let qm = query_mgr();
+
+    // Epic A has a.0 closed, a.1 in_progress, a.2 open, a.3 open
+    assert!(!qm.epic_all_children_closed("ur.o79g.0.a").unwrap());
+}
+
+#[test]
+fn epic_rollup_all_closed() {
+    let qm = query_mgr();
+
+    // Close all children of epic A
+    qm.schema()
+        .run(
+            r#"
+        ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [
+            ["ur.o79g.0.a.0", "task", "closed", 2, "ur.o79g.0.a",
+             "Define ticket relation", "Create the ticket stored relation.",
+             "2026-03-11T09:30:00Z", "2026-03-12T08:00:00Z"],
+            ["ur.o79g.0.a.1", "task", "closed", 2, "ur.o79g.0.a",
+             "Define metadata relations", "Create ticket_meta and activity_meta.",
+             "2026-03-11T09:35:00Z", "2026-03-12T09:00:00Z"],
+            ["ur.o79g.0.a.2", "task", "closed", 3, "ur.o79g.0.a",
+             "Define dependency relations", "Create blocks and relates_to.",
+             "2026-03-11T09:40:00Z", "2026-03-11T09:40:00Z"],
+            ["ur.o79g.0.a.3", "bug", "closed", 2, "ur.o79g.0.a",
+             "Fix nullable parent_id handling", "Empty string workaround needs validation.",
+             "2026-03-12T10:00:00Z", "2026-03-12T10:00:00Z"]
+        ]
+        :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
+    "#,
+        )
+        .unwrap();
+
+    assert!(qm.epic_all_children_closed("ur.o79g.0.a").unwrap());
+}
+
+#[test]
+fn epic_rollup_no_children() {
+    let qm = query_mgr();
+
+    // A ticket with no children should report all_closed = true (vacuously true)
+    assert!(qm
+        .epic_all_children_closed("ur.o79g.0.a.0")
+        .unwrap());
+}
+
+#[test]
+fn cycle_detection_no_cycle() {
+    let qm = query_mgr();
+
+    // Adding a.3 -> b.0 would not create a cycle (a.3 has no blockers, b.0 doesn't reach a.3)
+    assert!(!qm
+        .would_create_cycle("ur.o79g.0.a.3", "ur.o79g.0.b.0")
+        .unwrap());
+}
+
+#[test]
+fn cycle_detection_direct_reverse() {
+    let qm = query_mgr();
+
+    // a.0 -> a.1 exists. Adding a.1 -> a.0 would create a direct cycle.
+    assert!(qm
+        .would_create_cycle("ur.o79g.0.a.1", "ur.o79g.0.a.0")
+        .unwrap());
+}
+
+#[test]
+fn cycle_detection_transitive() {
+    let qm = query_mgr();
+
+    // Chain: a.0 -> a.1 -> a.2. Adding a.2 -> a.0 would create a transitive cycle.
+    assert!(qm
+        .would_create_cycle("ur.o79g.0.a.2", "ur.o79g.0.a.0")
+        .unwrap());
+}
+
+#[test]
+fn cycle_detection_cross_epic_transitive() {
+    let qm = query_mgr();
+
+    // Chain: a.0 -> a.1 -> a.2 -> b.1. Adding b.1 -> a.0 would create a cross-epic cycle.
+    assert!(qm
+        .would_create_cycle("ur.o79g.0.b.1", "ur.o79g.0.a.0")
+        .unwrap());
+}
+
+#[test]
+fn cycle_detection_self_loop() {
+    let qm = query_mgr();
+
+    // Self-loop should always be detected as a cycle
+    assert!(qm
+        .would_create_cycle("ur.o79g.0.a.0", "ur.o79g.0.a.0")
+        .unwrap());
+}
+
+#[test]
+fn metadata_query_by_assignee() {
+    let qm = query_mgr();
+
+    let tickets = qm.tickets_by_metadata("assignee", "agent-1").unwrap();
+    assert_eq!(tickets.len(), 2);
+
+    let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+    assert!(ids.contains(&"ur.o79g.0.a.0"));
+    assert!(ids.contains(&"ur.o79g.0.b"));
+}
+
+#[test]
+fn metadata_query_by_tag() {
+    let qm = query_mgr();
+
+    let tickets = qm.tickets_by_metadata("tag", "schema").unwrap();
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(tickets[0].id, "ur.o79g.0.a");
+}
+
+#[test]
+fn metadata_query_all_tagged_tickets() {
+    let qm = query_mgr();
+
+    // All tickets with any tag
+    let tickets = qm.tickets_with_metadata_key("tag").unwrap();
+    assert_eq!(tickets.len(), 4); // a (schema), b (queries), b.0 (dispatch), b.1 (graph)
+
+    let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+    assert!(ids.contains(&"ur.o79g.0.a"));
+    assert!(ids.contains(&"ur.o79g.0.b"));
+    assert!(ids.contains(&"ur.o79g.0.b.0"));
+    assert!(ids.contains(&"ur.o79g.0.b.1"));
+}
+
+#[test]
+fn metadata_query_no_matches() {
+    let qm = query_mgr();
+
+    let tickets = qm
+        .tickets_by_metadata("assignee", "nonexistent-user")
+        .unwrap();
+    assert!(tickets.is_empty());
+}
+
+/// Verify that dispatchable tickets update correctly when blockers are resolved.
+#[test]
+fn dispatchable_tickets_update_when_blockers_resolve() {
+    let qm = query_mgr();
+
+    // Initially b.0 is dispatchable (only blocked by a.0 which is closed)
+    // b.1 is blocked by a.2 (open), so not dispatchable
+    let before = qm.dispatchable_tickets("ur.o79g.0.b").unwrap();
+    assert_eq!(before.len(), 1);
+
+    // Close a.2 to unblock b.1
+    qm.schema()
+        .run(
+            r#"
+        ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
+            "ur.o79g.0.a.2", "task", "closed", 3, "ur.o79g.0.a",
+            "Define dependency relations", "Create blocks and relates_to.",
+            "2026-03-11T09:40:00Z", "2026-03-12T12:00:00Z"
+        ]]
+        :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
+    "#,
+        )
+        .unwrap();
+
+    // Also need to close a.1 since b.1 is blocked by a.2 which was blocked by a.1
+    // Wait — b.1 is only directly blocked by a.2. The blocks edges are:
+    //   a.0 -> a.1, a.1 -> a.2, a.0 -> b.0, a.2 -> b.1
+    // So b.1's direct blocker is a.2. Closing a.2 should make b.1 dispatchable.
+    let after = qm.dispatchable_tickets("ur.o79g.0.b").unwrap();
+    assert_eq!(after.len(), 2);
+    let ids: Vec<&str> = after.iter().map(|t| t.id.as_str()).collect();
+    assert!(ids.contains(&"ur.o79g.0.b.0"));
+    assert!(ids.contains(&"ur.o79g.0.b.1"));
 }
