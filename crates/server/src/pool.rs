@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use ur_config::{Config, ProjectConfig};
@@ -10,12 +11,16 @@ use crate::HostdClient;
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
-/// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-index>/`
+/// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-name>/`
 ///
 /// Git operations (clone, fetch, reset) are executed on the host via ur-hostd,
 /// since the server runs inside a Docker container without SSH keys or git credentials.
 ///
-/// Slots are acquired for agent processes and released when processes stop.
+/// Supports two acquisition modes:
+/// - **Exclusive** (numbered slots): Acquired by one agent at a time, tracked via `in_use` set.
+/// - **Shared** (named slots): Multiple agents can use the same slot concurrently,
+///   with per-slot mutexes serializing the initial reset.
+///
 /// In-memory tracking only — state is lost on restart.
 #[derive(Clone)]
 pub struct RepoPoolManager {
@@ -29,8 +34,12 @@ pub struct RepoPoolManager {
     hostd_client: HostdClient,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
-    /// Set of slot paths (host-side) currently in use by running agents.
+    /// Set of slot paths (host-side) currently in use by running agents (exclusive slots only).
     in_use: Arc<RwLock<HashSet<PathBuf>>>,
+    /// Per-slot mutexes for serializing concurrent shared slot acquires.
+    /// Keyed by (project_key, slot_name). Lock is held only during reset_slot,
+    /// not for the lifetime of the worker.
+    shared_locks: Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>,
 }
 
 impl RepoPoolManager {
@@ -46,6 +55,7 @@ impl RepoPoolManager {
             hostd_client,
             projects: config.projects.clone(),
             in_use: Arc::new(RwLock::new(HashSet::new())),
+            shared_locks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -70,20 +80,22 @@ impl RepoPoolManager {
     }
 
     /// Host-side path for a specific slot (returned for Docker mounts and hostd CWD).
-    fn host_slot_path(&self, project_key: &str, slot_index: u32) -> PathBuf {
-        self.host_project_pool_dir(project_key)
-            .join(slot_index.to_string())
+    ///
+    /// `slot_name` can be a numeric index (e.g., "0", "1") for exclusive slots
+    /// or a named identifier (e.g., "design") for shared slots.
+    fn host_slot_path(&self, project_key: &str, slot_name: &str) -> PathBuf {
+        self.host_project_pool_dir(project_key).join(slot_name)
     }
 
-    /// Acquire a repo slot for the given project.
+    /// Acquire an exclusive repo slot for the given project.
     ///
     /// 1. Looks up the project in config.
-    /// 2. Scans existing slots for one not in use.
+    /// 2. Scans existing numbered slots for one not in use.
     /// 3. If found, resets it to origin/master and marks it in-use.
     /// 4. If none available, clones a new slot (if under pool_limit).
     ///
     /// Returns the host-side path to the acquired slot directory (for Docker volume mounts).
-    pub async fn acquire(&self, project_key: &str) -> Result<PathBuf, String> {
+    pub async fn acquire_exclusive(&self, project_key: &str) -> Result<PathBuf, String> {
         let project = self
             .projects
             .get(project_key)
@@ -99,19 +111,22 @@ impl RepoPoolManager {
             let in_use = self.in_use.read().expect("pool lock poisoned");
             existing_slots
                 .iter()
-                .find(|idx| !in_use.contains(&self.host_slot_path(project_key, **idx)))
+                .find(|idx| {
+                    !in_use.contains(&self.host_slot_path(project_key, &idx.to_string()))
+                })
                 .copied()
         };
 
         if let Some(slot_index) = available_slot {
-            let host_path = self.host_slot_path(project_key, slot_index);
+            let slot_name = slot_index.to_string();
+            let host_path = self.host_slot_path(project_key, &slot_name);
             info!(project_key, slot_index, path = %host_path.display(), "resetting existing pool slot");
             if let Err(e) = self.reset_slot(&host_path).await {
                 warn!(
                     project_key, slot_index, path = %host_path.display(),
                     error = %e, "reset failed, re-cloning corrupted pool slot"
                 );
-                self.reclone_slot(&project.repo, project_key, slot_index)
+                self.reclone_slot(&project.repo, project_key, &slot_name)
                     .await?;
             }
             self.mark_in_use(&host_path);
@@ -129,7 +144,8 @@ impl RepoPoolManager {
 
         // Find next slot index (fill gaps or use max + 1)
         let next_index = self.next_slot_index(&existing_slots);
-        let host_path = self.host_slot_path(project_key, next_index);
+        let slot_name = next_index.to_string();
+        let host_path = self.host_slot_path(project_key, &slot_name);
 
         info!(
             project_key,
@@ -139,19 +155,91 @@ impl RepoPoolManager {
             "cloning new pool slot via hostd"
         );
 
-        self.clone_slot(&project.repo, project_key, next_index)
+        self.clone_slot(&project.repo, project_key, &slot_name)
             .await?;
         self.mark_in_use(&host_path);
 
         Ok(host_path)
     }
 
-    /// Release a previously acquired slot, resetting it to a clean state.
+    /// Acquire a shared (named) repo slot for the given project.
+    ///
+    /// Shared slots are not tracked in the `in_use` set — multiple agents can hold
+    /// the same slot concurrently. The slot is cloned on first use (if the directory
+    /// doesn't exist) and reset to origin/master on each acquire.
+    ///
+    /// A per-slot mutex serializes the reset to avoid git lock conflicts when
+    /// multiple agents acquire the same shared slot concurrently.
+    pub async fn acquire_shared(
+        &self,
+        slot_name: &str,
+        project_key: &str,
+    ) -> Result<PathBuf, String> {
+        let project = self
+            .projects
+            .get(project_key)
+            .ok_or_else(|| format!("unknown project: {project_key}"))?;
+
+        let host_path = self.host_slot_path(project_key, slot_name);
+        let local_slot_dir = self.local_project_pool_dir(project_key).join(slot_name);
+
+        // Get or create the per-slot mutex
+        let slot_mutex = {
+            let key = (project_key.to_string(), slot_name.to_string());
+            let locks = self.shared_locks.read().expect("shared_locks poisoned");
+            if let Some(mutex) = locks.get(&key) {
+                mutex.clone()
+            } else {
+                drop(locks);
+                let mut locks = self.shared_locks.write().expect("shared_locks poisoned");
+                locks
+                    .entry(key)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
+            }
+        };
+
+        // Serialize reset/clone operations for this slot
+        let _guard = slot_mutex.lock().await;
+
+        let slot_exists = tokio::fs::try_exists(&local_slot_dir)
+            .await
+            .unwrap_or(false);
+
+        if slot_exists {
+            // Reset existing slot
+            info!(project_key, slot_name, path = %host_path.display(), "resetting shared pool slot");
+            if let Err(e) = self.reset_slot(&host_path).await {
+                warn!(
+                    project_key, slot_name, path = %host_path.display(),
+                    error = %e, "reset failed on shared slot, re-cloning"
+                );
+                self.reclone_slot(&project.repo, project_key, slot_name)
+                    .await?;
+            }
+        } else {
+            // Clone on first use
+            info!(
+                project_key,
+                slot_name,
+                repo = %project.repo,
+                host_path = %host_path.display(),
+                "cloning new shared pool slot via hostd"
+            );
+            self.clone_slot(&project.repo, project_key, slot_name)
+                .await?;
+        }
+
+        Ok(host_path)
+    }
+
+    /// Release a previously acquired exclusive slot, resetting it to a clean state.
     ///
     /// Fetches, checks out master, resets to origin/master, and cleans.
+    /// Unmarks the slot from the in-use set.
     /// `slot_path` is a host-side path.
-    pub async fn release(&self, slot_path: &Path) -> Result<(), String> {
-        info!(path = %slot_path.display(), "releasing pool slot");
+    pub async fn release_exclusive(&self, slot_path: &Path) -> Result<(), String> {
+        info!(path = %slot_path.display(), "releasing exclusive pool slot");
         if let Err(e) = self.reset_slot(slot_path).await {
             // Mark available anyway so the next acquire can reclone it.
             warn!(path = %slot_path.display(), error = %e, "reset failed during release, slot will be recloned on next acquire");
@@ -196,11 +284,13 @@ impl RepoPoolManager {
     ///
     /// Creates the parent directory locally (container-side, bind-mounted),
     /// then sends `git clone` to hostd which runs on the host with SSH credentials.
+    ///
+    /// `slot_name` can be a numeric index (e.g., "0") or a named identifier (e.g., "design").
     async fn clone_slot(
         &self,
         repo_url: &str,
         project_key: &str,
-        slot_index: u32,
+        slot_name: &str,
     ) -> Result<(), String> {
         // Create parent directory locally (visible on host via bind mount)
         let local_parent = self.local_project_pool_dir(project_key);
@@ -208,7 +298,7 @@ impl RepoPoolManager {
             .await
             .map_err(|e| format!("failed to create pool directory: {e}"))?;
 
-        let host_slot = self.host_slot_path(project_key, slot_index);
+        let host_slot = self.host_slot_path(project_key, slot_name);
         let host_parent = self.host_project_pool_dir(project_key);
 
         self.hostd_client
@@ -229,13 +319,15 @@ impl RepoPoolManager {
     ///
     /// Removes the slot directory via hostd (`rm -rf`), then clones fresh.
     /// This recovers from any corruption (missing .git/config, partial clones, etc.).
+    ///
+    /// `slot_name` can be a numeric index (e.g., "0") or a named identifier (e.g., "design").
     async fn reclone_slot(
         &self,
         repo_url: &str,
         project_key: &str,
-        slot_index: u32,
+        slot_name: &str,
     ) -> Result<(), String> {
-        let host_slot = self.host_slot_path(project_key, slot_index);
+        let host_slot = self.host_slot_path(project_key, slot_name);
         let host_parent = self.host_project_pool_dir(project_key);
 
         // Remove the corrupted slot directory on the host
@@ -254,7 +346,7 @@ impl RepoPoolManager {
             })?;
 
         // Clone fresh
-        self.clone_slot(repo_url, project_key, slot_index)
+        self.clone_slot(repo_url, project_key, slot_name)
             .await
             .map_err(|e| format!("reclone failed for slot {}: {e}", host_slot.display()))
     }
@@ -368,6 +460,7 @@ mod tests {
             hostd_client: HostdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
+            shared_locks: Arc::new(RwLock::new(HashMap::new())),
         };
         (mgr, workspace)
     }
@@ -401,16 +494,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_unknown_project_errors() {
+    async fn acquire_exclusive_unknown_project_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _) = test_pool(tmp.path(), 10);
-        let result = mgr.acquire("nonexistent").await;
+        let result = mgr.acquire_exclusive("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown project"));
     }
 
     #[tokio::test]
-    async fn acquire_pool_limit_reached_errors() {
+    async fn acquire_exclusive_pool_limit_reached_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 1);
 
@@ -420,7 +513,7 @@ mod tests {
         mgr.mark_in_use(&slot0);
 
         // Acquire should fail — 1 slot exists, all in use, pool_limit = 1
-        let result = mgr.acquire("testproj").await;
+        let result = mgr.acquire_exclusive("testproj").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("pool limit reached"));
     }
@@ -477,7 +570,7 @@ mod tests {
             workspace.join("pool").join("myproj")
         );
         assert_eq!(
-            mgr.host_slot_path("myproj", 3),
+            mgr.host_slot_path("myproj", "3"),
             workspace.join("pool").join("myproj").join("3")
         );
     }
@@ -503,6 +596,7 @@ mod tests {
             hostd_client: HostdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
+            shared_locks: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // Local paths for filesystem ops
@@ -518,13 +612,13 @@ mod tests {
             PathBuf::from("/home/user/.ur/workspace/pool")
         );
         assert_eq!(
-            mgr.host_slot_path("proj", 0),
+            mgr.host_slot_path("proj", "0"),
             PathBuf::from("/home/user/.ur/workspace/pool/proj/0")
         );
     }
 
     #[tokio::test]
-    async fn acquire_skips_in_use_slots_selects_first_available() {
+    async fn acquire_exclusive_skips_in_use_slots_selects_first_available() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
@@ -543,7 +637,7 @@ mod tests {
         // Acquire should try slot 2, which will fail on hostd connection (expected in
         // unit tests — the important thing is it selects the right slot).
         // We test the selection logic by checking what the error says.
-        let result = mgr.acquire("testproj").await;
+        let result = mgr.acquire_exclusive("testproj").await;
         // The git reset via hostd will fail because there's no hostd running,
         // but the error should reference slot 2's path (proving correct selection).
         match result {
@@ -556,13 +650,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_clones_when_no_existing_slots() {
+    async fn acquire_exclusive_clones_when_no_existing_slots() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
         // No slots exist on disk. Acquire should attempt git clone via hostd into slot 0.
         // The clone will fail (no hostd running), but we verify the error propagates.
-        let result = mgr.acquire("testproj").await;
+        let result = mgr.acquire_exclusive("testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Should be a hostd/clone error (not "pool limit" or "unknown project")
@@ -573,5 +667,68 @@ mod tests {
         // The slot should NOT be marked in-use since clone failed
         let expected_slot = workspace.join("pool").join("testproj").join("0");
         assert!(!mgr.in_use.read().unwrap().contains(&expected_slot));
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_unknown_project_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _) = test_pool(tmp.path(), 10);
+        let result = mgr.acquire_shared("design", "nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown project"));
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_clones_on_first_use() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        // No slot exists on disk. acquire_shared should attempt git clone via hostd.
+        // The clone will fail (no hostd running), but we verify the right path is used.
+        let result = mgr.acquire_shared("design", "testproj").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("git clone failed"),
+            "expected clone error, got: {err}"
+        );
+        // The slot should NOT be in the in_use set (shared slots are not tracked)
+        let expected_slot = workspace.join("pool").join("testproj").join("design");
+        assert!(!mgr.in_use.read().unwrap().contains(&expected_slot));
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_resets_existing_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        // Create the shared slot directory so it appears to already exist
+        let design_slot = workspace.join("pool").join("testproj").join("design");
+        std::fs::create_dir_all(&design_slot).unwrap();
+
+        // acquire_shared should attempt to reset (not clone).
+        // The reset will fail (no hostd running), then it will attempt reclone.
+        let result = mgr.acquire_shared("design", "testproj").await;
+        assert!(result.is_err());
+        // The error comes from the reclone fallback path
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to remove corrupted slot") || err.contains("reclone failed"),
+            "expected reclone error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_does_not_affect_in_use_tracking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        // Create the shared slot directory
+        let design_slot = workspace.join("pool").join("testproj").join("design");
+        std::fs::create_dir_all(&design_slot).unwrap();
+
+        // Even after acquire_shared (which will fail on hostd), the in_use set remains empty
+        let _ = mgr.acquire_shared("design", "testproj").await;
+        assert!(mgr.in_use.read().unwrap().is_empty());
     }
 }

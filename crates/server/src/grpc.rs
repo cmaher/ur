@@ -54,7 +54,7 @@ impl CoreService for CoreServiceHandler {
         let (workspace_dir, project_key) = if !req.project_key.is_empty() {
             let slot_path = self
                 .repo_pool_manager
-                .acquire(&req.project_key)
+                .acquire_exclusive(&req.project_key)
                 .await
                 .map_err(Status::internal)?;
             info!(
