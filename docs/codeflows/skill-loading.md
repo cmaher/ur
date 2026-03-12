@@ -21,41 +21,41 @@ RUN mkdir -p /home/worker/.claude/skills
 
 All skills land in `~/.claude/potential-skills/`. The `~/.claude/skills/` directory starts empty — skills are not active until explicitly selected at runtime.
 
-## Template Resolution (ur-server)
+## Mode Resolution (ur-server)
 
 When a process launches, the server resolves which skills to activate.
 
 ```
-ProcessLaunchRequest { template, skills }
+ProcessLaunchRequest { mode, skills }
     │
     ▼
 ProcessManager::resolve_skills()                [crates/server/src/process.rs]
     │   Priority:
     │     1. If `skills` is non-empty → use directly
-    │     2. If `template` is non-empty → look up prompt_templates.<template>.skills
-    │     3. Otherwise → use prompt_templates.code (default)
+    │     2. If `mode` is non-empty → look up prompt_modes.<mode>.skills
+    │     3. Otherwise → use prompt_modes.code (default)
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
 ```
 
-### Default Templates (hardcoded, overridable via ur.toml)
+### Default Modes (hardcoded, overridable via ur.toml)
 
 **code** (default): tk, ship, tk:agents, tk:start, bacon, green, cli-design, reclaude, systematic-debugging, test-driven-development, writing-skills
 
-**design**: tk, brainstorming, cli-design, reclaude, writing-skills
+**design**: tk, ship, green, brainstorming, cli-design, reclaude, writing-skills
 
 ### ur.toml Override
 
 ```toml
-[prompt_templates.code]
+[prompt_modes.code]
 skills = ["tk", "custom-skill"]
 
-[prompt_templates.my-template]
+[prompt_modes.my-mode]
 skills = ["a", "b", "c"]
 ```
 
-Config-defined templates merge with defaults: defined names replace their default counterpart, undefined defaults are preserved.
+Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved.
 
 ## Container Startup (entrypoint.sh → ur-tools init-skills)
 
@@ -89,4 +89,4 @@ Claude Code reads ~/.claude/skills/ at session start
 | `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
 | `containers/claude-worker/entrypoint.sh` | Calls `ur-tools init-skills` at container start |
 | `crates/workercmd/tools/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
-| `crates/server/src/process.rs` | Template resolution, injects UR_WORKER_SKILLS env var |
+| `crates/server/src/process.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |
