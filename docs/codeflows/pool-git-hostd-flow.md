@@ -24,7 +24,8 @@ are routed through ur-hostd, which runs on the host with full credential access.
    c. Streams response, collects stderr, checks exit code
    d. Returns `Ok(())` or `Err(stderr + exit code)`
 5. ur-hostd spawns `git clone` on the host with SSH agent access
-6. Slot marked in-use, host-side path returned for Docker volume mount
+6. If `.gitmodules` exists, runs `git submodule update --init --recursive` via hostd
+7. Slot marked in-use, host-side path returned for Docker volume mount
 
 ### Acquire Slot (reuse existing)
 
@@ -35,6 +36,7 @@ are routed through ur-hostd, which runs on the host with full credential access.
    - `git reset --hard origin/master`
    - `git clean -fdx`
 3. Each command goes through `HostdClient::exec_and_check()`
+4. If `.gitmodules` exists, runs `git submodule update --init --recursive` via hostd
 4. Slot marked in-use on success
 
 ### Release Slot
