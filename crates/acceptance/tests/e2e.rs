@@ -704,7 +704,13 @@ fn e2e_rag_search() {
         // ---- (5) ur rag search — search indexed docs ----
         let search_output = run_cmd(
             &ur,
-            &["rag", "search", "container management", "--language", "rust"],
+            &[
+                "rag",
+                "search",
+                "container management",
+                "--language",
+                "rust",
+            ],
             &env,
         );
         assert!(

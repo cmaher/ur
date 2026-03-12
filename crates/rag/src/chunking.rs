@@ -99,7 +99,7 @@ mod tests {
         fs::write(dir.path().join("readme.txt"), "not markdown").unwrap();
         fs::write(
             dir.path().join("doc.md"),
-            &"Some markdown content. ".repeat(30),
+            "Some markdown content. ".repeat(30),
         )
         .unwrap();
 
@@ -112,10 +112,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let result = read_and_chunk_docs(dir.path());
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No markdown files"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No markdown files")
+        );
     }
 
     #[test]
@@ -125,7 +127,7 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
         fs::write(
             sub.join("nested.md"),
-            &"Nested document content here. ".repeat(30),
+            "Nested document content here. ".repeat(30),
         )
         .unwrap();
 
@@ -139,11 +141,7 @@ mod tests {
     fn skips_empty_markdown_files() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("empty.md"), "   \n\n  ").unwrap();
-        fs::write(
-            dir.path().join("real.md"),
-            &"Real content here. ".repeat(30),
-        )
-        .unwrap();
+        fs::write(dir.path().join("real.md"), "Real content here. ".repeat(30)).unwrap();
 
         let chunks = read_and_chunk_docs(dir.path()).unwrap();
         assert!(chunks.iter().all(|c| c.source_file == "real.md"));

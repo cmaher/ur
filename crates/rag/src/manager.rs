@@ -90,11 +90,8 @@ impl RagManager {
                 payload.insert("source_file", chunk.source_file.as_str());
                 payload.insert("language", language);
 
-                let point = PointStruct::new(
-                    Uuid::new_v4().to_string(),
-                    embedding.clone(),
-                    payload,
-                );
+                let point =
+                    PointStruct::new(Uuid::new_v4().to_string(), embedding.clone(), payload);
                 points.push(point);
             }
 
@@ -253,7 +250,7 @@ mod tests {
 
     #[test]
     fn extract_string_from_payload() {
-        use qdrant_client::qdrant::{value::Kind, Value};
+        use qdrant_client::qdrant::{Value, value::Kind};
         let mut payload = std::collections::HashMap::new();
         payload.insert(
             "text".to_string(),

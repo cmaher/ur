@@ -31,7 +31,10 @@ pub fn generate_docs(config_dir: &Path) -> Result<()> {
         .status()
         .context("failed to run cargo-docs-md collect-sources")?;
     if !collect.success() {
-        bail!("cargo-docs-md collect-sources failed (exit code: {:?})", collect.code());
+        bail!(
+            "cargo-docs-md collect-sources failed (exit code: {:?})",
+            collect.code()
+        );
     }
     info!("collect-sources completed");
 
