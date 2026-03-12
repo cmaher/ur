@@ -1,0 +1,18 @@
+[package]
+name = "rag"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic"] }
+qdrant-client = "1"
+text-splitter = { version = "0.18", features = ["markdown"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["rag"] }
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
