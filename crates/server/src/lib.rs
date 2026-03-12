@@ -12,6 +12,7 @@ pub mod process;
 pub mod proxy;
 pub mod registry;
 pub mod run_opts_builder;
+pub mod strategy;
 pub mod stream;
 
 pub use config::Config;
@@ -19,4 +20,5 @@ pub use hostd_client::HostdClient;
 pub use pool::RepoPoolManager;
 pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;
+pub use strategy::WorkerStrategy;
 pub use registry::RepoRegistry;

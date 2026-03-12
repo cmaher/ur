@@ -123,30 +123,29 @@ impl PromptModesConfig {
         let value: toml::Value =
             toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
 
-        match value.get("prompt_modes") {
-            Some(section) => {
-                let raw: RawPromptModes = section
-                    .clone()
-                    .try_into()
-                    .map_err(|e| format!("invalid prompt_modes config: {e}"))?;
-                let mut modes = default_prompt_modes();
-                let mut strategies = HashMap::new();
-                strategies.insert("code".into(), WorkerStrategy::Code);
-                strategies.insert("design".into(), WorkerStrategy::Design);
-                for (name, entry) in raw.modes {
-                    let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
-                        format!(
-                            "invalid base '{}' for prompt mode '{}': must be 'code' or 'design'",
-                            entry.base, name
-                        )
-                    })?;
-                    strategies.insert(name.clone(), strategy);
-                    modes.insert(name, entry.skills);
-                }
-                Ok(Self { modes, strategies })
-            }
-            None => Ok(Self::default()),
+        let Some(section) = value.get("prompt_modes") else {
+            return Ok(Self::default());
+        };
+
+        let raw: RawPromptModes = section
+            .clone()
+            .try_into()
+            .map_err(|e| format!("invalid prompt_modes config: {e}"))?;
+        let mut modes = default_prompt_modes();
+        let mut strategies = HashMap::new();
+        strategies.insert("code".into(), WorkerStrategy::Code);
+        strategies.insert("design".into(), WorkerStrategy::Design);
+        for (name, entry) in raw.modes {
+            let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
+                format!(
+                    "invalid base '{}' for prompt mode '{}': must be 'code' or 'design'",
+                    entry.base, name
+                )
+            })?;
+            strategies.insert(name.clone(), strategy);
+            modes.insert(name, entry.skills);
         }
+        Ok(Self { modes, strategies })
     }
 
     /// Resolve skills for a launch request.
