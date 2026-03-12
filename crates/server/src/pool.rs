@@ -313,6 +313,7 @@ mod tests {
                 pool_limit,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
+                mounts: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {
@@ -447,6 +448,7 @@ mod tests {
                 pool_limit: 10,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
+                mounts: Vec::new(),
             },
         );
         let mgr = RepoPoolManager {

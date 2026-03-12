@@ -209,6 +209,8 @@ pub struct ProcessConfig {
     pub project_key: String,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
+    /// Optional git hooks directory template string from project config.
+    pub git_hooks_dir: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -360,6 +362,7 @@ impl ProcessManager {
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
         .add_credentials(&self.host_config_dir)?
+        .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_env_vars(env_vars)
         .build();
 
