@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use container::RunOpts;
-use ur_config::{ResolvedTemplatePath, resolve_template_path};
+use ur_config::{MountConfig, ResolvedTemplatePath, resolve_template_path};
 
 use crate::process::ensure_file_exists;
 
@@ -123,6 +123,36 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add project-configured volume mounts.
+    ///
+    /// Each mount entry has a template source (resolved to a host path) and an absolute
+    /// container destination. Only `%URCONFIG%` and absolute paths are supported as sources
+    /// (`%PROJECT%` is rejected at config load time).
+    pub fn add_mounts(
+        mut self,
+        mounts: &[MountConfig],
+        host_config_dir: &Path,
+    ) -> Result<Self, String> {
+        for mount in mounts {
+            let resolved = resolve_template_path(&mount.source, host_config_dir)
+                .map_err(|e| format!("failed to resolve mount source '{}': {e}", mount.source))?;
+            match resolved {
+                ResolvedTemplatePath::HostPath(host_path) => {
+                    self.volumes
+                        .push((host_path, PathBuf::from(&mount.destination)));
+                }
+                ResolvedTemplatePath::ProjectRelative(_) => {
+                    return Err(format!(
+                        "mount source '{}' resolved to a project-relative path, \
+                         which is not supported for mounts",
+                        mount.source
+                    ));
+                }
+            }
+        }
+        Ok(self)
+    }
+
     /// Add environment variables to the container.
     pub fn add_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars.extend(env_vars);
@@ -239,6 +269,75 @@ mod tests {
         assert!(opts.port_maps.is_empty());
         assert!(opts.command.is_empty());
         assert!(opts.add_hosts.is_empty());
+    }
+
+    #[test]
+    fn add_mounts_empty_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_mounts(&[], Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+    }
+
+    #[test]
+    fn add_mounts_absolute_source() {
+        let mounts = vec![MountConfig {
+            source: "/host/tickets".into(),
+            destination: "/workspace/.tickets".into(),
+        }];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_mounts(&mounts, Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/tickets"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/workspace/.tickets"));
+    }
+
+    #[test]
+    fn add_mounts_urconfig_source() {
+        let mounts = vec![MountConfig {
+            source: "%URCONFIG%/shared-data".into(),
+            destination: "/var/data".into(),
+        }];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_mounts(&mounts, Path::new("/home/user/.ur"))
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(
+            opts.volumes[0].0,
+            PathBuf::from("/home/user/.ur/shared-data")
+        );
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/data"));
+    }
+
+    #[test]
+    fn add_mounts_multiple() {
+        let mounts = vec![
+            MountConfig {
+                source: "/host/a".into(),
+                destination: "/container/a".into(),
+            },
+            MountConfig {
+                source: "/host/b".into(),
+                destination: "/container/b".into(),
+            },
+        ];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_mounts(&mounts, Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 2);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/a"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/container/a"));
+        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/b"));
+        assert_eq!(opts.volumes[1].1, PathBuf::from("/container/b"));
     }
 
     #[test]

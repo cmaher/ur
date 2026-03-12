@@ -2,6 +2,67 @@ mod template_path;
 
 pub use template_path::{ResolvedTemplatePath, resolve_template_path};
 
+/// A parsed mount configuration entry: host source -> container destination.
+///
+/// Source supports `%URCONFIG%/...` template variables or absolute paths.
+/// `%PROJECT%` is not supported for mount sources — mounts are for paths
+/// outside the project repo (project-relative paths are already accessible
+/// via the workspace mount).
+///
+/// Destination must be an absolute container path (e.g., `/workspace/.tickets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountConfig {
+    /// Template path for the host-side source directory.
+    pub source: String,
+    /// Absolute container-side destination path.
+    pub destination: String,
+}
+
+/// Parse a mount string in `"source:destination"` format.
+///
+/// Splits on the first `:` character. Validates that:
+/// - The source is a valid template path (but not `%PROJECT%`)
+/// - The destination is an absolute path (starts with `/`)
+fn parse_mount_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Result<MountConfig> {
+    let colon_pos = raw.find(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "project '{project_key}': mounts[{index}]: expected 'source:destination' format, got: {raw}"
+        )
+    })?;
+
+    let source = &raw[..colon_pos];
+    let destination = &raw[colon_pos + 1..];
+
+    if source.is_empty() {
+        anyhow::bail!("project '{project_key}': mounts[{index}]: source must not be empty");
+    }
+    if destination.is_empty() {
+        anyhow::bail!("project '{project_key}': mounts[{index}]: destination must not be empty");
+    }
+
+    // Validate source template — must not use %PROJECT%
+    template_path::validate_template_str(source)
+        .map_err(|e| anyhow::anyhow!("project '{project_key}': mounts[{index}]: source: {e}"))?;
+    if source.starts_with("%PROJECT%") {
+        anyhow::bail!(
+            "project '{project_key}': mounts[{index}]: source must not use %PROJECT% \
+             (project-relative paths are already accessible via the workspace mount)"
+        );
+    }
+
+    // Validate destination is absolute
+    if !destination.starts_with('/') {
+        anyhow::bail!(
+            "project '{project_key}': mounts[{index}]: destination must be an absolute path, got: {destination}"
+        );
+    }
+
+    Ok(MountConfig {
+        source: source.to_string(),
+        destination: destination.to_string(),
+    })
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -196,11 +257,11 @@ pub struct ProjectConfig {
     /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
     pub git_hooks_dir: Option<String>,
-    /// Additional volume mount paths for this project.
-    /// Each entry is a template path string supporting `%PROJECT%/...`, `%URCONFIG%/...`,
-    /// or absolute paths. Validated at config load time; resolved at use time via
-    /// [`resolve_template_path`].
-    pub mounts: Vec<String>,
+    /// Additional volume mounts for this project.
+    /// Each entry maps a host-side source to a container-side destination.
+    /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
+    /// Parsed from `"source:destination"` strings in TOML.
+    pub mounts: Vec<MountConfig>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -315,7 +376,12 @@ impl Config {
                     key: key.clone(),
                     hostexec: raw_proj.hostexec,
                     git_hooks_dir: raw_proj.git_hooks_dir,
-                    mounts: raw_proj.mounts,
+                    mounts: raw_proj
+                        .mounts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| parse_mount_entry(&key, i, m))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
                 };
                 Ok((key, resolved))
             })
@@ -343,10 +409,7 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
     }
-    for (i, mount) in raw_proj.mounts.iter().enumerate() {
-        template_path::validate_template_str(mount)
-            .map_err(|e| anyhow::anyhow!("project '{}': mounts[{}]: {}", key, i, e))?;
-    }
+    // Mount validation is handled by parse_mount_entry during config loading.
     Ok(())
 }
 
@@ -723,40 +786,104 @@ repo = "git@github.com:cmaher/ur.git"
     }
 
     #[test]
-    fn mounts_parses_multiple_entries() {
+    fn mounts_parses_source_destination_format() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
-mounts = ["%PROJECT%/.cache", "%URCONFIG%/shared-data", "/opt/tools"]
+mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
 "#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].mounts.len(), 2);
         assert_eq!(
-            cfg.projects["ur"].mounts,
-            vec!["%PROJECT%/.cache", "%URCONFIG%/shared-data", "/opt/tools"]
+            cfg.projects["ur"].mounts[0],
+            MountConfig {
+                source: "%URCONFIG%/shared-data".into(),
+                destination: "/var/data".into(),
+            }
+        );
+        assert_eq!(
+            cfg.projects["ur"].mounts[1],
+            MountConfig {
+                source: "/opt/tools".into(),
+                destination: "/workspace/.tools".into(),
+            }
         );
     }
 
     #[test]
-    fn mounts_rejects_invalid_variable() {
+    fn mounts_rejects_missing_colon() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
-mounts = ["%PROJECT%/.cache", "%INVALID%/bad"]
+mounts = ["/opt/tools"]
 "#,
         )
         .unwrap();
         let err = Config::load_from(tmp.path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("mounts[1]"), "{msg}");
+        assert!(msg.contains("mounts[0]"), "{msg}");
+        assert!(msg.contains("source:destination"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_rejects_project_relative_source() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["%PROJECT%/.cache:/workspace/.cache"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[0]"), "{msg}");
+        assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_rejects_relative_destination() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["/opt/tools:relative/path"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[0]"), "{msg}");
+        assert!(msg.contains("absolute path"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_rejects_invalid_source_variable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["%INVALID%/bad:/workspace/bad"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("unrecognized template variable"), "{msg}");
-        assert!(msg.contains("project 'ur'"), "{msg}");
     }
 }

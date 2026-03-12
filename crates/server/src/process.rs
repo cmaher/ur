@@ -211,6 +211,8 @@ pub struct ProcessConfig {
     pub skills: Vec<String>,
     /// Optional git hooks directory template string from project config.
     pub git_hooks_dir: Option<String>,
+    /// Additional volume mounts from project config (source:destination pairs).
+    pub mounts: Vec<ur_config::MountConfig>,
 }
 
 /// Orchestrates the full lifecycle of agent processes:
@@ -362,6 +364,7 @@ impl ProcessManager {
         .add_workspace(&config.workspace_dir)
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
+        .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_env_vars(env_vars)
         .build();
 
