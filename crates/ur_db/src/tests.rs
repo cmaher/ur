@@ -7,7 +7,8 @@ fn populated_db() -> SchemaManager {
 
     // === Tickets ===
     // Initiative
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
             "ur.o79g", "initiative", "open", 1, "",
             "Foundational State & Tickets",
@@ -15,10 +16,13 @@ fn populated_db() -> SchemaManager {
             "2026-03-10T10:00:00Z", "2026-03-10T10:00:00Z"
         ]]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert initiative");
+    "#,
+    )
+    .expect("insert initiative");
 
     // Project
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
             "ur.o79g.0", "project", "open", 1, "ur.o79g",
             "CozoDB Integration",
@@ -26,10 +30,13 @@ fn populated_db() -> SchemaManager {
             "2026-03-10T11:00:00Z", "2026-03-10T11:00:00Z"
         ]]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert project");
+    "#,
+    )
+    .expect("insert project");
 
     // Epic A: Schema Design
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
             "ur.o79g.0.a", "epic", "open", 2, "ur.o79g.0",
             "Schema Design",
@@ -37,10 +44,13 @@ fn populated_db() -> SchemaManager {
             "2026-03-11T09:00:00Z", "2026-03-11T09:00:00Z"
         ]]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert epic A");
+    "#,
+    )
+    .expect("insert epic A");
 
     // Epic A children
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [
             ["ur.o79g.0.a.0", "task", "closed", 2, "ur.o79g.0.a",
              "Define ticket relation", "Create the ticket stored relation.",
@@ -56,10 +66,13 @@ fn populated_db() -> SchemaManager {
              "2026-03-12T10:00:00Z", "2026-03-12T10:00:00Z"]
         ]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert epic A children");
+    "#,
+    )
+    .expect("insert epic A children");
 
     // Epic B: Query Validation
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
             "ur.o79g.0.b", "epic", "open", 2, "ur.o79g.0",
             "Query Validation",
@@ -67,10 +80,13 @@ fn populated_db() -> SchemaManager {
             "2026-03-11T10:00:00Z", "2026-03-11T10:00:00Z"
         ]]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert epic B");
+    "#,
+    )
+    .expect("insert epic B");
 
     // Epic B children
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [
             ["ur.o79g.0.b.0", "task", "open", 2, "ur.o79g.0.b",
              "Dispatchable ticket query", "Find ready-to-dispatch children of an epic.",
@@ -83,10 +99,13 @@ fn populated_db() -> SchemaManager {
              "2026-03-11T10:40:00Z", "2026-03-11T10:40:00Z"]
         ]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).expect("insert epic B children");
+    "#,
+    )
+    .expect("insert epic B children");
 
     // === Metadata ===
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[ticket_id, key, value] <- [
             ["ur.o79g", "assignee", "christian"],
             ["ur.o79g.0.a", "assignee", "christian"],
@@ -99,11 +118,14 @@ fn populated_db() -> SchemaManager {
             ["ur.o79g.0.b.1", "tag", "graph"]
         ]
         :put ticket_meta {ticket_id, key => value}
-    "#).expect("insert metadata");
+    "#,
+    )
+    .expect("insert metadata");
 
     // === Blocking dependencies ===
     // Cross-epic: schema definition blocks query validation tasks
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[blocker_id, blocked_id] <- [
             ["ur.o79g.0.a.0", "ur.o79g.0.a.1"],
             ["ur.o79g.0.a.1", "ur.o79g.0.a.2"],
@@ -111,19 +133,25 @@ fn populated_db() -> SchemaManager {
             ["ur.o79g.0.a.2", "ur.o79g.0.b.1"]
         ]
         :put blocks {blocker_id, blocked_id}
-    "#).expect("insert blocks");
+    "#,
+    )
+    .expect("insert blocks");
 
     // === Soft relations ===
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[left_id, right_id] <- [
             ["ur.o79g.0.a.3", "ur.o79g.0.a.0"],
             ["ur.o79g.0.b.0", "ur.o79g.0.b.1"]
         ]
         :put relates_to {left_id, right_id}
-    "#).expect("insert relates_to");
+    "#,
+    )
+    .expect("insert relates_to");
 
     // === Activity entries ===
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, ticket_id, timestamp, author, message] <- [
             ["act.001", "ur.o79g.0.a.0", "2026-03-11T14:00:00Z", "agent-1",
              "Created ticket relation with all fields."],
@@ -135,10 +163,13 @@ fn populated_db() -> SchemaManager {
              "Need to research CozoDB's built-in graph algorithms."]
         ]
         :put activity {id => ticket_id, timestamp, author, message}
-    "#).expect("insert activity");
+    "#,
+    )
+    .expect("insert activity");
 
     // === Activity metadata ===
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[activity_id, key, value] <- [
             ["act.001", "commit", "abc123"],
             ["act.002", "commit", "def456"],
@@ -146,7 +177,9 @@ fn populated_db() -> SchemaManager {
             ["act.003", "status_change", "open->in_progress"]
         ]
         :put activity_meta {activity_id, key => value}
-    "#).expect("insert activity_meta");
+    "#,
+    )
+    .expect("insert activity_meta");
 
     mgr
 }
@@ -159,7 +192,9 @@ fn schema_creation_succeeds() {
 #[test]
 fn ticket_relation_stores_and_retrieves() {
     let mgr = populated_db();
-    let result = mgr.run("?[id, title, type] := *ticket{id, title, type}").unwrap();
+    let result = mgr
+        .run("?[id, title, type] := *ticket{id, title, type}")
+        .unwrap();
     // 12 tickets total: 1 initiative + 1 project + 2 epics + 4 epic-A children + 3 epic-B children
     assert_eq!(result.rows.len(), 11);
 }
@@ -201,7 +236,9 @@ fn ticket_meta_stores_and_queries() {
 
     // Find all tickets tagged with a specific tag
     let result = mgr
-        .run(r#"?[ticket_id] := *ticket_meta{ticket_id, key, value}, key = "tag", value = "schema""#)
+        .run(
+            r#"?[ticket_id] := *ticket_meta{ticket_id, key, value}, key = "tag", value = "schema""#,
+        )
         .unwrap();
     assert_eq!(result.rows.len(), 1);
 }
@@ -256,9 +293,7 @@ fn activity_stores_and_retrieves() {
 
     // Activity for a specific ticket
     let result = mgr
-        .run(
-            r#"?[id, message] := *activity{id, ticket_id, message}, ticket_id = "ur.o79g.0.a.0""#,
-        )
+        .run(r#"?[id, message] := *activity{id, ticket_id, message}, ticket_id = "ur.o79g.0.a.0""#)
         .unwrap();
     assert_eq!(
         result.rows.len(),
@@ -290,9 +325,7 @@ fn ticket_types_are_diverse() {
     let mgr = populated_db();
 
     // Verify we have multiple ticket types
-    let result = mgr
-        .run("?[type] := *ticket{type}")
-        .unwrap();
+    let result = mgr.run("?[type] := *ticket{type}").unwrap();
     let types: Vec<String> = result
         .rows
         .iter()
@@ -310,9 +343,7 @@ fn ticket_types_are_diverse() {
 fn ticket_statuses_are_diverse() {
     let mgr = populated_db();
 
-    let result = mgr
-        .run("?[status] := *ticket{status}")
-        .unwrap();
+    let result = mgr.run("?[status] := *ticket{status}").unwrap();
     let statuses: Vec<String> = result
         .rows
         .iter()
@@ -328,14 +359,17 @@ fn duplicate_ticket_id_updates_instead_of_duplicating() {
     let mgr = populated_db();
 
     // Update a ticket's title via :put (upsert)
-    mgr.run(r#"
+    mgr.run(
+        r#"
         ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
             "ur.o79g.0.a.0", "task", "closed", 2, "ur.o79g.0.a",
             "Define ticket relation (UPDATED)", "Create the ticket stored relation.",
             "2026-03-11T09:30:00Z", "2026-03-12T08:00:00Z"
         ]]
         :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 
     // Total count should remain 11
     let result = mgr.run("?[id] := *ticket{id}").unwrap();
@@ -528,9 +562,7 @@ fn epic_rollup_no_children() {
     let qm = query_mgr();
 
     // A ticket with no children should report all_closed = true (vacuously true)
-    assert!(qm
-        .epic_all_children_closed("ur.o79g.0.a.0")
-        .unwrap());
+    assert!(qm.epic_all_children_closed("ur.o79g.0.a.0").unwrap());
 }
 
 #[test]
@@ -538,9 +570,10 @@ fn cycle_detection_no_cycle() {
     let qm = query_mgr();
 
     // Adding a.3 -> b.0 would not create a cycle (a.3 has no blockers, b.0 doesn't reach a.3)
-    assert!(!qm
-        .would_create_cycle("ur.o79g.0.a.3", "ur.o79g.0.b.0")
-        .unwrap());
+    assert!(
+        !qm.would_create_cycle("ur.o79g.0.a.3", "ur.o79g.0.b.0")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -548,9 +581,10 @@ fn cycle_detection_direct_reverse() {
     let qm = query_mgr();
 
     // a.0 -> a.1 exists. Adding a.1 -> a.0 would create a direct cycle.
-    assert!(qm
-        .would_create_cycle("ur.o79g.0.a.1", "ur.o79g.0.a.0")
-        .unwrap());
+    assert!(
+        qm.would_create_cycle("ur.o79g.0.a.1", "ur.o79g.0.a.0")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -558,9 +592,10 @@ fn cycle_detection_transitive() {
     let qm = query_mgr();
 
     // Chain: a.0 -> a.1 -> a.2. Adding a.2 -> a.0 would create a transitive cycle.
-    assert!(qm
-        .would_create_cycle("ur.o79g.0.a.2", "ur.o79g.0.a.0")
-        .unwrap());
+    assert!(
+        qm.would_create_cycle("ur.o79g.0.a.2", "ur.o79g.0.a.0")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -568,9 +603,10 @@ fn cycle_detection_cross_epic_transitive() {
     let qm = query_mgr();
 
     // Chain: a.0 -> a.1 -> a.2 -> b.1. Adding b.1 -> a.0 would create a cross-epic cycle.
-    assert!(qm
-        .would_create_cycle("ur.o79g.0.b.1", "ur.o79g.0.a.0")
-        .unwrap());
+    assert!(
+        qm.would_create_cycle("ur.o79g.0.b.1", "ur.o79g.0.a.0")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -578,9 +614,10 @@ fn cycle_detection_self_loop() {
     let qm = query_mgr();
 
     // Self-loop should always be detected as a cycle
-    assert!(qm
-        .would_create_cycle("ur.o79g.0.a.0", "ur.o79g.0.a.0")
-        .unwrap());
+    assert!(
+        qm.would_create_cycle("ur.o79g.0.a.0", "ur.o79g.0.a.0")
+            .unwrap()
+    );
 }
 
 #[test]

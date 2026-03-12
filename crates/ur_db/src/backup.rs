@@ -189,16 +189,14 @@ mod tests {
         let db_path = tmp.path().join("primary.db");
         let backup_path = tmp.path().join("backup.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         let bm = BackupManager::new(mgr);
         bm.backup(&backup_path).expect("backup should succeed");
 
         // Open the backup and verify data is intact
-        let backup_mgr =
-            SchemaManager::open_sqlite(&backup_path).expect("open backup db");
+        let backup_mgr = SchemaManager::open_sqlite(&backup_path).expect("open backup db");
         let result = backup_mgr
             .run("?[id, title] := *ticket{id, title} :order id")
             .unwrap();
@@ -212,19 +210,31 @@ mod tests {
         let meta = backup_mgr
             .run("?[ticket_id, key, value] := *ticket_meta{ticket_id, key, value}")
             .unwrap();
-        assert_eq!(meta.rows.len(), 3, "backup should contain all 3 metadata entries");
+        assert_eq!(
+            meta.rows.len(),
+            3,
+            "backup should contain all 3 metadata entries"
+        );
 
         // Verify blocks survived
         let blocks = backup_mgr
             .run("?[blocker_id, blocked_id] := *blocks{blocker_id, blocked_id}")
             .unwrap();
-        assert_eq!(blocks.rows.len(), 1, "backup should contain the blocks edge");
+        assert_eq!(
+            blocks.rows.len(),
+            1,
+            "backup should contain the blocks edge"
+        );
 
         // Verify activity survived
         let activity = backup_mgr
             .run("?[id, message] := *activity{id, message}")
             .unwrap();
-        assert_eq!(activity.rows.len(), 1, "backup should contain the activity entry");
+        assert_eq!(
+            activity.rows.len(),
+            1,
+            "backup should contain the activity entry"
+        );
     }
 
     /// Verify that query results are identical between the original and backup.
@@ -234,8 +244,7 @@ mod tests {
         let db_path = tmp.path().join("primary.db");
         let backup_path = tmp.path().join("backup.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         // Run queries on original
@@ -248,8 +257,7 @@ mod tests {
         let bm = BackupManager::new(mgr);
         bm.backup(&backup_path).expect("backup should succeed");
 
-        let backup_mgr =
-            SchemaManager::open_sqlite(&backup_path).expect("open backup db");
+        let backup_mgr = SchemaManager::open_sqlite(&backup_path).expect("open backup db");
         let backup_qm = QueryManager::new(backup_mgr);
         let backup_dispatch = backup_qm.dispatchable_tickets("ur.001").unwrap();
         let backup_blockers = backup_qm.transitive_blockers("ur.001.0").unwrap();
@@ -272,15 +280,17 @@ mod tests {
         let db_path = tmp.path().join("primary.db");
         let backup_path = tmp.path().join("backup.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         let bm = BackupManager::new(mgr);
-        bm.backup(&backup_path).expect("first backup should succeed");
+        bm.backup(&backup_path)
+            .expect("first backup should succeed");
 
         // Second backup to the same path should fail (data already exists)
-        let err = bm.backup(&backup_path).expect_err("second backup should fail");
+        let err = bm
+            .backup(&backup_path)
+            .expect_err("second backup should fail");
         assert!(
             err.contains("data exists"),
             "error should mention existing data, got: {err}"
@@ -300,15 +310,13 @@ mod tests {
         let tmp = TempDir::new().expect("create temp dir");
         let db_path = tmp.path().join("primary.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         // Take a backup
         let backup_path_1 = tmp.path().join("backup1.db");
         let bm = BackupManager::new(mgr.clone());
-        bm.backup(&backup_path_1)
-            .expect("backup should succeed");
+        bm.backup(&backup_path_1).expect("backup should succeed");
 
         // Write more data AFTER the backup
         mgr.run(
@@ -325,11 +333,14 @@ mod tests {
 
         // Verify the source DB has the new data
         let source_count = mgr.run("?[id] := *ticket{id}").unwrap();
-        assert_eq!(source_count.rows.len(), 5, "source should have 5 tickets now");
+        assert_eq!(
+            source_count.rows.len(),
+            5,
+            "source should have 5 tickets now"
+        );
 
         // Verify the backup only has the original 4 tickets
-        let backup_mgr =
-            SchemaManager::open_sqlite(&backup_path_1).expect("open backup");
+        let backup_mgr = SchemaManager::open_sqlite(&backup_path_1).expect("open backup");
         let backup_count = backup_mgr.run("?[id] := *ticket{id}").unwrap();
         assert_eq!(
             backup_count.rows.len(),
@@ -342,8 +353,7 @@ mod tests {
         bm.backup(&backup_path_2)
             .expect("second backup should succeed");
 
-        let backup_mgr_2 =
-            SchemaManager::open_sqlite(&backup_path_2).expect("open second backup");
+        let backup_mgr_2 = SchemaManager::open_sqlite(&backup_path_2).expect("open second backup");
         let backup_count_2 = backup_mgr_2.run("?[id] := *ticket{id}").unwrap();
         assert_eq!(
             backup_count_2.rows.len(),
@@ -360,8 +370,7 @@ mod tests {
         let db_path = tmp.path().join("primary.db");
         let backup_path = tmp.path().join("backup.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         let bm = BackupManager::new(mgr.clone());
@@ -384,13 +393,17 @@ mod tests {
 
         // Delete old backup and create a new one
         std::fs::remove_file(&backup_path).expect("delete old backup");
-        bm.backup(&backup_path).expect("second backup after rotation");
+        bm.backup(&backup_path)
+            .expect("second backup after rotation");
 
         // Verify the rotated backup has all data including the new ticket
-        let backup_mgr =
-            SchemaManager::open_sqlite(&backup_path).expect("open rotated backup");
+        let backup_mgr = SchemaManager::open_sqlite(&backup_path).expect("open rotated backup");
         let count = backup_mgr.run("?[id] := *ticket{id}").unwrap();
-        assert_eq!(count.rows.len(), 5, "rotated backup should have all 5 tickets");
+        assert_eq!(
+            count.rows.len(),
+            5,
+            "rotated backup should have all 5 tickets"
+        );
     }
 
     /// Verify that SQLite-backed databases persist across process restarts
@@ -402,8 +415,7 @@ mod tests {
 
         // Create and populate
         {
-            let mgr = SchemaManager::create_with_sqlite(&db_path)
-                .expect("create sqlite db");
+            let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
             populate_sample_data(&mgr);
 
             let count = mgr.run("?[id] := *ticket{id}").unwrap();
@@ -413,8 +425,7 @@ mod tests {
 
         // Reopen the same file
         {
-            let mgr =
-                SchemaManager::open_sqlite(&db_path).expect("reopen sqlite db");
+            let mgr = SchemaManager::open_sqlite(&db_path).expect("reopen sqlite db");
             let count = mgr.run("?[id] := *ticket{id}").unwrap();
             assert_eq!(count.rows.len(), 4, "data should persist after reopen");
 
@@ -434,23 +445,20 @@ mod tests {
         let restore_path = tmp.path().join("restored.db");
 
         // Create, populate, and backup
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         let bm = BackupManager::new(mgr);
         bm.backup(&backup_path).expect("backup");
 
         // Restore into a fresh database
-        let fresh_db = cozo::DbInstance::new(
-            "sqlite",
-            restore_path.to_str().unwrap(),
-            "",
-        )
-        .expect("create fresh db for restore");
+        let fresh_db = cozo::DbInstance::new("sqlite", restore_path.to_str().unwrap(), "")
+            .expect("create fresh db for restore");
         let fresh_mgr = SchemaManager::new(fresh_db);
         let restore_bm = BackupManager::new(fresh_mgr.clone());
-        restore_bm.restore(&backup_path).expect("restore should succeed");
+        restore_bm
+            .restore(&backup_path)
+            .expect("restore should succeed");
 
         // Verify restored data
         let count = fresh_mgr.run("?[id] := *ticket{id}").unwrap();
@@ -469,8 +477,7 @@ mod tests {
         let db_path = tmp.path().join("primary.db");
         let backup_path = tmp.path().join("backup.db");
 
-        let mgr =
-            SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
+        let mgr = SchemaManager::create_with_sqlite(&db_path).expect("create sqlite db");
         populate_sample_data(&mgr);
 
         let bm = BackupManager::new(mgr.clone());

@@ -129,11 +129,7 @@ impl QueryManager {
     /// create a cycle in the dependency DAG.
     ///
     /// Returns true if a cycle would be created (i.e., the edge should be rejected).
-    pub fn would_create_cycle(
-        &self,
-        blocker_id: &str,
-        blocked_id: &str,
-    ) -> Result<bool, String> {
+    pub fn would_create_cycle(&self, blocker_id: &str, blocked_id: &str) -> Result<bool, String> {
         // A cycle exists if blocked_id can already transitively reach blocker_id
         // through existing edges, because adding blocker_id -> blocked_id would
         // then close the loop.
@@ -194,10 +190,7 @@ impl QueryManager {
     }
 
     /// Find all tickets that have a specific metadata key (any value).
-    pub fn tickets_with_metadata_key(
-        &self,
-        key: &str,
-    ) -> Result<Vec<MetadataMatchTicket>, String> {
+    pub fn tickets_with_metadata_key(&self, key: &str) -> Result<Vec<MetadataMatchTicket>, String> {
         let script = format!(
             r#"
             ?[id, title, type, status] :=
