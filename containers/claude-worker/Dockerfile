@@ -19,10 +19,6 @@ ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 COPY tk /usr/local/bin/tk
 RUN chmod +x /usr/local/bin/tk
 
-# Wrapper that delegates to the real claude with sandboxed permissions
-COPY claude-wrapper.sh /usr/local/bin/claude
-RUN chmod +x /usr/local/bin/claude
-
 RUN mkdir -p /workspace && chown worker:worker /workspace
 
 # Bake in minimal Claude Code config to skip onboarding/login prompts.
