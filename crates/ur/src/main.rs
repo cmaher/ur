@@ -121,6 +121,23 @@ enum ProjectCommands {
 enum RagCommands {
     /// Generate Rust documentation for RAG indexing
     Docs,
+    /// Index generated docs into the vector store
+    Index {
+        /// Language to index (default: rust)
+        #[arg(long, default_value = "rust")]
+        language: String,
+    },
+    /// Search indexed documentation
+    Search {
+        /// Search query
+        query: String,
+        /// Language to search (default: rust)
+        #[arg(long, default_value = "rust")]
+        language: String,
+        /// Number of results to return (default: 5)
+        #[arg(long, default_value = "5")]
+        top_k: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -585,6 +602,12 @@ async fn main() -> Result<()> {
         },
         Commands::Rag { command } => match command {
             RagCommands::Docs => rag::generate_docs(&config.config_dir)?,
+            RagCommands::Index { language } => rag::index(port, &language).await?,
+            RagCommands::Search {
+                query,
+                language,
+                top_k,
+            } => rag::search(port, &query, &language, top_k).await?,
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {
