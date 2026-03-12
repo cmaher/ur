@@ -73,6 +73,10 @@ fn default_code_skills() -> Vec<String> {
         "ship".into(),
         "tk:agents".into(),
         "tk:start".into(),
+        "bacon".into(),
+        "green".into(),
+        "cli-design".into(),
+        "reclaude".into(),
         "systematic-debugging".into(),
         "test-driven-development".into(),
         "writing-skills".into(),
@@ -81,7 +85,14 @@ fn default_code_skills() -> Vec<String> {
 
 /// Default skills for the "design" prompt template.
 fn default_design_skills() -> Vec<String> {
-    vec!["tk".into(), "brainstorming".into(), "writing-skills".into()]
+    vec![
+        "tk".into(),
+        "ship".into(),
+        "brainstorming".into(),
+        "cli-design".into(),
+        "reclaude".into(),
+        "writing-skills".into(),
+    ]
 }
 
 /// Returns the hardcoded default prompt templates.
