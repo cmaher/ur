@@ -385,7 +385,12 @@ mod tests {
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
-        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "pr".into(), "list".into()];
+        let args: Vec<String> = vec![
+            "-C".into(),
+            "/some/path/ur".into(),
+            "pr".into(),
+            "list".into(),
+        ];
         let result = mgr
             .run_transform(script, "gh", &args, "/workspace", Some(&ctx))
             .unwrap();
