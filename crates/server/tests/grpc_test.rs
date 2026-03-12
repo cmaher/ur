@@ -80,7 +80,7 @@ fn make_grpc_handler(
         repo_pool_manager.clone(),
         network_manager,
         network_config,
-        ur_server::process::PromptTemplatesConfig::default(),
+        ur_server::process::PromptModesConfig::default(),
     );
     let hostexec_config =
         ur_server::hostexec::HostExecConfigManager::load(Path::new("/nonexistent")).unwrap();

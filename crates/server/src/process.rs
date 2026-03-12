@@ -565,7 +565,7 @@ mod tests {
             repo_pool_manager,
             network_manager,
             network_config,
-            PromptTemplatesConfig::default(),
+            PromptModesConfig::default(),
         );
         (mgr, workspace)
     }
