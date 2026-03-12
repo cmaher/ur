@@ -197,6 +197,8 @@ struct ProcessEntry {
     project_key: String,
     /// Host path to the repo slot (workspace dir or pool slot).
     slot_path: Option<PathBuf>,
+    /// Worker strategy governing slot acquisition and release behavior.
+    strategy: WorkerStrategy,
     container_id: String,
     /// Host-side TCP port the per-agent gRPC server is bound to.
     grpc_port: u16,
@@ -216,6 +218,8 @@ pub struct ProcessConfig {
     pub proxy_hostname: String,
     /// Project key if launched with `--project` (empty string for raw workspace launches).
     pub project_key: String,
+    /// Worker strategy governing slot acquisition and release behavior.
+    pub strategy: WorkerStrategy,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
     /// Optional git hooks directory template string from project config.
@@ -265,6 +269,11 @@ impl ProcessManager {
     /// Resolve skills for a launch request using the configured prompt modes.
     pub fn resolve_skills(&self, mode: &str, skills: &[String]) -> Result<Vec<String>, String> {
         self.prompt_modes.resolve_skills(mode, skills)
+    }
+
+    /// Resolve a mode name to its worker strategy and skill list.
+    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
+        self.prompt_modes.resolve_mode(mode)
     }
 
     /// Generate a new unique agent ID for the given process_id.
@@ -400,6 +409,7 @@ impl ProcessManager {
                     process_id: config.process_id,
                     project_key: config.project_key,
                     slot_path: config.workspace_dir,
+                    strategy: config.strategy,
                     container_id: cid.0.clone(),
                     grpc_port: config.grpc_port,
                     server_handle,
@@ -443,9 +453,13 @@ impl ProcessManager {
                 process_id = entry.process_id,
                 project_key = entry.project_key,
                 slot_path = %slot_path.display(),
+                strategy = entry.strategy.name(),
                 "releasing pool slot"
             );
-            self.repo_pool_manager.release_exclusive(slot_path).await?;
+            entry
+                .strategy
+                .release_slot(&self.repo_pool_manager, slot_path)
+                .await?;
         }
 
         // 3. Unregister from RepoRegistry
@@ -617,6 +631,7 @@ mod tests {
                     process_id: "dup-proc".into(),
                     project_key: String::new(),
                     slot_path: None,
+                    strategy: WorkerStrategy::Code,
                     container_id: "fake-cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
@@ -693,6 +708,7 @@ mod tests {
                     process_id: "test".into(),
                     project_key: "myproject".into(),
                     slot_path: None,
+                    strategy: WorkerStrategy::Code,
                     container_id: "cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,

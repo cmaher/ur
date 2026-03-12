@@ -1,3 +1,7 @@
+use std::path::{Path, PathBuf};
+
+use crate::RepoPoolManager;
+
 /// Worker strategy enum governing mode-specific behavior: skill selection,
 /// slot acquisition, and slot release. Two variants ship initially: `Code`
 /// (exclusive numbered pool slots) and `Design` (shared named slot).
@@ -23,6 +27,36 @@ impl WorkerStrategy {
         match self {
             Self::Code => "code",
             Self::Design => "design",
+        }
+    }
+
+    /// Acquire a pool slot using this strategy's acquisition mode.
+    ///
+    /// - `Code` acquires an exclusive numbered slot via `pool.acquire_exclusive`.
+    /// - `Design` acquires a shared named slot via `pool.acquire_shared("design", ...)`.
+    pub async fn acquire_slot(
+        &self,
+        pool: &RepoPoolManager,
+        project_key: &str,
+    ) -> Result<PathBuf, String> {
+        match self {
+            Self::Code => pool.acquire_exclusive(project_key).await,
+            Self::Design => pool.acquire_shared("design", project_key).await,
+        }
+    }
+
+    /// Release a pool slot using this strategy's release mode.
+    ///
+    /// - `Code` releases the exclusive slot via `pool.release_exclusive`.
+    /// - `Design` is a no-op (shared slots are not tracked).
+    pub async fn release_slot(
+        &self,
+        pool: &RepoPoolManager,
+        slot_path: &Path,
+    ) -> Result<(), String> {
+        match self {
+            Self::Code => pool.release_exclusive(slot_path).await,
+            Self::Design => Ok(()),
         }
     }
 
