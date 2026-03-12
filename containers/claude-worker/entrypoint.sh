@@ -8,8 +8,8 @@ set -e
 mkdir -p ~/.claude
 mkdir -p ~/.local/bin
 
-# Initialize skills from potential-skills based on UR_WORKER_SKILLS env var
-ur-tools init-skills
+# Run all container initialization (skills, git hooks)
+ur-tools init
 
 # Start ur-workerd in background (creates command shims)
 ur-workerd &
