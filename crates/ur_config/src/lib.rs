@@ -161,6 +161,12 @@ pub const DEFAULT_AGENT_PREFIX: &str = "ur-agent-";
 /// Default maximum number of cached repo clones per project.
 pub const DEFAULT_POOL_LIMIT: u32 = 10;
 
+/// Default hostname for the Qdrant vector database on the Docker network.
+pub const DEFAULT_QDRANT_HOSTNAME: &str = "ur-qdrant";
+
+/// Default gRPC port for Qdrant.
+pub const DEFAULT_QDRANT_PORT: u16 = 6334;
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -181,6 +187,7 @@ struct RawConfig {
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
+    rag: Option<RawRagConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -214,6 +221,12 @@ struct RawNetworkConfig {
     agent_prefix: Option<String>,
 }
 
+/// Raw TOML representation for the `[rag]` section.
+#[derive(Debug, Deserialize)]
+struct RawRagConfig {
+    qdrant_hostname: Option<String>,
+}
+
 /// Forward proxy configuration for restricting container network access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
@@ -237,6 +250,13 @@ pub struct NetworkConfig {
     /// Container name prefix for agent containers (default: "ur-agent-").
     /// Agent containers are named `{agent_prefix}{process_id}`.
     pub agent_prefix: String,
+}
+
+/// RAG (Retrieval-Augmented Generation) configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RagConfig {
+    /// Hostname containers use to reach Qdrant via Docker DNS (default: "ur-qdrant").
+    pub qdrant_hostname: String,
 }
 
 /// Resolved project configuration for a single project.
@@ -281,6 +301,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
+    /// RAG system settings (Qdrant vector database).
+    pub rag: RagConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -364,6 +386,17 @@ impl Config {
             },
         };
 
+        let rag = match raw.rag {
+            Some(r) => RagConfig {
+                qdrant_hostname: r
+                    .qdrant_hostname
+                    .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
+            },
+            None => RagConfig {
+                qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
+            },
+        };
+
         let projects = raw
             .projects
             .into_iter()
@@ -395,6 +428,7 @@ impl Config {
             compose_file,
             proxy,
             network,
+            rag,
             projects,
         })
     }
@@ -560,6 +594,34 @@ mod tests {
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
         assert_eq!(cfg.network.agent_prefix, "test-agent-");
+    }
+
+    #[test]
+    fn rag_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
+    }
+
+    #[test]
+    fn rag_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
+    }
+
+    #[test]
+    fn rag_reads_custom_qdrant_hostname() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[rag]\nqdrant_hostname = \"my-qdrant\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, "my-qdrant");
     }
 
     #[test]

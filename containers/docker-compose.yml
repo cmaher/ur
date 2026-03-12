@@ -22,6 +22,15 @@ services:
       - workers
     restart: unless-stopped
 
+  ur-qdrant:
+    image: qdrant/qdrant
+    container_name: {{QDRANT_CONTAINER_NAME}}
+    volumes:
+      - ${UR_CONFIG:-~/.ur}/rag/qdrant:/qdrant/storage
+    networks:
+      - infra
+    restart: unless-stopped
+
   ur-server:
     image: ur-server:latest
     container_name: {{SERVER_CONTAINER_NAME}}
