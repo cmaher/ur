@@ -350,8 +350,7 @@ impl ProcessManager {
         }
 
         // Build RunOpts via the builder
-        let container_name =
-            format!("{}{}", self.network_config.agent_prefix, config.process_id);
+        let container_name = format!("{}{}", self.network_config.agent_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
             config.image_id.clone(),
             container_name,

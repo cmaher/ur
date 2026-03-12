@@ -1,6 +1,6 @@
 mod template_path;
 
-pub use template_path::{resolve_template_path, ResolvedTemplatePath};
+pub use template_path::{ResolvedTemplatePath, resolve_template_path};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -307,16 +307,7 @@ impl Config {
             .projects
             .into_iter()
             .map(|(key, raw_proj)| {
-                if let Some(ref tpl) = raw_proj.git_hooks_dir {
-                    template_path::validate_template_str(tpl).map_err(|e| {
-                        anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e)
-                    })?;
-                }
-                for (i, mount) in raw_proj.mounts.iter().enumerate() {
-                    template_path::validate_template_str(mount).map_err(|e| {
-                        anyhow::anyhow!("project '{}': mounts[{}]: {}", key, i, e)
-                    })?;
-                }
+                validate_project_templates(&key, &raw_proj)?;
                 let resolved = ProjectConfig {
                     name: raw_proj.name.unwrap_or_else(|| key.clone()),
                     repo: raw_proj.repo,
@@ -347,6 +338,18 @@ impl Config {
 pub const SERVER_PID_FILE: &str = "server.pid";
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
+fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
+    if let Some(ref tpl) = raw_proj.git_hooks_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
+    }
+    for (i, mount) in raw_proj.mounts.iter().enumerate() {
+        template_path::validate_template_str(mount)
+            .map_err(|e| anyhow::anyhow!("project '{}': mounts[{}]: {}", key, i, e))?;
+    }
+    Ok(())
+}
+
 pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(val) = std::env::var(UR_CONFIG_ENV) {
         return Ok(PathBuf::from(val));

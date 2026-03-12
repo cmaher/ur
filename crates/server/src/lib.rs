@@ -10,8 +10,8 @@ pub mod logging;
 pub mod pool;
 pub mod process;
 pub mod proxy;
-pub mod run_opts_builder;
 pub mod registry;
+pub mod run_opts_builder;
 pub mod stream;
 
 pub use config::Config;

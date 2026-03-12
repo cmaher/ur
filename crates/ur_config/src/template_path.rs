@@ -70,7 +70,9 @@ pub fn validate_template_str(template: &str) -> anyhow::Result<()> {
         let end = after_start + end;
         let var = &template[start..=end]; // includes both %
         if var != PROJECT_VAR && var != URCONFIG_VAR {
-            anyhow::bail!("unrecognized template variable {var} (recognized: %PROJECT%, %URCONFIG%)");
+            anyhow::bail!(
+                "unrecognized template variable {var} (recognized: %PROJECT%, %URCONFIG%)"
+            );
         }
         search_from = end + 1;
     }
@@ -161,14 +163,20 @@ mod tests {
     fn validate_rejects_unrecognized_variable() {
         let err = validate_template_str("%BADVAR%/hooks").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unrecognized template variable %BADVAR%"), "{msg}");
+        assert!(
+            msg.contains("unrecognized template variable %BADVAR%"),
+            "{msg}"
+        );
     }
 
     #[test]
     fn validate_rejects_unknown_variable_in_middle() {
         let err = validate_template_str("%PROJECT%/foo/%UNKNOWN%/bar").unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unrecognized template variable %UNKNOWN%"), "{msg}");
+        assert!(
+            msg.contains("unrecognized template variable %UNKNOWN%"),
+            "{msg}"
+        );
     }
 
     #[test]

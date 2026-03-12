@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use container::RunOpts;
-use ur_config::{resolve_template_path, ResolvedTemplatePath};
+use ur_config::{ResolvedTemplatePath, resolve_template_path};
 
 use crate::process::ensure_file_exists;
 
@@ -108,14 +108,11 @@ impl RunOptsBuilder {
             ResolvedTemplatePath::HostPath(host_path) => {
                 let container_path = PathBuf::from("/var/ur/git-hooks");
                 self.volumes.push((host_path, container_path));
-                self.env_vars.push((
-                    "UR_GIT_HOOKS_DIR".into(),
-                    "/var/ur/git-hooks".into(),
-                ));
+                self.env_vars
+                    .push(("UR_GIT_HOOKS_DIR".into(), "/var/ur/git-hooks".into()));
             }
             ResolvedTemplatePath::ProjectRelative(rel_path) => {
-                let container_hooks_dir =
-                    PathBuf::from("/workspace").join(&rel_path);
+                let container_hooks_dir = PathBuf::from("/workspace").join(&rel_path);
                 self.env_vars.push((
                     "UR_GIT_HOOKS_DIR".into(),
                     container_hooks_dir.to_string_lossy().into_owned(),
@@ -211,7 +208,7 @@ mod tests {
     fn add_credentials_creates_mount() {
         let tmp = tempfile::tempdir().unwrap();
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_credentials(&tmp.path().to_path_buf())
+            .add_credentials(tmp.path())
             .unwrap()
             .build();
 
@@ -287,10 +284,7 @@ mod tests {
             .build();
 
         assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/opt/git-hooks/myproject")
-        );
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/opt/git-hooks/myproject"));
         assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/git-hooks"));
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
@@ -300,10 +294,7 @@ mod tests {
     #[test]
     fn add_git_hooks_project_relative_no_mount() {
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_git_hooks(
-                &Some("%PROJECT%/.git-hooks".into()),
-                Path::new("/unused"),
-            )
+            .add_git_hooks(&Some("%PROJECT%/.git-hooks".into()), Path::new("/unused"))
             .unwrap()
             .build();
 
