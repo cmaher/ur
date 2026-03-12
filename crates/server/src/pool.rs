@@ -731,4 +731,72 @@ mod tests {
         let _ = mgr.acquire_shared("design", "testproj").await;
         assert!(mgr.in_use.read().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn acquire_shared_returns_same_path_on_subsequent_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        // Both calls target the same named slot — they should produce the same host path.
+        // First call: slot doesn't exist, tries to clone (fails on hostd).
+        let result1 = mgr.acquire_shared("design", "testproj").await;
+        assert!(result1.is_err());
+
+        // Create the slot directory to simulate a successful first clone.
+        let design_slot = workspace.join("pool").join("testproj").join("design");
+        std::fs::create_dir_all(&design_slot).unwrap();
+
+        // Second call: slot exists, tries to reset (fails on hostd), then reclone.
+        let result2 = mgr.acquire_shared("design", "testproj").await;
+        assert!(result2.is_err());
+
+        // Both attempts target the same host path.
+        let expected = mgr.host_slot_path("testproj", "design");
+        assert_eq!(expected, design_slot);
+    }
+
+    #[tokio::test]
+    async fn shared_slots_do_not_consume_exclusive_capacity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 1);
+
+        // Create a shared "design" slot directory
+        let design_slot = workspace.join("pool").join("testproj").join("design");
+        std::fs::create_dir_all(&design_slot).unwrap();
+
+        // Attempt shared acquire (will fail on hostd, but that's fine)
+        let _ = mgr.acquire_shared("design", "testproj").await;
+
+        // scan_slots only counts numeric directories — "design" is ignored
+        let pool_dir = workspace.join("pool").join("testproj");
+        let slots = mgr.scan_slots(&pool_dir).await;
+        assert!(slots.is_empty(), "shared slot should not appear in numeric scan");
+
+        // Exclusive acquire should still be allowed (pool_limit=1, no numeric slots exist)
+        // It will fail on hostd clone, but the error should be a clone error, not pool limit
+        let result = mgr.acquire_exclusive("testproj").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("git clone failed"),
+            "expected clone error (not pool limit), got: {err}"
+        );
+    }
+
+    #[test]
+    fn host_slot_path_works_with_named_slots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        // Named slots use the name directly as the directory
+        assert_eq!(
+            mgr.host_slot_path("testproj", "design"),
+            workspace.join("pool").join("testproj").join("design")
+        );
+        // Numeric slots still work
+        assert_eq!(
+            mgr.host_slot_path("testproj", "0"),
+            workspace.join("pool").join("testproj").join("0")
+        );
+    }
 }
