@@ -673,7 +673,15 @@ fn e2e_design_mode_pool_launch() {
         // ---- (3) Launch first design worker: ur process launch -p <project> -m design ----
         let launch_output = run_cmd(
             &ur,
-            &["process", "launch", "-p", project_key, "-m", "design", ticket_id_1],
+            &[
+                "process",
+                "launch",
+                "-p",
+                project_key,
+                "-m",
+                "design",
+                ticket_id_1,
+            ],
             &env,
         );
         assert!(
@@ -734,7 +742,15 @@ fn e2e_design_mode_pool_launch() {
         // ---- (7) Launch second design worker — should reuse same slot path ----
         let launch2_output = run_cmd(
             &ur,
-            &["process", "launch", "-p", project_key, "-m", "design", ticket_id_2],
+            &[
+                "process",
+                "launch",
+                "-p",
+                project_key,
+                "-m",
+                "design",
+                ticket_id_2,
+            ],
             &env,
         );
         assert!(
@@ -766,7 +782,15 @@ fn e2e_design_mode_pool_launch() {
         // Launch a code worker — it should succeed because design didn't consume any exclusive slots
         let code_launch = run_cmd(
             &ur,
-            &["process", "launch", "-p", project_key, "-m", "code", code_ticket_id],
+            &[
+                "process",
+                "launch",
+                "-p",
+                project_key,
+                "-m",
+                "code",
+                code_ticket_id,
+            ],
             &env,
         );
         assert!(

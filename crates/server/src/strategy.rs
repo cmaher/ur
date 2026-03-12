@@ -131,8 +131,14 @@ mod tests {
 
     #[test]
     fn from_name_valid() {
-        assert_eq!(WorkerStrategy::from_name("code").unwrap(), WorkerStrategy::Code);
-        assert_eq!(WorkerStrategy::from_name("design").unwrap(), WorkerStrategy::Design);
+        assert_eq!(
+            WorkerStrategy::from_name("code").unwrap(),
+            WorkerStrategy::Code
+        );
+        assert_eq!(
+            WorkerStrategy::from_name("design").unwrap(),
+            WorkerStrategy::Design
+        );
     }
 
     #[test]
@@ -142,7 +148,13 @@ mod tests {
 
     #[test]
     fn name_roundtrip() {
-        assert_eq!(WorkerStrategy::from_name(WorkerStrategy::Code.name()).unwrap(), WorkerStrategy::Code);
-        assert_eq!(WorkerStrategy::from_name(WorkerStrategy::Design.name()).unwrap(), WorkerStrategy::Design);
+        assert_eq!(
+            WorkerStrategy::from_name(WorkerStrategy::Code.name()).unwrap(),
+            WorkerStrategy::Code
+        );
+        assert_eq!(
+            WorkerStrategy::from_name(WorkerStrategy::Design.name()).unwrap(),
+            WorkerStrategy::Design
+        );
     }
 }

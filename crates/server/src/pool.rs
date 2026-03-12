@@ -9,6 +9,11 @@ use ur_config::{Config, ProjectConfig};
 
 use crate::HostdClient;
 
+/// Per-slot mutexes for serializing concurrent shared slot acquires.
+/// Keyed by (project_key, slot_name). Lock is held only during reset_slot,
+/// not for the lifetime of the worker.
+type SharedLockMap = Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>;
+
 /// Manages a pool of pre-cloned git repositories per project.
 ///
 /// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-name>/`
@@ -36,10 +41,7 @@ pub struct RepoPoolManager {
     projects: HashMap<String, ProjectConfig>,
     /// Set of slot paths (host-side) currently in use by running agents (exclusive slots only).
     in_use: Arc<RwLock<HashSet<PathBuf>>>,
-    /// Per-slot mutexes for serializing concurrent shared slot acquires.
-    /// Keyed by (project_key, slot_name). Lock is held only during reset_slot,
-    /// not for the lifetime of the worker.
-    shared_locks: Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>,
+    shared_locks: SharedLockMap,
 }
 
 impl RepoPoolManager {
@@ -111,9 +113,7 @@ impl RepoPoolManager {
             let in_use = self.in_use.read().expect("pool lock poisoned");
             existing_slots
                 .iter()
-                .find(|idx| {
-                    !in_use.contains(&self.host_slot_path(project_key, &idx.to_string()))
-                })
+                .find(|idx| !in_use.contains(&self.host_slot_path(project_key, &idx.to_string())))
                 .copied()
         };
 
@@ -770,7 +770,10 @@ mod tests {
         // scan_slots only counts numeric directories — "design" is ignored
         let pool_dir = workspace.join("pool").join("testproj");
         let slots = mgr.scan_slots(&pool_dir).await;
-        assert!(slots.is_empty(), "shared slot should not appear in numeric scan");
+        assert!(
+            slots.is_empty(),
+            "shared slot should not appear in numeric scan"
+        );
 
         // Exclusive acquire should still be allowed (pool_limit=1, no numeric slots exist)
         // It will fail on hostd clone, but the error should be a clone error, not pool limit

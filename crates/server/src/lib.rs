@@ -20,5 +20,5 @@ pub use hostd_client::HostdClient;
 pub use pool::RepoPoolManager;
 pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;
-pub use strategy::WorkerStrategy;
 pub use registry::RepoRegistry;
+pub use strategy::WorkerStrategy;
