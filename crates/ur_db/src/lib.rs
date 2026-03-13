@@ -2,9 +2,14 @@ mod schema;
 
 pub mod backup;
 pub mod query;
+pub mod ticket;
 
 pub use backup::BackupManager;
 pub use query::{DispatchableTicket, MetadataMatchTicket, QueryManager};
+pub use ticket::{
+    ActivityEntry, CreateTicketParams, ListTicketFilters, MetadataEntry, Ticket, TicketDetail,
+    UpdateTicketFields,
+};
 
 use cozo::{DbInstance, NamedRows, ScriptMutability};
 use schema::RELATION_STATEMENTS;
@@ -86,3 +91,6 @@ impl DatabaseManager {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ticket_tests;
