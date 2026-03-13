@@ -15,6 +15,41 @@ fi
 echo "==> Running CI checks..."
 cargo make ci
 
+# --- Mutex: only one pre-push hook runs image builds/acceptance at a time ---
+LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
+PID_FILE="$LOCK_DIR/pid"
+
+release_lock() {
+    rm -rf "$LOCK_DIR"
+}
+
+acquire_lock() {
+    while true; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            echo $$ > "$PID_FILE"
+            trap release_lock EXIT
+            return
+        fi
+
+        # Check for stale lock
+        if [ -f "$PID_FILE" ]; then
+            local stale_pid
+            stale_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+            if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
+                echo "==> Stale pre-push lock (PID $stale_pid dead), reclaiming..."
+                rm -rf "$LOCK_DIR"
+                continue
+            fi
+        fi
+
+        echo "==> Pre-push lock held (PID $(cat "$PID_FILE" 2>/dev/null || echo '?')), waiting..."
+        sleep 10
+    done
+}
+
+mkdir -p "$(dirname "$LOCK_DIR")"
+acquire_lock
+
 echo "==> Building container images..."
 cargo make image
 
