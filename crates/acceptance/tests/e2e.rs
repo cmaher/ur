@@ -294,11 +294,13 @@ fn e2e_ping_and_git() {
     // colliding with a real running ur stack)
     let server_container = "ur-test-server";
     let squid_container = "ur-test-squid";
+    let qdrant_container = DEFAULT_TEST_NAMES.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
     force_remove_container(&runtime, server_container);
     force_remove_container(&runtime, squid_container);
+    force_remove_container(&runtime, qdrant_container);
 
     // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
@@ -507,11 +509,13 @@ fn e2e_project_pool_launch() {
     let container_name = format!("{agent_prefix}{ticket_id}");
     let server_container = POOL_TEST_NAMES.server_hostname;
     let squid_container = POOL_TEST_NAMES.squid_hostname;
+    let qdrant_container = POOL_TEST_NAMES.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
     force_remove_container(&runtime, server_container);
     force_remove_container(&runtime, squid_container);
+    force_remove_container(&runtime, qdrant_container);
 
     // ---- (1) Create bare git repo and test config with project ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
@@ -661,6 +665,7 @@ fn e2e_design_mode_pool_launch() {
     let code_container_name = format!("{agent_prefix}{code_ticket_id}");
     let server_container = DESIGN_TEST_NAMES.server_hostname;
     let squid_container = DESIGN_TEST_NAMES.squid_hostname;
+    let qdrant_container = DESIGN_TEST_NAMES.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name_1);
@@ -668,6 +673,7 @@ fn e2e_design_mode_pool_launch() {
     force_remove_container(&runtime, &code_container_name);
     force_remove_container(&runtime, server_container);
     force_remove_container(&runtime, squid_container);
+    force_remove_container(&runtime, qdrant_container);
 
     // ---- (1) Create bare git repo and test config with project ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
