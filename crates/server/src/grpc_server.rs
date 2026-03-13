@@ -53,7 +53,11 @@ fn build_agent_routes(
 /// Start the main tonic gRPC server on a TCP socket.
 ///
 /// Used for the main host CLI path (ur -> server).
-pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow::Result<()> {
+pub async fn serve_grpc(
+    addr: SocketAddr,
+    handler: CoreServiceHandler,
+    #[cfg(feature = "rag")] rag_handler: Option<crate::rag::RagServiceHandler>,
+) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "main gRPC server listening");
 
     let routes = build_agent_routes(
@@ -63,7 +67,15 @@ pub async fn serve_grpc(addr: SocketAddr, handler: CoreServiceHandler) -> anyhow
         None,
     );
 
-    Server::builder().add_routes(routes).serve(addr).await?;
+    let mut server = Server::builder().add_routes(routes);
+
+    #[cfg(feature = "rag")]
+    if let Some(rag) = rag_handler {
+        use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
+        server = server.add_service(RagServiceServer::new(rag));
+    }
+
+    server.serve(addr).await?;
 
     Ok(())
 }

@@ -15,6 +15,7 @@ default = ["core"]
 core = []
 hostexec = []
 hostd = []
+rag = []
 stream = ["dep:tokio", "dep:tracing"]
 temporal = []
 

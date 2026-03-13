@@ -137,6 +137,8 @@ pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";
 pub const HOSTEXEC_DIR: &str = "hostexec";
 
 /// Allowlist configuration filename within `HOSTEXEC_DIR`.
+/// Deprecated: hostexec commands are now configured in `ur.toml` under `[hostexec.commands]`.
+/// This constant is retained only for migration detection.
 pub const HOSTEXEC_ALLOWLIST_FILE: &str = "allowlist.toml";
 
 /// Default hostname for the Squid proxy container on the Docker network.
@@ -161,6 +163,67 @@ pub const DEFAULT_AGENT_PREFIX: &str = "ur-agent-";
 /// Default maximum number of cached repo clones per project.
 pub const DEFAULT_POOL_LIMIT: u32 = 10;
 
+/// Default hostname for the Qdrant vector database on the Docker network.
+pub const DEFAULT_QDRANT_HOSTNAME: &str = "ur-qdrant";
+
+/// Default gRPC port for Qdrant.
+pub const DEFAULT_QDRANT_PORT: u16 = 6334;
+
+/// Default embedding model name for RAG.
+pub const DEFAULT_EMBEDDING_MODEL: &str = "all-MiniLM-L6-v2";
+
+/// HuggingFace download metadata for a supported embedding model.
+///
+/// Contains only the information needed to download model files — no fastembed
+/// or other heavy dependencies. Used by the CLI (`ur rag model download`) and
+/// the install script logic.
+pub struct ModelDownloadInfo {
+    /// HuggingFace org (e.g. "Qdrant").
+    pub hf_org: &'static str,
+    /// HuggingFace repo name (e.g. "all-MiniLM-L6-v2-onnx").
+    pub hf_repo: &'static str,
+    /// Git commit hash for the snapshot.
+    pub hf_commit: &'static str,
+    /// Files to download from HuggingFace.
+    pub hf_files: &'static [&'static str],
+    /// Vector dimensionality (e.g. 384 for MiniLM).
+    pub vector_size: u64,
+}
+
+const MINI_LM_FILES: &[&str] = &[
+    "model.onnx",
+    "tokenizer.json",
+    "config.json",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+];
+
+static SUPPORTED_MODELS: &[(&str, ModelDownloadInfo)] = &[(
+    "all-MiniLM-L6-v2",
+    ModelDownloadInfo {
+        hf_org: "Qdrant",
+        hf_repo: "all-MiniLM-L6-v2-onnx",
+        hf_commit: "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079",
+        hf_files: MINI_LM_FILES,
+        vector_size: 384,
+    },
+)];
+
+/// Look up model download info by config name (e.g. "all-MiniLM-L6-v2").
+///
+/// Returns `None` for unknown model names.
+pub fn model_download_info(name: &str) -> Option<&'static ModelDownloadInfo> {
+    SUPPORTED_MODELS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, info)| info)
+}
+
+/// List all supported model names.
+pub fn supported_model_names() -> Vec<&'static str> {
+    SUPPORTED_MODELS.iter().map(|(n, _)| *n).collect()
+}
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -181,8 +244,42 @@ struct RawConfig {
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
+    hostexec: Option<RawHostExecConfig>,
+    rag: Option<RawRagConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
+}
+
+/// Raw TOML representation for the `[hostexec]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawHostExecConfig {
+    #[serde(default)]
+    commands: HashMap<String, RawHostExecCommandConfig>,
+}
+
+/// Raw TOML representation for a single hostexec command entry.
+#[derive(Debug, Default, Deserialize)]
+struct RawHostExecCommandConfig {
+    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
+    lua: Option<String>,
+    /// Use the built-in default Lua script for this command (if one exists).
+    default_script: Option<bool>,
+}
+
+/// Resolved configuration for a single hostexec command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostExecCommandConfig {
+    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
+    pub lua: Option<String>,
+    /// Use the built-in default Lua script for this command (if one exists).
+    pub default_script: bool,
+}
+
+/// Resolved hostexec configuration from the `[hostexec]` section of `ur.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostExecConfig {
+    /// Named commands with optional Lua transform configuration.
+    pub commands: HashMap<String, HostExecCommandConfig>,
 }
 
 /// Raw TOML representation for a `[projects.<key>]` entry.
@@ -214,6 +311,13 @@ struct RawNetworkConfig {
     agent_prefix: Option<String>,
 }
 
+/// Raw TOML representation for the `[rag]` section.
+#[derive(Debug, Deserialize)]
+struct RawRagConfig {
+    qdrant_hostname: Option<String>,
+    embedding_model: Option<String>,
+}
+
 /// Forward proxy configuration for restricting container network access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
@@ -237,6 +341,15 @@ pub struct NetworkConfig {
     /// Container name prefix for agent containers (default: "ur-agent-").
     /// Agent containers are named `{agent_prefix}{process_id}`.
     pub agent_prefix: String,
+}
+
+/// RAG (Retrieval-Augmented Generation) configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RagConfig {
+    /// Hostname containers use to reach Qdrant via Docker DNS (default: "ur-qdrant").
+    pub qdrant_hostname: String,
+    /// Embedding model name (default: "all-MiniLM-L6-v2").
+    pub embedding_model: String,
 }
 
 /// Resolved project configuration for a single project.
@@ -281,6 +394,10 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
+    /// Global hostexec command configuration (from `[hostexec]` section).
+    pub hostexec: HostExecConfig,
+    /// RAG system settings (Qdrant vector database).
+    pub rag: RagConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -364,6 +481,38 @@ impl Config {
             },
         };
 
+        let hostexec = match raw.hostexec {
+            Some(h) => HostExecConfig {
+                commands: h
+                    .commands
+                    .into_iter()
+                    .map(|(name, raw_cmd)| {
+                        let cmd = HostExecCommandConfig {
+                            lua: raw_cmd.lua,
+                            default_script: raw_cmd.default_script.unwrap_or(false),
+                        };
+                        (name, cmd)
+                    })
+                    .collect(),
+            },
+            None => HostExecConfig::default(),
+        };
+
+        let rag = match raw.rag {
+            Some(r) => RagConfig {
+                qdrant_hostname: r
+                    .qdrant_hostname
+                    .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
+                embedding_model: r
+                    .embedding_model
+                    .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+            },
+            None => RagConfig {
+                qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
+                embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
+            },
+        };
+
         let projects = raw
             .projects
             .into_iter()
@@ -395,6 +544,8 @@ impl Config {
             compose_file,
             proxy,
             network,
+            hostexec,
+            rag,
             projects,
         })
     }
@@ -560,6 +711,34 @@ mod tests {
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
         assert_eq!(cfg.network.agent_prefix, "test-agent-");
+    }
+
+    #[test]
+    fn rag_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
+    }
+
+    #[test]
+    fn rag_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
+    }
+
+    #[test]
+    fn rag_reads_custom_qdrant_hostname() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[rag]\nqdrant_hostname = \"my-qdrant\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.qdrant_hostname, "my-qdrant");
     }
 
     #[test]
@@ -870,6 +1049,34 @@ mounts = ["/opt/tools:relative/path"]
     }
 
     #[test]
+    fn rag_embedding_model_defaults_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn rag_reads_custom_embedding_model() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[rag]\nembedding_model = \"custom-model\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, "custom-model");
+    }
+
+    #[test]
+    fn rag_embedding_model_defaults_when_rag_section_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
     fn mounts_rejects_invalid_source_variable() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
@@ -885,5 +1092,85 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
         let msg = err.to_string();
         assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("unrecognized template variable"), "{msg}");
+    }
+
+    #[test]
+    fn hostexec_defaults_to_empty_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.hostexec.commands.is_empty());
+    }
+
+    #[test]
+    fn hostexec_parses_passthrough_command() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+cargo = {}
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.hostexec.commands.len(), 1);
+        let cargo = &cfg.hostexec.commands["cargo"];
+        assert_eq!(cargo.lua, None);
+        assert!(!cargo.default_script);
+    }
+
+    #[test]
+    fn hostexec_parses_command_with_lua() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+git = { lua = "my-git.lua" }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let git = &cfg.hostexec.commands["git"];
+        assert_eq!(git.lua.as_deref(), Some("my-git.lua"));
+        assert!(!git.default_script);
+    }
+
+    #[test]
+    fn hostexec_parses_command_with_default_script() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+git = { default_script = true }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let git = &cfg.hostexec.commands["git"];
+        assert!(git.default_script);
+        assert_eq!(git.lua, None);
+    }
+
+    #[test]
+    fn hostexec_parses_multiple_commands() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+cargo = {}
+tk = {}
+make = { lua = "make-safe.lua" }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.hostexec.commands.len(), 3);
+        assert!(cfg.hostexec.commands.contains_key("cargo"));
+        assert!(cfg.hostexec.commands.contains_key("tk"));
+        assert!(cfg.hostexec.commands.contains_key("make"));
     }
 }

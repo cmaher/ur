@@ -10,8 +10,11 @@ pub mod logging;
 pub mod pool;
 pub mod process;
 pub mod proxy;
+#[cfg(feature = "rag")]
+pub mod rag;
 pub mod registry;
 pub mod run_opts_builder;
+pub mod strategy;
 pub mod stream;
 
 pub use config::Config;
@@ -20,3 +23,4 @@ pub use pool::RepoPoolManager;
 pub use process::{AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;
 pub use registry::RepoRegistry;
+pub use strategy::WorkerStrategy;

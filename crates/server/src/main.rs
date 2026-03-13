@@ -99,8 +99,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     #[cfg(feature = "hostexec")]
-    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir)
-        .expect("failed to load hostexec config");
+    let hostexec_config =
+        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
+            .expect("failed to load hostexec config");
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
@@ -116,7 +117,54 @@ async fn main() -> anyhow::Result<()> {
     };
     let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
 
-    let result = ur_server::grpc_server::serve_grpc(addr, grpc_handler).await;
+    #[cfg(feature = "rag")]
+    let rag_handler = {
+        use std::sync::Arc;
+
+        let model = rag::model::model_info(&cfg.rag.embedding_model).unwrap_or_else(|| {
+            let supported = ur_config::supported_model_names().join(", ");
+            panic!(
+                "unknown embedding model '{}' — supported models: {supported}",
+                cfg.rag.embedding_model,
+            );
+        });
+
+        let qdrant_url = format!(
+            "http://{}:{}",
+            cfg.rag.qdrant_hostname,
+            ur_config::DEFAULT_QDRANT_PORT,
+        );
+        info!(qdrant_url = %qdrant_url, "connecting to Qdrant");
+
+        let qdrant = Arc::new(
+            qdrant_client::Qdrant::from_url(&qdrant_url)
+                .build()
+                .expect("failed to create Qdrant client"),
+        );
+
+        let embedding_model = Arc::new(
+            fastembed::TextEmbedding::try_new(
+                fastembed::InitOptions::new(model.fastembed_model.clone())
+                    .with_show_download_progress(false),
+            )
+            .expect("failed to load embedding model — run `ur rag model download`"),
+        );
+
+        let rag_manager = rag::RagManager::new(qdrant, embedding_model, model.download.vector_size);
+
+        Some(ur_server::rag::RagServiceHandler {
+            rag_manager,
+            config_dir: cfg.config_dir.clone(),
+        })
+    };
+
+    let result = ur_server::grpc_server::serve_grpc(
+        addr,
+        grpc_handler,
+        #[cfg(feature = "rag")]
+        rag_handler,
+    )
+    .await;
 
     let _ = tokio::fs::remove_file(&pid_file).await;
 

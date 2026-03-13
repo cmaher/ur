@@ -49,18 +49,24 @@ impl CoreService for CoreServiceHandler {
             "process_launch request received"
         );
 
-        // Resolve workspace: project_key triggers pool acquire, otherwise use
-        // the explicit workspace_dir from the request.
+        // Resolve worker strategy from the mode field early in the launch flow.
+        let (strategy, resolved_skills) = self
+            .process_manager
+            .resolve_mode(&req.mode)
+            .map_err(Status::invalid_argument)?;
+
+        // Resolve workspace: project_key triggers pool acquire via the strategy,
+        // otherwise use the explicit workspace_dir from the request.
         let (workspace_dir, project_key) = if !req.project_key.is_empty() {
-            let slot_path = self
-                .repo_pool_manager
-                .acquire(&req.project_key)
+            let slot_path = strategy
+                .acquire_slot(&self.repo_pool_manager, &req.project_key)
                 .await
                 .map_err(Status::internal)?;
             info!(
                 process_id = req.process_id,
                 project_key = req.project_key,
                 slot_path = %slot_path.display(),
+                strategy = strategy.name(),
                 "acquired pool slot"
             );
             (Some(slot_path), req.project_key.clone())
@@ -129,11 +135,13 @@ impl CoreService for CoreServiceHandler {
         .await
         .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
 
-        // Resolve skills from request mode/skills fields
-        let skills = self
-            .process_manager
-            .resolve_skills(&req.mode, &req.skills)
-            .map_err(Status::invalid_argument)?;
+        // Use explicit skills from the request if provided, otherwise use
+        // the skills resolved from the strategy/mode.
+        let skills = if req.skills.is_empty() {
+            resolved_skills
+        } else {
+            req.skills
+        };
 
         // Phase 2: run container
         let (git_hooks_dir, mounts) = if !project_key.is_empty() {
@@ -156,6 +164,7 @@ impl CoreService for CoreServiceHandler {
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
+            strategy,
             skills,
             git_hooks_dir,
             mounts,

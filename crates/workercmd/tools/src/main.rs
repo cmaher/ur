@@ -6,6 +6,8 @@ use tonic::transport::Endpoint;
 use ur_rpc::proto::core::command_output::Payload;
 use ur_rpc::proto::hostexec::HostExecRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
+use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
+use ur_rpc::proto::rag::{Language, RagSearchRequest};
 
 mod init_git_hooks;
 mod init_skills;
@@ -30,6 +32,26 @@ enum Commands {
     },
     /// Run all container initialization (skills, git hooks)
     Init,
+    /// RAG operations
+    Rag {
+        #[command(subcommand)]
+        command: RagCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RagCommands {
+    /// Search indexed documentation via RAG
+    Search {
+        /// The search query
+        query: String,
+        /// Language to search (default: rust)
+        #[arg(long, default_value = "rust")]
+        language: String,
+        /// Number of results to return (default: 5)
+        #[arg(long, default_value_t = 5)]
+        top_k: u32,
+    },
 }
 
 #[tokio::main]
@@ -56,6 +78,15 @@ async fn main() {
 
             std::process::exit(0);
         }
+        Commands::Rag { command } => match command {
+            RagCommands::Search {
+                query,
+                language,
+                top_k,
+            } => {
+                std::process::exit(run_rag_search(&query, &language, top_k).await);
+            }
+        },
     }
 }
 
@@ -122,4 +153,66 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
     }
 
     exit_code
+}
+
+fn parse_language(s: &str) -> Option<Language> {
+    match s.to_lowercase().as_str() {
+        "rust" => Some(Language::Rust),
+        _ => None,
+    }
+}
+
+async fn run_rag_search(query: &str, language: &str, top_k: u32) -> i32 {
+    let lang = match parse_language(language) {
+        Some(l) => l,
+        None => {
+            eprintln!("rag search: unsupported language: {language}");
+            return 1;
+        }
+    };
+
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    let addr = format!("http://{server_addr}");
+
+    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
+        Ok(ch) => ch,
+        Err(e) => {
+            eprintln!("rag search: failed to connect to ur server: {e}");
+            return 1;
+        }
+    };
+
+    let mut client = RagServiceClient::new(channel);
+
+    let resp = match client
+        .rag_search(RagSearchRequest {
+            query: query.to_owned(),
+            language: lang.into(),
+            top_k: Some(top_k),
+        })
+        .await
+    {
+        Ok(resp) => resp,
+        Err(status) => {
+            eprintln!("rag search: {}", status.message());
+            return 1;
+        }
+    };
+
+    let results = resp.into_inner().results;
+    if results.is_empty() {
+        println!("No results found.");
+        return 0;
+    }
+
+    for (i, result) in results.iter().enumerate() {
+        println!("--- Result {} (score: {:.2}) ---", i + 1, result.score);
+        println!("Source: {}", result.source_file);
+        println!();
+        println!("{}", result.text);
+        println!();
+    }
+
+    0
 }

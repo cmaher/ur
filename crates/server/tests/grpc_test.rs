@@ -62,6 +62,11 @@ fn make_grpc_handler(
             allowlist: vec![],
         },
         network: network_config.clone(),
+        hostexec: ur_config::HostExecConfig::default(),
+        rag: ur_config::RagConfig {
+            qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
+            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
+        },
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
@@ -82,8 +87,11 @@ fn make_grpc_handler(
         network_config,
         ur_server::process::PromptModesConfig::default(),
     );
-    let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(Path::new("/nonexistent")).unwrap();
+    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
+        Path::new("/nonexistent"),
+        &ur_config::HostExecConfig::default(),
+    )
+    .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_pool_manager,

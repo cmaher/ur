@@ -6,6 +6,8 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 container = { path = "../container" }
+fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub"] }
+qdrant-client = "1"
 clap = { workspace = true }
 prost = { workspace = true }
 rand = "0.9"
@@ -18,13 +20,15 @@ ur_config = { path = "../ur_config" }
 mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
+rag = { path = "../rag" }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
 
 [features]
-default = ["core", "hostexec", "hostd"]
+default = ["core", "hostexec", "hostd", "rag"]
 core = ["ur_rpc/core"]
 hostexec = ["ur_rpc/hostexec", "hostd"]
 hostd = ["ur_rpc/hostd"]
+rag = ["ur_rpc/rag"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
