@@ -316,9 +316,11 @@ impl RagManager {
         let mut chunk_ids_by_file: std::collections::HashMap<String, Vec<Uuid>> =
             std::collections::HashMap::new();
 
-        // Upsert in batches
-        for batch_start in (0..chunks.len()).step_by(UPSERT_BATCH_SIZE) {
-            let batch_end = (batch_start + UPSERT_BATCH_SIZE).min(chunks.len());
+        // Upsert in batches (last batch waits synchronously to ensure all writes complete)
+        let total = chunks.len();
+        for batch_start in (0..total).step_by(UPSERT_BATCH_SIZE) {
+            let batch_end = (batch_start + UPSERT_BATCH_SIZE).min(total);
+            let is_last_batch = batch_end == total;
             let points: Vec<PointStruct> = (batch_start..batch_end)
                 .map(|i| {
                     let (chunk, file_path) = &chunks[i];
@@ -338,18 +340,12 @@ impl RagManager {
                 .collect();
 
             self.qdrant
-                .upsert_points(UpsertPointsBuilder::new(collection, points).wait(false))
+                .upsert_points(UpsertPointsBuilder::new(collection, points).wait(is_last_batch))
                 .await
                 .context("Failed to upsert points to Qdrant")?;
 
             debug!(batch_start, batch_end, "upserted batch to Qdrant");
         }
-
-        // Final synchronous upsert to flush pending async writes
-        self.qdrant
-            .upsert_points(UpsertPointsBuilder::new(collection, vec![]).wait(true))
-            .await
-            .context("Failed to flush pending upserts to Qdrant")?;
 
         Ok(chunk_ids_by_file)
     }
