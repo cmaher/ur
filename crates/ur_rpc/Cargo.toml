@@ -16,6 +16,7 @@ core = []
 hostexec = []
 hostd = []
 rag = []
+ticket = []
 stream = ["dep:tokio", "dep:tracing"]
 temporal = []
 

@@ -13,6 +13,8 @@ pub mod process;
 pub mod proxy;
 #[cfg(feature = "rag")]
 pub mod rag;
+#[cfg(feature = "ticket")]
+pub mod grpc_ticket;
 pub mod registry;
 pub mod run_opts_builder;
 pub mod strategy;

@@ -174,11 +174,18 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    #[cfg(feature = "ticket")]
+    let ticket_handler = Some(ur_server::grpc_ticket::TicketServiceHandler {
+        db: db.clone(),
+    });
+
     let result = ur_server::grpc_server::serve_grpc(
         addr,
         grpc_handler,
         #[cfg(feature = "rag")]
         rag_handler,
+        #[cfg(feature = "ticket")]
+        ticket_handler,
     )
     .await;
 

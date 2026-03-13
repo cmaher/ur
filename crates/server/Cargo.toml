@@ -26,14 +26,15 @@ rag = { path = "../rag" }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
 
 [features]
-default = ["core", "hostexec", "hostd", "rag"]
+default = ["core", "hostexec", "hostd", "rag", "ticket"]
 core = ["ur_rpc/core"]
 hostexec = ["ur_rpc/hostexec", "hostd"]
 hostd = ["ur_rpc/hostd"]
 rag = ["ur_rpc/rag"]
+ticket = ["ur_rpc/ticket"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "hostd"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "hostd", "ticket"] }

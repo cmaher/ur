@@ -22,4 +22,9 @@ pub mod proto {
     pub mod rag {
         tonic::include_proto!("ur.rag");
     }
+    #[cfg(feature = "ticket")]
+    #[allow(clippy::excessive_nesting)]
+    pub mod ticket {
+        tonic::include_proto!("ur.ticket");
+    }
 }
