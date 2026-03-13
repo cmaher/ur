@@ -35,10 +35,12 @@ Add to `ur-server` in `docker-compose.yml`:
 
 ```yaml
 volumes:
-  - ${UR_CONFIG:-~/.ur}/fastembed:/fastembed
+  - ${UR_CONFIG:-~/.ur}/fastembed:/fastembed:ro
 environment:
   - FASTEMBED_CACHE_DIR=/fastembed
 ```
+
+Read-only mount (`:ro`) — the server only reads the model at runtime, never writes.
 
 ### Server startup
 
@@ -61,6 +63,8 @@ The CLI still requires an explicit language argument. `LANGUAGE_UNSPECIFIED` exi
 
 Future: project-level default language in `ur.toml` project config, injected into workers via env var. Not in scope for this change.
 
+Note: this is a wire-incompatible renumber, but there is no data compatibility issue — Qdrant payloads store language as a string (`"rust"`), not the enum integer. Existing collections do not need re-indexing.
+
 ## 3. Configurable embedding model
 
 **Problem**: The embedding model is hardcoded to `AllMiniLML6V2`.
@@ -79,17 +83,20 @@ embedding_model = "all-MiniLM-L6-v2"
 
 ### Model name mapping
 
-A function in the `rag` crate maps the config string to:
+A `ModelInfo` struct in the `rag` crate maps the config string (kebab-case, e.g. `"all-MiniLM-L6-v2"`) to:
 - `fastembed::EmbeddingModel` variant (for server init)
-- HuggingFace org/repo/files (for curl download)
+- HuggingFace org/repo, commit hash, and file list (for curl download)
+- Vector dimension (e.g. 384 for MiniLM) — used by `RagManager::recreate_collection` instead of the current hardcoded `VECTOR_SIZE`
+
+This is the single source of truth for model metadata. Both the Rust CLI (`ur rag model download`) and the install script consume it. The install script cannot call the ur binary, so it hardcodes the default model's download info (commit hash, files). This is acceptable duplication — the install script only downloads the default model. Users with custom models use `ur rag model download` after install.
 
 Only `all-MiniLM-L6-v2` is supported initially. Unknown model names produce a clear error listing supported models.
 
 ### Consumers
 
 - **Server** (`crates/server/src/main.rs`): reads `cfg.rag.embedding_model`, maps to `fastembed::EmbeddingModel`, passes to `TextEmbedding::try_new`.
-- **Install script** (`scripts/build/install.sh`): reads the model name from `ur.toml` (or uses default) to determine which files to curl.
-- **`ur rag model download`**: same — reads config, downloads the right model.
+- **Install script** (`scripts/build/install.sh`): always downloads the default model (`all-MiniLM-L6-v2`). Does not parse `ur.toml` — keeps the script simple with no TOML parsing dependency.
+- **`ur rag model download`**: reads `ur.toml` config, downloads the configured model. This is how users get non-default models.
 
 ## Files changed
 
@@ -104,3 +111,10 @@ Only `all-MiniLM-L6-v2` is supported initially. Unknown model names produce a cl
 - `crates/rag/` — add model name → fastembed enum mapping, add model name → HF download info mapping
 - `crates/ur/src/rag.rs` — add `ur rag model download` subcommand
 - `crates/ur/src/main.rs` — wire up `model download` subcommand
+- `crates/rag/src/lib.rs` — export `ModelInfo` and mapping functions
+
+## Tests
+
+- `crates/rag/`: unit tests for model name mapping (valid names, invalid names, returned metadata)
+- `crates/ur_config/`: config parsing tests for `embedding_model` field (absent → default, custom value, empty `[rag]` section)
+- `crates/server/src/rag.rs`: `LANGUAGE_UNSPECIFIED` rejection returns `InvalidArgument`
