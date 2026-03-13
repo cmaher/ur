@@ -1,6 +1,5 @@
 pub use ur_config::{
-    ModelDownloadInfo, model_download_info, supported_model_names,
-    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_EMBEDDING_MODEL, ModelDownloadInfo, model_download_info, supported_model_names,
 };
 
 /// Full model info including the fastembed enum variant.
