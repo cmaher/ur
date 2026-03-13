@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use text_splitter::MarkdownSplitter;
 use std::collections::BTreeMap;
+use text_splitter::MarkdownSplitter;
 use tracing::{debug, info};
 use walkdir::WalkDir;
 

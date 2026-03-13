@@ -19,6 +19,13 @@ const UPSERT_BATCH_SIZE: usize = 256;
 const EMBED_BATCH_SIZE: usize = 32;
 const DEFAULT_TOP_K: u64 = 5;
 
+/// Progress update for a single dependency that was indexed.
+pub struct DependencyProgress {
+    pub name: String,
+    pub files: u32,
+    pub chunks: u32,
+}
+
 /// Summary of a completed indexing operation.
 pub struct IndexSummary {
     pub files_processed: u32,
@@ -64,7 +71,15 @@ impl RagManager {
     /// Uses a local manifest to perform incremental indexing: only changed/new files are
     /// embedded and upserted, unchanged files are skipped, and removed files have their
     /// points deleted. A model name change triggers a full re-index.
-    pub async fn index(&self, docs_dir: &Path, language: &str) -> Result<IndexSummary> {
+    ///
+    /// If `progress_tx` is provided, sends a `DependencyProgress` for each dependency
+    /// as it finishes indexing.
+    pub async fn index(
+        &self,
+        docs_dir: &Path,
+        language: &str,
+        progress_tx: Option<tokio::sync::mpsc::Sender<DependencyProgress>>,
+    ) -> Result<IndexSummary> {
         let collection = collection_name(language);
 
         // Read and chunk all documents from disk
@@ -164,31 +179,51 @@ impl RagManager {
             }
         }
 
-        // Collect chunks for files that need indexing
-        let mut chunks_to_embed: Vec<(&chunking::DocChunk, String)> = Vec::new();
+        // Group files to index by dependency (first path component)
+        let mut files_by_dep: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for file_path in &files_to_index {
-            let file_chunks = chunks_by_file.get(file_path).into_iter().flatten();
-            for chunk in file_chunks {
-                chunks_to_embed.push((chunk, file_path.clone()));
-            }
+            let dep_name = file_path.split('/').next().unwrap_or("unknown").to_string();
+            files_by_dep
+                .entry(dep_name)
+                .or_default()
+                .push(file_path.clone());
         }
 
-        let chunks_indexed = chunks_to_embed.len();
+        let mut chunks_indexed: usize = 0;
 
-        if !chunks_to_embed.is_empty() {
-            let new_chunk_ids = self
-                .embed_and_upsert(&collection, language, &chunks_to_embed)
-                .await?;
+        // Process each dependency's files together and report progress
+        for (dep_name, dep_files) in &files_by_dep {
+            let chunks_to_embed: Vec<(&chunking::DocChunk, String)> = dep_files
+                .iter()
+                .flat_map(|file_path| {
+                    chunks_by_file
+                        .get(file_path)
+                        .into_iter()
+                        .flatten()
+                        .map(move |chunk| (*chunk, file_path.clone()))
+                })
+                .collect();
 
-            // Update manifest with new file entries
-            for (file_path, chunk_ids) in &new_chunk_ids {
-                prev_manifest.files.insert(
-                    file_path.clone(),
-                    FileEntry {
-                        hash: current_hashes[file_path].clone(),
-                        chunk_ids: chunk_ids.clone(),
-                    },
-                );
+            let dep_chunk_count = chunks_to_embed.len();
+            chunks_indexed += dep_chunk_count;
+
+            if !chunks_to_embed.is_empty() {
+                let new_chunk_ids = self
+                    .embed_and_upsert(&collection, language, &chunks_to_embed)
+                    .await?;
+
+                update_manifest(&mut prev_manifest, &new_chunk_ids, &current_hashes);
+            }
+
+            if let Some(tx) = &progress_tx {
+                let _ = tx
+                    .send(DependencyProgress {
+                        name: dep_name.clone(),
+                        files: dep_files.len() as u32,
+                        chunks: dep_chunk_count as u32,
+                    })
+                    .await;
             }
         }
 
@@ -386,6 +421,23 @@ impl RagManager {
             .await
             .context("Failed to delete points from Qdrant")?;
         Ok(())
+    }
+}
+
+/// Update the manifest with newly indexed file entries.
+fn update_manifest(
+    manifest: &mut IndexManifest,
+    chunk_ids_by_file: &std::collections::HashMap<String, Vec<Uuid>>,
+    current_hashes: &std::collections::HashMap<String, String>,
+) {
+    for (file_path, chunk_ids) in chunk_ids_by_file {
+        manifest.files.insert(
+            file_path.clone(),
+            FileEntry {
+                hash: current_hashes[file_path].clone(),
+                chunk_ids: chunk_ids.clone(),
+            },
+        );
     }
 }
 

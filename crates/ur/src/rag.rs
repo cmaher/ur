@@ -134,10 +134,7 @@ fn find_workspace_root() -> Result<std::path::PathBuf> {
 
 /// Collect workspace crate names and their direct dependency names into a single
 /// set. Crate names use underscores (matching cargo-docs-md directory names).
-fn collect_allowed_crates(
-    workspace_root: &Path,
-    exclude: &[String],
-) -> Result<HashSet<String>> {
+fn collect_allowed_crates(workspace_root: &Path, exclude: &[String]) -> Result<HashSet<String>> {
     let exclude_set: HashSet<&str> = exclude.iter().map(String::as_str).collect();
     let mut allowed = HashSet::new();
 
@@ -176,19 +173,19 @@ fn collect_allowed_crates(
                 continue;
             }
 
-            let member_contents = std::fs::read_to_string(&member_toml_path).with_context(|| {
-                format!(
-                    "failed to read member Cargo.toml: {}",
-                    member_toml_path.display()
-                )
-            })?;
-            let member_doc: toml::Value =
-                toml::from_str(&member_contents).with_context(|| {
+            let member_contents =
+                std::fs::read_to_string(&member_toml_path).with_context(|| {
                     format!(
-                        "failed to parse member Cargo.toml: {}",
+                        "failed to read member Cargo.toml: {}",
                         member_toml_path.display()
                     )
                 })?;
+            let member_doc: toml::Value = toml::from_str(&member_contents).with_context(|| {
+                format!(
+                    "failed to parse member Cargo.toml: {}",
+                    member_toml_path.display()
+                )
+            })?;
 
             // Add the crate's own name (with hyphens converted to underscores)
             if let Some(name) = member_doc
@@ -223,8 +220,10 @@ fn parse_language(s: &str) -> Result<Language> {
     }
 }
 
-/// Send a RagIndex gRPC request to ur-server.
+/// Send a RagIndex gRPC request to ur-server and stream progress.
 pub async fn index(port: u16, language: &str) -> Result<()> {
+    use ur_rpc::proto::rag::rag_index_progress::Update;
+
     let lang = parse_language(language)?;
 
     let addr = format!("http://127.0.0.1:{port}");
@@ -235,7 +234,7 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
     info!(language = %language, "sending RagIndex request");
     println!("Indexing {language} docs...");
 
-    let resp = client
+    let mut stream = client
         .rag_index(RagIndexRequest {
             language: lang.into(),
         })
@@ -250,13 +249,27 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
             } else {
                 anyhow::anyhow!("RagIndex failed: {status}")
             }
-        })?;
+        })?
+        .into_inner();
 
-    let inner = resp.into_inner();
-    println!(
-        "Indexed {} files, {} chunks",
-        inner.files_processed, inner.chunks_indexed
-    );
+    while let Some(msg) = stream.message().await.context("stream error")? {
+        match msg.update {
+            Some(Update::DependencyIndexed(dep)) => {
+                println!(
+                    "  {} — {} files, {} chunks",
+                    dep.name, dep.files, dep.chunks
+                );
+            }
+            Some(Update::IndexComplete(complete)) => {
+                println!(
+                    "Done. Indexed {} files, {} chunks total.",
+                    complete.total_files, complete.total_chunks
+                );
+            }
+            None => {}
+        }
+    }
+
     Ok(())
 }
 
@@ -501,10 +514,7 @@ tokio-stream = "0.1"
         // by checking the read_dir branch directly
         let result = std::fs::read_dir(&nonexistent);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().kind(),
-            std::io::ErrorKind::NotFound
-        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
