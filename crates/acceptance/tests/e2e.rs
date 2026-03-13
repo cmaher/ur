@@ -117,12 +117,12 @@ const POOL_TEST_NAMES: TestNames = TestNames {
 };
 
 const RAG_TEST_NAMES: TestNames = TestNames {
-    squid_hostname: "ur-rag-squid",
-    network: "ur-rag-test",
-    worker_network: "ur-rag-workers",
-    server_hostname: "ur-rag-server",
-    agent_prefix: "ur-rag-agent-",
-    qdrant_hostname: "ur-rag-qdrant",
+    squid_hostname: "ur-test-rag-squid",
+    network: "ur-test-rag",
+    worker_network: "ur-test-rag-workers",
+    server_hostname: "ur-test-rag-server",
+    agent_prefix: "ur-test-rag-agent-",
+    qdrant_hostname: "ur-test-rag-qdrant",
 };
 
 const DESIGN_TEST_NAMES: TestNames = TestNames {
