@@ -11,7 +11,7 @@ with Lua-based validation and CWD mapping.
 2. Bash shim at `/home/worker/.local/bin/git` runs `ur-tools host-exec git status`
 3. `ur-tools` captures CWD, sends `HostExecRequest` to ur-server (per-agent gRPC)
 4. ur-server `HostExecServiceHandler`:
-   a. Checks command against merged allowlist (defaults + ~/.ur/hostexec/allowlist.toml)
+   a. Checks command against merged allowlist (defaults + `[hostexec.commands]` from ur.toml)
    b. Maps CWD: /workspace/... -> host workspace path via RepoRegistry
    c. Runs Lua transform if configured (validates/modifies args)
    d. Forwards `HostDaemonExecRequest` to ur-hostd
@@ -26,11 +26,11 @@ creates bash shims in `/home/worker/.local/bin/` (on PATH, writable by worker us
 ## Configuration
 
 - Built-in defaults: git (with git.lua), gh (with gh.lua)
-- Global user extensions: ~/.ur/hostexec/allowlist.toml (commands with optional Lua transforms)
+- Global hostexec commands: `[hostexec.commands]` section in `ur.toml` (commands with optional Lua transforms)
 - Per-project passthrough commands: `hostexec = ["tk", "make"]` in `ur.toml` `[projects.<key>]`
-- Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from allowlist.toml)
-- Passthrough commands: `command = {}` in allowlist (no Lua transform)
-- Merge order: built-in defaults → global allowlist.toml → per-project hostexec list (passthrough only, does not override existing commands)
+- Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from `[hostexec.commands]`)
+- Passthrough commands: `command = {}` in `[hostexec.commands]` (no Lua transform)
+- Merge order: built-in defaults → global `[hostexec.commands]` → per-project hostexec list (passthrough only, does not override existing commands)
 
 ## Key Files
 

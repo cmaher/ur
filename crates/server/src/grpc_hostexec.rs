@@ -186,7 +186,11 @@ mod tests {
     fn test_map_working_dir_root() {
         let registry = test_registry("test", "/host/workspace/test");
         let handler = HostExecServiceHandler {
-            config: HostExecConfigManager::load(std::path::Path::new("/nonexistent")).unwrap(),
+            config: HostExecConfigManager::load(
+                std::path::Path::new("/nonexistent"),
+                &ur_config::HostExecConfig::default(),
+            )
+            .unwrap(),
             lua: LuaTransformManager::new(),
             repo_registry: registry,
             process_id: "test".into(),
@@ -202,7 +206,11 @@ mod tests {
     fn test_map_working_dir_subdir() {
         let registry = test_registry("test", "/host/workspace/test");
         let handler = HostExecServiceHandler {
-            config: HostExecConfigManager::load(std::path::Path::new("/nonexistent")).unwrap(),
+            config: HostExecConfigManager::load(
+                std::path::Path::new("/nonexistent"),
+                &ur_config::HostExecConfig::default(),
+            )
+            .unwrap(),
             lua: LuaTransformManager::new(),
             repo_registry: registry,
             process_id: "test".into(),
@@ -218,7 +226,11 @@ mod tests {
     fn test_map_working_dir_rejects_invalid() {
         let registry = test_registry("test", "/host/workspace/test");
         let handler = HostExecServiceHandler {
-            config: HostExecConfigManager::load(std::path::Path::new("/nonexistent")).unwrap(),
+            config: HostExecConfigManager::load(
+                std::path::Path::new("/nonexistent"),
+                &ur_config::HostExecConfig::default(),
+            )
+            .unwrap(),
             lua: LuaTransformManager::new(),
             repo_registry: registry,
             process_id: "test".into(),

@@ -1,22 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize, Default)]
-struct RawAllowlist {
-    #[serde(default)]
-    commands: HashMap<String, RawCommandConfig>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct RawCommandConfig {
-    #[serde(default)]
-    lua: Option<String>,
-    #[serde(default)]
-    default_script: Option<bool>,
-}
+use anyhow::{Context as _, Result};
 
 #[derive(Debug, Clone)]
 pub struct CommandConfig {
@@ -29,25 +14,18 @@ pub struct HostExecConfigManager {
 }
 
 impl HostExecConfigManager {
-    pub fn load(config_dir: &Path) -> Result<Self> {
+    /// Build from the parsed `[hostexec]` section of `ur.toml`.
+    ///
+    /// Built-in defaults (git, gh) are loaded first, then user commands from
+    /// the config are merged on top.
+    pub fn load(config_dir: &Path, hostexec_cfg: &ur_config::HostExecConfig) -> Result<Self> {
         let mut commands = Self::defaults();
 
-        let allowlist_path = config_dir
-            .join(ur_config::HOSTEXEC_DIR)
-            .join(ur_config::HOSTEXEC_ALLOWLIST_FILE);
+        let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
 
-        if allowlist_path.exists() {
-            let content = std::fs::read_to_string(&allowlist_path)
-                .with_context(|| format!("reading {}", allowlist_path.display()))?;
-            let raw: RawAllowlist = toml::from_str(&content)
-                .with_context(|| format!("parsing {}", allowlist_path.display()))?;
-
-            let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
-
-            for (name, raw_cfg) in raw.commands {
-                let lua_source = Self::resolve_lua_source(&name, &raw_cfg, &hostexec_dir)?;
-                commands.insert(name, CommandConfig { lua_source });
-            }
+        for (name, cmd_cfg) in &hostexec_cfg.commands {
+            let lua_source = Self::resolve_lua_source(name, cmd_cfg, &hostexec_dir)?;
+            commands.insert(name.clone(), CommandConfig { lua_source });
         }
 
         Ok(Self { commands })
@@ -72,13 +50,13 @@ impl HostExecConfigManager {
 
     fn resolve_lua_source(
         name: &str,
-        raw_cfg: &RawCommandConfig,
+        cmd_cfg: &ur_config::HostExecCommandConfig,
         hostexec_dir: &Path,
     ) -> Result<Option<String>> {
-        if raw_cfg.default_script.unwrap_or(false) {
+        if cmd_cfg.default_script {
             return Ok(Self::default_script(name));
         }
-        if let Some(lua_file) = &raw_cfg.lua {
+        if let Some(lua_file) = &cmd_cfg.lua {
             let lua_path = hostexec_dir.join(lua_file);
             let src = std::fs::read_to_string(&lua_path)
                 .with_context(|| format!("reading lua script {}", lua_path.display()))?;
@@ -132,11 +110,16 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use ur_config::{HostExecCommandConfig, HostExecConfig};
+
+    fn empty_config() -> HostExecConfig {
+        HostExecConfig::default()
+    }
 
     #[test]
     fn test_defaults_include_git_and_gh() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
@@ -147,15 +130,16 @@ mod tests {
     #[test]
     fn test_user_config_extends_defaults() {
         let tmp = TempDir::new().unwrap();
-        let hostexec_dir = tmp.path().join(ur_config::HOSTEXEC_DIR);
-        fs::create_dir_all(&hostexec_dir).unwrap();
-        fs::write(
-            hostexec_dir.join(ur_config::HOSTEXEC_ALLOWLIST_FILE),
-            "[commands]\ntk = {}\n",
-        )
-        .unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "tk".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+            },
+        );
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
 
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
@@ -169,17 +153,21 @@ mod tests {
         let hostexec_dir = tmp.path().join(ur_config::HOSTEXEC_DIR);
         fs::create_dir_all(&hostexec_dir).unwrap();
         fs::write(
-            hostexec_dir.join(ur_config::HOSTEXEC_ALLOWLIST_FILE),
-            "[commands]\ngit = { lua = \"my-git.lua\" }\n",
-        )
-        .unwrap();
-        fs::write(
             hostexec_dir.join("my-git.lua"),
             "function transform(c, a, w) return a end",
         )
         .unwrap();
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "git".into(),
+            HostExecCommandConfig {
+                lua: Some("my-git.lua".into()),
+                default_script: false,
+            },
+        );
+
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
 
         let git_cfg = mgr.get("git").unwrap();
         assert!(git_cfg.lua_source.as_ref().unwrap().contains("return a"));
@@ -188,15 +176,16 @@ mod tests {
     #[test]
     fn test_default_script_flag() {
         let tmp = TempDir::new().unwrap();
-        let hostexec_dir = tmp.path().join(ur_config::HOSTEXEC_DIR);
-        fs::create_dir_all(&hostexec_dir).unwrap();
-        fs::write(
-            hostexec_dir.join(ur_config::HOSTEXEC_ALLOWLIST_FILE),
-            "[commands]\ngit = { default_script = true }\n",
-        )
-        .unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "git".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: true,
+            },
+        );
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
 
         let git_cfg = mgr.get("git").unwrap();
         assert!(git_cfg.lua_source.as_ref().unwrap().contains("blocked"));
@@ -205,7 +194,7 @@ mod tests {
     #[test]
     fn test_with_passthrough_commands_adds_new() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
         let extra = vec!["tk".into(), "make".into()];
         let merged = mgr.with_passthrough_commands(&extra);
@@ -221,7 +210,7 @@ mod tests {
     #[test]
     fn test_with_passthrough_commands_does_not_override_existing() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
         // git already exists with a Lua script — passthrough should not replace it
         let extra = vec!["git".into(), "tk".into()];
@@ -234,7 +223,7 @@ mod tests {
     #[test]
     fn test_with_passthrough_commands_empty_is_noop() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
         let merged = mgr.with_passthrough_commands(&[]);
 
         assert_eq!(merged.command_names(), mgr.command_names());
@@ -243,15 +232,16 @@ mod tests {
     #[test]
     fn test_with_passthrough_commands_preserves_global_user_config() {
         let tmp = TempDir::new().unwrap();
-        let hostexec_dir = tmp.path().join(ur_config::HOSTEXEC_DIR);
-        fs::create_dir_all(&hostexec_dir).unwrap();
-        fs::write(
-            hostexec_dir.join(ur_config::HOSTEXEC_ALLOWLIST_FILE),
-            "[commands]\ntk = {}\n",
-        )
-        .unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "tk".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+            },
+        );
 
-        let mgr = HostExecConfigManager::load(tmp.path()).unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
         let extra = vec!["make".into()];
         let merged = mgr.with_passthrough_commands(&extra);
 

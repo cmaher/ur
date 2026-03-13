@@ -222,6 +222,7 @@ mod tests {
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
             },
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+            hostexec: ur_config::HostExecConfig::default(),
             rag: ur_config::RagConfig {
                 qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
                 embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
