@@ -140,6 +140,20 @@ fn write_test_config(
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
 
+    // Symlink the host's fastembed cache so the server container can find the
+    // embedding model. The compose template mounts $UR_CONFIG/fastembed:/fastembed:ro.
+    let host_fastembed = std::env::var("UR_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").expect("HOME env var")).join(".ur")
+        })
+        .join("fastembed");
+    let test_fastembed = config_dir.join("fastembed");
+    if host_fastembed.exists() && !test_fastembed.exists() {
+        std::os::unix::fs::symlink(&host_fastembed, &test_fastembed)
+            .expect("failed to symlink fastembed cache");
+    }
+
     let squid_dir = config_dir.join("squid");
     std::fs::create_dir_all(&squid_dir).expect("failed to create squid dir");
     std::fs::write(
@@ -618,15 +632,13 @@ fn e2e_project_pool_launch() {
 ///
 /// Exercises the full RAG pipeline:
 ///   1. `ur start` starts the server + Qdrant + squid in containers via docker compose
-///   2. `ur rag docs` generates Rust documentation locally
-///   3. `ur rag index --language rust` indexes the generated docs into Qdrant via the server
+///   2. Small test markdown docs are written directly (not `ur rag docs` — too slow)
+///   3. `ur rag index --language rust` indexes the docs into Qdrant via the server
 ///   4. `ur rag search "query" --language rust` searches indexed docs via the server
-///   5. Verify search returns non-empty results with expected fields
-///   6. `ur stop` tears down the server
+///   5. `ur stop` tears down the server
 ///
 /// Requires:
-///   - `cargo-docs-md` installed (via `mise install`)
-///   - ONNX embedding model baked into the ur-server container image
+///   - ONNX embedding model downloaded on host (`ur rag model download`)
 ///   - Qdrant service in docker compose
 #[test]
 fn e2e_rag_search() {
@@ -656,6 +668,25 @@ fn e2e_rag_search() {
     let config_str = config_path.to_str().unwrap();
     let env = [("UR_CONFIG", config_str)];
 
+    // Write small test docs directly instead of running `ur rag docs` (which
+    // generates the full workspace — thousands of files, too slow for e2e).
+    std::fs::write(
+        rag_docs_dir.join("container.md"),
+        "# Container Management\n\n\
+         The container module manages Docker containers for worker agents.\n\
+         It handles lifecycle operations: create, start, stop, and remove.\n\
+         Each agent gets its own isolated container with mounted workspace.\n",
+    )
+    .expect("failed to write test doc");
+    std::fs::write(
+        rag_docs_dir.join("grpc.md"),
+        "# gRPC Server\n\n\
+         The gRPC server listens on TCP port 42069 for requests from the CLI\n\
+         and from worker containers. It routes commands to the appropriate\n\
+         handler: process management, git operations, or RAG search.\n",
+    )
+    .expect("failed to write test doc");
+
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- (2) ur start ----
         let up_output = run_cmd(&ur, &["start"], &env);
@@ -666,27 +697,7 @@ fn e2e_rag_search() {
             String::from_utf8_lossy(&up_output.stderr),
         );
 
-        // ---- (3) ur rag docs — generate documentation ----
-        let docs_output = run_cmd(&ur, &["rag", "docs"], &env);
-        assert!(
-            docs_output.status.success(),
-            "ur rag docs failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&docs_output.stdout),
-            String::from_utf8_lossy(&docs_output.stderr),
-        );
-
-        // Verify docs were generated
-        let doc_files: Vec<_> = std::fs::read_dir(&rag_docs_dir)
-            .expect("failed to read rag docs dir")
-            .filter_map(|e| e.ok())
-            .collect();
-        assert!(
-            !doc_files.is_empty(),
-            "ur rag docs should have generated files in {}",
-            rag_docs_dir.display()
-        );
-
-        // ---- (4) ur rag index — index docs into Qdrant ----
+        // ---- (3) ur rag index — index test docs into Qdrant ----
         let index_output = run_cmd(&ur, &["rag", "index", "--language", "rust"], &env);
         assert!(
             index_output.status.success(),
@@ -701,7 +712,7 @@ fn e2e_rag_search() {
             "ur rag index should report indexed chunks.\nGot: {index_stdout}"
         );
 
-        // ---- (5) ur rag search — search indexed docs ----
+        // ---- (4) ur rag search — search indexed docs ----
         let search_output = run_cmd(
             &ur,
             &[
@@ -737,7 +748,7 @@ fn e2e_rag_search() {
         );
     }));
 
-    // ---- (6) Always tear down server ----
+    // ---- (5) Always tear down server ----
     stop_server(&ur, config_path);
 
     if let Err(e) = result {

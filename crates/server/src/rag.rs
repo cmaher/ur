@@ -24,7 +24,7 @@ impl RagService for RagServiceHandler {
         req: Request<RagIndexRequest>,
     ) -> Result<Response<RagIndexResponse>, Status> {
         let req = req.into_inner();
-        let language = language_str(req.language());
+        let language = language_str(req.language())?;
 
         info!(language = %language, "rag_index request received");
 
@@ -54,7 +54,7 @@ impl RagService for RagServiceHandler {
         req: Request<RagSearchRequest>,
     ) -> Result<Response<RagSearchResponse>, Status> {
         let req = req.into_inner();
-        let language = language_str(req.language());
+        let language = language_str(req.language())?;
         let top_k = req.top_k.map(|k| k as u64);
 
         info!(
@@ -84,8 +84,33 @@ impl RagService for RagServiceHandler {
 }
 
 /// Convert the proto `Language` enum to a string used by `RagManager`.
-fn language_str(lang: Language) -> &'static str {
+///
+/// Returns `InvalidArgument` for `Unspecified` — callers must provide an explicit language.
+#[allow(clippy::result_large_err)]
+fn language_str(lang: Language) -> Result<&'static str, Status> {
     match lang {
-        Language::Rust => "rust",
+        Language::Unspecified => Err(Status::invalid_argument(
+            "language is required — specify a language (e.g. --language rust)",
+        )),
+        Language::Rust => Ok("rust"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_str_rejects_unspecified() {
+        let result = language_str(Language::Unspecified);
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn language_str_accepts_rust() {
+        let result = language_str(Language::Rust);
+        assert_eq!(result.unwrap(), "rust");
     }
 }

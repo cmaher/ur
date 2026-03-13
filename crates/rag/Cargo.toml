@@ -10,6 +10,7 @@ qdrant-client = "1"
 text-splitter = { version = "0.18", features = ["markdown"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
+ur_config = { path = "../ur_config" }
 ur_rpc = { path = "../ur_rpc", features = ["rag"] }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"

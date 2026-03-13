@@ -64,6 +64,7 @@ fn make_grpc_handler(
         network: network_config.clone(),
         rag: ur_config::RagConfig {
             qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
+            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
         },
         projects: std::collections::HashMap::new(),
     };

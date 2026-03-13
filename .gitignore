@@ -16,3 +16,4 @@ containers/server/ur-server
 
 # Bacon
 .bacon-locations
+.source_*

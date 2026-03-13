@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use crate::chunking;
 
-const VECTOR_SIZE: u64 = 384;
 const UPSERT_BATCH_SIZE: usize = 256;
+const EMBED_BATCH_SIZE: usize = 32;
 const DEFAULT_TOP_K: u64 = 5;
 
 /// Summary of a completed indexing operation.
@@ -38,13 +38,19 @@ pub struct SearchResult {
 pub struct RagManager {
     qdrant: Arc<qdrant_client::Qdrant>,
     embedding_model: Arc<TextEmbedding>,
+    vector_size: u64,
 }
 
 impl RagManager {
-    pub fn new(qdrant: Arc<qdrant_client::Qdrant>, embedding_model: Arc<TextEmbedding>) -> Self {
+    pub fn new(
+        qdrant: Arc<qdrant_client::Qdrant>,
+        embedding_model: Arc<TextEmbedding>,
+        vector_size: u64,
+    ) -> Self {
         Self {
             qdrant,
             embedding_model,
+            vector_size,
         }
     }
 
@@ -69,12 +75,16 @@ impl RagManager {
         // Drop and recreate collection
         self.recreate_collection(&collection).await?;
 
-        // Embed all chunks
+        // Embed chunks in small batches to avoid ONNX runtime memory blowup.
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let embeddings = self
-            .embedding_model
-            .embed(texts, None)
-            .context("Failed to embed document chunks")?;
+        let mut embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(EMBED_BATCH_SIZE) {
+            let batch_embeddings = self
+                .embedding_model
+                .embed(batch.to_vec(), None)
+                .context("Failed to embed document chunks")?;
+            embeddings.extend(batch_embeddings);
+        }
 
         // Upsert in batches
         for batch_start in (0..chunks.len()).step_by(UPSERT_BATCH_SIZE) {
@@ -182,7 +192,7 @@ impl RagManager {
         self.qdrant
             .create_collection(
                 CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(VECTOR_SIZE, Distance::Cosine)),
+                    .vectors_config(VectorParamsBuilder::new(self.vector_size, Distance::Cosine)),
             )
             .await
             .context("Failed to create collection")?;

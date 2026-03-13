@@ -167,6 +167,61 @@ pub const DEFAULT_QDRANT_HOSTNAME: &str = "ur-qdrant";
 /// Default gRPC port for Qdrant.
 pub const DEFAULT_QDRANT_PORT: u16 = 6334;
 
+/// Default embedding model name for RAG.
+pub const DEFAULT_EMBEDDING_MODEL: &str = "all-MiniLM-L6-v2";
+
+/// HuggingFace download metadata for a supported embedding model.
+///
+/// Contains only the information needed to download model files — no fastembed
+/// or other heavy dependencies. Used by the CLI (`ur rag model download`) and
+/// the install script logic.
+pub struct ModelDownloadInfo {
+    /// HuggingFace org (e.g. "Qdrant").
+    pub hf_org: &'static str,
+    /// HuggingFace repo name (e.g. "all-MiniLM-L6-v2-onnx").
+    pub hf_repo: &'static str,
+    /// Git commit hash for the snapshot.
+    pub hf_commit: &'static str,
+    /// Files to download from HuggingFace.
+    pub hf_files: &'static [&'static str],
+    /// Vector dimensionality (e.g. 384 for MiniLM).
+    pub vector_size: u64,
+}
+
+const MINI_LM_FILES: &[&str] = &[
+    "model.onnx",
+    "tokenizer.json",
+    "config.json",
+    "special_tokens_map.json",
+    "tokenizer_config.json",
+];
+
+static SUPPORTED_MODELS: &[(&str, ModelDownloadInfo)] = &[(
+    "all-MiniLM-L6-v2",
+    ModelDownloadInfo {
+        hf_org: "Qdrant",
+        hf_repo: "all-MiniLM-L6-v2-onnx",
+        hf_commit: "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079",
+        hf_files: MINI_LM_FILES,
+        vector_size: 384,
+    },
+)];
+
+/// Look up model download info by config name (e.g. "all-MiniLM-L6-v2").
+///
+/// Returns `None` for unknown model names.
+pub fn model_download_info(name: &str) -> Option<&'static ModelDownloadInfo> {
+    SUPPORTED_MODELS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, info)| info)
+}
+
+/// List all supported model names.
+pub fn supported_model_names() -> Vec<&'static str> {
+    SUPPORTED_MODELS.iter().map(|(n, _)| *n).collect()
+}
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -225,6 +280,7 @@ struct RawNetworkConfig {
 #[derive(Debug, Deserialize)]
 struct RawRagConfig {
     qdrant_hostname: Option<String>,
+    embedding_model: Option<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -257,6 +313,8 @@ pub struct NetworkConfig {
 pub struct RagConfig {
     /// Hostname containers use to reach Qdrant via Docker DNS (default: "ur-qdrant").
     pub qdrant_hostname: String,
+    /// Embedding model name (default: "all-MiniLM-L6-v2").
+    pub embedding_model: String,
 }
 
 /// Resolved project configuration for a single project.
@@ -391,9 +449,13 @@ impl Config {
                 qdrant_hostname: r
                     .qdrant_hostname
                     .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
+                embedding_model: r
+                    .embedding_model
+                    .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
             },
             None => RagConfig {
                 qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
+                embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
             },
         };
 
@@ -929,6 +991,34 @@ mounts = ["/opt/tools:relative/path"]
         let msg = err.to_string();
         assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("absolute path"), "{msg}");
+    }
+
+    #[test]
+    fn rag_embedding_model_defaults_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn rag_reads_custom_embedding_model() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[rag]\nembedding_model = \"custom-model\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, "custom-model");
+    }
+
+    #[test]
+    fn rag_embedding_model_defaults_when_rag_section_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
     }
 
     #[test]

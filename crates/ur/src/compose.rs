@@ -224,6 +224,7 @@ mod tests {
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
             rag: ur_config::RagConfig {
                 qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
             },
             projects: std::collections::HashMap::new(),
         };
@@ -264,6 +265,7 @@ mod tests {
         };
         let rag = ur_config::RagConfig {
             qdrant_hostname: "test-qdrant".to_string(),
+            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
         };
         let rendered = render_compose(&network, &proxy, &rag);
         assert!(rendered.contains("name: test-net"));

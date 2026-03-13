@@ -3,7 +3,8 @@ syntax = "proto3";
 package ur.rag;
 
 enum Language {
-  LANGUAGE_RUST = 0;
+  LANGUAGE_UNSPECIFIED = 0;
+  LANGUAGE_RUST = 1;
 }
 
 // RAG indexing and search service

@@ -41,6 +41,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${UR_CONFIG:-~/.ur}:/config
       - ${UR_WORKSPACE:-~/.ur/workspace}:/workspace
+      - ${UR_CONFIG:-~/.ur}/fastembed:/fastembed:ro
 
     environment:
       # Point server at the mounted config directory inside the container
@@ -49,6 +50,8 @@ services:
       - UR_HOST_CONFIG=${UR_CONFIG:-~/.ur}
       # Host-side workspace path for ur-hostd CWD mapping
       - UR_HOST_WORKSPACE=${UR_WORKSPACE:-~/.ur/workspace}
+      # fastembed model cache (mounted read-only from host)
+      - FASTEMBED_CACHE_DIR=/fastembed
       # GitHub authentication (forwarded from host)
       - UR_HOSTD_ADDR=http://host.docker.internal:${UR_HOSTD_PORT:-42070}
       - GH_TOKEN=${GH_TOKEN:-}
