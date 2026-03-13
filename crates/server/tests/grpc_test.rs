@@ -83,12 +83,11 @@ fn make_grpc_handler(
         network_config,
         ur_server::process::PromptModesConfig::default(),
     );
-    let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(
-            Path::new("/nonexistent"),
-            &ur_config::HostExecConfig::default(),
-        )
-        .unwrap();
+    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
+        Path::new("/nonexistent"),
+        &ur_config::HostExecConfig::default(),
+    )
+    .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_pool_manager,
