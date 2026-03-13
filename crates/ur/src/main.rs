@@ -612,7 +612,7 @@ async fn main() -> Result<()> {
             ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
         },
         Commands::Rag { command } => match command {
-            RagCommands::Docs => rag::generate_docs(&config.config_dir)?,
+            RagCommands::Docs => rag::generate_docs(&config)?,
             RagCommands::Index { language } => rag::index(port, &language).await?,
             RagCommands::Search {
                 query,
