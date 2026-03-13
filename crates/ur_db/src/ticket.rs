@@ -116,7 +116,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 
 /// Escape a string value for safe use inside CozoScript single-quoted string literals.
 /// Doubles any backslashes and escapes single quotes.
-fn escape_cozo(s: &str) -> String {
+pub(crate) fn escape_cozo(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 

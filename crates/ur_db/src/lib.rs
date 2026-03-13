@@ -1,11 +1,13 @@
 mod schema;
 
 pub mod backup;
+pub mod dependency;
 pub mod query;
 pub mod ticket;
 
 pub use backup::BackupManager;
-pub use query::{DispatchableTicket, MetadataMatchTicket, QueryManager};
+pub use dependency::DispatchableTicket;
+pub use query::{MetadataMatchTicket, QueryManager};
 pub use ticket::{
     ActivityEntry, CreateTicketParams, ListTicketFilters, MetadataEntry, Ticket, TicketDetail,
     UpdateTicketFields,
@@ -88,6 +90,9 @@ impl DatabaseManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod dependency_tests;
 
 #[cfg(test)]
 mod tests;

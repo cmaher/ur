@@ -1,3 +1,4 @@
+use crate::dependency::DispatchableTicket;
 use crate::DatabaseManager;
 
 /// Manages Datalog queries against the CozoDB ticket database.
@@ -197,14 +198,6 @@ impl QueryManager {
             })
             .collect())
     }
-}
-
-/// A ticket that is dispatchable (ready for an agent to work on).
-#[derive(Debug, Clone)]
-pub struct DispatchableTicket {
-    pub id: String,
-    pub title: String,
-    pub priority: i64,
 }
 
 /// A ticket matched by a metadata query.
