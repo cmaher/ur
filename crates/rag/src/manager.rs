@@ -110,12 +110,19 @@ impl RagManager {
             }
 
             self.qdrant
-                .upsert_points(UpsertPointsBuilder::new(&collection, points).wait(true))
+                .upsert_points(UpsertPointsBuilder::new(&collection, points).wait(false))
                 .await
                 .context("Failed to upsert points to Qdrant")?;
 
             debug!(batch_start, batch_end, "upserted batch to Qdrant");
         }
+
+        // Final synchronous upsert with an empty batch to ensure all prior async
+        // upserts have been committed before we report completion.
+        self.qdrant
+            .upsert_points(UpsertPointsBuilder::new(&collection, vec![]).wait(true))
+            .await
+            .context("Failed to flush pending upserts to Qdrant")?;
 
         info!(
             collection = %collection,
