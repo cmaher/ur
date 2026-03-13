@@ -7,6 +7,7 @@ members = [
     "crates/rag",
     "crates/ur",
     "crates/ur_config",
+    "crates/ur_db",
     "crates/ur_rpc",
     "crates/server",
     "crates/workercmd/*",

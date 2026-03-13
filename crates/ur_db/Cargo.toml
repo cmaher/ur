@@ -1,0 +1,11 @@
+[package]
+name = "ur_db"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+cozo = "0.7"
+rayon = "=1.10.0"
+
+[dev-dependencies]
+tempfile = "3"
