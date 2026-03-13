@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -5,13 +6,14 @@ use anyhow::{Context, Result};
 use fastembed::TextEmbedding;
 use qdrant_client::Payload;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, Distance, PointStruct, SearchPointsBuilder, UpsertPointsBuilder,
-    VectorParamsBuilder,
+    CreateCollectionBuilder, DeletePointsBuilder, Distance, PointStruct, PointsIdsList,
+    SearchPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder,
 };
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::chunking;
+use crate::manifest::{self, FileEntry, IndexManifest};
 
 const UPSERT_BATCH_SIZE: usize = 256;
 const EMBED_BATCH_SIZE: usize = 32;
@@ -39,6 +41,7 @@ pub struct RagManager {
     qdrant: Arc<qdrant_client::Qdrant>,
     embedding_model: Arc<TextEmbedding>,
     vector_size: u64,
+    model_name: String,
 }
 
 impl RagManager {
@@ -46,94 +49,162 @@ impl RagManager {
         qdrant: Arc<qdrant_client::Qdrant>,
         embedding_model: Arc<TextEmbedding>,
         vector_size: u64,
+        model_name: String,
     ) -> Self {
         Self {
             qdrant,
             embedding_model,
             vector_size,
+            model_name,
         }
     }
 
     /// Index markdown documents from `docs_dir` into a language-specific Qdrant collection.
     ///
-    /// Drops and recreates the collection (idempotent). Returns a summary of the operation.
+    /// Uses a local manifest to perform incremental indexing: only changed/new files are
+    /// embedded and upserted, unchanged files are skipped, and removed files have their
+    /// points deleted. A model name change triggers a full re-index.
     pub async fn index(&self, docs_dir: &Path, language: &str) -> Result<IndexSummary> {
         let collection = collection_name(language);
 
-        // Read and chunk documents
-        let chunks = chunking::read_and_chunk_docs(docs_dir)?;
-        let files_processed = count_unique_files(&chunks);
-        let total_chunks = chunks.len();
+        // Read and chunk all documents from disk
+        let all_chunks = chunking::read_and_chunk_docs(docs_dir)?;
+        let total_files = count_unique_files(&all_chunks);
+
+        // Load the existing manifest (or create a fresh one)
+        let mut prev_manifest = IndexManifest::load(language, &self.model_name)?;
+
+        // If the model changed, force a full re-index by clearing the manifest
+        let model_changed = prev_manifest.model != self.model_name;
+        if model_changed {
+            info!(
+                old_model = %prev_manifest.model,
+                new_model = %self.model_name,
+                "embedding model changed, triggering full re-index"
+            );
+            // Delete all old points if there's an existing collection
+            self.ensure_collection_exists(&collection).await?;
+            self.recreate_collection(&collection).await?;
+            prev_manifest.files.clear();
+            prev_manifest.model = self.model_name.clone();
+        } else {
+            // Ensure the collection exists (create if missing, don't drop)
+            self.ensure_collection_exists(&collection).await?;
+        }
+
+        // Hash all current files and group chunks by source file
+        let mut current_files: HashSet<String> = HashSet::new();
+        let mut chunks_by_file: std::collections::HashMap<String, Vec<&chunking::DocChunk>> =
+            std::collections::HashMap::new();
+        for chunk in &all_chunks {
+            current_files.insert(chunk.source_file.clone());
+            chunks_by_file
+                .entry(chunk.source_file.clone())
+                .or_default()
+                .push(chunk);
+        }
+
+        // Compute hashes for current files
+        let mut current_hashes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for file_path in &current_files {
+            let full_path = docs_dir.join(file_path);
+            let hash = manifest::sha256_file(&full_path)?;
+            current_hashes.insert(file_path.clone(), hash);
+        }
+
+        // Determine which files need re-indexing
+        let mut files_to_index: Vec<String> = Vec::new();
+        let mut files_to_delete: Vec<String> = Vec::new();
+
+        // Find changed or new files
+        for file_path in &current_files {
+            let current_hash = &current_hashes[file_path];
+            match prev_manifest.files.get(file_path) {
+                Some(entry) if entry.hash == *current_hash => {
+                    debug!(file = %file_path, "unchanged, skipping");
+                }
+                _ => {
+                    files_to_index.push(file_path.clone());
+                }
+            }
+        }
+
+        // Find removed files (in manifest but not on disk)
+        for file_path in prev_manifest.files.keys() {
+            if !current_files.contains(file_path) {
+                files_to_delete.push(file_path.clone());
+            }
+        }
 
         info!(
             collection = %collection,
-            files = files_processed,
-            chunks = total_chunks,
-            "indexing documents"
+            total_files = total_files,
+            changed = files_to_index.len(),
+            removed = files_to_delete.len(),
+            skipped = total_files - files_to_index.len(),
+            "incremental indexing"
         );
 
-        // Drop and recreate collection
-        self.recreate_collection(&collection).await?;
-
-        // Embed chunks in small batches to avoid ONNX runtime memory blowup.
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let mut embeddings = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(EMBED_BATCH_SIZE) {
-            let batch_vec = batch.to_vec();
-            let model = Arc::clone(&self.embedding_model);
-            let batch_embeddings = tokio::task::spawn_blocking(move || {
-                model.embed(batch_vec, None)
-            })
-            .await
-            .context("Embedding task panicked")?
-            .context("Failed to embed document chunks")?;
-            embeddings.extend(batch_embeddings);
-        }
-
-        // Upsert in batches
-        for batch_start in (0..chunks.len()).step_by(UPSERT_BATCH_SIZE) {
-            let batch_end = (batch_start + UPSERT_BATCH_SIZE).min(chunks.len());
-            let mut points = Vec::with_capacity(batch_end - batch_start);
-
-            for i in batch_start..batch_end {
-                let chunk = &chunks[i];
-                let embedding = &embeddings[i];
-
-                let mut payload = Payload::new();
-                payload.insert("text", chunk.text.as_str());
-                payload.insert("source_file", chunk.source_file.as_str());
-                payload.insert("language", language);
-
-                let point =
-                    PointStruct::new(Uuid::new_v4().to_string(), embedding.clone(), payload);
-                points.push(point);
+        // Delete points for removed files
+        for file_path in &files_to_delete {
+            if let Some(entry) = prev_manifest.files.remove(file_path) {
+                self.delete_points_by_ids(&collection, &entry.chunk_ids)
+                    .await?;
+                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted removed file points");
             }
-
-            self.qdrant
-                .upsert_points(UpsertPointsBuilder::new(&collection, points).wait(false))
-                .await
-                .context("Failed to upsert points to Qdrant")?;
-
-            debug!(batch_start, batch_end, "upserted batch to Qdrant");
         }
 
-        // Final synchronous upsert with an empty batch to ensure all prior async
-        // upserts have been committed before we report completion.
-        self.qdrant
-            .upsert_points(UpsertPointsBuilder::new(&collection, vec![]).wait(true))
-            .await
-            .context("Failed to flush pending upserts to Qdrant")?;
+        // Delete old points for changed files (before re-indexing them)
+        for file_path in &files_to_index {
+            if let Some(entry) = prev_manifest.files.remove(file_path) {
+                self.delete_points_by_ids(&collection, &entry.chunk_ids)
+                    .await?;
+                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted stale file points");
+            }
+        }
+
+        // Collect chunks for files that need indexing
+        let mut chunks_to_embed: Vec<(&chunking::DocChunk, String)> = Vec::new();
+        for file_path in &files_to_index {
+            let file_chunks = chunks_by_file.get(file_path).into_iter().flatten();
+            for chunk in file_chunks {
+                chunks_to_embed.push((chunk, file_path.clone()));
+            }
+        }
+
+        let chunks_indexed = chunks_to_embed.len();
+
+        if !chunks_to_embed.is_empty() {
+            let new_chunk_ids = self
+                .embed_and_upsert(&collection, language, &chunks_to_embed)
+                .await?;
+
+            // Update manifest with new file entries
+            for (file_path, chunk_ids) in &new_chunk_ids {
+                prev_manifest.files.insert(
+                    file_path.clone(),
+                    FileEntry {
+                        hash: current_hashes[file_path].clone(),
+                        chunk_ids: chunk_ids.clone(),
+                    },
+                );
+            }
+        }
+
+        // Save the updated manifest
+        prev_manifest.save(language)?;
 
         info!(
             collection = %collection,
-            files = files_processed,
-            chunks = total_chunks,
+            total_files = total_files,
+            chunks_indexed = chunks_indexed,
             "indexing complete"
         );
 
         Ok(IndexSummary {
-            files_processed: files_processed as u32,
-            chunks_indexed: total_chunks as u32,
+            files_processed: total_files as u32,
+            chunks_indexed: chunks_indexed as u32,
         })
     }
 
@@ -152,12 +223,10 @@ impl RagManager {
         // Embed the query
         let model = Arc::clone(&self.embedding_model);
         let query_text = query.to_string();
-        let embeddings = tokio::task::spawn_blocking(move || {
-            model.embed(vec![query_text], None)
-        })
-        .await
-        .context("Embedding task panicked")?
-        .context("Failed to embed search query")?;
+        let embeddings = tokio::task::spawn_blocking(move || model.embed(vec![query_text], None))
+            .await
+            .context("Embedding task panicked")?
+            .context("Failed to embed search query")?;
 
         let query_vector = embeddings
             .into_iter()
@@ -188,6 +257,91 @@ impl RagManager {
         Ok(results)
     }
 
+    /// Embed a set of chunks, upsert them to Qdrant, and return the chunk IDs grouped by file.
+    async fn embed_and_upsert(
+        &self,
+        collection: &str,
+        language: &str,
+        chunks: &[(&chunking::DocChunk, String)],
+    ) -> Result<std::collections::HashMap<String, Vec<Uuid>>> {
+        // Embed in small batches
+        let texts: Vec<String> = chunks.iter().map(|(c, _)| c.text.clone()).collect();
+        let mut embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(EMBED_BATCH_SIZE) {
+            let batch_vec = batch.to_vec();
+            let model = Arc::clone(&self.embedding_model);
+            let batch_embeddings =
+                tokio::task::spawn_blocking(move || model.embed(batch_vec, None))
+                    .await
+                    .context("Embedding task panicked")?
+                    .context("Failed to embed document chunks")?;
+            embeddings.extend(batch_embeddings);
+        }
+
+        let mut chunk_ids_by_file: std::collections::HashMap<String, Vec<Uuid>> =
+            std::collections::HashMap::new();
+
+        // Upsert in batches
+        for batch_start in (0..chunks.len()).step_by(UPSERT_BATCH_SIZE) {
+            let batch_end = (batch_start + UPSERT_BATCH_SIZE).min(chunks.len());
+            let points: Vec<PointStruct> = (batch_start..batch_end)
+                .map(|i| {
+                    let (chunk, file_path) = &chunks[i];
+                    let point_id = Uuid::new_v4();
+                    chunk_ids_by_file
+                        .entry(file_path.clone())
+                        .or_default()
+                        .push(point_id);
+
+                    let mut payload = Payload::new();
+                    payload.insert("text", chunk.text.as_str());
+                    payload.insert("source_file", chunk.source_file.as_str());
+                    payload.insert("language", language);
+
+                    PointStruct::new(point_id.to_string(), embeddings[i].clone(), payload)
+                })
+                .collect();
+
+            self.qdrant
+                .upsert_points(UpsertPointsBuilder::new(collection, points).wait(false))
+                .await
+                .context("Failed to upsert points to Qdrant")?;
+
+            debug!(batch_start, batch_end, "upserted batch to Qdrant");
+        }
+
+        // Final synchronous upsert to flush pending async writes
+        self.qdrant
+            .upsert_points(UpsertPointsBuilder::new(collection, vec![]).wait(true))
+            .await
+            .context("Failed to flush pending upserts to Qdrant")?;
+
+        Ok(chunk_ids_by_file)
+    }
+
+    /// Ensure the collection exists, creating it if missing.
+    async fn ensure_collection_exists(&self, collection_name: &str) -> Result<()> {
+        let exists = self
+            .qdrant
+            .collection_exists(collection_name)
+            .await
+            .context("Failed to check collection existence")?;
+
+        if !exists {
+            self.qdrant
+                .create_collection(
+                    CreateCollectionBuilder::new(collection_name).vectors_config(
+                        VectorParamsBuilder::new(self.vector_size, Distance::Cosine),
+                    ),
+                )
+                .await
+                .context("Failed to create collection")?;
+            info!(collection = %collection_name, "created collection");
+        }
+
+        Ok(())
+    }
+
     /// Drop the collection if it exists, then create a fresh one with the correct vector config.
     async fn recreate_collection(&self, collection_name: &str) -> Result<()> {
         let exists = self
@@ -213,6 +367,24 @@ impl RagManager {
             .context("Failed to create collection")?;
 
         info!(collection = %collection_name, "created collection");
+        Ok(())
+    }
+
+    /// Delete specific points from a collection by their UUIDs.
+    async fn delete_points_by_ids(&self, collection_name: &str, chunk_ids: &[Uuid]) -> Result<()> {
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<qdrant_client::qdrant::PointId> =
+            chunk_ids.iter().map(|id| id.to_string().into()).collect();
+        self.qdrant
+            .delete_points(
+                DeletePointsBuilder::new(collection_name)
+                    .points(PointsIdsList { ids })
+                    .wait(true),
+            )
+            .await
+            .context("Failed to delete points from Qdrant")?;
         Ok(())
     }
 }
