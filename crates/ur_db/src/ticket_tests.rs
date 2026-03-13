@@ -1,5 +1,5 @@
-use crate::ticket::{CreateTicketParams, ListTicketFilters, UpdateTicketFields};
 use crate::DatabaseManager;
+use crate::ticket::{CreateTicketParams, ListTicketFilters, UpdateTicketFields};
 
 fn fresh_db() -> DatabaseManager {
     DatabaseManager::create_in_memory().expect("create in-memory db")
@@ -39,7 +39,10 @@ fn create_top_level_ticket_generates_project_prefixed_id() {
         )
         .unwrap();
 
-    assert!(id.starts_with("ur."), "ID should start with project prefix, got: {id}");
+    assert!(
+        id.starts_with("ur."),
+        "ID should start with project prefix, got: {id}"
+    );
     // Format: ur.XXXX (4 alphanumeric chars)
     let suffix = &id[3..];
     assert_eq!(suffix.len(), 4, "suffix should be 4 chars, got: {suffix}");
@@ -174,7 +177,11 @@ fn create_multiple_top_level_tickets_generates_unique_ids() {
     let mut sorted = ids.clone();
     sorted.sort();
     sorted.dedup();
-    assert_eq!(sorted.len(), ids.len(), "all generated IDs should be unique");
+    assert_eq!(
+        sorted.len(),
+        ids.len(),
+        "all generated IDs should be unique"
+    );
 }
 
 // === get_ticket ===
@@ -652,8 +659,14 @@ fn create_ticket_with_special_characters_in_title() {
         .unwrap();
 
     let detail = db.get_ticket(&id).unwrap();
-    assert_eq!(detail.ticket.title, r#"Fix "quoted" thing & backslash \ test"#);
-    assert_eq!(detail.ticket.body, "Body with \"quotes\" and \\backslashes\\");
+    assert_eq!(
+        detail.ticket.title,
+        r#"Fix "quoted" thing & backslash \ test"#
+    );
+    assert_eq!(
+        detail.ticket.body,
+        "Body with \"quotes\" and \\backslashes\\"
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
-use crate::ticket::CreateTicketParams;
 use crate::DatabaseManager;
+use crate::ticket::CreateTicketParams;
 
 fn fresh_db() -> DatabaseManager {
     DatabaseManager::create_in_memory().expect("create in-memory db")
@@ -251,9 +251,7 @@ fn add_link_nonexistent_ticket_fails() {
     let epic = create_epic(&db, "ur");
     let t1 = create_task(&db, "ur", &epic, "Task 1");
 
-    let err = db
-        .add_link(&t1, "ur.nonexistent")
-        .expect_err("should fail");
+    let err = db.add_link(&t1, "ur.nonexistent").expect_err("should fail");
     assert!(err.contains("Ticket not found"));
 }
 

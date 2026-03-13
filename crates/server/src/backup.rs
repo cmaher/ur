@@ -32,10 +32,7 @@ impl BackupTaskManager {
     /// is not writable. Call this at startup before spawning the background task.
     pub fn validate_backup_path(path: &Path) -> Result<(), String> {
         if !path.exists() {
-            return Err(format!(
-                "backup path does not exist: {}",
-                path.display()
-            ));
+            return Err(format!("backup path does not exist: {}", path.display()));
         }
         if !path.is_dir() {
             return Err(format!(
@@ -45,13 +42,8 @@ impl BackupTaskManager {
         }
         // Check writability by attempting to create and remove a temp file
         let probe = path.join(".ur-backup-probe");
-        std::fs::write(&probe, b"probe").map_err(|e| {
-            format!(
-                "backup path is not writable: {} ({})",
-                path.display(),
-                e
-            )
-        })?;
+        std::fs::write(&probe, b"probe")
+            .map_err(|e| format!("backup path is not writable: {} ({})", path.display(), e))?;
         std::fs::remove_file(&probe).ok();
         Ok(())
     }
@@ -154,14 +146,13 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str) {
         if name_str.starts_with("ur-backup-")
             && name_str.ends_with(".db")
             && name_str.as_ref() != current_filename
+            && let Err(e) = std::fs::remove_file(entry.path())
         {
-            if let Err(e) = std::fs::remove_file(entry.path()) {
-                warn!(
-                    error = %e,
-                    file = %entry.path().display(),
-                    "failed to remove old backup"
-                );
-            }
+            warn!(
+                error = %e,
+                file = %entry.path().display(),
+                "failed to remove old backup"
+            );
         }
     }
 }
@@ -202,8 +193,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("not-a-dir");
         std::fs::write(&file, "data").unwrap();
-        let err =
-            BackupTaskManager::validate_backup_path(&file).expect_err("should fail for file");
+        let err = BackupTaskManager::validate_backup_path(&file).expect_err("should fail for file");
         assert!(err.contains("not a directory"), "{err}");
     }
 
@@ -222,11 +212,7 @@ mod tests {
         let entries: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()
             .flatten()
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("ur-backup-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("ur-backup-"))
             .collect();
         assert_eq!(entries.len(), 1, "should create exactly one backup file");
         assert!(entries[0].metadata().unwrap().len() > 0);
@@ -289,7 +275,10 @@ mod tests {
         let mgr = BackupTaskManager::new(bm, config);
         let (tx, rx) = watch::channel(false);
 
-        let handle = mgr.spawn(rx).expect("should succeed").expect("should be Some");
+        let handle = mgr
+            .spawn(rx)
+            .expect("should succeed")
+            .expect("should be Some");
         assert!(!handle.is_finished());
 
         // Signal shutdown

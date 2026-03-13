@@ -1,5 +1,5 @@
-use crate::ticket::escape_cozo;
 use crate::DatabaseManager;
+use crate::ticket::escape_cozo;
 
 /// A ticket that is dispatchable (ready for an agent to work on).
 #[derive(Debug, Clone)]
@@ -18,9 +18,7 @@ impl DatabaseManager {
     /// - The blocker and blocked are the same ticket
     pub fn add_block(&self, blocker_id: &str, blocked_id: &str) -> Result<(), String> {
         if blocker_id == blocked_id {
-            return Err(format!(
-                "Cannot block a ticket on itself: {blocker_id}"
-            ));
+            return Err(format!("Cannot block a ticket on itself: {blocker_id}"));
         }
 
         // Verify both tickets exist
@@ -103,10 +101,7 @@ impl DatabaseManager {
     /// (task, bug), status=open, and no incoming `blocks` edges from open (non-closed) tickets.
     ///
     /// Parent-child relationships do NOT count as blocking -- only explicit `blocks` edges.
-    pub fn dispatchable_tickets(
-        &self,
-        epic_id: &str,
-    ) -> Result<Vec<DispatchableTicket>, String> {
+    pub fn dispatchable_tickets(&self, epic_id: &str) -> Result<Vec<DispatchableTicket>, String> {
         let script = format!(
             r#"
             # Rule: ticket IDs that are blocked by at least one open ticket

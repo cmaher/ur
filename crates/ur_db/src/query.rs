@@ -1,5 +1,5 @@
-use crate::dependency::DispatchableTicket;
 use crate::DatabaseManager;
+use crate::dependency::DispatchableTicket;
 
 /// Manages Datalog queries against the CozoDB ticket database.
 ///

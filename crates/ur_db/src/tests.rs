@@ -188,7 +188,8 @@ fn database_manager_creates_schema() {
     let db = DatabaseManager::create_in_memory().expect("schema creation should succeed");
 
     // Verify all six relations exist by querying each one
-    db.run("?[id] := *ticket{id}").expect("ticket relation should exist");
+    db.run("?[id] := *ticket{id}")
+        .expect("ticket relation should exist");
     db.run("?[ticket_id] := *ticket_meta{ticket_id}")
         .expect("ticket_meta relation should exist");
     db.run("?[blocker_id] := *blocks{blocker_id}")
@@ -209,7 +210,8 @@ fn database_manager_sqlite_creates_schema() {
     let db = DatabaseManager::create_with_sqlite(&db_path).expect("sqlite creation should succeed");
 
     // Verify all six relations exist
-    db.run("?[id] := *ticket{id}").expect("ticket relation should exist");
+    db.run("?[id] := *ticket{id}")
+        .expect("ticket relation should exist");
     db.run("?[ticket_id] := *ticket_meta{ticket_id}")
         .expect("ticket_meta relation should exist");
     db.run("?[blocker_id] := *blocks{blocker_id}")

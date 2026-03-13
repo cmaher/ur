@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::ticket::{escape_cozo, ActivityEntry};
 use crate::DatabaseManager;
+use crate::ticket::{ActivityEntry, escape_cozo};
 use rand::Rng;
 
 /// A single key-value metadata entry for an activity.

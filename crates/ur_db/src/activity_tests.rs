@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::ticket::CreateTicketParams;
 use crate::DatabaseManager;
+use crate::ticket::CreateTicketParams;
 
 fn fresh_db() -> DatabaseManager {
     DatabaseManager::create_in_memory().expect("create in-memory db")
@@ -161,7 +161,12 @@ fn add_activity_with_special_characters() {
     let tid = create_task(&db);
 
     let aid = db
-        .add_activity(&tid, "o'brien", "It's a test with \\ backslash", &HashMap::new())
+        .add_activity(
+            &tid,
+            "o'brien",
+            "It's a test with \\ backslash",
+            &HashMap::new(),
+        )
         .unwrap();
     assert!(!aid.is_empty());
 

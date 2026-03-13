@@ -4,6 +4,8 @@ pub mod grpc;
 #[cfg(feature = "hostexec")]
 pub mod grpc_hostexec;
 pub mod grpc_server;
+#[cfg(feature = "ticket")]
+pub mod grpc_ticket;
 pub mod hostd_client;
 #[cfg(feature = "hostexec")]
 pub mod hostexec;
@@ -13,8 +15,6 @@ pub mod process;
 pub mod proxy;
 #[cfg(feature = "rag")]
 pub mod rag;
-#[cfg(feature = "ticket")]
-pub mod grpc_ticket;
 pub mod registry;
 pub mod run_opts_builder;
 pub mod strategy;

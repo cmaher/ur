@@ -9,7 +9,9 @@ use tracing::info;
 use container::NetworkManager;
 use ur_db::{BackupManager, DatabaseManager};
 use ur_server::process::PromptModesConfig;
-use ur_server::{BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry};
+use ur_server::{
+    BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry,
+};
 
 #[derive(Parser)]
 #[command(
@@ -175,9 +177,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "ticket")]
-    let ticket_handler = Some(ur_server::grpc_ticket::TicketServiceHandler {
-        db: db.clone(),
-    });
+    let ticket_handler = Some(ur_server::grpc_ticket::TicketServiceHandler { db: db.clone() });
 
     let result = ur_server::grpc_server::serve_grpc(
         addr,

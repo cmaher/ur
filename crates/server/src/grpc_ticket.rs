@@ -8,11 +8,10 @@ use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
     AddLinkResponse, CreateTicketRequest, CreateTicketResponse, DeleteMetaRequest,
-    DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse,
-    GetTicketRequest, GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse,
-    ListTicketsRequest, ListTicketsResponse, RemoveBlockRequest, RemoveBlockResponse,
-    RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest,
-    UpdateTicketResponse,
+    DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
+    GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
+    ListTicketsResponse, RemoveBlockRequest, RemoveBlockResponse, RemoveLinkRequest,
+    RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
 };
 
 /// gRPC implementation of the TicketService, delegating to `DatabaseManager`.
@@ -44,7 +43,10 @@ impl TicketService for TicketServiceHandler {
             body: req.body,
         };
 
-        let id = self.db.create_ticket(&req.project, &params).map_err(db_err)?;
+        let id = self
+            .db
+            .create_ticket(&req.project, &params)
+            .map_err(db_err)?;
 
         Ok(Response::new(CreateTicketResponse { id }))
     }
@@ -294,10 +296,7 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(epic_id = %req.epic_id, "dispatchable_tickets request");
 
-        let tickets = self
-            .db
-            .dispatchable_tickets(&req.epic_id)
-            .map_err(db_err)?;
+        let tickets = self.db.dispatchable_tickets(&req.epic_id).map_err(db_err)?;
 
         let proto_tickets = tickets
             .into_iter()
