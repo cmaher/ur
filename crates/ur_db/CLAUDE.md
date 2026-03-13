@@ -4,24 +4,22 @@ CozoDB-based ticket database for the unified ticket data model.
 
 ## Architecture
 
-- `SchemaManager` — owns the CozoDB `DbInstance`, defines relations, provides raw query access
-- `QueryManager` — structured Datalog queries (dispatch, DAG traversal, rollup, cycle detection, metadata)
-- `BackupManager` — backup/restore via CozoDB's `backup_db()`/`restore_backup()` API
+- `DatabaseManager` — primary entry point. Holds the CozoDB `DbInstance` (internally Arc'd, so Clone is cheap). Creates all six relations on startup. Exposes `run()` for raw CozoScript queries. ur-server injects this at startup and passes it to managers that need database access.
+- `QueryManager` — structured Datalog queries (dispatch, DAG traversal, rollup, cycle detection, metadata). Accepts `DatabaseManager` via constructor.
+- `BackupManager` — backup/restore via CozoDB's `backup_db()`/`restore_backup()` API. Accepts `DatabaseManager` via constructor.
 
-## CozoDB Backup Approach
+## Database Location
 
-- **SQLite backend**: `DbInstance::new("sqlite", path, "")` — single file on disk, auto-created
-- **`backup_db()`**: Logical copy via read transaction snapshot. Always produces an SQLite file. Safe during concurrent writes (captures consistent snapshot, doesn't block writers). Target path must be empty — delete old backup before writing new one.
-- **`restore_backup()`**: Only works on empty/fresh DB (store_id == 0). For disaster recovery, create a new instance, restore into it, then swap.
-- **Recommended config** in `ur.toml`:
-  ```toml
-  [database]
-  path = "~/.ur/db/tickets.db"
-  backup_path = "~/.ur/backups/tickets.db"
-  backup_interval_secs = 300
-  ```
-- **Rotation**: Delete-and-recreate (not append). No incremental/WAL backup support.
-- **Gotchas**: One process per DB file (SQLite write lock). Full logical copy each time (fine for <10MB ticket DBs). Restore requires fresh instance.
+SQLite backend: `$UR_CONFIG/ur.db` (alongside `ur.toml`, default `~/.ur/ur.db`).
+
+## Schema (six relations)
+
+- `ticket` — primary entity, keyed by `id: String`
+- `ticket_meta` — flexible key-value metadata per ticket, keyed by `(ticket_id, key)`
+- `blocks` — hard dependency edges forming the dispatch DAG, keyed by `(blocker_id, blocked_id)`
+- `relates_to` — soft informational links, keyed by `(left_id, right_id)`
+- `activity` — timestamped updates on tickets, keyed by `id: String`
+- `activity_meta` — flexible key-value metadata per activity, keyed by `(activity_id, key)`
 
 ## Datalog Patterns
 
