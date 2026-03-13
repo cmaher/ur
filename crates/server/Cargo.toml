@@ -5,6 +5,7 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
+chrono = "0.4"
 container = { path = "../container" }
 fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub"] }
 qdrant-client = "1"
@@ -17,6 +18,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ur_config = { path = "../ur_config" }
+ur_db = { path = "../ur_db" }
 mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
@@ -24,14 +26,15 @@ rag = { path = "../rag" }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
 
 [features]
-default = ["core", "hostexec", "hostd", "rag"]
+default = ["core", "hostexec", "hostd", "rag", "ticket"]
 core = ["ur_rpc/core"]
 hostexec = ["ur_rpc/hostexec", "hostd"]
 hostd = ["ur_rpc/hostd"]
 rag = ["ur_rpc/rag"]
+ticket = ["ur_rpc/ticket"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "hostd"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "hostd", "ticket"] }

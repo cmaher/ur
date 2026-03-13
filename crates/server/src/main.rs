@@ -3,11 +3,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
+use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
+use ur_db::{BackupManager, DatabaseManager};
 use ur_server::process::PromptModesConfig;
-use ur_server::{Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry};
+use ur_server::{
+    BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry,
+};
 
 #[derive(Parser)]
 #[command(
@@ -81,6 +85,20 @@ async fn main() -> anyhow::Result<()> {
             Err(_) => PromptModesConfig::default(),
         }
     };
+
+    // Initialize CozoDB database
+    let db_path = cfg.config_dir.join("ur.db");
+    let db = DatabaseManager::create_with_sqlite(&db_path)
+        .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
+    info!(db_path = %db_path.display(), "database initialized");
+
+    // Start periodic backup task (if configured)
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let backup_manager = BackupManager::new(db.clone());
+    let backup_task_manager = BackupTaskManager::new(backup_manager, cfg.backup.clone());
+    let backup_handle = backup_task_manager
+        .spawn(shutdown_rx)
+        .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
 
     let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
@@ -163,13 +181,24 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
+    #[cfg(feature = "ticket")]
+    let ticket_handler = Some(ur_server::grpc_ticket::TicketServiceHandler { db: db.clone() });
+
     let result = ur_server::grpc_server::serve_grpc(
         addr,
         grpc_handler,
         #[cfg(feature = "rag")]
         rag_handler,
+        #[cfg(feature = "ticket")]
+        ticket_handler,
     )
     .await;
+
+    // Signal backup task to stop and wait for it
+    let _ = shutdown_tx.send(true);
+    if let Some(handle) = backup_handle {
+        let _ = handle.await;
+    }
 
     let _ = tokio::fs::remove_file(&pid_file).await;
 

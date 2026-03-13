@@ -57,6 +57,7 @@ pub async fn serve_grpc(
     addr: SocketAddr,
     handler: CoreServiceHandler,
     #[cfg(feature = "rag")] rag_handler: Option<crate::rag::RagServiceHandler>,
+    #[cfg(feature = "ticket")] ticket_handler: Option<crate::grpc_ticket::TicketServiceHandler>,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "main gRPC server listening");
 
@@ -73,6 +74,12 @@ pub async fn serve_grpc(
     if let Some(rag) = rag_handler {
         use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
         server = server.add_service(RagServiceServer::new(rag));
+    }
+
+    #[cfg(feature = "ticket")]
+    if let Some(ticket) = ticket_handler {
+        use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
+        server = server.add_service(TicketServiceServer::new(ticket));
     }
 
     server.serve(addr).await?;

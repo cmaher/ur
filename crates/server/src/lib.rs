@@ -1,8 +1,11 @@
+pub mod backup;
 pub mod config;
 pub mod grpc;
 #[cfg(feature = "hostexec")]
 pub mod grpc_hostexec;
 pub mod grpc_server;
+#[cfg(feature = "ticket")]
+pub mod grpc_ticket;
 pub mod hostd_client;
 #[cfg(feature = "hostexec")]
 pub mod hostexec;
@@ -17,6 +20,7 @@ pub mod run_opts_builder;
 pub mod strategy;
 pub mod stream;
 
+pub use backup::BackupTaskManager;
 pub use config::Config;
 pub use hostd_client::HostdClient;
 pub use pool::RepoPoolManager;

@@ -4755,6 +4755,7 @@ name = "ur-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "container",
  "fastembed",
@@ -4773,6 +4774,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ur_config",
+ "ur_db",
  "ur_rpc",
 ]
 
@@ -4805,6 +4807,7 @@ name = "ur_db"
 version = "0.1.0"
 dependencies = [
  "cozo",
+ "rand 0.8.5",
  "rayon",
  "tempfile",
 ]

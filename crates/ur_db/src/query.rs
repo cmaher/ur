@@ -1,4 +1,5 @@
-use crate::schema::SchemaManager;
+use crate::DatabaseManager;
+use crate::dependency::DispatchableTicket;
 
 /// Manages Datalog queries against the CozoDB ticket database.
 ///
@@ -6,28 +7,23 @@ use crate::schema::SchemaManager;
 /// cycle detection, and metadata filtering.
 #[derive(Clone)]
 pub struct QueryManager {
-    schema: SchemaManager,
+    db: DatabaseManager,
 }
 
 impl QueryManager {
-    /// Create a new QueryManager wrapping the given SchemaManager.
-    pub fn new(schema: SchemaManager) -> Self {
-        Self { schema }
+    /// Create a new QueryManager wrapping the given DatabaseManager.
+    pub fn new(db: DatabaseManager) -> Self {
+        Self { db }
     }
 
-    /// Access the underlying SchemaManager.
-    pub fn schema(&self) -> &SchemaManager {
-        &self.schema
+    /// Access the underlying DatabaseManager.
+    pub fn db(&self) -> &DatabaseManager {
+        &self.db
     }
 
     /// Find dispatchable tickets under a given epic: children with dispatchable type
     /// (task, bug), status=open, and no incoming `blocks` edges from open tickets.
     pub fn dispatchable_tickets(&self, epic_id: &str) -> Result<Vec<DispatchableTicket>, String> {
-        // The query:
-        // 1. Finds children of the epic with dispatchable types and open status
-        // 2. Uses negation to exclude tickets that have an open blocker
-        //    CozoDB negation: `not <rule_name>(...)` requires a separate rule definition
-        //    that produces the set to negate against.
         let script = format!(
             r#"
             # Rule: ticket IDs that are blocked by at least one open ticket
@@ -47,7 +43,7 @@ impl QueryManager {
             :order id
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result
             .rows
             .iter()
@@ -62,8 +58,6 @@ impl QueryManager {
     /// Compute the transitive closure of tickets that transitively block a given ticket.
     /// Returns all tickets that must be completed before the target can start.
     pub fn transitive_blockers(&self, ticket_id: &str) -> Result<Vec<String>, String> {
-        // CozoDB supports recursive rules for transitive closure.
-        // Base case: direct blockers. Recursive case: blockers of blockers.
         let script = format!(
             r#"
             # Recursive transitive closure of the blocks relation (upward: who blocks me?)
@@ -77,7 +71,7 @@ impl QueryManager {
             :order id
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result
             .rows
             .iter()
@@ -88,7 +82,6 @@ impl QueryManager {
     /// Compute the transitive closure of tickets that a given ticket transitively blocks.
     /// Returns all tickets that are downstream dependents.
     pub fn transitive_dependents(&self, ticket_id: &str) -> Result<Vec<String>, String> {
-        // Recursive transitive closure going downward: who do I block?
         let script = format!(
             r#"
             trans_dependent[descendant] :=
@@ -101,7 +94,7 @@ impl QueryManager {
             :order id
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result
             .rows
             .iter()
@@ -111,8 +104,6 @@ impl QueryManager {
 
     /// Check if all children of an epic are closed.
     pub fn epic_all_children_closed(&self, epic_id: &str) -> Result<bool, String> {
-        // Instead of count aggregation, simply query for any non-closed children.
-        // If the result set is empty, all children are closed (or there are none).
         let script = format!(
             r#"
             ?[id] :=
@@ -121,7 +112,7 @@ impl QueryManager {
                 status != "closed"
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result.rows.is_empty())
     }
 
@@ -130,10 +121,6 @@ impl QueryManager {
     ///
     /// Returns true if a cycle would be created (i.e., the edge should be rejected).
     pub fn would_create_cycle(&self, blocker_id: &str, blocked_id: &str) -> Result<bool, String> {
-        // A cycle exists if blocked_id can already transitively reach blocker_id
-        // through existing edges, because adding blocker_id -> blocked_id would
-        // then close the loop.
-        // Also catches the self-loop case (blocker_id == blocked_id).
         if blocker_id == blocked_id {
             return Ok(true);
         }
@@ -152,7 +139,7 @@ impl QueryManager {
             ?[found] := not reachable["{blocker_id}"], found = false
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         let found = result.rows[0][0].get_bool().unwrap();
         Ok(found)
     }
@@ -163,8 +150,6 @@ impl QueryManager {
         key: &str,
         value: &str,
     ) -> Result<Vec<MetadataMatchTicket>, String> {
-        // In CozoDB, output head variables must be bound in the body.
-        // We bind `id` by unifying `id = ticket_id` from the ticket relation.
         let script = format!(
             r#"
             ?[id, title, type, status] :=
@@ -176,7 +161,7 @@ impl QueryManager {
             :order id
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result
             .rows
             .iter()
@@ -201,7 +186,7 @@ impl QueryManager {
             :order id
             "#
         );
-        let result = self.schema.run(&script)?;
+        let result = self.db.run(&script)?;
         Ok(result
             .rows
             .iter()
@@ -213,14 +198,6 @@ impl QueryManager {
             })
             .collect())
     }
-}
-
-/// A ticket that is dispatchable (ready for an agent to work on).
-#[derive(Debug, Clone)]
-pub struct DispatchableTicket {
-    pub id: String,
-    pub title: String,
-    pub priority: i64,
 }
 
 /// A ticket matched by a metadata query.

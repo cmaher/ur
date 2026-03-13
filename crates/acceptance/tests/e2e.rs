@@ -17,6 +17,23 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
+
+/// Generate a short unique prefix for this test run to avoid container/network
+/// collisions with other concurrent CI runs or local stacks.
+///
+/// Uses `UR_AGENT_ID` env var if set, otherwise generates 4 random hex chars.
+fn test_run_id() -> String {
+    std::env::var("UR_AGENT_ID").unwrap_or_else(|_| {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(std::process::id() as u64);
+        format!("{:04x}", hasher.finish() & 0xFFFF)
+    })
+}
+
+static RUN_ID: LazyLock<String> = LazyLock::new(test_run_id);
 
 /// Locate the workspace root (two levels up from this crate's manifest dir).
 fn workspace_root() -> PathBuf {
@@ -90,49 +107,27 @@ struct ProjectEntry {
 /// Configuration names for a test stack, preventing container/network collisions
 /// between tests that may run concurrently.
 struct TestNames {
-    squid_hostname: &'static str,
-    network: &'static str,
-    worker_network: &'static str,
-    server_hostname: &'static str,
-    agent_prefix: &'static str,
-    qdrant_hostname: &'static str,
+    squid_hostname: String,
+    network: String,
+    worker_network: String,
+    server_hostname: String,
+    agent_prefix: String,
+    qdrant_hostname: String,
 }
 
-const DEFAULT_TEST_NAMES: TestNames = TestNames {
-    squid_hostname: "ur-test-squid",
-    network: "ur-test",
-    worker_network: "ur-test-workers",
-    server_hostname: "ur-test-server",
-    agent_prefix: "ur-test-agent-",
-    qdrant_hostname: "ur-test-qdrant",
-};
-
-const POOL_TEST_NAMES: TestNames = TestNames {
-    squid_hostname: "ur-pool-squid",
-    network: "ur-pool-test",
-    worker_network: "ur-pool-workers",
-    server_hostname: "ur-pool-server",
-    agent_prefix: "ur-pool-agent-",
-    qdrant_hostname: "ur-pool-qdrant",
-};
-
-const RAG_TEST_NAMES: TestNames = TestNames {
-    squid_hostname: "ur-test-rag-squid",
-    network: "ur-test-rag",
-    worker_network: "ur-test-rag-workers",
-    server_hostname: "ur-test-rag-server",
-    agent_prefix: "ur-test-rag-agent-",
-    qdrant_hostname: "ur-test-rag-qdrant",
-};
-
-const DESIGN_TEST_NAMES: TestNames = TestNames {
-    squid_hostname: "ur-design-squid",
-    network: "ur-design-test",
-    worker_network: "ur-design-workers",
-    server_hostname: "ur-design-server",
-    agent_prefix: "ur-design-agent-",
-    qdrant_hostname: "ur-design-qdrant",
-};
+/// Build test names with a unique prefix derived from the run ID.
+/// `label` differentiates test stacks within the same run (e.g., "default", "pool").
+fn test_names(label: &str) -> TestNames {
+    let id = &*RUN_ID;
+    TestNames {
+        squid_hostname: format!("ur-{id}-{label}-squid"),
+        network: format!("ur-{id}-{label}"),
+        worker_network: format!("ur-{id}-{label}-workers"),
+        server_hostname: format!("ur-{id}-{label}-server"),
+        agent_prefix: format!("ur-{id}-{label}-agent-"),
+        qdrant_hostname: format!("ur-{id}-{label}-qdrant"),
+    }
+}
 
 /// Write a test-specific ur.toml and supporting files.
 ///
@@ -287,14 +282,12 @@ fn stop_server(ur: &Path, config_dir: &Path) {
 #[test]
 fn e2e_ping_and_git() {
     let runtime = detect_container_runtime();
+    let names = test_names("default");
     let ticket_id = "acceptance-test";
-    let agent_prefix = "ur-test-agent-";
-    let container_name = format!("{agent_prefix}{ticket_id}");
-    // Container names match the test config (NOT the defaults, to avoid
-    // colliding with a real running ur stack)
-    let server_container = "ur-test-server";
-    let squid_container = "ur-test-squid";
-    let qdrant_container = DEFAULT_TEST_NAMES.qdrant_hostname;
+    let container_name = format!("{}{ticket_id}", names.agent_prefix);
+    let server_container = &names.server_hostname;
+    let squid_container = &names.squid_hostname;
+    let qdrant_container = &names.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
@@ -307,7 +300,7 @@ fn e2e_ping_and_git() {
     let config_path = config_dir.path();
     let daemon_port = 19876u16;
 
-    write_test_config(config_path, daemon_port, &DEFAULT_TEST_NAMES, &[]);
+    write_test_config(config_path, daemon_port, &names, &[]);
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
@@ -503,13 +496,13 @@ fn e2e_ping_and_git() {
 #[test]
 fn e2e_project_pool_launch() {
     let runtime = detect_container_runtime();
+    let names = test_names("pool");
     let ticket_id = "pool-test";
     let project_key = "poolproj";
-    let agent_prefix = POOL_TEST_NAMES.agent_prefix;
-    let container_name = format!("{agent_prefix}{ticket_id}");
-    let server_container = POOL_TEST_NAMES.server_hostname;
-    let squid_container = POOL_TEST_NAMES.squid_hostname;
-    let qdrant_container = POOL_TEST_NAMES.qdrant_hostname;
+    let container_name = format!("{}{ticket_id}", names.agent_prefix);
+    let server_container = &names.server_hostname;
+    let squid_container = &names.squid_hostname;
+    let qdrant_container = &names.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name);
@@ -528,7 +521,7 @@ fn e2e_project_pool_launch() {
     write_test_config(
         config_path,
         daemon_port,
-        &POOL_TEST_NAMES,
+        &names,
         &[ProjectEntry {
             key: project_key.into(),
             repo: bare_repo.to_string_lossy().into_owned(),
@@ -655,17 +648,17 @@ fn e2e_project_pool_launch() {
 #[test]
 fn e2e_design_mode_pool_launch() {
     let runtime = detect_container_runtime();
+    let names = test_names("design");
     let ticket_id_1 = "design-test-1";
     let ticket_id_2 = "design-test-2";
     let code_ticket_id = "design-code-test";
     let project_key = "designproj";
-    let agent_prefix = DESIGN_TEST_NAMES.agent_prefix;
-    let container_name_1 = format!("{agent_prefix}{ticket_id_1}");
-    let container_name_2 = format!("{agent_prefix}{ticket_id_2}");
-    let code_container_name = format!("{agent_prefix}{code_ticket_id}");
-    let server_container = DESIGN_TEST_NAMES.server_hostname;
-    let squid_container = DESIGN_TEST_NAMES.squid_hostname;
-    let qdrant_container = DESIGN_TEST_NAMES.qdrant_hostname;
+    let container_name_1 = format!("{}{ticket_id_1}", names.agent_prefix);
+    let container_name_2 = format!("{}{ticket_id_2}", names.agent_prefix);
+    let code_container_name = format!("{}{code_ticket_id}", names.agent_prefix);
+    let server_container = &names.server_hostname;
+    let squid_container = &names.squid_hostname;
+    let qdrant_container = &names.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, &container_name_1);
@@ -685,7 +678,7 @@ fn e2e_design_mode_pool_launch() {
     write_test_config(
         config_path,
         daemon_port,
-        &DESIGN_TEST_NAMES,
+        &names,
         &[ProjectEntry {
             key: project_key.into(),
             repo: bare_repo.to_string_lossy().into_owned(),
@@ -885,9 +878,10 @@ fn e2e_design_mode_pool_launch() {
 #[test]
 fn e2e_rag_search() {
     let runtime = detect_container_runtime();
-    let server_container = RAG_TEST_NAMES.server_hostname;
-    let squid_container = RAG_TEST_NAMES.squid_hostname;
-    let qdrant_container = RAG_TEST_NAMES.qdrant_hostname;
+    let names = test_names("rag");
+    let server_container = &names.server_hostname;
+    let squid_container = &names.squid_hostname;
+    let qdrant_container = &names.qdrant_hostname;
 
     // ---- (0) Clean up stale containers from prior failed runs ----
     force_remove_container(&runtime, server_container);
@@ -899,7 +893,7 @@ fn e2e_rag_search() {
     let config_path = config_dir.path();
     let daemon_port = 19879u16; // unique port for RAG test
 
-    write_test_config(config_path, daemon_port, &RAG_TEST_NAMES, &[]);
+    write_test_config(config_path, daemon_port, &names, &[]);
 
     // Create rag docs directory structure (normally done by `ur init`)
     let rag_docs_dir = config_path.join("rag").join("docs").join("rust");

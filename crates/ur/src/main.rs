@@ -7,6 +7,7 @@ mod logging;
 mod project;
 mod proxy;
 mod rag;
+mod ticket;
 
 use std::path::PathBuf;
 use std::process;
@@ -191,14 +192,105 @@ enum ProcessCommands {
 enum TicketCommands {
     /// Create a new ticket
     Create {
+        /// Ticket title
         title: String,
+        /// Ticket type (task, epic, bug, chore, design, milestone, initiative)
+        #[arg(long, default_value = "task")]
+        r#type: String,
+        /// Parent ticket ID (e.g. ur.o79g)
         #[arg(long)]
         parent: Option<String>,
+        /// Priority (lower = higher priority)
+        #[arg(long, default_value = "3")]
+        priority: i64,
+        /// Ticket body/description
+        #[arg(long, default_value = "")]
+        body: String,
+        /// Project prefix
+        #[arg(long, default_value = "ur")]
+        project: String,
     },
     /// List tickets
-    Ls,
+    Ls {
+        /// Filter by parent/epic ID
+        #[arg(long)]
+        epic: Option<String>,
+        /// Filter by ticket type
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Filter by status
+        #[arg(long)]
+        status: Option<String>,
+    },
     /// Show ticket details
-    Show { ticket_id: String },
+    Show {
+        /// Ticket ID
+        ticket_id: String,
+    },
+    /// Update ticket fields
+    Update {
+        /// Ticket ID
+        ticket_id: String,
+        /// New status
+        #[arg(long)]
+        status: Option<String>,
+        /// New priority
+        #[arg(long)]
+        priority: Option<i64>,
+        /// New title
+        #[arg(long)]
+        title: Option<String>,
+        /// New body
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Add a blocking dependency (BLOCKER blocks TICKET)
+    Dep {
+        /// Ticket that is blocked
+        ticket_id: String,
+        /// Ticket that blocks it
+        blocker_id: String,
+    },
+    /// Remove a blocking dependency
+    Undep {
+        /// Ticket that was blocked
+        ticket_id: String,
+        /// Ticket that was blocking it
+        blocker_id: String,
+    },
+    /// Link two related tickets
+    Link {
+        /// First ticket ID
+        id1: String,
+        /// Second ticket ID
+        id2: String,
+    },
+    /// Remove a link between two tickets
+    Unlink {
+        /// First ticket ID
+        id1: String,
+        /// Second ticket ID
+        id2: String,
+    },
+    /// Add a note to a ticket
+    Note {
+        /// Ticket ID
+        ticket_id: String,
+        /// Note message
+        message: String,
+    },
+    /// Set or delete ticket metadata
+    Meta {
+        /// Ticket ID
+        ticket_id: String,
+        /// Metadata key
+        key: String,
+        /// Metadata value (omit with --delete to remove)
+        value: Option<String>,
+        /// Delete the metadata key instead of setting it
+        #[arg(long)]
+        delete: bool,
+    },
 }
 
 #[instrument]
@@ -624,17 +716,73 @@ async fn main() -> Result<()> {
             },
         },
         Commands::Ticket { command } => match command {
-            TicketCommands::Create { title, parent } => {
-                info!(title = %title, parent = ?parent, "creating ticket");
-                println!("Creating ticket: {title} (parent: {parent:?})");
+            TicketCommands::Create {
+                title,
+                r#type,
+                parent,
+                priority,
+                body,
+                project,
+            } => {
+                ticket::create(
+                    port,
+                    &title,
+                    &r#type,
+                    parent.as_deref(),
+                    priority,
+                    &body,
+                    &project,
+                )
+                .await?
             }
-            TicketCommands::Ls => {
-                debug!("listing tickets");
-                println!("Listing tickets...");
+            TicketCommands::Ls {
+                epic,
+                r#type,
+                status,
+            } => ticket::list(port, epic.as_deref(), r#type.as_deref(), status.as_deref()).await?,
+            TicketCommands::Show { ticket_id } => ticket::show(port, &ticket_id).await?,
+            TicketCommands::Update {
+                ticket_id,
+                status,
+                priority,
+                title,
+                body,
+            } => {
+                ticket::update(
+                    port,
+                    &ticket_id,
+                    status.as_deref(),
+                    priority,
+                    title.as_deref(),
+                    body.as_deref(),
+                )
+                .await?
             }
-            TicketCommands::Show { ticket_id } => {
-                debug!(ticket_id = %ticket_id, "showing ticket");
-                println!("Showing ticket {ticket_id}...");
+            TicketCommands::Dep {
+                ticket_id,
+                blocker_id,
+            } => ticket::add_dep(port, &ticket_id, &blocker_id).await?,
+            TicketCommands::Undep {
+                ticket_id,
+                blocker_id,
+            } => ticket::remove_dep(port, &ticket_id, &blocker_id).await?,
+            TicketCommands::Link { id1, id2 } => ticket::add_link(port, &id1, &id2).await?,
+            TicketCommands::Unlink { id1, id2 } => ticket::remove_link(port, &id1, &id2).await?,
+            TicketCommands::Note { ticket_id, message } => {
+                ticket::add_note(port, &ticket_id, &message).await?
+            }
+            TicketCommands::Meta {
+                ticket_id,
+                key,
+                value,
+                delete,
+            } => {
+                if delete {
+                    ticket::delete_meta(port, &ticket_id, &key).await?
+                } else {
+                    let val = value.as_deref().unwrap_or("");
+                    ticket::set_meta(port, &ticket_id, &key, val).await?
+                }
             }
         },
     }

@@ -228,6 +228,10 @@ mod tests {
                 embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
                 docs: ur_config::RagDocsConfig::default(),
             },
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            },
             projects: std::collections::HashMap::new(),
         };
 
