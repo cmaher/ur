@@ -16,5 +16,7 @@ ur-workerd &
 
 # Start a detached tmux session (no PTY required).
 # The container stays alive via sleep; attach with `tmux attach -t agent`.
-tmux -u new-session -d -s agent
+# Use -x/-y to set a large default size since there's no client at creation time.
+# When a real client attaches, tmux resizes to the client's terminal dimensions.
+tmux -u new-session -d -s agent -x 220 -y 55
 exec sleep infinity
