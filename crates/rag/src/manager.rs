@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use crate::chunking;
 
-const VECTOR_SIZE: u64 = 384;
 const UPSERT_BATCH_SIZE: usize = 256;
 const DEFAULT_TOP_K: u64 = 5;
 
@@ -38,13 +37,19 @@ pub struct SearchResult {
 pub struct RagManager {
     qdrant: Arc<qdrant_client::Qdrant>,
     embedding_model: Arc<TextEmbedding>,
+    vector_size: u64,
 }
 
 impl RagManager {
-    pub fn new(qdrant: Arc<qdrant_client::Qdrant>, embedding_model: Arc<TextEmbedding>) -> Self {
+    pub fn new(
+        qdrant: Arc<qdrant_client::Qdrant>,
+        embedding_model: Arc<TextEmbedding>,
+        vector_size: u64,
+    ) -> Self {
         Self {
             qdrant,
             embedding_model,
+            vector_size,
         }
     }
 
@@ -182,7 +187,7 @@ impl RagManager {
         self.qdrant
             .create_collection(
                 CreateCollectionBuilder::new(collection_name)
-                    .vectors_config(VectorParamsBuilder::new(VECTOR_SIZE, Distance::Cosine)),
+                    .vectors_config(VectorParamsBuilder::new(self.vector_size, Distance::Cosine)),
             )
             .await
             .context("Failed to create collection")?;

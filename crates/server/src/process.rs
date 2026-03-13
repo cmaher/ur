@@ -520,6 +520,7 @@ mod tests {
             },
             rag: ur_config::RagConfig {
                 qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
             },
             projects: std::collections::HashMap::new(),
         }

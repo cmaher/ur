@@ -1,32 +1,37 @@
-FROM alpine:3.21
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache \
-    docker-cli \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    docker.io \
     ca-certificates \
     git \
     tini \
-    netcat-openbsd
+    netcat-openbsd \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the cross-compiled ur-server binary (staged by the build script)
 COPY ur-server /usr/local/bin/ur-server
 RUN chmod +x /usr/local/bin/ur-server
 
-# Pre-cache the all-MiniLM-L6-v2 ONNX embedding model so fastembed doesn't
-# need to download it at runtime (containers are ephemeral).
-# The hf_hub crate (used by fastembed) expects this cache layout:
-#   {cache_dir}/models--{org}--{model}/refs/main        -> commit hash
-#   {cache_dir}/models--{org}--{model}/snapshots/{hash}/ -> model files
-ENV FASTEMBED_CACHE_DIR=/usr/local/share/fastembed
+# Download ONNX Runtime shared library for fastembed/ort.
+# The binary is compiled with ort-load-dynamic, which requires libonnxruntime.so
+# to be available via ORT_DYLIB_PATH at runtime.
+ARG TARGETARCH
 RUN set -eux; \
-    MODEL_DIR="$FASTEMBED_CACHE_DIR/models--Qdrant--all-MiniLM-L6-v2-onnx"; \
-    COMMIT="5f1b8cd78bc4fb444dd171e59b18f3a3af89a079"; \
-    SNAPSHOT_DIR="$MODEL_DIR/snapshots/$COMMIT"; \
-    HF_BASE="https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/main"; \
-    mkdir -p "$MODEL_DIR/refs" "$MODEL_DIR/blobs" "$SNAPSHOT_DIR"; \
-    echo -n "$COMMIT" > "$MODEL_DIR/refs/main"; \
-    for f in model.onnx tokenizer.json config.json special_tokens_map.json tokenizer_config.json; do \
-        wget -q -O "$SNAPSHOT_DIR/$f" "$HF_BASE/$f"; \
-    done
+    ORT_VERSION="1.20.0"; \
+    case "$TARGETARCH" in \
+        arm64) ORT_ARCH="aarch64" ;; \
+        amd64) ORT_ARCH="x64" ;; \
+        *) echo "Unsupported arch: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+        | tar xz -C /tmp; \
+    cp /tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION} /usr/local/lib/; \
+    ln -s libonnxruntime.so.${ORT_VERSION} /usr/local/lib/libonnxruntime.so; \
+    ldconfig; \
+    rm -rf /tmp/onnxruntime-*
+
+ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 
 # Default gRPC port (ur_config::DEFAULT_DAEMON_PORT)
 EXPOSE 42069

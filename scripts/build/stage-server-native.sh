@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build ur-server binary for linux-musl (Alpine) and stage for Dockerfile (for Linux CI).
-# Uses cargo-zigbuild (available via mise) to target musl — required because the server
-# container is Alpine-based.
+# Build ur-server binary for linux-gnu (Debian) and stage for Dockerfile (for Linux CI).
+# Uses gnu target (not musl) because fastembed/ort requires dlopen for ONNX runtime.
+# Uses cargo-zigbuild (available via mise).
 
 ARCH=$(uname -m)
 case "$ARCH" in
-    arm64|aarch64) TARGET="aarch64-unknown-linux-musl" ;;
-    x86_64)        TARGET="x86_64-unknown-linux-musl" ;;
+    arm64|aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
+    x86_64)        TARGET="x86_64-unknown-linux-gnu" ;;
     *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 

@@ -27,6 +27,7 @@ pub fn generate_docs(config_dir: &Path) -> Result<()> {
     // Step 1: collect sources
     println!("Collecting sources...");
     let collect = Command::new("cargo-docs-md")
+        .arg("docs-md")
         .arg("collect-sources")
         .status()
         .context("failed to run cargo-docs-md collect-sources")?;
@@ -41,6 +42,7 @@ pub fn generate_docs(config_dir: &Path) -> Result<()> {
     // Step 2: generate docs
     println!("Generating docs to {}...", output_dir.display());
     let docs = Command::new("cargo-docs-md")
+        .arg("docs-md")
         .arg("docs")
         .arg("--output")
         .arg(&output_dir)
@@ -132,5 +134,80 @@ pub async fn search(port: u16, query: &str, language: &str, top_k: u32) -> Resul
         println!();
     }
 
+    Ok(())
+}
+
+/// Download the configured embedding model to the local fastembed cache.
+///
+/// Uses curl to fetch model files from HuggingFace, matching the hf_hub
+/// cache layout that fastembed expects.
+pub fn download_model(config: &ur_config::Config) -> Result<()> {
+    let model_name = &config.rag.embedding_model;
+    let info = ur_config::model_download_info(model_name).ok_or_else(|| {
+        let supported = ur_config::supported_model_names().join(", ");
+        anyhow::anyhow!("unknown embedding model '{model_name}' — supported models: {supported}")
+    })?;
+
+    let cache_dir = config.config_dir.join("fastembed");
+    let model_dir = cache_dir.join(format!("models--{}--{}", info.hf_org, info.hf_repo));
+    let snapshot_dir = model_dir.join("snapshots").join(info.hf_commit);
+
+    // Check if already downloaded
+    if snapshot_dir.exists() {
+        let all_present = info.hf_files.iter().all(|f| snapshot_dir.join(f).exists());
+        if all_present {
+            println!(
+                "Model '{model_name}' already downloaded at {}",
+                cache_dir.display()
+            );
+            return Ok(());
+        }
+    }
+
+    println!(
+        "Downloading model '{model_name}' to {}...",
+        cache_dir.display()
+    );
+
+    std::fs::create_dir_all(model_dir.join("refs"))
+        .context("failed to create model refs directory")?;
+    std::fs::create_dir_all(model_dir.join("blobs"))
+        .context("failed to create model blobs directory")?;
+    std::fs::create_dir_all(&snapshot_dir).context("failed to create model snapshot directory")?;
+
+    // Write the commit hash to refs/main
+    std::fs::write(model_dir.join("refs").join("main"), info.hf_commit)
+        .context("failed to write refs/main")?;
+
+    let hf_base = format!(
+        "https://huggingface.co/{}/{}/resolve/main",
+        info.hf_org, info.hf_repo
+    );
+
+    for file in info.hf_files {
+        let url = format!("{hf_base}/{file}");
+        let dest = snapshot_dir.join(file);
+        println!("  Downloading {file}...");
+
+        let status = Command::new("curl")
+            .args(["-fSL", "-o"])
+            .arg(&dest)
+            .arg(&url)
+            .status()
+            .with_context(|| format!("failed to run curl for {file}"))?;
+
+        if !status.success() {
+            bail!(
+                "curl failed to download {url} (exit code: {:?})",
+                status.code()
+            );
+        }
+    }
+
+    println!(
+        "Done. Model '{}' cached at {}",
+        model_name,
+        cache_dir.display()
+    );
     Ok(())
 }

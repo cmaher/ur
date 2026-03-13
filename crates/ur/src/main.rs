@@ -138,6 +138,17 @@ enum RagCommands {
         #[arg(long, default_value = "5")]
         top_k: u32,
     },
+    /// Manage embedding models
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelCommands {
+    /// Download the configured embedding model to the local cache
+    Download,
 }
 
 #[derive(Subcommand)]
@@ -608,6 +619,9 @@ async fn main() -> Result<()> {
                 language,
                 top_k,
             } => rag::search(port, &query, &language, top_k).await?,
+            RagCommands::Model { command } => match command {
+                ModelCommands::Download => rag::download_model(&config)?,
+            },
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {

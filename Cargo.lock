@@ -2354,6 +2354,7 @@ dependencies = [
  "text-splitter",
  "tokio",
  "tracing",
+ "ur_config",
  "ur_rpc",
  "uuid",
  "walkdir",
