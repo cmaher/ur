@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::chunking;
 
 const UPSERT_BATCH_SIZE: usize = 256;
+const EMBED_BATCH_SIZE: usize = 32;
 const DEFAULT_TOP_K: u64 = 5;
 
 /// Summary of a completed indexing operation.
@@ -74,12 +75,16 @@ impl RagManager {
         // Drop and recreate collection
         self.recreate_collection(&collection).await?;
 
-        // Embed all chunks
+        // Embed chunks in small batches to avoid ONNX runtime memory blowup.
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let embeddings = self
-            .embedding_model
-            .embed(texts, None)
-            .context("Failed to embed document chunks")?;
+        let mut embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(EMBED_BATCH_SIZE) {
+            let batch_embeddings = self
+                .embedding_model
+                .embed(batch.to_vec(), None)
+                .context("Failed to embed document chunks")?;
+            embeddings.extend(batch_embeddings);
+        }
 
         // Upsert in batches
         for batch_start in (0..chunks.len()).step_by(UPSERT_BATCH_SIZE) {
