@@ -518,6 +518,7 @@ mod tests {
                 server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
             },
+            hostexec: ur_config::HostExecConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }

@@ -62,6 +62,7 @@ fn make_grpc_handler(
             allowlist: vec![],
         },
         network: network_config.clone(),
+        hostexec: ur_config::HostExecConfig::default(),
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
@@ -83,7 +84,11 @@ fn make_grpc_handler(
         ur_server::process::PromptModesConfig::default(),
     );
     let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(Path::new("/nonexistent")).unwrap();
+        ur_server::hostexec::HostExecConfigManager::load(
+            Path::new("/nonexistent"),
+            &ur_config::HostExecConfig::default(),
+        )
+        .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_pool_manager,

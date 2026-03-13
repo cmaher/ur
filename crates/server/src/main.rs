@@ -99,8 +99,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     #[cfg(feature = "hostexec")]
-    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir)
-        .expect("failed to load hostexec config");
+    let hostexec_config =
+        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
+            .expect("failed to load hostexec config");
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager,

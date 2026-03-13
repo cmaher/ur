@@ -4,6 +4,33 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::{debug, info, instrument};
 
+const EXAMPLE_LUA: &str = "\
+-- Example hostexec Lua transform script.
+--
+-- Reference this from ur.toml:
+--   [hostexec.commands]
+--   mycommand = { lua = \"example.lua\" }
+--
+-- The transform function validates and optionally modifies command arguments
+-- before the command is executed on the host. Return the args table to allow
+-- execution, or call error() to block it.
+--
+-- Parameters:
+--   command       (string) - the command name (e.g. \"cargo\", \"make\")
+--   args          (table)  - array of argument strings
+--   working_dir   (string) - host-mapped working directory
+--   agent_context (table|nil) - per-agent metadata when running in a project:
+--     .agent_id    (string) - unique agent identifier (e.g. \"deploy-x7q2\")
+--     .project_key (string) - project key from ur.toml (e.g. \"ur\")
+--     .slot_path   (string) - host-side repo pool slot path
+--
+-- Returns:
+--   table - the (possibly modified) args array to execute
+function transform(command, args, working_dir, agent_context)
+    return args
+end
+";
+
 const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
 platform.claude.com
@@ -58,6 +85,13 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         DEFAULT_ALLOWLIST,
         should_force_squid,
         "--force or --force-squid",
+    )?;
+
+    write_file(
+        &hostexec_dir.join("example.lua"),
+        EXAMPLE_LUA,
+        false,
+        "--force",
     )?;
 
     // Credentials file must exist on the host for Docker file mounts to work
@@ -121,6 +155,7 @@ mod tests {
         assert!(tmp.path().join("workspace").is_dir());
         assert!(tmp.path().join("squid").is_dir());
         assert!(tmp.path().join("hostexec").is_dir());
+        assert!(tmp.path().join("hostexec/example.lua").exists());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());
     }

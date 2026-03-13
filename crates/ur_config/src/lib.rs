@@ -137,6 +137,8 @@ pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";
 pub const HOSTEXEC_DIR: &str = "hostexec";
 
 /// Allowlist configuration filename within `HOSTEXEC_DIR`.
+/// Deprecated: hostexec commands are now configured in `ur.toml` under `[hostexec.commands]`.
+/// This constant is retained only for migration detection.
 pub const HOSTEXEC_ALLOWLIST_FILE: &str = "allowlist.toml";
 
 /// Default hostname for the Squid proxy container on the Docker network.
@@ -181,8 +183,41 @@ struct RawConfig {
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
+    hostexec: Option<RawHostExecConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
+}
+
+/// Raw TOML representation for the `[hostexec]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawHostExecConfig {
+    #[serde(default)]
+    commands: HashMap<String, RawHostExecCommandConfig>,
+}
+
+/// Raw TOML representation for a single hostexec command entry.
+#[derive(Debug, Default, Deserialize)]
+struct RawHostExecCommandConfig {
+    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
+    lua: Option<String>,
+    /// Use the built-in default Lua script for this command (if one exists).
+    default_script: Option<bool>,
+}
+
+/// Resolved configuration for a single hostexec command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostExecCommandConfig {
+    /// Path to a Lua script (relative to `$UR_CONFIG/hostexec/`).
+    pub lua: Option<String>,
+    /// Use the built-in default Lua script for this command (if one exists).
+    pub default_script: bool,
+}
+
+/// Resolved hostexec configuration from the `[hostexec]` section of `ur.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostExecConfig {
+    /// Named commands with optional Lua transform configuration.
+    pub commands: HashMap<String, HostExecCommandConfig>,
 }
 
 /// Raw TOML representation for a `[projects.<key>]` entry.
@@ -281,6 +316,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     /// Docker network settings for container networking.
     pub network: NetworkConfig,
+    /// Global hostexec command configuration (from `[hostexec]` section).
+    pub hostexec: HostExecConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -364,6 +401,23 @@ impl Config {
             },
         };
 
+        let hostexec = match raw.hostexec {
+            Some(h) => HostExecConfig {
+                commands: h
+                    .commands
+                    .into_iter()
+                    .map(|(name, raw_cmd)| {
+                        let cmd = HostExecCommandConfig {
+                            lua: raw_cmd.lua,
+                            default_script: raw_cmd.default_script.unwrap_or(false),
+                        };
+                        (name, cmd)
+                    })
+                    .collect(),
+            },
+            None => HostExecConfig::default(),
+        };
+
         let projects = raw
             .projects
             .into_iter()
@@ -395,6 +449,7 @@ impl Config {
             compose_file,
             proxy,
             network,
+            hostexec,
             projects,
         })
     }
@@ -885,5 +940,85 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
         let msg = err.to_string();
         assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("unrecognized template variable"), "{msg}");
+    }
+
+    #[test]
+    fn hostexec_defaults_to_empty_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.hostexec.commands.is_empty());
+    }
+
+    #[test]
+    fn hostexec_parses_passthrough_command() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+cargo = {}
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.hostexec.commands.len(), 1);
+        let cargo = &cfg.hostexec.commands["cargo"];
+        assert_eq!(cargo.lua, None);
+        assert!(!cargo.default_script);
+    }
+
+    #[test]
+    fn hostexec_parses_command_with_lua() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+git = { lua = "my-git.lua" }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let git = &cfg.hostexec.commands["git"];
+        assert_eq!(git.lua.as_deref(), Some("my-git.lua"));
+        assert!(!git.default_script);
+    }
+
+    #[test]
+    fn hostexec_parses_command_with_default_script() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+git = { default_script = true }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let git = &cfg.hostexec.commands["git"];
+        assert!(git.default_script);
+        assert_eq!(git.lua, None);
+    }
+
+    #[test]
+    fn hostexec_parses_multiple_commands() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+cargo = {}
+tk = {}
+make = { lua = "make-safe.lua" }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.hostexec.commands.len(), 3);
+        assert!(cfg.hostexec.commands.contains_key("cargo"));
+        assert!(cfg.hostexec.commands.contains_key("tk"));
+        assert!(cfg.hostexec.commands.contains_key("make"));
     }
 }
