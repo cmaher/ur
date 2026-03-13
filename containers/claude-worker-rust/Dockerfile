@@ -2,6 +2,10 @@ FROM ur-worker:latest
 
 USER root
 
+# Rust-specific entrypoint (adds bacon background watcher)
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Build dependencies for Rust compilation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -35,3 +39,5 @@ RUN --mount=type=cache,target=/home/worker/.cargo/registry,uid=1000 \
 
 # Activate mise in interactive shells so all tools are on PATH.
 RUN echo 'eval "$(/home/worker/.local/bin/mise activate bash)"' >> /home/worker/.bashrc
+
+ENTRYPOINT ["/entrypoint.sh"]
