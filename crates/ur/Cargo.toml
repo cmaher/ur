@@ -16,7 +16,7 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc", features = ["core"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "rag"] }
 
 [dev-dependencies]
 tempfile = "3"

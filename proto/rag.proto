@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package ur.rag;
+
+enum Language {
+  LANGUAGE_RUST = 0;
+}
+
+// RAG indexing and search service
+service RagService {
+  rpc RagIndex(RagIndexRequest) returns (RagIndexResponse);
+  rpc RagSearch(RagSearchRequest) returns (RagSearchResponse);
+}
+
+message RagIndexRequest {
+  Language language = 1;
+}
+
+message RagIndexResponse {
+  uint32 files_processed = 1;
+  uint32 chunks_indexed = 2;
+}
+
+message RagSearchRequest {
+  string query = 1;
+  Language language = 2;
+  optional uint32 top_k = 3;
+}
+
+message RagSearchResponse {
+  repeated RagSearchResult results = 1;
+}
+
+message RagSearchResult {
+  string text = 1;
+  string source_file = 2;
+  float score = 3;
+}

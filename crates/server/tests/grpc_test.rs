@@ -62,6 +62,9 @@ fn make_grpc_handler(
             allowlist: vec![],
         },
         network: network_config.clone(),
+        rag: ur_config::RagConfig {
+            qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
+        },
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
