@@ -150,12 +150,14 @@ impl ComposeManager {
 pub fn render_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
+    rag: &ur_config::RagConfig,
 ) -> String {
     COMPOSE_TEMPLATE
         .replace("{{NETWORK_NAME}}", &network.name)
         .replace("{{WORKER_NETWORK_NAME}}", &network.worker_name)
         .replace("{{SERVER_CONTAINER_NAME}}", &network.server_hostname)
         .replace("{{SQUID_CONTAINER_NAME}}", &proxy.hostname)
+        .replace("{{QDRANT_CONTAINER_NAME}}", &rag.qdrant_hostname)
 }
 
 /// Build a `ComposeManager` from the resolved ur config.
@@ -182,7 +184,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         env_vars.push(("UR_CONTAINER".to_string(), val));
     }
 
-    let compose_content = render_compose(&config.network, &config.proxy);
+    let compose_content = render_compose(&config.network, &config.proxy, &config.rag);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -221,6 +223,10 @@ mod tests {
             },
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
+            rag: ur_config::RagConfig {
+                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
+            },
             projects: std::collections::HashMap::new(),
         };
 
@@ -258,15 +264,21 @@ mod tests {
             hostname: "test-squid".to_string(),
             allowlist: vec![],
         };
-        let rendered = render_compose(&network, &proxy);
+        let rag = ur_config::RagConfig {
+            qdrant_hostname: "test-qdrant".to_string(),
+            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
+        };
+        let rendered = render_compose(&network, &proxy, &rag);
         assert!(rendered.contains("name: test-net"));
         assert!(rendered.contains("name: test-workers"));
         assert!(rendered.contains("container_name: test-server"));
         assert!(rendered.contains("container_name: test-squid"));
+        assert!(rendered.contains("container_name: test-qdrant"));
         assert!(!rendered.contains("{{NETWORK_NAME}}"));
         assert!(!rendered.contains("{{WORKER_NETWORK_NAME}}"));
         assert!(!rendered.contains("{{SERVER_CONTAINER_NAME}}"));
         assert!(!rendered.contains("{{SQUID_CONTAINER_NAME}}"));
+        assert!(!rendered.contains("{{QDRANT_CONTAINER_NAME}}"));
     }
 
     #[test]

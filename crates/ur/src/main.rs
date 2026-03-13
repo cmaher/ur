@@ -6,6 +6,7 @@ mod lifecycle_log;
 mod logging;
 mod project;
 mod proxy;
+mod rag;
 
 use std::path::PathBuf;
 use std::process;
@@ -71,6 +72,11 @@ enum Commands {
         #[command(subcommand)]
         command: ProjectCommands,
     },
+    /// RAG documentation and search
+    Rag {
+        #[command(subcommand)]
+        command: RagCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -109,6 +115,40 @@ enum ProjectCommands {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RagCommands {
+    /// Generate Rust documentation for RAG indexing
+    Docs,
+    /// Index generated docs into the vector store
+    Index {
+        /// Language to index (default: rust)
+        #[arg(long, default_value = "rust")]
+        language: String,
+    },
+    /// Search indexed documentation
+    Search {
+        /// Search query
+        query: String,
+        /// Language to search (default: rust)
+        #[arg(long, default_value = "rust")]
+        language: String,
+        /// Number of results to return (default: 5)
+        #[arg(long, default_value = "5")]
+        top_k: u32,
+    },
+    /// Manage embedding models
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelCommands {
+    /// Download the configured embedding model to the local cache
+    Download,
 }
 
 #[derive(Subcommand)]
@@ -570,6 +610,18 @@ async fn main() -> Result<()> {
                 pool_limit,
             } => project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit)?,
             ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
+        },
+        Commands::Rag { command } => match command {
+            RagCommands::Docs => rag::generate_docs(&config.config_dir)?,
+            RagCommands::Index { language } => rag::index(port, &language).await?,
+            RagCommands::Search {
+                query,
+                language,
+                top_k,
+            } => rag::search(port, &query, &language, top_k).await?,
+            RagCommands::Model { command } => match command {
+                ModelCommands::Download => rag::download_model(&config)?,
+            },
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create { title, parent } => {

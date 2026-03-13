@@ -95,6 +95,7 @@ struct TestNames {
     worker_network: &'static str,
     server_hostname: &'static str,
     agent_prefix: &'static str,
+    qdrant_hostname: &'static str,
 }
 
 const DEFAULT_TEST_NAMES: TestNames = TestNames {
@@ -103,6 +104,7 @@ const DEFAULT_TEST_NAMES: TestNames = TestNames {
     worker_network: "ur-test-workers",
     server_hostname: "ur-test-server",
     agent_prefix: "ur-test-agent-",
+    qdrant_hostname: "ur-test-qdrant",
 };
 
 const POOL_TEST_NAMES: TestNames = TestNames {
@@ -111,6 +113,16 @@ const POOL_TEST_NAMES: TestNames = TestNames {
     worker_network: "ur-pool-workers",
     server_hostname: "ur-pool-server",
     agent_prefix: "ur-pool-agent-",
+    qdrant_hostname: "ur-pool-qdrant",
+};
+
+const RAG_TEST_NAMES: TestNames = TestNames {
+    squid_hostname: "ur-rag-squid",
+    network: "ur-rag-test",
+    worker_network: "ur-rag-workers",
+    server_hostname: "ur-rag-server",
+    agent_prefix: "ur-rag-agent-",
+    qdrant_hostname: "ur-rag-qdrant",
 };
 
 /// Write a test-specific ur.toml and supporting files.
@@ -127,6 +139,20 @@ fn write_test_config(
 ) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
+
+    // Symlink the host's fastembed cache so the server container can find the
+    // embedding model. The compose template mounts $UR_CONFIG/fastembed:/fastembed:ro.
+    let host_fastembed = std::env::var("UR_CONFIG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").expect("HOME env var")).join(".ur")
+        })
+        .join("fastembed");
+    let test_fastembed = config_dir.join("fastembed");
+    if host_fastembed.exists() && !test_fastembed.exists() {
+        std::os::unix::fs::symlink(&host_fastembed, &test_fastembed)
+            .expect("failed to symlink fastembed cache");
+    }
 
     let squid_dir = config_dir.join("squid");
     std::fs::create_dir_all(&squid_dir).expect("failed to create squid dir");
@@ -160,6 +186,9 @@ fn write_test_config(
          worker_name = \"{worker_network}\"\n\
          server_hostname = \"{server}\"\n\
          agent_prefix = \"{agent_prefix}\"\n\
+         \n\
+         [rag]\n\
+         qdrant_hostname = \"{qdrant}\"\n\
          {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
@@ -168,6 +197,7 @@ fn write_test_config(
         worker_network = names.worker_network,
         server = names.server_hostname,
         agent_prefix = names.agent_prefix,
+        qdrant = names.qdrant_hostname,
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
 }
@@ -591,6 +621,134 @@ fn e2e_project_pool_launch() {
     }));
 
     // ---- (8) Always tear down server ----
+    stop_server(&ur, config_path);
+
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// End-to-end test for RAG search (`ur rag search`).
+///
+/// Exercises the full RAG pipeline:
+///   1. `ur start` starts the server + Qdrant + squid in containers via docker compose
+///   2. Small test markdown docs are written directly (not `ur rag docs` — too slow)
+///   3. `ur rag index --language rust` indexes the docs into Qdrant via the server
+///   4. `ur rag search "query" --language rust` searches indexed docs via the server
+///   5. `ur stop` tears down the server
+///
+/// Requires:
+///   - ONNX embedding model downloaded on host (`ur rag model download`)
+///   - Qdrant service in docker compose
+#[test]
+fn e2e_rag_search() {
+    let runtime = detect_container_runtime();
+    let server_container = RAG_TEST_NAMES.server_hostname;
+    let squid_container = RAG_TEST_NAMES.squid_hostname;
+    let qdrant_container = RAG_TEST_NAMES.qdrant_hostname;
+
+    // ---- (0) Clean up stale containers from prior failed runs ----
+    force_remove_container(&runtime, server_container);
+    force_remove_container(&runtime, squid_container);
+    force_remove_container(&runtime, qdrant_container);
+
+    // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
+    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
+    let config_path = config_dir.path();
+    let daemon_port = 19878u16; // unique port for RAG test
+
+    write_test_config(config_path, daemon_port, &RAG_TEST_NAMES, &[]);
+
+    // Create rag docs directory structure (normally done by `ur init`)
+    let rag_docs_dir = config_path.join("rag").join("docs").join("rust");
+    std::fs::create_dir_all(&rag_docs_dir).expect("failed to create rag docs dir");
+
+    let ur = bin("ur");
+    assert!(ur.exists(), "ur binary not found at {}", ur.display());
+    let config_str = config_path.to_str().unwrap();
+    let env = [("UR_CONFIG", config_str)];
+
+    // Write small test docs directly instead of running `ur rag docs` (which
+    // generates the full workspace — thousands of files, too slow for e2e).
+    std::fs::write(
+        rag_docs_dir.join("container.md"),
+        "# Container Management\n\n\
+         The container module manages Docker containers for worker agents.\n\
+         It handles lifecycle operations: create, start, stop, and remove.\n\
+         Each agent gets its own isolated container with mounted workspace.\n",
+    )
+    .expect("failed to write test doc");
+    std::fs::write(
+        rag_docs_dir.join("grpc.md"),
+        "# gRPC Server\n\n\
+         The gRPC server listens on TCP port 42069 for requests from the CLI\n\
+         and from worker containers. It routes commands to the appropriate\n\
+         handler: process management, git operations, or RAG search.\n",
+    )
+    .expect("failed to write test doc");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- (2) ur start ----
+        let up_output = run_cmd(&ur, &["start"], &env);
+        assert!(
+            up_output.status.success(),
+            "ur start failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
+
+        // ---- (3) ur rag index — index test docs into Qdrant ----
+        let index_output = run_cmd(&ur, &["rag", "index", "--language", "rust"], &env);
+        assert!(
+            index_output.status.success(),
+            "ur rag index failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&index_output.stdout),
+            String::from_utf8_lossy(&index_output.stderr),
+        );
+
+        let index_stdout = String::from_utf8_lossy(&index_output.stdout);
+        assert!(
+            index_stdout.contains("Indexed") && index_stdout.contains("chunks"),
+            "ur rag index should report indexed chunks.\nGot: {index_stdout}"
+        );
+
+        // ---- (4) ur rag search — search indexed docs ----
+        let search_output = run_cmd(
+            &ur,
+            &[
+                "rag",
+                "search",
+                "container management",
+                "--language",
+                "rust",
+            ],
+            &env,
+        );
+        assert!(
+            search_output.status.success(),
+            "ur rag search failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&search_output.stdout),
+            String::from_utf8_lossy(&search_output.stderr),
+        );
+
+        let search_stdout = String::from_utf8_lossy(&search_output.stdout);
+        // Search should return results (not "No results found")
+        assert!(
+            !search_stdout.contains("No results found"),
+            "ur rag search should return results after indexing.\nGot: {search_stdout}"
+        );
+        // Results should contain the expected format fields
+        assert!(
+            search_stdout.contains("Result") && search_stdout.contains("score:"),
+            "ur rag search output should contain Result and score fields.\nGot: {search_stdout}"
+        );
+        assert!(
+            search_stdout.contains("Source:"),
+            "ur rag search output should contain Source field.\nGot: {search_stdout}"
+        );
+    }));
+
+    // ---- (5) Always tear down server ----
     stop_server(&ur, config_path);
 
     if let Err(e) = result {
