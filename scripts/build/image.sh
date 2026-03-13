@@ -36,6 +36,27 @@ echo "Worker image built: ur-worker:latest"
 build_image ur-worker-rust:latest "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
 echo "Rust worker image built: ur-worker-rust:latest"
 
+# Download ONNX Runtime if not already cached, then stage into build context.
+# The ur-server binary is compiled with ort-load-dynamic and needs libonnxruntime.so.
+ORT_VERSION="1.20.0"
+ONNX_DIR="${UR_CONFIG:-$HOME/.ur}/onnx"
+case "$(uname -m)" in
+    arm64|aarch64) ORT_ARCH="aarch64" ;;
+    x86_64)        ORT_ARCH="x64" ;;
+    *)             echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+ORT_SO="$ONNX_DIR/libonnxruntime.so.$ORT_VERSION"
+if [ ! -f "$ORT_SO" ]; then
+    echo "Downloading ONNX Runtime $ORT_VERSION (linux-$ORT_ARCH)..."
+    mkdir -p "$ONNX_DIR"
+    curl -fSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+        | tar xz -C /tmp
+    cp "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" "$ORT_SO"
+    rm -rf /tmp/onnxruntime-*
+    echo "ONNX Runtime cached at $ONNX_DIR"
+fi
+cp "$ORT_SO" containers/server/libonnxruntime.so
+
 build_image ur-server:latest containers/server/Dockerfile containers/server
 echo "ur-server image built: ur-server:latest"
 
