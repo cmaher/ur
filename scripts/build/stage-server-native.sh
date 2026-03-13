@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Raise fd limit — the zig linker opens hundreds of .rlib files simultaneously
+# and can exceed macOS's default soft limit (256).
+ulimit -n 65536 2>/dev/null || true
+
 # Build ur-server binary for linux-gnu (Debian) and stage for Dockerfile (for Linux CI).
 # Uses gnu target (not musl) because fastembed/ort requires dlopen for ONNX runtime.
 # Uses cargo-zigbuild (available via mise).
