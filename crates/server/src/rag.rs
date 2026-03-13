@@ -1,13 +1,17 @@
 use std::path::PathBuf;
+use std::pin::Pin;
 
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
 use rag::RagManager;
+use ur_rpc::proto::rag::rag_index_progress::Update;
 use ur_rpc::proto::rag::rag_service_server::RagService;
 use ur_rpc::proto::rag::{
-    Language, RagIndexRequest, RagIndexResponse, RagSearchRequest, RagSearchResponse,
-    RagSearchResult,
+    DependencyIndexed, IndexComplete, Language, RagIndexProgress, RagIndexRequest,
+    RagSearchRequest, RagSearchResponse, RagSearchResult,
 };
 
 /// gRPC implementation of the RagService, delegating to `RagManager`.
@@ -17,12 +21,17 @@ pub struct RagServiceHandler {
     pub config_dir: PathBuf,
 }
 
+type RagIndexOutputStream =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<RagIndexProgress, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl RagService for RagServiceHandler {
+    type RagIndexStream = RagIndexOutputStream;
+
     async fn rag_index(
         &self,
         req: Request<RagIndexRequest>,
-    ) -> Result<Response<RagIndexResponse>, Status> {
+    ) -> Result<Response<Self::RagIndexStream>, Status> {
         let req = req.into_inner();
         let language = language_str(req.language())?;
 
@@ -37,16 +46,60 @@ impl RagService for RagServiceHandler {
             )));
         }
 
-        let summary = self
-            .rag_manager
-            .index(&docs_dir, language)
-            .await
-            .map_err(|e| Status::internal(format!("indexing failed: {e}")))?;
+        let (progress_tx, mut progress_rx) = mpsc::channel::<rag::DependencyProgress>(32);
+        let (stream_tx, stream_rx) = mpsc::channel::<Result<RagIndexProgress, Status>>(32);
 
-        Ok(Response::new(RagIndexResponse {
-            files_processed: summary.files_processed,
-            chunks_indexed: summary.chunks_indexed,
-        }))
+        let rag_manager = self.rag_manager.clone();
+        let lang_str = language.to_string();
+
+        tokio::spawn(async move {
+            // Forward dependency progress updates to the gRPC stream
+            let stream_tx_clone = stream_tx.clone();
+            let forward_handle = tokio::spawn(async move {
+                while let Some(dep) = progress_rx.recv().await {
+                    let msg = RagIndexProgress {
+                        update: Some(Update::DependencyIndexed(DependencyIndexed {
+                            name: dep.name,
+                            files: dep.files,
+                            chunks: dep.chunks,
+                        })),
+                    };
+                    if stream_tx_clone.send(Ok(msg)).await.is_err() {
+                        return;
+                    }
+                }
+            });
+
+            // Run the indexing
+            let result = rag_manager
+                .index(&docs_dir, &lang_str, Some(progress_tx))
+                .await;
+
+            // Wait for all progress messages to be forwarded
+            let _ = forward_handle.await;
+
+            // Send final message
+            match result {
+                Ok(summary) => {
+                    let _ = stream_tx
+                        .send(Ok(RagIndexProgress {
+                            update: Some(Update::IndexComplete(IndexComplete {
+                                total_files: summary.files_processed,
+                                total_chunks: summary.chunks_indexed,
+                            })),
+                        }))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = stream_tx
+                        .send(Err(Status::internal(format!("indexing failed: {e}"))))
+                        .await;
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(stream_rx);
+        Ok(Response::new(Box::pin(stream) as Self::RagIndexStream))
     }
 
     async fn rag_search(

@@ -150,7 +150,12 @@ async fn main() -> anyhow::Result<()> {
             .expect("failed to load embedding model — run `ur rag model download`"),
         );
 
-        let rag_manager = rag::RagManager::new(qdrant, embedding_model, model.download.vector_size);
+        let rag_manager = rag::RagManager::new(
+            qdrant,
+            embedding_model,
+            model.download.vector_size,
+            cfg.rag.embedding_model.clone(),
+        );
 
         Some(ur_server::rag::RagServiceHandler {
             rag_manager,

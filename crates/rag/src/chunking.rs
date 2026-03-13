@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use text_splitter::MarkdownSplitter;
-use tracing::debug;
+use tracing::{debug, info};
 use walkdir::WalkDir;
 
 /// A chunk of text extracted from a markdown file.
@@ -37,34 +38,56 @@ pub fn read_and_chunk_docs(docs_dir: &Path) -> Result<Vec<DocChunk>> {
         );
     }
 
+    // Group files by top-level subdirectory (each is a dependency)
+    let mut deps: BTreeMap<String, Vec<&walkdir::DirEntry>> = BTreeMap::new();
     for entry in &entries {
-        let path = entry.path();
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let relative = entry.path().strip_prefix(docs_dir).unwrap_or(entry.path());
+        let dep_name = relative
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        deps.entry(dep_name).or_default().push(entry);
+    }
 
-        if content.trim().is_empty() {
-            continue;
+    for (dep_name, dep_entries) in &deps {
+        let mut dep_files = 0u64;
+        let mut dep_chunks = 0u64;
+
+        for entry in dep_entries {
+            let path = entry.path();
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+
+            if content.trim().is_empty() {
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(docs_dir)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+
+            let file_chunks: Vec<&str> = splitter.chunks(&content).collect();
+            debug!(
+                file = %relative,
+                chunk_count = file_chunks.len(),
+                "chunked markdown file"
+            );
+
+            dep_files += 1;
+            dep_chunks += file_chunks.len() as u64;
+
+            for chunk_text in file_chunks {
+                chunks.push(DocChunk {
+                    text: chunk_text.to_string(),
+                    source_file: relative.clone(),
+                });
+            }
         }
 
-        let relative = path
-            .strip_prefix(docs_dir)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-
-        let file_chunks: Vec<&str> = splitter.chunks(&content).collect();
-        debug!(
-            file = %relative,
-            chunk_count = file_chunks.len(),
-            "chunked markdown file"
-        );
-
-        for chunk_text in file_chunks {
-            chunks.push(DocChunk {
-                text: chunk_text.to_string(),
-                source_file: relative.clone(),
-            });
-        }
+        info!("indexed {dep_name}: {dep_files} files, {dep_chunks} chunks");
     }
 
     Ok(chunks)

@@ -9,7 +9,7 @@ enum Language {
 
 // RAG indexing and search service
 service RagService {
-  rpc RagIndex(RagIndexRequest) returns (RagIndexResponse);
+  rpc RagIndex(RagIndexRequest) returns (stream RagIndexProgress);
   rpc RagSearch(RagSearchRequest) returns (RagSearchResponse);
 }
 
@@ -17,9 +17,22 @@ message RagIndexRequest {
   Language language = 1;
 }
 
-message RagIndexResponse {
-  uint32 files_processed = 1;
-  uint32 chunks_indexed = 2;
+message RagIndexProgress {
+  oneof update {
+    DependencyIndexed dependency_indexed = 1;
+    IndexComplete index_complete = 2;
+  }
+}
+
+message DependencyIndexed {
+  string name = 1;
+  uint32 files = 2;
+  uint32 chunks = 3;
+}
+
+message IndexComplete {
+  uint32 total_files = 1;
+  uint32 total_chunks = 2;
 }
 
 message RagSearchRequest {

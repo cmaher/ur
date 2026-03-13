@@ -316,6 +316,14 @@ struct RawNetworkConfig {
 struct RawRagConfig {
     qdrant_hostname: Option<String>,
     embedding_model: Option<String>,
+    docs: Option<RawRagDocsConfig>,
+}
+
+/// Raw TOML representation for the `[rag.docs]` section.
+#[derive(Debug, Deserialize)]
+struct RawRagDocsConfig {
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -350,6 +358,16 @@ pub struct RagConfig {
     pub qdrant_hostname: String,
     /// Embedding model name (default: "all-MiniLM-L6-v2").
     pub embedding_model: String,
+    /// Documentation generation settings.
+    pub docs: RagDocsConfig,
+}
+
+/// Configuration for RAG documentation generation (`[rag.docs]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RagDocsConfig {
+    /// Direct dependency crate names to exclude from generated docs.
+    /// Useful for filtering out noisy deps that add bulk without value.
+    pub exclude: Vec<String>,
 }
 
 /// Resolved project configuration for a single project.
@@ -506,10 +524,15 @@ impl Config {
                 embedding_model: r
                     .embedding_model
                     .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+                docs: r
+                    .docs
+                    .map(|d| RagDocsConfig { exclude: d.exclude })
+                    .unwrap_or_default(),
             },
             None => RagConfig {
                 qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
                 embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
+                docs: RagDocsConfig::default(),
             },
         };
 
@@ -1074,6 +1097,42 @@ mounts = ["/opt/tools:relative/path"]
         std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
+    }
+
+    #[test]
+    fn rag_docs_exclude_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.rag.docs.exclude.is_empty());
+    }
+
+    #[test]
+    fn rag_docs_exclude_defaults_when_rag_section_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.rag.docs.exclude.is_empty());
+    }
+
+    #[test]
+    fn rag_docs_exclude_reads_values() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[rag.docs]\nexclude = [\"tokio\", \"serde\"]\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.rag.docs.exclude, vec!["tokio", "serde"]);
+    }
+
+    #[test]
+    fn rag_docs_section_empty_exclude_defaults() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[rag.docs]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.rag.docs.exclude.is_empty());
     }
 
     #[test]
