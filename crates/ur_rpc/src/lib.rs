@@ -17,4 +17,9 @@ pub mod proto {
     pub mod hostd {
         tonic::include_proto!("ur.hostd");
     }
+    #[cfg(feature = "rag")]
+    #[allow(clippy::excessive_nesting)]
+    pub mod rag {
+        tonic::include_proto!("ur.rag");
+    }
 }

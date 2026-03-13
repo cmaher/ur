@@ -541,6 +541,11 @@ mod tests {
                 server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
             },
+            hostexec: ur_config::HostExecConfig::default(),
+            rag: ur_config::RagConfig {
+                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
+            },
             projects: std::collections::HashMap::new(),
         }
     }

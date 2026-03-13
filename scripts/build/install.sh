@@ -32,3 +32,23 @@ cp "$TARGET_DIR/ur" "$INSTALL_DIR/ur"
 cp "$TARGET_DIR/ur-hostd" "$INSTALL_DIR/ur-hostd"
 echo "Installed ur and ur-hostd to $INSTALL_DIR/"
 echo "ur-server runs in a container — use 'docker compose -f containers/docker-compose.yml up -d' to start"
+
+# Download the default embedding model for RAG if not already cached.
+# This matches the hf_hub cache layout fastembed expects.
+FASTEMBED_DIR="${UR_CONFIG:-$HOME/.ur}/fastembed"
+MODEL_DIR="$FASTEMBED_DIR/models--Qdrant--all-MiniLM-L6-v2-onnx"
+COMMIT="5f1b8cd78bc4fb444dd171e59b18f3a3af89a079"
+SNAPSHOT_DIR="$MODEL_DIR/snapshots/$COMMIT"
+
+if [ -d "$SNAPSHOT_DIR" ] && [ -f "$SNAPSHOT_DIR/model.onnx" ]; then
+    echo "Embedding model already cached at $FASTEMBED_DIR"
+else
+    echo "Downloading embedding model (all-MiniLM-L6-v2)..."
+    mkdir -p "$MODEL_DIR/refs" "$MODEL_DIR/blobs" "$SNAPSHOT_DIR"
+    echo -n "$COMMIT" > "$MODEL_DIR/refs/main"
+    HF_BASE="https://huggingface.co/Qdrant/all-MiniLM-L6-v2-onnx/resolve/main"
+    for f in model.onnx tokenizer.json config.json special_tokens_map.json tokenizer_config.json; do
+        curl -fSL -o "$SNAPSHOT_DIR/$f" "$HF_BASE/$f"
+    done
+    echo "Embedding model cached at $FASTEMBED_DIR"
+fi

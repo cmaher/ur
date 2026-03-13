@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../../proto/core.proto");
     println!("cargo:rerun-if-changed=../../proto/hostexec.proto");
     println!("cargo:rerun-if-changed=../../proto/hostd.proto");
+    println!("cargo:rerun-if-changed=../../proto/rag.proto");
 
     let mut protos = Vec::new();
 
@@ -19,6 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cfg!(feature = "hostd") {
         protos.push(proto_dir.join("hostd.proto"));
+    }
+
+    if cfg!(feature = "rag") {
+        protos.push(proto_dir.join("rag.proto"));
     }
 
     if !protos.is_empty() {

@@ -10,6 +10,8 @@ pub mod logging;
 pub mod pool;
 pub mod process;
 pub mod proxy;
+#[cfg(feature = "rag")]
+pub mod rag;
 pub mod registry;
 pub mod run_opts_builder;
 pub mod strategy;
