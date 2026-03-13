@@ -12,6 +12,7 @@ use ur_config::NetworkConfig;
 use container::{ContainerRuntime, NetworkManager};
 
 use crate::run_opts_builder::RunOptsBuilder;
+use crate::strategy::WorkerStrategy;
 use crate::{RepoPoolManager, RepoRegistry};
 
 /// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
@@ -67,43 +68,11 @@ impl AgentId {
     }
 }
 
-/// Skills shared by all prompt modes.
-fn common_skills() -> Vec<String> {
-    vec![
-        "tk".into(),
-        "ship".into(),
-        "green".into(),
-        "cli-design".into(),
-        "reclaude".into(),
-        "writing-skills".into(),
-    ]
-}
-
-/// Default skills for the "code" prompt mode.
-fn default_code_skills() -> Vec<String> {
-    let mut skills = common_skills();
-    skills.extend([
-        "tk:agents".into(),
-        "tk:start".into(),
-        "bacon".into(),
-        "systematic-debugging".into(),
-        "test-driven-development".into(),
-    ]);
-    skills
-}
-
-/// Default skills for the "design" prompt mode.
-fn default_design_skills() -> Vec<String> {
-    let mut skills = common_skills();
-    skills.extend(["brainstorming".into()]);
-    skills
-}
-
-/// Returns the hardcoded default prompt modes.
+/// Returns the hardcoded default prompt modes derived from WorkerStrategy variants.
 fn default_prompt_modes() -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
-    map.insert("code".into(), default_code_skills());
-    map.insert("design".into(), default_design_skills());
+    map.insert("code".into(), WorkerStrategy::Code.skills());
+    map.insert("design".into(), WorkerStrategy::Design.skills());
     map
 }
 
@@ -115,22 +84,31 @@ struct RawPromptModes {
     modes: HashMap<String, RawModeEntry>,
 }
 
-/// A single prompt mode entry with its skills list.
+/// A single prompt mode entry with its base strategy and skills list.
 #[derive(Debug, Deserialize)]
 struct RawModeEntry {
+    /// The base worker strategy name (e.g. "code" or "design"). Required for custom modes.
+    base: String,
     skills: Vec<String>,
 }
 
-/// Resolved prompt modes configuration mapping mode names to skill lists.
+/// Resolved prompt modes configuration mapping mode names to skill lists and strategies.
 #[derive(Debug, Clone)]
 pub struct PromptModesConfig {
     modes: HashMap<String, Vec<String>>,
+    /// Maps mode names to their worker strategy. Built-in modes ("code", "design")
+    /// map to their corresponding variants; custom modes map via their `base` field.
+    strategies: HashMap<String, WorkerStrategy>,
 }
 
 impl Default for PromptModesConfig {
     fn default() -> Self {
+        let mut strategies = HashMap::new();
+        strategies.insert("code".into(), WorkerStrategy::Code);
+        strategies.insert("design".into(), WorkerStrategy::Design);
         Self {
             modes: default_prompt_modes(),
+            strategies,
         }
     }
 }
@@ -139,25 +117,35 @@ impl PromptModesConfig {
     /// Parse prompt_modes from a TOML string.
     /// If no `[prompt_modes]` section exists, hardcoded defaults are used.
     /// Any modes defined in the config replace the defaults entirely.
+    /// Custom modes must specify a valid `base` field ("code" or "design").
     pub fn from_toml(toml_content: &str) -> Result<Self, String> {
         // Parse the full TOML to extract just the prompt_modes section
         let value: toml::Value =
             toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
 
-        match value.get("prompt_modes") {
-            Some(section) => {
-                let raw: RawPromptModes = section
-                    .clone()
-                    .try_into()
-                    .map_err(|e| format!("invalid prompt_modes config: {e}"))?;
-                let mut modes = default_prompt_modes();
-                for (name, entry) in raw.modes {
-                    modes.insert(name, entry.skills);
-                }
-                Ok(Self { modes })
-            }
-            None => Ok(Self::default()),
+        let Some(section) = value.get("prompt_modes") else {
+            return Ok(Self::default());
+        };
+
+        let raw: RawPromptModes = section
+            .clone()
+            .try_into()
+            .map_err(|e| format!("invalid prompt_modes config: {e}"))?;
+        let mut modes = default_prompt_modes();
+        let mut strategies = HashMap::new();
+        strategies.insert("code".into(), WorkerStrategy::Code);
+        strategies.insert("design".into(), WorkerStrategy::Design);
+        for (name, entry) in raw.modes {
+            let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
+                format!(
+                    "invalid base '{}' for prompt mode '{}': must be 'code' or 'design'",
+                    entry.base, name
+                )
+            })?;
+            strategies.insert(name.clone(), strategy);
+            modes.insert(name, entry.skills);
         }
+        Ok(Self { modes, strategies })
     }
 
     /// Resolve skills for a launch request.
@@ -178,6 +166,27 @@ impl PromptModesConfig {
             .cloned()
             .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))
     }
+
+    /// Resolve a mode name to its worker strategy and skill list.
+    ///
+    /// For built-in modes ("code", "design"), returns the corresponding
+    /// `WorkerStrategy` variant and its default skills. For custom modes,
+    /// returns the strategy determined by the `base` field and the custom skills.
+    /// An empty mode name defaults to "code".
+    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
+        let mode_name = if mode.is_empty() { "code" } else { mode };
+        let strategy = self
+            .strategies
+            .get(mode_name)
+            .copied()
+            .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))?;
+        let skills = self
+            .modes
+            .get(mode_name)
+            .cloned()
+            .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))?;
+        Ok((strategy, skills))
+    }
 }
 
 /// Tracks a running agent process, keyed by `AgentId` in the process table.
@@ -188,6 +197,8 @@ struct ProcessEntry {
     project_key: String,
     /// Host path to the repo slot (workspace dir or pool slot).
     slot_path: Option<PathBuf>,
+    /// Worker strategy governing slot acquisition and release behavior.
+    strategy: WorkerStrategy,
     container_id: String,
     /// Host-side TCP port the per-agent gRPC server is bound to.
     grpc_port: u16,
@@ -207,6 +218,8 @@ pub struct ProcessConfig {
     pub proxy_hostname: String,
     /// Project key if launched with `--project` (empty string for raw workspace launches).
     pub project_key: String,
+    /// Worker strategy governing slot acquisition and release behavior.
+    pub strategy: WorkerStrategy,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
     /// Optional git hooks directory template string from project config.
@@ -256,6 +269,11 @@ impl ProcessManager {
     /// Resolve skills for a launch request using the configured prompt modes.
     pub fn resolve_skills(&self, mode: &str, skills: &[String]) -> Result<Vec<String>, String> {
         self.prompt_modes.resolve_skills(mode, skills)
+    }
+
+    /// Resolve a mode name to its worker strategy and skill list.
+    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
+        self.prompt_modes.resolve_mode(mode)
     }
 
     /// Generate a new unique agent ID for the given process_id.
@@ -391,6 +409,7 @@ impl ProcessManager {
                     process_id: config.process_id,
                     project_key: config.project_key,
                     slot_path: config.workspace_dir,
+                    strategy: config.strategy,
                     container_id: cid.0.clone(),
                     grpc_port: config.grpc_port,
                     server_handle,
@@ -434,9 +453,13 @@ impl ProcessManager {
                 process_id = entry.process_id,
                 project_key = entry.project_key,
                 slot_path = %slot_path.display(),
+                strategy = entry.strategy.name(),
                 "releasing pool slot"
             );
-            self.repo_pool_manager.release(slot_path).await?;
+            entry
+                .strategy
+                .release_slot(&self.repo_pool_manager, slot_path)
+                .await?;
         }
 
         // 3. Unregister from RepoRegistry
@@ -613,6 +636,7 @@ mod tests {
                     process_id: "dup-proc".into(),
                     project_key: String::new(),
                     slot_path: None,
+                    strategy: WorkerStrategy::Code,
                     container_id: "fake-cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
@@ -689,6 +713,7 @@ mod tests {
                     process_id: "test".into(),
                     project_key: "myproject".into(),
                     slot_path: None,
+                    strategy: WorkerStrategy::Code,
                     container_id: "cid".into(),
                     grpc_port: 0,
                     server_handle: noop_handle,
@@ -757,9 +782,11 @@ mod tests {
     fn prompt_modes_from_toml_overrides_defaults() {
         let toml = r#"
 [prompt_modes.code]
+base = "code"
 skills = ["only-one"]
 
 [prompt_modes.custom]
+base = "design"
 skills = ["a", "b"]
 "#;
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
@@ -778,5 +805,66 @@ skills = ["a", "b"]
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
         assert!(code.contains(&"tk".to_string()));
+    }
+
+    #[test]
+    fn resolve_mode_default_returns_code_strategy() {
+        let cfg = PromptModesConfig::default();
+        let (strategy, skills) = cfg.resolve_mode("").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Code);
+        assert!(skills.contains(&"tk:agents".to_string()));
+    }
+
+    #[test]
+    fn resolve_mode_design_returns_design_strategy() {
+        let cfg = PromptModesConfig::default();
+        let (strategy, skills) = cfg.resolve_mode("design").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Design);
+        assert!(skills.contains(&"brainstorming".to_string()));
+    }
+
+    #[test]
+    fn resolve_mode_custom_inherits_base_strategy() {
+        let toml = r#"
+[prompt_modes.my-docs]
+base = "design"
+skills = ["tk", "my-custom-skill"]
+"#;
+        let cfg = PromptModesConfig::from_toml(toml).unwrap();
+        let (strategy, skills) = cfg.resolve_mode("my-docs").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Design);
+        assert_eq!(skills, vec!["tk", "my-custom-skill"]);
+    }
+
+    #[test]
+    fn resolve_mode_unknown_errors() {
+        let cfg = PromptModesConfig::default();
+        let result = cfg.resolve_mode("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_toml_rejects_invalid_base() {
+        let toml = r#"
+[prompt_modes.bad]
+base = "invalid"
+skills = ["tk"]
+"#;
+        let result = PromptModesConfig::from_toml(toml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid base"));
+    }
+
+    #[test]
+    fn from_toml_overrides_builtin_strategy() {
+        let toml = r#"
+[prompt_modes.code]
+base = "code"
+skills = ["only-one"]
+"#;
+        let cfg = PromptModesConfig::from_toml(toml).unwrap();
+        let (strategy, skills) = cfg.resolve_mode("code").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Code);
+        assert_eq!(skills, vec!["only-one"]);
     }
 }
