@@ -79,10 +79,14 @@ impl RagManager {
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let mut embeddings = Vec::with_capacity(texts.len());
         for batch in texts.chunks(EMBED_BATCH_SIZE) {
-            let batch_embeddings = self
-                .embedding_model
-                .embed(batch.to_vec(), None)
-                .context("Failed to embed document chunks")?;
+            let batch_vec = batch.to_vec();
+            let model = Arc::clone(&self.embedding_model);
+            let batch_embeddings = tokio::task::spawn_blocking(move || {
+                model.embed(batch_vec, None)
+            })
+            .await
+            .context("Embedding task panicked")?
+            .context("Failed to embed document chunks")?;
             embeddings.extend(batch_embeddings);
         }
 
@@ -139,10 +143,14 @@ impl RagManager {
         let limit = top_k.unwrap_or(DEFAULT_TOP_K);
 
         // Embed the query
-        let embeddings = self
-            .embedding_model
-            .embed(vec![query.to_string()], None)
-            .context("Failed to embed search query")?;
+        let model = Arc::clone(&self.embedding_model);
+        let query_text = query.to_string();
+        let embeddings = tokio::task::spawn_blocking(move || {
+            model.embed(vec![query_text], None)
+        })
+        .await
+        .context("Embedding task panicked")?
+        .context("Failed to embed search query")?;
 
         let query_vector = embeddings
             .into_iter()
