@@ -90,6 +90,7 @@ fn common_skills() -> Vec<String> {
         "cli-design".into(),
         "reclaude".into(),
         "writing-skills".into(),
+        "rag-docs".into(),
     ]
 }
 
@@ -126,6 +127,7 @@ mod tests {
             assert!(skills.contains(&"cli-design".to_string()));
             assert!(skills.contains(&"reclaude".to_string()));
             assert!(skills.contains(&"writing-skills".to_string()));
+            assert!(skills.contains(&"rag-docs".to_string()));
         }
     }
 
