@@ -235,6 +235,9 @@ fn default_proxy_allowlist() -> Vec<String> {
 
 // ---- Config ----
 
+/// Default backup interval in minutes.
+pub const DEFAULT_BACKUP_INTERVAL_MINUTES: u64 = 30;
+
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
@@ -246,6 +249,7 @@ struct RawConfig {
     network: Option<RawNetworkConfig>,
     hostexec: Option<RawHostExecConfig>,
     rag: Option<RawRagConfig>,
+    backup: Option<RawBackupConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -318,6 +322,13 @@ struct RawRagConfig {
     embedding_model: Option<String>,
 }
 
+/// Raw TOML representation for the `[backup]` section.
+#[derive(Debug, Deserialize)]
+struct RawBackupConfig {
+    path: Option<PathBuf>,
+    interval_minutes: Option<u64>,
+}
+
 /// Forward proxy configuration for restricting container network access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
@@ -350,6 +361,17 @@ pub struct RagConfig {
     pub qdrant_hostname: String,
     /// Embedding model name (default: "all-MiniLM-L6-v2").
     pub embedding_model: String,
+}
+
+/// Backup configuration for periodic CozoDB snapshots.
+///
+/// When `path` is `None`, periodic backup is disabled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupConfig {
+    /// Directory to write backup files to. `None` means backup is disabled.
+    pub path: Option<PathBuf>,
+    /// Interval between backups in minutes (default: 30).
+    pub interval_minutes: u64,
 }
 
 /// Resolved project configuration for a single project.
@@ -398,6 +420,8 @@ pub struct Config {
     pub hostexec: HostExecConfig,
     /// RAG system settings (Qdrant vector database).
     pub rag: RagConfig,
+    /// Periodic backup settings for the CozoDB database.
+    pub backup: BackupConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -513,6 +537,19 @@ impl Config {
             },
         };
 
+        let backup = match raw.backup {
+            Some(b) => BackupConfig {
+                path: b.path,
+                interval_minutes: b
+                    .interval_minutes
+                    .unwrap_or(DEFAULT_BACKUP_INTERVAL_MINUTES),
+            },
+            None => BackupConfig {
+                path: None,
+                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
+            },
+        };
+
         let projects = raw
             .projects
             .into_iter()
@@ -546,6 +583,7 @@ impl Config {
             network,
             hostexec,
             rag,
+            backup,
             projects,
         })
     }
@@ -1172,5 +1210,55 @@ make = { lua = "make-safe.lua" }
         assert!(cfg.hostexec.commands.contains_key("cargo"));
         assert!(cfg.hostexec.commands.contains_key("tk"));
         assert!(cfg.hostexec.commands.contains_key("make"));
+    }
+
+    #[test]
+    fn backup_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.backup.path, None);
+        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+    }
+
+    #[test]
+    fn backup_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[backup]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.backup.path, None);
+        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+    }
+
+    #[test]
+    fn backup_reads_path_and_interval() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.backup.path,
+            Some(std::path::PathBuf::from("/backups/ur"))
+        );
+        assert_eq!(cfg.backup.interval_minutes, 60);
+    }
+
+    #[test]
+    fn backup_reads_path_with_default_interval() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[backup]\npath = \"/backups/ur\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.backup.path,
+            Some(std::path::PathBuf::from("/backups/ur"))
+        );
+        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
     }
 }

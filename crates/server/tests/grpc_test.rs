@@ -67,6 +67,10 @@ fn make_grpc_handler(
             qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
             embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
         },
+        backup: ur_config::BackupConfig {
+            path: None,
+            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+        },
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
