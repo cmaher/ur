@@ -1,10 +1,12 @@
 mod schema;
 
+pub mod activity;
 pub mod backup;
 pub mod dependency;
 pub mod query;
 pub mod ticket;
 
+pub use activity::{ActivityDetail, ActivityMetadataEntry};
 pub use backup::BackupManager;
 pub use dependency::DispatchableTicket;
 pub use query::{MetadataMatchTicket, QueryManager};
@@ -90,6 +92,9 @@ impl DatabaseManager {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod activity_tests;
 
 #[cfg(test)]
 mod dependency_tests;
