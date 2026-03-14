@@ -717,6 +717,102 @@ mod tests {
         );
     }
 
+    // --- TransformResult field tests ---
+
+    #[test]
+    fn test_env_extraction() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { command = c, args = a, working_dir = w, env = { FOO = "bar" } }
+            end
+        "#;
+        let result = mgr
+            .run_transform(script, "test", &["arg1".into()], "/tmp", None)
+            .unwrap();
+        assert_eq!(result.env.len(), 1);
+        assert_eq!(result.env.get("FOO").unwrap(), "bar");
+    }
+
+    #[test]
+    fn test_nil_env() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { command = c, args = a, working_dir = w }
+            end
+        "#;
+        let result = mgr
+            .run_transform(script, "test", &["arg1".into()], "/tmp", None)
+            .unwrap();
+        assert!(result.env.is_empty());
+    }
+
+    #[test]
+    fn test_command_override() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { command = "overridden", args = a, working_dir = w }
+            end
+        "#;
+        let result = mgr
+            .run_transform(script, "original", &[], "/tmp", None)
+            .unwrap();
+        assert_eq!(result.command, "overridden");
+        assert_ne!(result.command, "original");
+    }
+
+    #[test]
+    fn test_working_dir_passthrough() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { command = c, args = a, working_dir = w }
+            end
+        "#;
+        let result = mgr
+            .run_transform(script, "test", &[], "/my/working/dir", None)
+            .unwrap();
+        assert_eq!(result.working_dir, "/my/working/dir");
+    }
+
+    #[test]
+    fn test_missing_required_field_command() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { args = a, working_dir = w }
+            end
+        "#;
+        let result = mgr.run_transform(script, "test", &[], "/tmp", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("command"));
+    }
+
+    #[test]
+    fn test_wrong_env_type() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(c, a, w)
+                return { command = c, args = a, working_dir = w, env = { FOO = { nested = "table" } } }
+            end
+        "#;
+        let result = mgr.run_transform(script, "test", &[], "/tmp", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("env"));
+    }
+
+    #[test]
+    fn test_git_lua_git_editor_env() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let result = mgr
+            .run_transform(script, "git", &["status".into()], "/workspace", None)
+            .unwrap();
+        assert_eq!(result.env.get("GIT_EDITOR").unwrap(), "true");
+    }
+
     #[test]
     fn test_cargo_allows_flags_before_subcommand() {
         let mgr = LuaTransformManager::new();
