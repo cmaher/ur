@@ -36,12 +36,15 @@ impl HostDaemonService for HostDaemonHandler {
             "host exec request received"
         );
 
-        let child = tokio::process::Command::new(&req.command)
-            .args(&req.args)
+        let mut cmd = tokio::process::Command::new(&req.command);
+        cmd.args(&req.args)
             .current_dir(&req.working_dir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        for (k, v) in &req.env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn()
             .map_err(|e| {
                 error!(
                     command = %req.command,
@@ -88,6 +91,7 @@ mod tests {
             command: "echo".into(),
             args: vec!["hello".into()],
             working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
         });
 
         let resp = handler.exec(req).await.unwrap();
@@ -104,6 +108,7 @@ mod tests {
             command: "nonexistent_command_xyz".into(),
             args: vec![],
             working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
         });
 
         let result = handler.exec(req).await;
