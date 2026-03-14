@@ -427,6 +427,24 @@ impl TicketRepo {
             .collect())
     }
 
+    /// Returns true if the ticket has any transitive blocker that is not closed.
+    async fn has_open_blockers(&self, ticket_id: &str) -> Result<bool, sqlx::Error> {
+        let blockers = self.graph_manager.transitive_blockers(ticket_id).await?;
+        if blockers.is_empty() {
+            return Ok(false);
+        }
+        let placeholders: String = blockers.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let query = format!(
+            "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
+        );
+        let mut q = sqlx::query_scalar::<_, i32>(&query);
+        for blocker_id in &blockers {
+            q = q.bind(blocker_id);
+        }
+        let count = q.fetch_one(&self.pool).await?;
+        Ok(count > 0)
+    }
+
     /// Returns open children of the given epic that have no open blockers.
     /// Uses GraphManager to compute transitive blockers, then filters out
     /// any ticket that has at least one open blocker.
@@ -446,25 +464,7 @@ impl TicketRepo {
         let mut result = Vec::new();
 
         for (id, title, priority, type_) in children {
-            let blockers = self.graph_manager.transitive_blockers(&id).await?;
-
-            // Check if any blocker is still open.
-            let has_open_blocker = if blockers.is_empty() {
-                false
-            } else {
-                let placeholders: String =
-                    blockers.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-                let query = format!(
-                    "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
-                );
-                let mut q = sqlx::query_scalar::<_, i32>(&query);
-                for blocker_id in &blockers {
-                    q = q.bind(blocker_id);
-                }
-                let count = q.fetch_one(&self.pool).await?;
-                count > 0
-            };
-
+            let has_open_blocker = self.has_open_blockers(&id).await?;
             if !has_open_blocker {
                 result.push(DispatchableTicket {
                     id,
