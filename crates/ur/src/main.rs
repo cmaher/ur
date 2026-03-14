@@ -573,9 +573,7 @@ async fn handle_process(
                     let dir_name = cwd
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("cannot determine directory name from cwd")
-                        })?
+                        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
                         .to_owned();
                     if project_keys.contains(&dir_name) {
                         debug!(project_key = %dir_name, "derived project from cwd");
