@@ -71,6 +71,9 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
     let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
     init_dir(&hostexec_dir)?;
 
+    let backup_dir = config_dir.join("backups");
+    init_dir(&backup_dir)?;
+
     let rag_dir = config_dir.join("rag");
     init_dir(&rag_dir)?;
 
@@ -165,6 +168,7 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         assert!(tmp.path().join("workspace").is_dir());
+        assert!(tmp.path().join("backups").is_dir());
         assert!(tmp.path().join("squid").is_dir());
         assert!(tmp.path().join("hostexec").is_dir());
         assert!(tmp.path().join("hostexec/example.lua").exists());

@@ -1,5 +1,6 @@
 mod compose;
 mod credential;
+mod db;
 mod hostd;
 mod init;
 mod lifecycle_log;
@@ -78,6 +79,11 @@ enum Commands {
         #[command(subcommand)]
         command: RagCommands,
     },
+    /// Database backup and restore
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -150,6 +156,19 @@ enum RagCommands {
 enum ModelCommands {
     /// Download the configured embedding model to the local cache
     Download,
+}
+
+#[derive(Subcommand)]
+enum DbCommands {
+    /// Create an on-demand database backup
+    Backup,
+    /// Restore a database from a backup file
+    Restore {
+        /// Path to the backup file to restore
+        path: PathBuf,
+    },
+    /// List available backup files
+    List,
 }
 
 #[derive(Subcommand)]
@@ -790,6 +809,11 @@ async fn main() -> Result<()> {
             RagCommands::Model { command } => match command {
                 ModelCommands::Download => rag::download_model(&config)?,
             },
+        },
+        Commands::Db { command } => match command {
+            DbCommands::Backup => db::backup(&config).await?,
+            DbCommands::Restore { path } => db::restore(&config, &path).await?,
+            DbCommands::List => db::list(&config)?,
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create {
