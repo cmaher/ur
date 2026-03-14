@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock};
 
 use rand::Rng;
 use serde::Deserialize;
-use tokio::task::JoinHandle;
 use tracing::info;
+use uuid::Uuid;
 
 use ur_config::NetworkConfig;
 
@@ -189,6 +189,15 @@ impl PromptModesConfig {
     }
 }
 
+/// Context for a running agent, returned by `ProcessManager::get_agent_context`.
+#[derive(Debug, Clone)]
+pub struct AgentContext {
+    /// Project key if launched with `--project`, or `None` for raw workspace launches.
+    pub project_key: Option<String>,
+    /// Host path to the repo slot (workspace dir or pool slot).
+    pub slot_path: PathBuf,
+}
+
 /// Tracks a running agent process, keyed by `AgentId` in the process table.
 struct ProcessEntry {
     /// The original process_id (without random suffix).
@@ -200,10 +209,8 @@ struct ProcessEntry {
     /// Worker strategy governing slot acquisition and release behavior.
     strategy: WorkerStrategy,
     container_id: String,
-    /// Host-side TCP port the per-agent gRPC server is bound to.
-    grpc_port: u16,
-    /// Handle to the per-agent gRPC server task.
-    server_handle: JoinHandle<()>,
+    /// Secret token (UUID v4) for authenticating agent requests.
+    agent_secret: String,
 }
 
 /// Configuration for launching a container process.
@@ -213,7 +220,6 @@ pub struct ProcessConfig {
     pub image_id: String,
     pub cpus: u32,
     pub memory: String,
-    pub grpc_port: u16,
     pub workspace_dir: Option<PathBuf>,
     pub proxy_hostname: String,
     /// Project key if launched with `--project` (empty string for raw workspace launches).
@@ -290,11 +296,38 @@ impl ProcessManager {
             .ok_or_else(|| format!("unknown agent: {agent_id}"))
     }
 
+    /// Look up agent context (project_key, slot_path) by agent ID.
+    /// Returns `None` if the agent is not registered or has no slot_path.
+    pub fn get_agent_context(&self, agent_id: &AgentId) -> Option<AgentContext> {
+        let procs = self.processes.read().expect("process lock poisoned");
+        let entry = procs.get(agent_id)?;
+        let slot_path = entry.slot_path.clone()?;
+        let project_key = if entry.project_key.is_empty() {
+            None
+        } else {
+            Some(entry.project_key.clone())
+        };
+        Some(AgentContext {
+            project_key,
+            slot_path,
+        })
+    }
+
+    /// Verify that the given agent_id and secret match a registered agent.
+    pub fn verify_agent(&self, agent_id: &str, secret: &str) -> bool {
+        let Ok(parsed) = AgentId::parse(agent_id) else {
+            return false;
+        };
+        let procs = self.processes.read().expect("process lock poisoned");
+        procs
+            .get(&parsed)
+            .is_some_and(|entry| entry.agent_secret == secret)
+    }
+
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
     /// When `workspace_dir` is Some, the directory is used as-is (no git init)
     /// and registered via `register_absolute`.
-    /// The caller is responsible for spawning the per-agent gRPC server and
-    /// then calling `run_and_record`.
+    /// The caller is responsible for calling `run_and_record` after `prepare`.
     pub async fn prepare(
         &self,
         process_id: &str,
@@ -341,24 +374,27 @@ impl ProcessManager {
     }
 
     /// Phase 2 of launch: run the container and record the process entry.
-    /// Call after spawning the per-agent gRPC server.
+    /// Generates and stores an agent secret (UUID v4) for auth.
+    /// Returns `(container_id, agent_secret)`.
     pub async fn run_and_record(
         &self,
         config: ProcessConfig,
-        server_handle: JoinHandle<()>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
-        let server_hostname = &self.network_config.server_hostname;
-        let server_addr = format!("{server_hostname}:{}", config.grpc_port);
+        // Generate agent secret for worker auth
+        let agent_secret = Uuid::new_v4().to_string();
 
         // Build env vars
         let mut env_vars = vec![
-            (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
             (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
+            (
+                ur_config::UR_AGENT_SECRET_ENV.into(),
+                agent_secret.clone(),
+            ),
         ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
@@ -396,7 +432,6 @@ impl ProcessManager {
             process_id = config.process_id,
             agent_id = %config.agent_id,
             container_id = cid.0,
-            grpc_port = config.grpc_port,
             "process launched"
         );
 
@@ -411,17 +446,16 @@ impl ProcessManager {
                     slot_path: config.workspace_dir,
                     strategy: config.strategy,
                     container_id: cid.0.clone(),
-                    grpc_port: config.grpc_port,
-                    server_handle,
+                    agent_secret: agent_secret.clone(),
                 },
             );
         }
 
-        Ok(cid.0)
+        Ok((cid.0, agent_secret))
     }
 
     /// Stop a running agent process by agent ID. Stops + removes the container,
-    /// unregisters from RepoRegistry, aborts the per-agent gRPC server task.
+    /// unregisters from RepoRegistry.
     pub async fn stop_by_agent_id(&self, agent_id: &AgentId) -> Result<(), String> {
         let entry = {
             let mut procs = self.processes.write().expect("process lock poisoned");
@@ -465,13 +499,9 @@ impl ProcessManager {
         // 3. Unregister from RepoRegistry
         self.repo_registry.unregister(&entry.process_id);
 
-        // 4. Abort the per-agent gRPC server task
-        entry.server_handle.abort();
-
         info!(
             process_id = entry.process_id,
             %agent_id,
-            grpc_port = entry.grpc_port,
             "process stopped"
         );
 
@@ -644,7 +674,6 @@ mod tests {
 
         let existing_agent_id = AgentId("dup-proc-ab12".into());
         // Manually insert a process entry
-        let noop_handle = tokio::spawn(std::future::ready(()));
         {
             let mut procs = mgr.processes.write().unwrap();
             procs.insert(
@@ -655,8 +684,7 @@ mod tests {
                     slot_path: None,
                     strategy: WorkerStrategy::Code,
                     container_id: "fake-cid".into(),
-                    grpc_port: 0,
-                    server_handle: noop_handle,
+                    agent_secret: Uuid::new_v4().to_string(),
                 },
             );
         }
@@ -721,7 +749,6 @@ mod tests {
     async fn resolve_process_id_works() {
         let (mgr, _workspace) = test_manager();
         let agent_id = AgentId("test-ab12".into());
-        let noop_handle = tokio::spawn(std::future::ready(()));
         {
             let mut procs = mgr.processes.write().unwrap();
             procs.insert(
@@ -732,8 +759,7 @@ mod tests {
                     slot_path: None,
                     strategy: WorkerStrategy::Code,
                     container_id: "cid".into(),
-                    grpc_port: 0,
-                    server_handle: noop_handle,
+                    agent_secret: Uuid::new_v4().to_string(),
                 },
             );
         }

@@ -90,51 +90,6 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        // Spawn per-agent gRPC server on TCP bound to 0.0.0.0 (reachable via
-        // Docker network; network isolation handled by Docker network membership).
-        let core_handler = CoreServiceHandler {
-            process_manager: self.process_manager.clone(),
-            repo_pool_manager: self.repo_pool_manager.clone(),
-            repo_registry: self.repo_registry.clone(),
-            workspace: self.workspace.clone(),
-            proxy_hostname: self.proxy_hostname.clone(),
-            projects: self.projects.clone(),
-            #[cfg(feature = "hostexec")]
-            hostexec_config: self.hostexec_config.clone(),
-            #[cfg(feature = "hostexec")]
-            hostd_addr: self.hostd_addr.clone(),
-        };
-
-        let bind_host = "0.0.0.0";
-
-        // Build agent context for Lua transforms. For raw workspace mounts
-        // (no project association), agent_context is None.
-        #[cfg(feature = "hostexec")]
-        let agent_context = {
-            let agent_id_str = agent_id.0.clone();
-            if !project_key.is_empty() {
-                workspace_dir
-                    .as_ref()
-                    .map(|ws_dir| crate::hostexec::AgentContext {
-                        agent_id: agent_id_str,
-                        project_key: project_key.clone(),
-                        slot_path: ws_dir.clone(),
-                    })
-            } else {
-                None
-            }
-        };
-
-        let (grpc_port, server_handle) = crate::grpc_server::serve_agent_grpc(
-            bind_host,
-            core_handler,
-            &req.process_id,
-            #[cfg(feature = "hostexec")]
-            agent_context,
-        )
-        .await
-        .map_err(|e| Status::internal(format!("failed to start per-agent gRPC: {e}")))?;
-
         // Use explicit skills from the request if provided, otherwise use
         // the skills resolved from the strategy/mode.
         let skills = if req.skills.is_empty() {
@@ -160,7 +115,6 @@ impl CoreService for CoreServiceHandler {
             image_id: req.image_id,
             cpus: req.cpus,
             memory: req.memory,
-            grpc_port,
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
@@ -169,9 +123,9 @@ impl CoreService for CoreServiceHandler {
             git_hooks_dir,
             mounts,
         };
-        let container_id = self
+        let (container_id, _agent_secret) = self
             .process_manager
-            .run_and_record(config, server_handle)
+            .run_and_record(config)
             .await
             .map_err(Status::internal)?;
 
