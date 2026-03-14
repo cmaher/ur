@@ -8,11 +8,7 @@ use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 use crate::grpc::CoreServiceHandler;
 
 /// Build a Routes collection with all enabled services.
-fn build_agent_routes(
-    core_handler: CoreServiceHandler,
-    process_id: &str,
-    #[cfg(feature = "hostexec")] agent_context: Option<crate::hostexec::AgentContext>,
-) -> Routes {
+fn build_agent_routes(core_handler: CoreServiceHandler) -> Routes {
     let mut builder = Routes::builder();
     builder.add_service(CoreServiceServer::new(core_handler.clone()));
 
@@ -20,29 +16,14 @@ fn build_agent_routes(
     {
         use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
 
-        // Merge per-project passthrough hostexec commands from ur.toml.
-        let hostexec_config = match &agent_context {
-            Some(ctx) if !ctx.project_key.is_empty() => {
-                let extra = core_handler
-                    .projects
-                    .get(&ctx.project_key)
-                    .map(|p| p.hostexec.as_slice())
-                    .unwrap_or_default();
-                core_handler
-                    .hostexec_config
-                    .with_passthrough_commands(extra)
-            }
-            _ => core_handler.hostexec_config.clone(),
-        };
-
         builder.add_service(HostExecServiceServer::new(
             crate::grpc_hostexec::HostExecServiceHandler {
-                config: hostexec_config,
+                config: core_handler.hostexec_config.clone(),
                 lua: crate::hostexec::LuaTransformManager::new(),
                 repo_registry: core_handler.repo_registry.clone(),
-                process_id: process_id.to_owned(),
+                process_manager: core_handler.process_manager.clone(),
+                projects: core_handler.projects.clone(),
                 hostd_addr: core_handler.hostd_addr.clone(),
-                agent_context,
             },
         ));
     }
@@ -61,12 +42,7 @@ pub async fn serve_grpc(
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "main gRPC server listening");
 
-    let routes = build_agent_routes(
-        handler,
-        "",
-        #[cfg(feature = "hostexec")]
-        None,
-    );
+    let routes = build_agent_routes(handler);
 
     let mut server = Server::builder().add_routes(routes);
 
@@ -99,7 +75,6 @@ pub async fn serve_agent_grpc(
     bind_host: &str,
     core_handler: CoreServiceHandler,
     process_id: &str,
-    #[cfg(feature = "hostexec")] agent_context: Option<crate::hostexec::AgentContext>,
 ) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind(format!("{bind_host}:0")).await?;
     let addr = listener.local_addr()?;
@@ -107,12 +82,7 @@ pub async fn serve_agent_grpc(
 
     tracing::info!(addr = %addr, port, process_id, "per-agent gRPC server listening");
 
-    let routes = build_agent_routes(
-        core_handler,
-        process_id,
-        #[cfg(feature = "hostexec")]
-        agent_context,
-    );
+    let routes = build_agent_routes(core_handler);
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let handle = tokio::spawn(async move {
