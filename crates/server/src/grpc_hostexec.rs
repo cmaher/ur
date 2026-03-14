@@ -63,7 +63,6 @@ impl HostExecService for HostExecServiceHandler {
         let host_working_dir = self.map_working_dir(&req.working_dir)?;
 
         // 3. Lua transform (if configured)
-        // TODO(ur-bvxe): Use full TransformResult fields (command, working_dir, env)
         let transform_result = if let Some(lua_source) = &cmd_config.lua_source {
             self.lua
                 .run_transform(
@@ -78,7 +77,7 @@ impl HostExecService for HostExecServiceHandler {
             crate::hostexec::lua_transform::TransformResult {
                 command: req.command.clone(),
                 args: req.args,
-                working_dir: host_working_dir.clone(),
+                working_dir: host_working_dir,
                 env: std::collections::HashMap::new(),
             }
         };
@@ -86,7 +85,7 @@ impl HostExecService for HostExecServiceHandler {
         info!(
             command = transform_result.command,
             process_id = self.process_id,
-            host_working_dir,
+            working_dir = transform_result.working_dir,
             args_count = transform_result.args.len(),
             "host exec forwarding to hostd"
         );
@@ -97,9 +96,9 @@ impl HostExecService for HostExecServiceHandler {
             .map_err(|e| Status::unavailable(format!("hostd unavailable: {e}")))?;
 
         let hostd_req = HostDaemonExecRequest {
-            command: req.command,
+            command: transform_result.command,
             args: transform_result.args,
-            working_dir: host_working_dir,
+            working_dir: transform_result.working_dir,
             env: transform_result.env,
         };
 
