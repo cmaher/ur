@@ -63,6 +63,12 @@ pub async fn serve_worker_grpc(
     // Build the Routes collection, wrapping each service with the auth interceptor.
     let mut routes = tonic::service::Routes::builder();
 
+    // Register CoreService (ping health check) for worker containers.
+    routes.add_service(CoreServiceServer::with_interceptor(
+        crate::grpc::WorkerCoreServiceHandler,
+        interceptor.clone(),
+    ));
+
     #[cfg(feature = "hostexec")]
     {
         use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;

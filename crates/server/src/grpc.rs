@@ -161,3 +161,46 @@ impl CoreService for CoreServiceHandler {
         Ok(Response::new(ProcessInfoResponse { workspace_dir }))
     }
 }
+
+/// Lightweight CoreService for the worker gRPC server.
+///
+/// Only implements `Ping` (health check for workers); process management RPCs
+/// return `Unimplemented` because they are host-only operations.
+#[derive(Clone)]
+pub struct WorkerCoreServiceHandler;
+
+#[tonic::async_trait]
+impl CoreService for WorkerCoreServiceHandler {
+    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        Ok(Response::new(PingResponse {
+            message: "pong".into(),
+        }))
+    }
+
+    async fn process_launch(
+        &self,
+        _req: Request<ProcessLaunchRequest>,
+    ) -> Result<Response<ProcessLaunchResponse>, Status> {
+        Err(Status::unimplemented(
+            "process_launch is only available on the host server",
+        ))
+    }
+
+    async fn process_stop(
+        &self,
+        _req: Request<ProcessStopRequest>,
+    ) -> Result<Response<ProcessStopResponse>, Status> {
+        Err(Status::unimplemented(
+            "process_stop is only available on the host server",
+        ))
+    }
+
+    async fn process_info(
+        &self,
+        _req: Request<ProcessInfoRequest>,
+    ) -> Result<Response<ProcessInfoResponse>, Status> {
+        Err(Status::unimplemented(
+            "process_info is only available on the host server",
+        ))
+    }
+}
