@@ -45,7 +45,7 @@ pub async fn serve_grpc(
 /// Serves all container workers. Registers HostExec, RAG, and Ticket services,
 /// all wrapped with the agent auth interceptor that validates `ur-agent-id` and
 /// `ur-agent-secret` metadata headers via `ProcessManager`.
-#[allow(unused_variables)]
+#[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn serve_worker_grpc(
     addr: SocketAddr,
     process_manager: ProcessManager,

@@ -254,6 +254,7 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: PathBuf,
         host_config_dir: PathBuf,
@@ -411,10 +412,7 @@ impl ProcessManager {
     /// Phase 2 of launch: run the container and record the process entry.
     /// Generates and stores an agent secret (UUID v4) for auth.
     /// Returns `(container_id, agent_secret)`.
-    pub async fn run_and_record(
-        &self,
-        config: ProcessConfig,
-    ) -> Result<(String, String), String> {
+    pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
@@ -431,10 +429,7 @@ impl ProcessManager {
         let mut env_vars = vec![
             (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
             (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
-            (
-                ur_config::UR_AGENT_SECRET_ENV.into(),
-                agent_secret.clone(),
-            ),
+            (ur_config::UR_AGENT_SECRET_ENV.into(), agent_secret.clone()),
         ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)

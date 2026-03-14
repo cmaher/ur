@@ -9,6 +9,7 @@ use crate::ProcessManager;
 ///
 /// Returns `Status::unauthenticated` if either header is missing or the
 /// agent_id/secret pair doesn't match a registered agent.
+#[allow(clippy::result_large_err)]
 pub fn worker_auth_interceptor(
     process_manager: ProcessManager,
 ) -> impl Fn(Request<()>) -> Result<Request<()>, Status> + Clone + Send + Sync + 'static {

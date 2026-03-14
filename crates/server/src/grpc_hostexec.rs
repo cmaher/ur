@@ -48,8 +48,7 @@ impl HostExecService for HostExecServiceHandler {
         let cmd_config = config.get(&req.command).ok_or_else(|| {
             warn!(
                 command = req.command,
-                process_id,
-                "host exec command denied: not in allowlist"
+                process_id, "host exec command denied: not in allowlist"
             );
             Status::permission_denied(format!("command not allowed: {}", req.command))
         })?;
@@ -140,7 +139,14 @@ impl HostExecServiceHandler {
     fn resolve_request_context<T>(
         &self,
         req: &Request<T>,
-    ) -> Result<(String, Option<crate::hostexec::AgentContext>, HostExecConfigManager), Status> {
+    ) -> Result<
+        (
+            String,
+            Option<crate::hostexec::AgentContext>,
+            HostExecConfigManager,
+        ),
+        Status,
+    > {
         let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) else {
             // No agent ID header — host-server request (e.g., from `ur` CLI).
             return Ok((String::new(), None, self.config.clone()));

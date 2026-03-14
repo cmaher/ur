@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use tonic::transport::{Endpoint, Server};
 
+use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
-use ur_rpc::proto::core::PingRequest;
 
 /// Build a ProcessManager and CoreServiceHandler for testing.
 fn make_test_components(
