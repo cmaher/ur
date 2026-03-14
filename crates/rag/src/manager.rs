@@ -270,7 +270,9 @@ impl RagManager {
 
         let response = self
             .qdrant
-            .search_points(SearchPointsBuilder::new(&collection, query_vector, limit))
+            .search_points(
+                SearchPointsBuilder::new(&collection, query_vector, limit).with_payload(true),
+            )
             .await
             .context("Failed to search Qdrant")?;
 

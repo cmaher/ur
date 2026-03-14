@@ -111,13 +111,6 @@ digraph brainstorming {
 - The epic description should contain the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
 - Edit the epic's `.md` file directly to write the full design as the ticket body (below the YAML frontmatter)
 
-**Spec Review Loop:**
-After writing the epic description:
-
-1. Dispatch spec-document-reviewer subagent (see spec-document-reviewer-prompt.md)
-2. If Issues Found: fix the epic description, re-dispatch, repeat until Approved
-3. If loop exceeds 5 iterations, surface to human for guidance
-
 **Creating child tickets:**
 
 - Create one ticket per discrete, implementable task using `tk create "Task title" --parent <epic-id>`
