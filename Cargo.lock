@@ -4357,6 +4357,7 @@ dependencies = [
  "ur_config",
  "ur_db",
  "ur_rpc",
+ "uuid",
 ]
 
 [[package]]
