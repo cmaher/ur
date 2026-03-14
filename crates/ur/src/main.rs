@@ -78,6 +78,11 @@ enum Commands {
         #[command(subcommand)]
         command: RagCommands,
     },
+    /// Query agent information
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,6 +191,12 @@ enum ProcessCommands {
     Kill { process_id: String },
     /// Save credentials from a running container for reuse
     SaveCredentials { process_id: String },
+}
+
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// Print the host workspace directory for a running agent
+    Dir { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -783,6 +794,21 @@ async fn main() -> Result<()> {
                     let val = value.as_deref().unwrap_or("");
                     ticket::set_meta(port, &ticket_id, &key, val).await?
                 }
+            }
+        },
+        Commands::Agent { command } => match command {
+            AgentCommands::Dir { process_id } => {
+                let mut client = connect(port).await?;
+                let resp = client
+                    .process_info(ProcessInfoRequest {
+                        process_id: process_id.clone(),
+                    })
+                    .await?;
+                let workspace_dir = resp.into_inner().workspace_dir;
+                if workspace_dir.is_empty() {
+                    bail!("no workspace directory for agent {process_id}");
+                }
+                println!("{workspace_dir}");
             }
         },
     }

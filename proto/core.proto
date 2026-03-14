@@ -16,6 +16,7 @@ service CoreService {
   rpc Ping(PingRequest) returns (PingResponse);
   rpc ProcessLaunch(ProcessLaunchRequest) returns (ProcessLaunchResponse);
   rpc ProcessStop(ProcessStopRequest) returns (ProcessStopResponse);
+  rpc ProcessInfo(ProcessInfoRequest) returns (ProcessInfoResponse);
 }
 
 message PingRequest {}
@@ -48,3 +49,11 @@ message ProcessStopRequest {
 }
 
 message ProcessStopResponse {}
+
+message ProcessInfoRequest {
+  string process_id = 1;
+}
+
+message ProcessInfoResponse {
+  string workspace_dir = 1;
+}

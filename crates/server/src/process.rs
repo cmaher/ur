@@ -480,6 +480,17 @@ impl ProcessManager {
 
     /// Stop a running agent process by process_id (searches all entries).
     /// Used by the CLI which only knows the process_id, not the agent_id.
+    /// Look up the workspace/slot directory for a running process by its process ID.
+    pub fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
+        let procs = self.processes.read().expect("process lock poisoned");
+        let entry = procs
+            .iter()
+            .find(|(_, entry)| entry.process_id == process_id)
+            .map(|(_, entry)| entry)
+            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+        Ok(entry.slot_path.clone())
+    }
+
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
         let agent_id = {
             let procs = self.processes.read().expect("process lock poisoned");
@@ -551,6 +562,7 @@ mod tests {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
             },
+            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
             projects: std::collections::HashMap::new(),
         }
     }

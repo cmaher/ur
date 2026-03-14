@@ -72,6 +72,7 @@ fn make_grpc_handler(
             path: None,
             interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
         },
+        worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
