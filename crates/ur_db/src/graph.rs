@@ -47,10 +47,7 @@ impl GraphManager {
 
     /// Returns all transitive dependents of the given ticket (downstream DFS
     /// over "blocks" edges). Results are returned regardless of ticket status.
-    pub async fn transitive_dependents(
-        &self,
-        ticket_id: &str,
-    ) -> Result<Vec<String>, sqlx::Error> {
+    pub async fn transitive_dependents(&self, ticket_id: &str) -> Result<Vec<String>, sqlx::Error> {
         let built = self.build_graph().await?;
         let Some(&start) = built.node_map.get(ticket_id) else {
             return Ok(vec![]);
@@ -106,10 +103,9 @@ impl GraphManager {
         .fetch_all(&self.pool)
         .await?;
 
-        let ticket_ids =
-            sqlx::query_scalar::<_, String>("SELECT id FROM ticket")
-                .fetch_all(&self.pool)
-                .await?;
+        let ticket_ids = sqlx::query_scalar::<_, String>("SELECT id FROM ticket")
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut graph = DiGraph::<String, ()>::new();
         let mut node_map = HashMap::new();

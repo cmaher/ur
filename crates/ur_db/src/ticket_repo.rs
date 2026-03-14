@@ -60,7 +60,20 @@ impl TicketRepo {
     }
 
     pub async fn get_ticket(&self, id: &str) -> Result<Option<Ticket>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, i32, Option<String>, String, String, String, String)>(
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                i32,
+                Option<String>,
+                String,
+                String,
+                String,
+                String,
+            ),
+        >(
             "SELECT id, type, status, priority, parent_id, title, body, created_at, updated_at
              FROM ticket WHERE id = ?",
         )
@@ -68,19 +81,21 @@ impl TicketRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
-            Ticket {
-                id,
-                type_,
-                status,
-                priority,
-                parent_id,
-                title,
-                body,
-                created_at,
-                updated_at,
-            }
-        }))
+        Ok(row.map(
+            |(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
+                Ticket {
+                    id,
+                    type_,
+                    status,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    created_at,
+                    updated_at,
+                }
+            },
+        ))
     }
 
     pub async fn update_ticket(
@@ -88,9 +103,10 @@ impl TicketRepo {
         id: &str,
         update: &TicketUpdate,
     ) -> Result<Ticket, sqlx::Error> {
-        let existing = self.get_ticket(id).await?.ok_or_else(|| {
-            sqlx::Error::RowNotFound
-        })?;
+        let existing = self
+            .get_ticket(id)
+            .await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)?;
 
         let status = update.status.as_deref().unwrap_or(&existing.status);
         let priority = update.priority.unwrap_or(existing.priority);
@@ -150,7 +166,20 @@ impl TicketRepo {
 
         query.push_str(" ORDER BY priority ASC, created_at ASC");
 
-        let mut q = sqlx::query_as::<_, (String, String, String, i32, Option<String>, String, String, String, String)>(&query);
+        let mut q = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                i32,
+                Option<String>,
+                String,
+                String,
+                String,
+                String,
+            ),
+        >(&query);
         for bind in &binds {
             q = q.bind(bind);
         }
@@ -159,19 +188,21 @@ impl TicketRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
-                Ticket {
-                    id,
-                    type_,
-                    status,
-                    priority,
-                    parent_id,
-                    title,
-                    body,
-                    created_at,
-                    updated_at,
-                }
-            })
+            .map(
+                |(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
+                    Ticket {
+                        id,
+                        type_,
+                        status,
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        created_at,
+                        updated_at,
+                    }
+                },
+            )
             .collect())
     }
 
@@ -353,14 +384,16 @@ impl TicketRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(id, title, type_, status, key, value)| MetadataMatchTicket {
-                id,
-                title,
-                type_,
-                status,
-                key,
-                value,
-            })
+            .map(
+                |(id, title, type_, status, key, value)| MetadataMatchTicket {
+                    id,
+                    title,
+                    type_,
+                    status,
+                    key,
+                    value,
+                },
+            )
             .collect())
     }
 
@@ -381,14 +414,16 @@ impl TicketRepo {
 
         Ok(rows
             .into_iter()
-            .map(|(id, title, type_, status, key, value)| MetadataMatchTicket {
-                id,
-                title,
-                type_,
-                status,
-                key,
-                value,
-            })
+            .map(
+                |(id, title, type_, status, key, value)| MetadataMatchTicket {
+                    id,
+                    title,
+                    type_,
+                    status,
+                    key,
+                    value,
+                },
+            )
             .collect())
     }
 
@@ -417,7 +452,8 @@ impl TicketRepo {
             let has_open_blocker = if blockers.is_empty() {
                 false
             } else {
-                let placeholders: String = blockers.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                let placeholders: String =
+                    blockers.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
                 let query = format!(
                     "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
                 );

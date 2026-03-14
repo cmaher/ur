@@ -30,7 +30,10 @@ impl SnapshotManager {
     /// Restore a snapshot into a new database file. Copies the source file to
     /// the target path, then opens it with migrations to verify schema
     /// integrity. Fails if the target path already exists.
-    pub async fn restore(source_path: &str, target_path: &str) -> Result<DatabaseManager, sqlx::Error> {
+    pub async fn restore(
+        source_path: &str,
+        target_path: &str,
+    ) -> Result<DatabaseManager, sqlx::Error> {
         let target = Path::new(target_path);
         if target.exists() {
             return Err(sqlx::Error::Protocol(format!(

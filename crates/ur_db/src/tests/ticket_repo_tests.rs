@@ -775,7 +775,10 @@ async fn add_activity_returns_generated_fields() {
 async fn tickets_by_metadata_exact_match() {
     let (db, repo) = populated_db().await;
 
-    let results = repo.tickets_by_metadata("component", "backend").await.unwrap();
+    let results = repo
+        .tickets_by_metadata("component", "backend")
+        .await
+        .unwrap();
     assert_eq!(results.len(), 2);
     let ids: Vec<&str> = results.iter().map(|t| t.id.as_str()).collect();
     assert!(ids.contains(&"task-1a"));
@@ -794,7 +797,10 @@ async fn tickets_by_metadata_exact_match() {
 async fn tickets_by_metadata_no_match() {
     let (db, repo) = populated_db().await;
 
-    let results = repo.tickets_by_metadata("component", "mobile").await.unwrap();
+    let results = repo
+        .tickets_by_metadata("component", "mobile")
+        .await
+        .unwrap();
     assert!(results.is_empty());
 
     db.cleanup().await;

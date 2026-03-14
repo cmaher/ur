@@ -2,10 +2,7 @@ use crate::database::DatabaseManager;
 
 #[tokio::test]
 async fn open_creates_database_and_runs_migrations() {
-    let db_path = format!(
-        "/tmp/ur_db_test_{}.db",
-        uuid::Uuid::new_v4()
-    );
+    let db_path = format!("/tmp/ur_db_test_{}.db", uuid::Uuid::new_v4());
     let manager = DatabaseManager::open(&db_path)
         .await
         .expect("should open database");

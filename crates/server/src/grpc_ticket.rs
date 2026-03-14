@@ -373,10 +373,7 @@ impl TicketService for TicketServiceHandler {
                 }),
                 metadata: meta
                     .into_iter()
-                    .map(|(key, value)| ur_rpc::proto::ticket::ActivityMetadataEntry {
-                        key,
-                        value,
-                    })
+                    .map(|(key, value)| ur_rpc::proto::ticket::ActivityMetadataEntry { key, value })
                     .collect(),
             });
         }

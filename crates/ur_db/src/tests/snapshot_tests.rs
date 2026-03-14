@@ -200,7 +200,10 @@ async fn restore_fails_if_source_missing() {
     let target_path = snapshot_path();
 
     let result = SnapshotManager::restore(&nonexistent, &target_path).await;
-    assert!(result.is_err(), "restore should fail when source is missing");
+    assert!(
+        result.is_err(),
+        "restore should fail when source is missing"
+    );
 
     let err_msg = result.err().unwrap().to_string();
     assert!(
@@ -296,27 +299,15 @@ async fn snapshot_data_integrity_full_round_trip() {
         .unwrap();
     assert_eq!(all_tickets.len(), 3);
 
-    let epic = restored_repo
-        .get_ticket("int-epic")
-        .await
-        .unwrap()
-        .unwrap();
+    let epic = restored_repo.get_ticket("int-epic").await.unwrap().unwrap();
     assert_eq!(epic.type_, "epic");
     assert_eq!(epic.title, "Integrity epic");
 
-    let t1 = restored_repo
-        .get_ticket("int-t1")
-        .await
-        .unwrap()
-        .unwrap();
+    let t1 = restored_repo.get_ticket("int-t1").await.unwrap().unwrap();
     assert_eq!(t1.parent_id.as_deref(), Some("int-epic"));
     assert_eq!(t1.title, "Integrity task one");
 
-    let t2 = restored_repo
-        .get_ticket("int-t2")
-        .await
-        .unwrap()
-        .unwrap();
+    let t2 = restored_repo.get_ticket("int-t2").await.unwrap().unwrap();
     assert_eq!(t2.parent_id.as_deref(), Some("int-epic"));
 
     // Verify metadata.

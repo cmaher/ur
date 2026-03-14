@@ -1,7 +1,7 @@
 // DatabaseManager: SQLite connection pool and migration runner.
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 
 #[derive(Clone)]
