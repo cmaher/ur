@@ -442,6 +442,22 @@ impl TicketRepo {
         Ok(result)
     }
 
+    pub async fn delete_meta(
+        &self,
+        entity_id: &str,
+        entity_type: &str,
+        key: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM meta WHERE entity_id = ? AND entity_type = ? AND key = ?")
+            .bind(entity_id)
+            .bind(entity_type)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     /// Returns true if all children of the given epic are in 'closed' status.
     /// Returns true if the epic has no children.
     pub async fn epic_all_children_closed(&self, epic_id: &str) -> Result<bool, sqlx::Error> {

@@ -4,24 +4,24 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 use ur_config::BackupConfig;
-use ur_db::BackupManager;
+use ur_db::SnapshotManager;
 
 /// Manages periodic database backups as a background tokio task.
 ///
 /// Reads backup configuration from `ur.toml`, validates the backup path at
-/// startup, and spawns a background task that periodically calls CozoDB's
-/// backup API via [`BackupManager`]. The task gracefully stops when the
+/// startup, and spawns a background task that periodically calls SQLite's
+/// VACUUM INTO via [`SnapshotManager`]. The task gracefully stops when the
 /// shutdown signal is received.
 #[derive(Clone)]
 pub struct BackupTaskManager {
-    backup_manager: BackupManager,
+    snapshot_manager: SnapshotManager,
     config: BackupConfig,
 }
 
 impl BackupTaskManager {
-    pub fn new(backup_manager: BackupManager, config: BackupConfig) -> Self {
+    pub fn new(snapshot_manager: SnapshotManager, config: BackupConfig) -> Self {
         Self {
-            backup_manager,
+            snapshot_manager,
             config,
         }
     }
@@ -70,7 +70,7 @@ impl BackupTaskManager {
         Self::validate_backup_path(&backup_path)?;
 
         let interval = Duration::from_secs(self.config.interval_minutes * 60);
-        let manager = self.backup_manager.clone();
+        let manager = self.snapshot_manager.clone();
 
         info!(
             path = %backup_path.display(),
@@ -91,7 +91,7 @@ fn backup_filename() -> String {
 
 /// Run the periodic backup loop until shutdown is signaled.
 async fn backup_loop(
-    manager: BackupManager,
+    manager: SnapshotManager,
     backup_dir: PathBuf,
     interval: Duration,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -99,7 +99,7 @@ async fn backup_loop(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
-                run_backup(&manager, &backup_dir);
+                run_backup(&manager, &backup_dir).await;
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -112,11 +112,12 @@ async fn backup_loop(
 }
 
 /// Execute a single backup, rotating the previous file if needed.
-fn run_backup(manager: &BackupManager, backup_dir: &Path) {
+async fn run_backup(manager: &SnapshotManager, backup_dir: &Path) {
     let filename = backup_filename();
     let target = backup_dir.join(&filename);
+    let target_str = target.to_string_lossy();
 
-    match manager.backup(&target) {
+    match manager.vacuum_into(&target_str).await {
         Ok(()) => {
             info!(path = %target.display(), "backup completed successfully");
             // Clean up older backups — keep only the latest
@@ -161,24 +162,28 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use ur_db::DatabaseManager;
+    use ur_db::{DatabaseManager, GraphManager, NewTicket, TicketRepo};
 
-    fn create_test_db() -> (DatabaseManager, BackupManager) {
-        let db = DatabaseManager::create_in_memory().expect("create in-memory db");
+    async fn create_test_db(tmp: &TempDir) -> (DatabaseManager, SnapshotManager) {
+        let db_path = tmp.path().join("test.db");
+        let db_path_str = db_path.to_string_lossy().to_string();
+        let db = DatabaseManager::open(&db_path_str)
+            .await
+            .expect("open test db");
         // Insert some data so backup is non-trivial
-        db.run(
-            r#"
-            ?[id, type, status, priority, parent_id, title, body, created_at, updated_at] <- [[
-                "ur.001", "epic", "open", 1, "",
-                "Test Epic", "For backup testing.",
-                "2026-03-12T10:00:00Z", "2026-03-12T10:00:00Z"
-            ]]
-            :put ticket {id => type, status, priority, parent_id, title, body, created_at, updated_at}
-        "#,
-        )
-        .expect("insert test data");
-        let bm = BackupManager::new(db.clone());
-        (db, bm)
+        let graph_manager = GraphManager::new(db.pool().clone());
+        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
+        let ticket = NewTicket {
+            id: "ur-001".to_string(),
+            type_: "epic".to_string(),
+            priority: 1,
+            parent_id: None,
+            title: "Test Epic".to_string(),
+            body: "For backup testing.".to_string(),
+        };
+        repo.create_ticket(&ticket).await.expect("insert test data");
+        let sm = SnapshotManager::new(db.pool().clone());
+        (db, sm)
     }
 
     #[test]
@@ -203,13 +208,14 @@ mod tests {
         BackupTaskManager::validate_backup_path(tmp.path()).expect("should succeed");
     }
 
-    #[test]
-    fn run_backup_creates_file() {
-        let tmp = TempDir::new().unwrap();
-        let (_db, bm) = create_test_db();
-        run_backup(&bm, tmp.path());
+    #[tokio::test]
+    async fn run_backup_creates_file() {
+        let db_tmp = TempDir::new().unwrap();
+        let backup_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
+        run_backup(&sm, backup_tmp.path()).await;
 
-        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+        let entries: Vec<_> = std::fs::read_dir(backup_tmp.path())
             .unwrap()
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("ur-backup-"))
@@ -238,27 +244,29 @@ mod tests {
         assert!(tmp.path().join("other.txt").exists());
     }
 
-    #[test]
-    fn spawn_returns_none_when_no_path() {
-        let (_db, bm) = create_test_db();
+    #[tokio::test]
+    async fn spawn_returns_none_when_no_path() {
+        let db_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
         let config = BackupConfig {
             path: None,
             interval_minutes: 30,
         };
-        let mgr = BackupTaskManager::new(bm, config);
+        let mgr = BackupTaskManager::new(sm, config);
         let (_tx, rx) = watch::channel(false);
         let result = mgr.spawn(rx).expect("should not error");
         assert!(result.is_none());
     }
 
-    #[test]
-    fn spawn_errors_on_invalid_path() {
-        let (_db, bm) = create_test_db();
+    #[tokio::test]
+    async fn spawn_errors_on_invalid_path() {
+        let db_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
         let config = BackupConfig {
             path: Some(PathBuf::from("/nonexistent/backup/path")),
             interval_minutes: 30,
         };
-        let mgr = BackupTaskManager::new(bm, config);
+        let mgr = BackupTaskManager::new(sm, config);
         let (_tx, rx) = watch::channel(false);
         let err = mgr.spawn(rx).expect_err("should fail");
         assert!(err.contains("does not exist"), "{err}");
@@ -266,13 +274,14 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_and_shutdown() {
-        let tmp = TempDir::new().unwrap();
-        let (_db, bm) = create_test_db();
+        let db_tmp = TempDir::new().unwrap();
+        let backup_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
         let config = BackupConfig {
-            path: Some(tmp.path().to_path_buf()),
+            path: Some(backup_tmp.path().to_path_buf()),
             interval_minutes: 1, // Won't actually tick in this test
         };
-        let mgr = BackupTaskManager::new(bm, config);
+        let mgr = BackupTaskManager::new(sm, config);
         let (tx, rx) = watch::channel(false);
 
         let handle = mgr

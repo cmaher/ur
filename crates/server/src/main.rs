@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{BackupManager, DatabaseManager};
+use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
 use ur_server::{
     BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry,
@@ -86,16 +86,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Initialize CozoDB database
+    // Initialize SQLite database
     let db_path = cfg.config_dir.join("ur.db");
-    let db = DatabaseManager::create_with_sqlite(&db_path)
+    let db_path_str = db_path.to_string_lossy();
+    let db = DatabaseManager::open(&db_path_str)
+        .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
     info!(db_path = %db_path.display(), "database initialized");
 
     // Start periodic backup task (if configured)
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let backup_manager = BackupManager::new(db.clone());
-    let backup_task_manager = BackupTaskManager::new(backup_manager, cfg.backup.clone());
+    let snapshot_manager = SnapshotManager::new(db.pool().clone());
+    let backup_task_manager = BackupTaskManager::new(snapshot_manager, cfg.backup.clone());
     let backup_handle = backup_task_manager
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
@@ -182,7 +184,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "ticket")]
-    let ticket_handler = Some(ur_server::grpc_ticket::TicketServiceHandler { db: db.clone() });
+    let ticket_handler = {
+        let graph_manager = GraphManager::new(db.pool().clone());
+        let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
+        Some(ur_server::grpc_ticket::TicketServiceHandler { ticket_repo })
+    };
 
     let result = ur_server::grpc_server::serve_grpc(
         addr,

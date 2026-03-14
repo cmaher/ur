@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use tonic::{Request, Response, Status};
 use tracing::info;
+use uuid::Uuid;
 
-use ur_db::DatabaseManager;
+use ur_db::{EdgeKind, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
@@ -14,15 +15,15 @@ use ur_rpc::proto::ticket::{
     RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
 };
 
-/// gRPC implementation of the TicketService, delegating to `DatabaseManager`.
+/// gRPC implementation of the TicketService, delegating to `TicketRepo`.
 #[derive(Clone)]
 pub struct TicketServiceHandler {
-    pub db: DatabaseManager,
+    pub ticket_repo: TicketRepo,
 }
 
-/// Convert a `DatabaseManager` `Result<T, String>` error into a gRPC `Status::internal`.
-fn db_err(e: String) -> Status {
-    Status::internal(e)
+/// Convert a database error into a gRPC `Status::internal`.
+fn db_err(e: impl std::fmt::Display) -> Status {
+    Status::internal(e.to_string())
 }
 
 #[tonic::async_trait]
@@ -34,18 +35,22 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(project = %req.project, title = %req.title, "create_ticket request");
 
-        let params = ur_db::CreateTicketParams {
-            ticket_type: req.ticket_type,
-            status: req.status,
-            priority: req.priority,
-            parent_id: req.parent_id,
+        let id = format!("ur-{}", &Uuid::new_v4().to_string()[..5]);
+
+        let parent_id = req.parent_id.filter(|s| !s.is_empty());
+
+        let new_ticket = NewTicket {
+            id: id.clone(),
+            type_: req.ticket_type,
+            priority: req.priority as i32,
+            parent_id,
             title: req.title,
             body: req.body,
         };
 
-        let id = self
-            .db
-            .create_ticket(&req.project, &params)
+        self.ticket_repo
+            .create_ticket(&new_ticket)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(CreateTicketResponse { id }))
@@ -58,35 +63,84 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!("list_tickets request");
 
-        let filters = ur_db::ListTicketFilters {
-            project: req.project,
-            ticket_type: req.ticket_type,
-            status: req.status,
-            parent_id: req.parent_id,
-            meta_key: req.meta_key,
-            meta_value: req.meta_value,
+        let meta_key = req.meta_key.filter(|s| !s.is_empty());
+        let meta_value = req.meta_value.filter(|s| !s.is_empty());
+
+        // If metadata filters are provided, use the metadata-based queries
+        let tickets = match (&meta_key, &meta_value) {
+            (Some(key), Some(value)) => {
+                let matches = self
+                    .ticket_repo
+                    .tickets_by_metadata(key, value)
+                    .await
+                    .map_err(db_err)?;
+                matches
+                    .into_iter()
+                    .map(|t| ur_rpc::proto::ticket::Ticket {
+                        id: t.id,
+                        ticket_type: t.type_,
+                        status: t.status,
+                        priority: 0,
+                        parent_id: String::new(),
+                        title: t.title,
+                        body: String::new(),
+                        created_at: String::new(),
+                        updated_at: String::new(),
+                    })
+                    .collect()
+            }
+            (Some(key), None) => {
+                let matches = self
+                    .ticket_repo
+                    .tickets_with_metadata_key(key)
+                    .await
+                    .map_err(db_err)?;
+                matches
+                    .into_iter()
+                    .map(|t| ur_rpc::proto::ticket::Ticket {
+                        id: t.id,
+                        ticket_type: t.type_,
+                        status: t.status,
+                        priority: 0,
+                        parent_id: String::new(),
+                        title: t.title,
+                        body: String::new(),
+                        created_at: String::new(),
+                        updated_at: String::new(),
+                    })
+                    .collect()
+            }
+            _ => {
+                let filter = TicketFilter {
+                    status: req.status.filter(|s| !s.is_empty()),
+                    type_: req.ticket_type.filter(|s| !s.is_empty()),
+                    parent_id: req.parent_id.filter(|s| !s.is_empty()),
+                };
+
+                let db_tickets = self
+                    .ticket_repo
+                    .list_tickets(&filter)
+                    .await
+                    .map_err(db_err)?;
+
+                db_tickets
+                    .into_iter()
+                    .map(|t| ur_rpc::proto::ticket::Ticket {
+                        id: t.id,
+                        ticket_type: t.type_,
+                        status: t.status,
+                        priority: t.priority as i64,
+                        parent_id: t.parent_id.unwrap_or_default(),
+                        title: t.title,
+                        body: t.body,
+                        created_at: t.created_at,
+                        updated_at: t.updated_at,
+                    })
+                    .collect()
+            }
         };
 
-        let tickets = self.db.list_tickets(&filters).map_err(db_err)?;
-
-        let proto_tickets = tickets
-            .into_iter()
-            .map(|t| ur_rpc::proto::ticket::Ticket {
-                id: t.id,
-                ticket_type: t.ticket_type,
-                status: t.status,
-                priority: t.priority,
-                parent_id: t.parent_id,
-                title: t.title,
-                body: t.body,
-                created_at: t.created_at,
-                updated_at: t.updated_at,
-            })
-            .collect();
-
-        Ok(Response::new(ListTicketsResponse {
-            tickets: proto_tickets,
-        }))
+        Ok(Response::new(ListTicketsResponse { tickets }))
     }
 
     async fn get_ticket(
@@ -96,31 +150,43 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(id = %req.id, "get_ticket request");
 
-        let detail = self.db.get_ticket(&req.id).map_err(db_err)?;
+        let t = self
+            .ticket_repo
+            .get_ticket(&req.id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| Status::not_found(format!("ticket not found: {}", req.id)))?;
+
+        let meta = self
+            .ticket_repo
+            .get_meta(&req.id, "ticket")
+            .await
+            .map_err(db_err)?;
+
+        let activities_list = self
+            .ticket_repo
+            .get_activities(&req.id)
+            .await
+            .map_err(db_err)?;
 
         let ticket = ur_rpc::proto::ticket::Ticket {
-            id: detail.ticket.id,
-            ticket_type: detail.ticket.ticket_type,
-            status: detail.ticket.status,
-            priority: detail.ticket.priority,
-            parent_id: detail.ticket.parent_id,
-            title: detail.ticket.title,
-            body: detail.ticket.body,
-            created_at: detail.ticket.created_at,
-            updated_at: detail.ticket.updated_at,
+            id: t.id,
+            ticket_type: t.type_,
+            status: t.status,
+            priority: t.priority as i64,
+            parent_id: t.parent_id.unwrap_or_default(),
+            title: t.title,
+            body: t.body,
+            created_at: t.created_at,
+            updated_at: t.updated_at,
         };
 
-        let metadata = detail
-            .metadata
+        let metadata: Vec<_> = meta
             .into_iter()
-            .map(|m| ur_rpc::proto::ticket::MetadataEntry {
-                key: m.key,
-                value: m.value,
-            })
+            .map(|(key, value)| ur_rpc::proto::ticket::MetadataEntry { key, value })
             .collect();
 
-        let activities = detail
-            .activities
+        let activities = activities_list
             .into_iter()
             .map(|a| ur_rpc::proto::ticket::ActivityEntry {
                 id: a.id,
@@ -144,14 +210,18 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(id = %req.id, "update_ticket request");
 
-        let fields = ur_db::UpdateTicketFields {
-            status: req.status,
-            priority: req.priority,
-            title: req.title,
-            body: req.body,
+        let update = TicketUpdate {
+            status: req.status.filter(|s| !s.is_empty()),
+            priority: req.priority.map(|p| p as i32),
+            title: req.title.filter(|s| !s.is_empty()),
+            body: req.body.filter(|s| !s.is_empty()),
+            parent_id: None,
         };
 
-        self.db.update_ticket(&req.id, &fields).map_err(db_err)?;
+        self.ticket_repo
+            .update_ticket(&req.id, &update)
+            .await
+            .map_err(db_err)?;
 
         Ok(Response::new(UpdateTicketResponse {}))
     }
@@ -163,8 +233,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(ticket_id = %req.ticket_id, key = %req.key, "set_meta request");
 
-        self.db
-            .set_meta(&req.ticket_id, &req.key, &req.value)
+        self.ticket_repo
+            .set_meta(&req.ticket_id, "ticket", &req.key, &req.value)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(SetMetaResponse {}))
@@ -177,8 +248,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(ticket_id = %req.ticket_id, key = %req.key, "delete_meta request");
 
-        self.db
-            .delete_meta(&req.ticket_id, &req.key)
+        self.ticket_repo
+            .delete_meta(&req.ticket_id, "ticket", &req.key)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(DeleteMetaResponse {}))
@@ -191,8 +263,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(blocker = %req.blocker_id, blocked = %req.blocked_id, "add_block request");
 
-        self.db
-            .add_block(&req.blocker_id, &req.blocked_id)
+        self.ticket_repo
+            .add_edge(&req.blocker_id, &req.blocked_id, EdgeKind::Blocks)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(AddBlockResponse {}))
@@ -205,8 +278,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(blocker = %req.blocker_id, blocked = %req.blocked_id, "remove_block request");
 
-        self.db
-            .remove_block(&req.blocker_id, &req.blocked_id)
+        self.ticket_repo
+            .remove_edge(&req.blocker_id, &req.blocked_id, EdgeKind::Blocks)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(RemoveBlockResponse {}))
@@ -219,8 +293,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(left = %req.left_id, right = %req.right_id, "add_link request");
 
-        self.db
-            .add_link(&req.left_id, &req.right_id)
+        self.ticket_repo
+            .add_edge(&req.left_id, &req.right_id, EdgeKind::RelatesTo)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(AddLinkResponse {}))
@@ -233,8 +308,9 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(left = %req.left_id, right = %req.right_id, "remove_link request");
 
-        self.db
-            .remove_link(&req.left_id, &req.right_id)
+        self.ticket_repo
+            .remove_edge(&req.left_id, &req.right_id, EdgeKind::RelatesTo)
+            .await
             .map_err(db_err)?;
 
         Ok(Response::new(RemoveLinkResponse {}))
@@ -249,12 +325,22 @@ impl TicketService for TicketServiceHandler {
 
         let meta: HashMap<String, String> = req.metadata;
 
-        let activity_id = self
-            .db
-            .add_activity(&req.ticket_id, &req.author, &req.message, &meta)
+        let activity = self
+            .ticket_repo
+            .add_activity(&req.ticket_id, &req.author, &req.message)
+            .await
             .map_err(db_err)?;
 
-        Ok(Response::new(AddActivityResponse { activity_id }))
+        for (key, value) in &meta {
+            self.ticket_repo
+                .set_meta(&activity.id, "activity", key, value)
+                .await
+                .map_err(db_err)?;
+        }
+
+        Ok(Response::new(AddActivityResponse {
+            activity_id: activity.id,
+        }))
     }
 
     async fn list_activities(
@@ -264,27 +350,36 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(ticket_id = %req.ticket_id, "list_activities request");
 
-        let details = self.db.list_activities(&req.ticket_id).map_err(db_err)?;
+        let activities_list = self
+            .ticket_repo
+            .get_activities(&req.ticket_id)
+            .await
+            .map_err(db_err)?;
 
-        let activities = details
-            .into_iter()
-            .map(|d| ur_rpc::proto::ticket::ActivityDetail {
+        let mut activities = Vec::new();
+        for a in activities_list {
+            let meta = self
+                .ticket_repo
+                .get_meta(&a.id, "activity")
+                .await
+                .map_err(db_err)?;
+
+            activities.push(ur_rpc::proto::ticket::ActivityDetail {
                 entry: Some(ur_rpc::proto::ticket::ActivityEntry {
-                    id: d.entry.id,
-                    timestamp: d.entry.timestamp,
-                    author: d.entry.author,
-                    message: d.entry.message,
+                    id: a.id,
+                    timestamp: a.timestamp,
+                    author: a.author,
+                    message: a.message,
                 }),
-                metadata: d
-                    .metadata
+                metadata: meta
                     .into_iter()
-                    .map(|m| ur_rpc::proto::ticket::ActivityMetadataEntry {
-                        key: m.key,
-                        value: m.value,
+                    .map(|(key, value)| ur_rpc::proto::ticket::ActivityMetadataEntry {
+                        key,
+                        value,
                     })
                     .collect(),
-            })
-            .collect();
+            });
+        }
 
         Ok(Response::new(ListActivitiesResponse { activities }))
     }
@@ -296,14 +391,18 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(epic_id = %req.epic_id, "dispatchable_tickets request");
 
-        let tickets = self.db.dispatchable_tickets(&req.epic_id).map_err(db_err)?;
+        let tickets = self
+            .ticket_repo
+            .dispatchable_tickets(&req.epic_id)
+            .await
+            .map_err(db_err)?;
 
         let proto_tickets = tickets
             .into_iter()
             .map(|t| ur_rpc::proto::ticket::DispatchableTicket {
                 id: t.id,
                 title: t.title,
-                priority: t.priority,
+                priority: t.priority as i64,
             })
             .collect();
 
