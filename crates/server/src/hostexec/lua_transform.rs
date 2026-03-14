@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -13,6 +14,18 @@ pub struct AgentContext {
     pub agent_id: String,
     pub project_key: String,
     pub slot_path: PathBuf,
+}
+
+/// Structured result from a Lua transform function.
+///
+/// Contains the full execution spec: command, args, working directory,
+/// and optional environment variables to set on the spawned process.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformResult {
+    pub command: String,
+    pub args: Vec<String>,
+    pub working_dir: String,
+    pub env: HashMap<String, String>,
 }
 
 #[derive(Clone, Default)]
@@ -34,7 +47,7 @@ impl LuaTransformManager {
         args: &[String],
         working_dir: &str,
         agent_context: Option<&AgentContext>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<TransformResult> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
             mlua::LuaOptions::default(),
@@ -81,17 +94,58 @@ impl LuaTransformManager {
 
         match result {
             Value::Table(tbl) => {
-                let len = tbl
-                    .len()
-                    .map_err(|e| anyhow::anyhow!("getting table len: {e}"))?;
-                let mut out = Vec::new();
-                for i in 1..=len {
-                    let val: String = tbl
-                        .get(i)
-                        .map_err(|e| anyhow::anyhow!("reading table index {i}: {e}"))?;
-                    out.push(val);
-                }
-                Ok(out)
+                let command: String = tbl
+                    .get("command")
+                    .map_err(|e| anyhow::anyhow!("missing or invalid 'command' field (expected string): {e}"))?;
+
+                let args_value: Value = tbl
+                    .get("args")
+                    .map_err(|e| anyhow::anyhow!("missing 'args' field: {e}"))?;
+                let args = match args_value {
+                    Value::Table(args_tbl) => {
+                        let len = args_tbl
+                            .len()
+                            .map_err(|e| anyhow::anyhow!("getting args table len: {e}"))?;
+                        let mut out = Vec::new();
+                        for i in 1..=len {
+                            let val: String = args_tbl
+                                .get(i)
+                                .map_err(|e| anyhow::anyhow!("args[{i}] must be a string: {e}"))?;
+                            out.push(val);
+                        }
+                        out
+                    }
+                    _ => anyhow::bail!("'args' field must be a table"),
+                };
+
+                let working_dir: String = tbl
+                    .get("working_dir")
+                    .map_err(|e| anyhow::anyhow!("missing or invalid 'working_dir' field (expected string): {e}"))?;
+
+                let env_value: Value = tbl
+                    .get("env")
+                    .map_err(|e| anyhow::anyhow!("reading 'env' field: {e}"))?;
+                let env = match env_value {
+                    Value::Nil => HashMap::new(),
+                    Value::Table(env_tbl) => {
+                        let mut map = HashMap::new();
+                        for pair in env_tbl.pairs::<String, String>() {
+                            let (k, v) = pair.map_err(|e| {
+                                anyhow::anyhow!("env entries must be string key-value pairs: {e}")
+                            })?;
+                            map.insert(k, v);
+                        }
+                        map
+                    }
+                    _ => anyhow::bail!("'env' field must be a table or nil"),
+                };
+
+                Ok(TransformResult {
+                    command,
+                    args,
+                    working_dir,
+                    env,
+                })
             }
             _ => anyhow::bail!("lua transform must return a table"),
         }
@@ -105,11 +159,18 @@ mod tests {
     #[test]
     fn test_passthrough_transform() {
         let mgr = LuaTransformManager::new();
-        let script = "function transform(c, a, w) return a end";
+        let script = r#"
+            function transform(c, a, w)
+                return { command = c, args = a, working_dir = w }
+            end
+        "#;
         let result = mgr
             .run_transform(script, "git", &["status".into()], "/workspace", None)
             .unwrap();
-        assert_eq!(result, vec!["status"]);
+        assert_eq!(result.command, "git");
+        assert_eq!(result.args, vec!["status"]);
+        assert_eq!(result.working_dir, "/workspace");
+        assert!(result.env.is_empty());
     }
 
     #[test]
@@ -163,7 +224,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "git", &args, "/workspace", None)
             .unwrap();
-        assert_eq!(result, args);
+        assert_eq!(result.args, args);
     }
 
     #[test]
@@ -201,9 +262,13 @@ mod tests {
                     error("expected agent_context")
                 end
                 return {
-                    agent_context.agent_id,
-                    agent_context.project_key,
-                    agent_context.slot_path,
+                    command = command,
+                    args = {
+                        agent_context.agent_id,
+                        agent_context.project_key,
+                        agent_context.slot_path,
+                    },
+                    working_dir = working_dir,
                 }
             end
         "#;
@@ -216,7 +281,7 @@ mod tests {
             .run_transform(script, "git", &[], "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["deploy-x7q2", "ur", "/home/user/.ur/workspace/pool/ur/0",]
         );
     }
@@ -229,13 +294,13 @@ mod tests {
                 if agent_context ~= nil then
                     error("expected nil agent_context")
                 end
-                return args
+                return { command = command, args = args, working_dir = working_dir }
             end
         "#;
         let result = mgr
             .run_transform(script, "git", &["status".into()], "/workspace", None)
             .unwrap();
-        assert_eq!(result, vec!["status"]);
+        assert_eq!(result.args, vec!["status"]);
     }
 
     #[test]
@@ -252,7 +317,7 @@ mod tests {
             .run_transform(script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "status",]
         );
     }
@@ -271,7 +336,7 @@ mod tests {
             .run_transform(script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "status",]
         );
     }
@@ -289,7 +354,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
-        assert_eq!(result, vec!["-C", "/pool/ur/0", "log"]);
+        assert_eq!(result.args, vec!["-C", "/pool/ur/0", "log"]);
     }
 
     #[test]
@@ -305,7 +370,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
-        assert_eq!(result, vec!["-C", "/pool/ur/0", "status"]);
+        assert_eq!(result.args, vec!["-C", "/pool/ur/0", "status"]);
     }
 
     #[test]
@@ -342,6 +407,8 @@ mod tests {
     fn test_existing_scripts_ignore_extra_arg() {
         // Verify that existing Lua scripts (git.lua, gh.lua) work fine with
         // the new 4th argument — Lua silently ignores extra arguments.
+        // NOTE: This test will fail at runtime until scripts are updated to
+        // return structured tables (ur-ami7). It compiles correctly.
         let mgr = LuaTransformManager::new();
         let ctx = AgentContext {
             agent_id: "test-ab12".into(),
@@ -355,7 +422,7 @@ mod tests {
         let result = mgr
             .run_transform(git_script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
-        assert_eq!(result, vec!["status"]);
+        assert_eq!(result.args, vec!["status"]);
 
         // gh.lua with agent context
         let gh_script = include_str!("default_scripts/gh.lua");
@@ -363,7 +430,7 @@ mod tests {
         let result = mgr
             .run_transform(gh_script, "gh", &args, "/workspace", Some(&ctx))
             .unwrap();
-        assert_eq!(result, vec!["pr", "list"]);
+        assert_eq!(result.args, vec!["pr", "list"]);
     }
 
     #[test]
@@ -395,7 +462,7 @@ mod tests {
             .run_transform(script, "gh", &args, "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "pr", "list"]
         );
     }
@@ -414,7 +481,7 @@ mod tests {
             .run_transform(script, "gh", &args, "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "pr", "list"]
         );
     }
@@ -447,7 +514,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
             .unwrap();
-        assert_eq!(result, args);
+        assert_eq!(result.args, args);
     }
 
     // --- cargo.lua tests ---
@@ -460,7 +527,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "cargo", &args, "/workspace", None)
             .unwrap();
-        assert_eq!(result, args);
+        assert_eq!(result.args, args);
     }
 
     #[test]
@@ -471,7 +538,7 @@ mod tests {
         let result = mgr
             .run_transform(script, "cargo", &args, "/workspace", None)
             .unwrap();
-        assert_eq!(result, args);
+        assert_eq!(result.args, args);
     }
 
     #[test]
@@ -625,7 +692,7 @@ mod tests {
             .run_transform(script, "cargo", &args, "/workspace", Some(&ctx))
             .unwrap();
         assert_eq!(
-            result,
+            result.args,
             vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
         );
     }
@@ -664,6 +731,6 @@ mod tests {
         let result = mgr
             .run_transform(script, "cargo", &args, "/workspace", None)
             .unwrap();
-        assert_eq!(result, args);
+        assert_eq!(result.args, args);
     }
 }
