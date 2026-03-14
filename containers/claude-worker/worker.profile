@@ -7,8 +7,7 @@ if [ -n "$BASH_VERSION" ]; then
     fi
 fi
 
-# NOTE: We intentionally do NOT add ~/.local/bin to PATH here.
-# PATH is set by ENV in the Dockerfile so /usr/local/bin/claude
-# (our wrapper) takes precedence over ~/.local/bin/claude (the
-# real binary). Adding ~/.local/bin here would break that ordering
-# and also break Claude Code's auto-update.
+# Restore ~/.local/bin on PATH. Debian's /etc/profile resets PATH for login
+# shells, wiping the Docker ENV PATH that included this directory. Claude Code
+# and hostexec shims both live in ~/.local/bin, so it must be present.
+export PATH="$HOME/.local/bin:$PATH"
