@@ -1,100 +1,109 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use tonic::service::Routes;
 use tonic::transport::Server;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 use crate::grpc::CoreServiceHandler;
+use crate::{ProcessManager, RepoRegistry};
 
-/// Build a Routes collection with all enabled services.
-fn build_agent_routes(core_handler: CoreServiceHandler) -> Routes {
-    let mut builder = Routes::builder();
-    builder.add_service(CoreServiceServer::new(core_handler.clone()));
+/// Start the host gRPC server on a TCP socket.
+///
+/// Serves the host CLI (`ur`). Registers Core, RAG, and Ticket services
+/// directly — no auth interceptor.
+pub async fn serve_grpc(
+    addr: SocketAddr,
+    handler: CoreServiceHandler,
+    #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
+    #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+) -> anyhow::Result<()> {
+    tracing::info!(addr = %addr, "host gRPC server listening");
+
+    let mut router = Server::builder().add_service(CoreServiceServer::new(handler));
+
+    #[cfg(feature = "rag")]
+    {
+        use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
+        router = router.add_service(RagServiceServer::new(rag_handler));
+    }
+
+    #[cfg(feature = "ticket")]
+    {
+        use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
+        router = router.add_service(TicketServiceServer::new(ticket_handler));
+    }
+
+    router.serve(addr).await?;
+
+    Ok(())
+}
+
+/// Start the shared worker gRPC server on a TCP socket.
+///
+/// Serves all container workers. Registers HostExec, RAG, and Ticket services,
+/// all wrapped with the agent auth interceptor that validates `ur-agent-id` and
+/// `ur-agent-secret` metadata headers via `ProcessManager`.
+#[allow(unused_variables)]
+pub async fn serve_worker_grpc(
+    addr: SocketAddr,
+    process_manager: ProcessManager,
+    repo_registry: Arc<RepoRegistry>,
+    projects: HashMap<String, ur_config::ProjectConfig>,
+    #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
+    #[cfg(feature = "hostexec")] hostd_addr: String,
+    #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
+    #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+) -> anyhow::Result<()> {
+    tracing::info!(addr = %addr, "worker gRPC server listening");
+
+    let interceptor = crate::auth::worker_auth_interceptor(process_manager.clone());
+
+    // Build the Routes collection, wrapping each service with the auth interceptor.
+    let mut routes = tonic::service::Routes::builder();
 
     #[cfg(feature = "hostexec")]
     {
         use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
 
-        builder.add_service(HostExecServiceServer::new(
-            crate::grpc_hostexec::HostExecServiceHandler {
-                config: core_handler.hostexec_config.clone(),
-                lua: crate::hostexec::LuaTransformManager::new(),
-                repo_registry: core_handler.repo_registry.clone(),
-                process_manager: core_handler.process_manager.clone(),
-                projects: core_handler.projects.clone(),
-                hostd_addr: core_handler.hostd_addr.clone(),
-            },
+        let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
+            config: hostexec_config,
+            lua: crate::hostexec::LuaTransformManager::new(),
+            repo_registry,
+            process_manager,
+            projects,
+            hostd_addr,
+        };
+
+        routes.add_service(HostExecServiceServer::with_interceptor(
+            hostexec_handler,
+            interceptor.clone(),
         ));
     }
 
-    builder.routes()
-}
-
-/// Start the main tonic gRPC server on a TCP socket.
-///
-/// Used for the main host CLI path (ur -> server).
-pub async fn serve_grpc(
-    addr: SocketAddr,
-    handler: CoreServiceHandler,
-    #[cfg(feature = "rag")] rag_handler: Option<crate::rag::RagServiceHandler>,
-    #[cfg(feature = "ticket")] ticket_handler: Option<crate::grpc_ticket::TicketServiceHandler>,
-) -> anyhow::Result<()> {
-    tracing::info!(addr = %addr, "main gRPC server listening");
-
-    let routes = build_agent_routes(handler);
-
-    let mut server = Server::builder().add_routes(routes);
-
     #[cfg(feature = "rag")]
-    if let Some(rag) = rag_handler {
+    {
         use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
-        server = server.add_service(RagServiceServer::new(rag));
+        routes.add_service(RagServiceServer::with_interceptor(
+            rag_handler,
+            interceptor.clone(),
+        ));
     }
 
     #[cfg(feature = "ticket")]
-    if let Some(ticket) = ticket_handler {
+    {
         use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
-        server = server.add_service(TicketServiceServer::new(ticket));
+        routes.add_service(TicketServiceServer::with_interceptor(
+            ticket_handler,
+            interceptor.clone(),
+        ));
     }
 
-    server.serve(addr).await?;
+    Server::builder()
+        .add_routes(routes.routes())
+        .serve(addr)
+        .await?;
 
     Ok(())
-}
-
-/// Start a per-agent gRPC server on TCP, bound to the given host address with
-/// an OS-assigned port.
-///
-/// Binds the listener, spawns the server task, and returns the assigned port
-/// plus a `JoinHandle` the caller can abort to stop the server.
-///
-/// `bind_host` is typically `0.0.0.0` — containers reach the server via Docker
-/// internal DNS (the server hostname on the shared Docker network).
-pub async fn serve_agent_grpc(
-    bind_host: &str,
-    core_handler: CoreServiceHandler,
-    process_id: &str,
-) -> anyhow::Result<(u16, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind(format!("{bind_host}:0")).await?;
-    let addr = listener.local_addr()?;
-    let port = addr.port();
-
-    tracing::info!(addr = %addr, port, process_id, "per-agent gRPC server listening");
-
-    let routes = build_agent_routes(core_handler);
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
-    let handle = tokio::spawn(async move {
-        let result = Server::builder()
-            .add_routes(routes)
-            .serve_with_incoming(incoming)
-            .await;
-
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "per-agent gRPC server error");
-        }
-    });
-
-    Ok((port, handle))
 }

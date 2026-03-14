@@ -178,17 +178,17 @@ async fn main() -> anyhow::Result<()> {
             cfg.rag.embedding_model.clone(),
         );
 
-        Some(ur_server::rag::RagServiceHandler {
+        ur_server::rag::RagServiceHandler {
             rag_manager,
             config_dir: cfg.config_dir.clone(),
-        })
+        }
     };
 
     #[cfg(feature = "ticket")]
     let ticket_handler = {
         let graph_manager = GraphManager::new(db.pool().clone());
         let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        Some(ur_server::grpc_ticket::TicketServiceHandler { ticket_repo })
+        ur_server::grpc_ticket::TicketServiceHandler { ticket_repo }
     };
 
     let result = ur_server::grpc_server::serve_grpc(
