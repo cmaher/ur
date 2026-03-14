@@ -381,7 +381,7 @@ pub struct RagDocsConfig {
     pub exclude: Vec<String>,
 }
 
-/// Backup configuration for periodic CozoDB snapshots.
+/// Backup configuration for periodic database snapshots.
 ///
 /// When `path` is `None`, periodic backup is disabled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,7 +438,7 @@ pub struct Config {
     pub hostexec: HostExecConfig,
     /// RAG system settings (Qdrant vector database).
     pub rag: RagConfig,
-    /// Periodic backup settings for the CozoDB database.
+    /// Periodic backup settings for the database.
     pub backup: BackupConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,

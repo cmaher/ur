@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 
 /// In-memory map of process_id -> repo directory path.
-/// TEMPORARY: will be replaced by CozoDB.
+/// TEMPORARY: will be replaced by ur_db.
 pub struct RepoRegistry {
     workspace: PathBuf,
     /// process_id -> absolute repo path
