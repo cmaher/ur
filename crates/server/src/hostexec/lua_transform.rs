@@ -101,22 +101,7 @@ impl LuaTransformManager {
                 let args_value: Value = tbl
                     .get("args")
                     .map_err(|e| anyhow::anyhow!("missing 'args' field: {e}"))?;
-                let args = match args_value {
-                    Value::Table(args_tbl) => {
-                        let len = args_tbl
-                            .len()
-                            .map_err(|e| anyhow::anyhow!("getting args table len: {e}"))?;
-                        let mut out = Vec::new();
-                        for i in 1..=len {
-                            let val: String = args_tbl
-                                .get(i)
-                                .map_err(|e| anyhow::anyhow!("args[{i}] must be a string: {e}"))?;
-                            out.push(val);
-                        }
-                        out
-                    }
-                    _ => anyhow::bail!("'args' field must be a table"),
-                };
+                let args = extract_args(args_value)?;
 
                 let working_dir: String = tbl.get("working_dir").map_err(|e| {
                     anyhow::anyhow!("missing or invalid 'working_dir' field (expected string): {e}")
@@ -125,20 +110,7 @@ impl LuaTransformManager {
                 let env_value: Value = tbl
                     .get("env")
                     .map_err(|e| anyhow::anyhow!("reading 'env' field: {e}"))?;
-                let env = match env_value {
-                    Value::Nil => HashMap::new(),
-                    Value::Table(env_tbl) => {
-                        let mut map = HashMap::new();
-                        for pair in env_tbl.pairs::<String, String>() {
-                            let (k, v) = pair.map_err(|e| {
-                                anyhow::anyhow!("env entries must be string key-value pairs: {e}")
-                            })?;
-                            map.insert(k, v);
-                        }
-                        map
-                    }
-                    _ => anyhow::bail!("'env' field must be a table or nil"),
-                };
+                let env = extract_env(env_value)?;
 
                 Ok(TransformResult {
                     command,
@@ -149,6 +121,42 @@ impl LuaTransformManager {
             }
             _ => anyhow::bail!("lua transform must return a table"),
         }
+    }
+}
+
+fn extract_args(value: Value) -> Result<Vec<String>> {
+    match value {
+        Value::Table(args_tbl) => {
+            let len = args_tbl
+                .len()
+                .map_err(|e| anyhow::anyhow!("getting args table len: {e}"))?;
+            let mut out = Vec::new();
+            for i in 1..=len {
+                let val: String = args_tbl
+                    .get(i)
+                    .map_err(|e| anyhow::anyhow!("args[{i}] must be a string: {e}"))?;
+                out.push(val);
+            }
+            Ok(out)
+        }
+        _ => anyhow::bail!("'args' field must be a table"),
+    }
+}
+
+fn extract_env(value: Value) -> Result<HashMap<String, String>> {
+    match value {
+        Value::Nil => Ok(HashMap::new()),
+        Value::Table(env_tbl) => {
+            let mut map = HashMap::new();
+            for pair in env_tbl.pairs::<String, String>() {
+                let (k, v) = pair.map_err(|e| {
+                    anyhow::anyhow!("env entries must be string key-value pairs: {e}")
+                })?;
+                map.insert(k, v);
+            }
+            Ok(map)
+        }
+        _ => anyhow::bail!("'env' field must be a table or nil"),
     }
 }
 
