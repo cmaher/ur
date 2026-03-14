@@ -115,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
         repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),
+        cfg.worker_port,
         prompt_modes,
     );
 

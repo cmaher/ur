@@ -235,7 +235,7 @@ pub struct ProcessConfig {
 }
 
 /// Orchestrates the full lifecycle of agent processes:
-/// per-agent gRPC server (TCP), repo registration, git init, container run/stop.
+/// repo registration, git init, container run/stop.
 #[derive(Clone)]
 pub struct ProcessManager {
     workspace: PathBuf,
@@ -246,6 +246,9 @@ pub struct ProcessManager {
     repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
+    /// TCP port the shared worker gRPC server listens on.
+    /// Injected into containers as part of `UR_SERVER_ADDR`.
+    worker_port: u16,
     prompt_modes: PromptModesConfig,
     processes: Arc<RwLock<HashMap<AgentId, ProcessEntry>>>,
 }
@@ -258,6 +261,7 @@ impl ProcessManager {
         repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
+        worker_port: u16,
         prompt_modes: PromptModesConfig,
     ) -> Self {
         Self {
@@ -267,6 +271,7 @@ impl ProcessManager {
             repo_pool_manager,
             network_manager,
             network_config,
+            worker_port,
             prompt_modes,
             processes: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -389,7 +394,12 @@ impl ProcessManager {
         let agent_secret = Uuid::new_v4().to_string();
 
         // Build env vars
+        let server_addr = format!(
+            "{}:{}",
+            self.network_config.server_hostname, self.worker_port
+        );
         let mut env_vars = vec![
+            (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
             (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
             (
                 ur_config::UR_AGENT_SECRET_ENV.into(),
@@ -624,6 +634,7 @@ mod tests {
             repo_pool_manager,
             network_manager,
             network_config,
+            ur_config::DEFAULT_DAEMON_PORT + 1,
             PromptModesConfig::default(),
         );
         (mgr, workspace)

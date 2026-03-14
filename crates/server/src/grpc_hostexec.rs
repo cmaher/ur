@@ -291,6 +291,7 @@ mod tests {
             repo_pool_manager,
             network_manager,
             network_config,
+            ur_config::DEFAULT_DAEMON_PORT + 1,
             crate::process::PromptModesConfig::default(),
         )
     }
