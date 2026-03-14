@@ -6,8 +6,8 @@ use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, ProcessLaunchRequest, ProcessLaunchResponse, ProcessStopRequest,
-    ProcessStopResponse,
+    PingRequest, PingResponse, ProcessInfo, ProcessLaunchRequest, ProcessLaunchResponse,
+    ProcessListRequest, ProcessListResponse, ProcessStopRequest, ProcessStopResponse,
 };
 
 use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
@@ -189,5 +189,25 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
         Ok(Response::new(ProcessStopResponse {}))
+    }
+
+    async fn process_list(
+        &self,
+        _req: Request<ProcessListRequest>,
+    ) -> Result<Response<ProcessListResponse>, Status> {
+        info!("process_list request received");
+        let summaries = self.process_manager.list();
+        let processes = summaries
+            .into_iter()
+            .map(|s| ProcessInfo {
+                process_id: s.process_id,
+                agent_id: s.agent_id,
+                container_id: s.container_id,
+                project_key: s.project_key,
+                mode: s.mode,
+                grpc_port: s.grpc_port as u32,
+            })
+            .collect();
+        Ok(Response::new(ProcessListResponse { processes }))
     }
 }

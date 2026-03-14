@@ -166,6 +166,9 @@ enum ProcessCommands {
         /// Attach to the process after launching
         #[arg(short = 'a', long = "attach")]
         attach: bool,
+        /// Stop the process when the attach session exits (implies -a)
+        #[arg(long)]
+        rm: bool,
         /// Stop existing process with this ID before launching
         #[arg(short = 'f', long = "force")]
         force: bool,
@@ -176,10 +179,17 @@ enum ProcessCommands {
         #[arg(short = 's', long = "skills")]
         skills: Option<String>,
     },
+    /// List all running processes
+    List,
     /// Show process status
     Status { process_id: Option<String> },
     /// Attach to a running process
-    Attach { process_id: String },
+    Attach {
+        process_id: String,
+        /// Stop the process when the attach session exits
+        #[arg(long)]
+        rm: bool,
+    },
     /// Stop a running agent process
     Stop { process_id: String },
     /// Force-stop a running agent process (via server)
@@ -423,7 +433,7 @@ fn kill_all_containers(agent_prefix: &str) -> Result<()> {
 }
 
 #[instrument]
-fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
+fn process_attach(process_id: &str, agent_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("{agent_prefix}{process_id}"));
     info!(container = %id.0, "attaching to process");
@@ -440,7 +450,40 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
         "attach".into(),
     ];
     let status = runtime.exec_interactive(&id, &command)?;
-    process::exit(status.code().unwrap_or(1));
+    Ok(status.code().unwrap_or(1))
+}
+
+#[instrument(skip(client))]
+async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
+    info!("listing processes");
+    let resp = client.process_list(ProcessListRequest {}).await?;
+    let processes = resp.into_inner().processes;
+    if processes.is_empty() {
+        println!("No running processes.");
+        return Ok(());
+    }
+    // Print header
+    println!(
+        "{:<20} {:<12} {:<16} {:<8}",
+        "PROCESS", "PROJECT", "CONTAINER", "MODE"
+    );
+    for p in &processes {
+        let container_short = if p.container_id.len() > 12 {
+            &p.container_id[..12]
+        } else {
+            &p.container_id
+        };
+        let project = if p.project_key.is_empty() {
+            "-"
+        } else {
+            &p.project_key
+        };
+        println!(
+            "{:<20} {:<12} {:<16} {:<8}",
+            p.process_id, project, container_short, p.mode
+        );
+    }
+    Ok(())
 }
 
 #[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
@@ -519,7 +562,19 @@ async fn handle_process(
     project_keys: &[String],
 ) -> Result<()> {
     match command {
-        ProcessCommands::Attach { process_id } => process_attach(&process_id, agent_prefix),
+        ProcessCommands::List => {
+            let mut client = connect(port).await?;
+            process_list(&mut client).await
+        }
+        ProcessCommands::Attach { process_id, rm } => {
+            let exit_code = process_attach(&process_id, agent_prefix)?;
+            if rm {
+                println!("Stopping {process_id} (--rm)...");
+                let mut client = connect(port).await?;
+                process_stop(&mut client, &process_id).await?;
+            }
+            process::exit(exit_code);
+        }
         ProcessCommands::Kill { process_id } => {
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
@@ -541,6 +596,7 @@ async fn handle_process(
             workspace,
             project,
             attach,
+            rm,
             force,
             mode,
             skills,
@@ -608,8 +664,14 @@ async fn handle_process(
                 &skills_vec,
             )
             .await?;
-            if attach {
-                process_attach(&ticket_id, agent_prefix)?;
+            if attach || rm {
+                let exit_code = process_attach(&ticket_id, agent_prefix)?;
+                if rm {
+                    println!("Stopping {ticket_id} (--rm)...");
+                    let mut client = connect(port).await?;
+                    process_stop(&mut client, &ticket_id).await?;
+                }
+                process::exit(exit_code);
             }
             Ok(())
         }
@@ -630,6 +692,7 @@ fn command_name(cmd: &ProcessCommands) -> &'static str {
     match cmd {
         ProcessCommands::Attach { .. } => "attach",
         ProcessCommands::Kill { .. } => "kill",
+        ProcessCommands::List => "list",
         ProcessCommands::SaveCredentials { .. } => "save_credentials",
         ProcessCommands::Launch { .. } => "launch",
         ProcessCommands::Status { .. } => "status",

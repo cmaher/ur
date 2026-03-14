@@ -206,6 +206,16 @@ struct ProcessEntry {
     server_handle: JoinHandle<()>,
 }
 
+/// Summary of a running process, returned by `ProcessManager::list()`.
+pub struct ProcessSummary {
+    pub process_id: String,
+    pub agent_id: String,
+    pub container_id: String,
+    pub project_key: String,
+    pub mode: String,
+    pub grpc_port: u16,
+}
+
 /// Configuration for launching a container process.
 pub struct ProcessConfig {
     pub process_id: String,
@@ -476,6 +486,24 @@ impl ProcessManager {
         );
 
         Ok(())
+    }
+
+    /// List all running processes with their metadata.
+    pub fn list(&self) -> Vec<ProcessSummary> {
+        let procs = self.processes.read().expect("process lock poisoned");
+        let mut result: Vec<ProcessSummary> = procs
+            .iter()
+            .map(|(agent_id, entry)| ProcessSummary {
+                process_id: entry.process_id.clone(),
+                agent_id: agent_id.0.clone(),
+                container_id: entry.container_id.clone(),
+                project_key: entry.project_key.clone(),
+                mode: entry.strategy.name().to_owned(),
+                grpc_port: entry.grpc_port,
+            })
+            .collect();
+        result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
+        result
     }
 
     /// Stop a running agent process by process_id (searches all entries).
