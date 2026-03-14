@@ -1,12 +1,13 @@
 [package]
 name = "ur_db"
-edition.workspace = true
-version.workspace = true
+edition = "2024"
+version = "0.1.0"
 
 [dependencies]
-cozo = "0.7"
-rand = "0.8"
-rayon = "=1.10.0"
+chrono = { version = "0.4", features = ["serde"] }
+petgraph = "0.7"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

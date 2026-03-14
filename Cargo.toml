@@ -12,9 +12,6 @@ members = [
     "crates/server",
     "crates/workercmd/*",
 ]
-# ur_db_sql excluded during coexistence with ur_db: both link native sqlite3.
-# Move to members after ur_db is deleted (ur-3i3h).
-exclude = ["crates/ur_db_sql"]
 default-members = [
     "crates/container",
     "crates/hostd",

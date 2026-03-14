@@ -1,4 +1,4 @@
-// Shared data types for ur_db_sql.
+// Shared data types for ur_db.
 
 pub struct Ticket {
     pub id: String,
