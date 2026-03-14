@@ -1,31 +1,26 @@
 # ur_db
 
-CozoDB-based ticket database for the unified ticket data model.
+Async SQLite-backed ticket database, replacing the CozoDB-based ur_db crate.
 
 ## Architecture
 
-- `DatabaseManager` — primary entry point. Holds the CozoDB `DbInstance` (internally Arc'd, so Clone is cheap). Creates all six relations on startup. Exposes `run()` for raw CozoScript queries. ur-server injects this at startup and passes it to managers that need database access.
-- `QueryManager` — structured Datalog queries (dispatch, DAG traversal, rollup, cycle detection, metadata). Accepts `DatabaseManager` via constructor.
-- `BackupManager` — backup/restore via CozoDB's `backup_db()`/`restore_backup()` API. Accepts `DatabaseManager` via constructor.
+- `DatabaseManager` — primary entry point. Holds an sqlx `SqlitePool`. Runs migrations on startup via `sqlx::migrate!()`. Injected into all other managers.
+- `TicketRepo` — CRUD operations for tickets, activities, and metadata. Accepts `DatabaseManager` via constructor.
+- `GraphManager` — dependency graph operations using petgraph. Loads edges from SQLite into a petgraph `DiGraph` for traversal, cycle detection, and topological sorting. Accepts `DatabaseManager` via constructor.
+- `SnapshotManager` — point-in-time snapshots of ticket state for history/undo. Accepts `DatabaseManager` via constructor.
+- `model` — shared data structs (Ticket, Activity, Edge, Meta, etc.) used across managers.
 
 ## Database Location
 
-SQLite backend: `$UR_CONFIG/ur.db` (alongside `ur.toml`, default `~/.ur/ur.db`).
+SQLite file: `$UR_CONFIG/ur.db` (alongside `ur.toml`, default `~/.ur/ur.db`).
 
-## Schema (six relations)
+## Schema
 
-- `ticket` — primary entity, keyed by `id: String`
-- `ticket_meta` — flexible key-value metadata per ticket, keyed by `(ticket_id, key)`
-- `blocks` — hard dependency edges forming the dispatch DAG, keyed by `(blocker_id, blocked_id)`
-- `relates_to` — soft informational links, keyed by `(left_id, right_id)`
-- `activity` — timestamped updates on tickets, keyed by `id: String`
-- `activity_meta` — flexible key-value metadata per activity, keyed by `(activity_id, key)`
-
-## Datalog Patterns
-
-- **Negation**: CozoDB requires a separate named rule for the set to negate against (`not rule_name[var]`)
-- **Transitive closure**: Recursive rules with base case (direct edge) and recursive case (edge + recursive call)
-- **Variable binding**: Output head variables must be bound in the body; use `id = ticket_id` for cross-relation joins
+Single migration (`migrations/001_initial.sql`) creates:
+- `ticket` — primary entity table
+- `activity` — timestamped updates on tickets
+- `meta` — unified metadata table with `(entity_id, entity_type, key)` PK
+- `edge` — unified edge table with `kind` discriminator (blocks, relates_to)
 
 ## Testing
 
@@ -33,4 +28,12 @@ SQLite backend: `$UR_CONFIG/ur.db` (alongside `ur.toml`, default `~/.ur/ur.db`).
 cargo test -p ur_db
 ```
 
-All queries use raw Datalog strings via `format!()`. Parameters are interpolated into the query text (safe for internal use with known ID formats).
+Tests use file-backed SQLite databases with unique names per test, cleaned up explicitly. No mocks.
+
+## Conventions
+
+- All database access is async via sqlx.
+- Graph operations load edges into petgraph in-memory graphs; the database is the source of truth.
+- Managers follow the project-wide pattern: implement `Clone`, accept dependencies via constructor (dependency injection).
+- The `meta` table uses `entity_type` to distinguish ticket metadata from activity metadata, avoiding separate tables.
+- The `edge` table stores `relates_to` edges once (not duplicated) and queries with `WHERE source_id = ? OR target_id = ?`.

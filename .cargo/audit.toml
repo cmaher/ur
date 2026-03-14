@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # rsa: Marvin Attack timing sidechannel. Pulled into Cargo.lock via sqlx-mysql
+    # which is an unused transitive dependency of sqlx-macros-core. Not reachable
+    # at runtime since we only use the sqlite driver.
+    "RUSTSEC-2023-0071",
+]
