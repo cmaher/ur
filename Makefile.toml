@@ -9,7 +9,7 @@ script_runner = "@shell"
 script = ["""
 if ! cargo fmt --all --check >/dev/null 2>&1; then
     cargo fmt --all >/dev/null 2>&1
-    echo "error: formatting was incorrect. Files are already fixed on disk — just stage, commit, and push again."
+    echo "error: formatting was incorrect. Files are already fixed on disk. Stage, commit, and push again."
     exit 1
 fi
 """]
