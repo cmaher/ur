@@ -8,10 +8,10 @@ set -e
 mkdir -p ~/.claude
 mkdir -p ~/.local/bin
 
-# Run all container initialization (skills, git hooks)
-ur-tools init
+# Initialize: skills, git hooks, hostexec shims (synchronous)
+ur-workerd init
 
-# Start ur-workerd in background (creates command shims)
+# Start daemon in background
 ur-workerd &
 
 # Start a detached tmux session (no PTY required).

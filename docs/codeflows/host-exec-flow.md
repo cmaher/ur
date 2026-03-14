@@ -20,12 +20,12 @@ with Lua-based validation and CWD mapping.
 
 ## Shim Generation
 
-At container startup, ur-workerd calls `ListHostExecCommands` on ur-server and
+At container startup, `ur-workerd init` calls `ListHostExecCommands` on ur-server and
 creates bash shims in `/home/worker/.local/bin/` (on PATH, writable by worker user).
 
 ## Configuration
 
-- Built-in defaults: git (with git.lua), gh (with gh.lua)
+- Built-in defaults: git (with git.lua), gh (with gh.lua), cargo (with cargo.lua)
 - Global hostexec commands: `[hostexec.commands]` section in `ur.toml` (commands with optional Lua transforms)
 - Per-project passthrough commands: `hostexec = ["tk", "make"]` in `ur.toml` `[projects.<key>]`
 - Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from `[hostexec.commands]`)

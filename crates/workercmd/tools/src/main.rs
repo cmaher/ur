@@ -9,10 +9,6 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
 
-mod init_git_hooks;
-mod init_skills;
-mod logging;
-
 #[derive(Parser)]
 #[command(name = "ur-tools", about = "Ur worker toolkit")]
 struct Cli {
@@ -30,8 +26,6 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run all container initialization (skills, git hooks)
-    Init,
     /// RAG operations
     Rag {
         #[command(subcommand)]
@@ -61,22 +55,6 @@ async fn main() {
     match cli.command {
         Commands::HostExec { command, args } => {
             std::process::exit(run_host_exec(&command, args).await);
-        }
-        Commands::Init => {
-            logging::init();
-            let skills_manager = init_skills::InitSkillsManager::from_env();
-            let exit_code = skills_manager.run().await;
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
-
-            let git_hooks_manager = init_git_hooks::InitGitHooksManager;
-            if let Err(e) = git_hooks_manager.run().await {
-                eprintln!("init git hooks failed: {e}");
-                std::process::exit(1);
-            }
-
-            std::process::exit(0);
         }
         Commands::Rag { command } => match command {
             RagCommands::Search {

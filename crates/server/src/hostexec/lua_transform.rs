@@ -449,4 +449,203 @@ mod tests {
             .unwrap();
         assert_eq!(result, args);
     }
+
+    // --- cargo.lua tests ---
+
+    #[test]
+    fn test_cargo_allows_normal_args() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["build".into(), "--release".into()];
+        let result = mgr
+            .run_transform(script, "cargo", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn test_cargo_allows_test() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["test".into(), "--workspace".into()];
+        let result = mgr
+            .run_transform(script, "cargo", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn test_cargo_blocks_install() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["install".into(), "ripgrep".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: install"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_uninstall() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["uninstall".into(), "ripgrep".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: uninstall"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_publish() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["publish".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: publish"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_login() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["login".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: login"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_yank() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["yank".into(), "--version".into(), "1.0.0".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: yank"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_owner() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["owner".into(), "--add".into(), "user".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked cargo subcommand: owner"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_manifest_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--manifest-path".into(),
+            "/tmp/evil/Cargo.toml".into(),
+        ];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked flag: --manifest-path"));
+    }
+
+    #[test]
+    fn test_cargo_blocks_manifest_path_equals() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--manifest-path=/tmp/evil/Cargo.toml".into(),
+        ];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("blocked flag: --manifest-path="));
+    }
+
+    #[test]
+    fn test_cargo_dash_c_blocks_without_agent_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "build".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -C"));
+    }
+
+    #[test]
+    fn test_cargo_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
+        let result = mgr
+            .run_transform(script, "cargo", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
+        );
+    }
+
+    #[test]
+    fn test_cargo_dash_c_rejected_wrong_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let ctx = AgentContext {
+            agent_id: "deploy-x7q2".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
+        let result = mgr.run_transform(script, "cargo", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_cargo_allows_flags_before_subcommand() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/cargo.lua");
+        let args: Vec<String> = vec![
+            "--color".into(),
+            "never".into(),
+            "check".into(),
+            "--message-format".into(),
+            "short".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "cargo", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result, args);
+    }
 }
