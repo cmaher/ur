@@ -94,9 +94,9 @@ impl LuaTransformManager {
 
         match result {
             Value::Table(tbl) => {
-                let command: String = tbl
-                    .get("command")
-                    .map_err(|e| anyhow::anyhow!("missing or invalid 'command' field (expected string): {e}"))?;
+                let command: String = tbl.get("command").map_err(|e| {
+                    anyhow::anyhow!("missing or invalid 'command' field (expected string): {e}")
+                })?;
 
                 let args_value: Value = tbl
                     .get("args")
@@ -118,9 +118,9 @@ impl LuaTransformManager {
                     _ => anyhow::bail!("'args' field must be a table"),
                 };
 
-                let working_dir: String = tbl
-                    .get("working_dir")
-                    .map_err(|e| anyhow::anyhow!("missing or invalid 'working_dir' field (expected string): {e}"))?;
+                let working_dir: String = tbl.get("working_dir").map_err(|e| {
+                    anyhow::anyhow!("missing or invalid 'working_dir' field (expected string): {e}")
+                })?;
 
                 let env_value: Value = tbl
                     .get("env")

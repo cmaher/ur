@@ -44,16 +44,15 @@ impl HostDaemonService for HostDaemonHandler {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        let child = cmd.spawn()
-            .map_err(|e| {
-                error!(
-                    command = %req.command,
-                    working_dir = %req.working_dir,
-                    error = %e,
-                    "failed to spawn process"
-                );
-                Status::internal(format!("failed to spawn {}: {e}", req.command))
-            })?;
+        let child = cmd.spawn().map_err(|e| {
+            error!(
+                command = %req.command,
+                working_dir = %req.working_dir,
+                error = %e,
+                "failed to spawn process"
+            );
+            Status::internal(format!("failed to spawn {}: {e}", req.command))
+        })?;
 
         let (tx, rx) = mpsc::channel(32);
         ur_rpc::stream::spawn_child_output_stream(child, tx);
