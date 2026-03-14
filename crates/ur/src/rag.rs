@@ -9,10 +9,9 @@ use ur_rpc::proto::rag::{Language, RagIndexRequest, RagSearchRequest};
 
 /// Generate Rust documentation into the RAG docs directory.
 ///
-/// Shells out to `cargo-docs-md` to collect sources and produce markdown,
-/// writing output to `<config_dir>/rag/docs/rust/`. Then filters output to
-/// keep only workspace crates and their direct dependencies, removing all
-/// transitive dependency docs.
+/// Runs `cargo +nightly doc` to produce rustdoc JSON for the full dependency
+/// tree, filters the JSON to workspace crates and direct dependencies only,
+/// then converts the filtered JSON to markdown via `cargo-docs-md`.
 pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
     let output_dir = config.config_dir.join("rag").join("docs").join("rust");
     info!(output_dir = %output_dir.display(), "generating RAG docs");
@@ -27,90 +26,72 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
     }
     debug!("cargo-docs-md found");
 
-    // Step 1: collect sources
-    println!("Collecting sources...");
-    let collect = Command::new("cargo-docs-md")
-        .arg("docs-md")
-        .arg("collect-sources")
+    let workspace_root = find_workspace_root()?;
+
+    // Step 1: generate rustdoc JSON for all crates
+    println!("Generating rustdoc JSON...");
+    let cargo_doc = Command::new("cargo")
+        .arg("+nightly")
+        .arg("doc")
+        .env("RUSTDOCFLAGS", "-Z unstable-options --output-format json")
+        .current_dir(&workspace_root)
         .status()
-        .context("failed to run cargo-docs-md collect-sources")?;
-    if !collect.success() {
+        .context("failed to run cargo +nightly doc")?;
+    if !cargo_doc.success() {
         bail!(
-            "cargo-docs-md collect-sources failed (exit code: {:?})",
-            collect.code()
+            "cargo +nightly doc failed (exit code: {:?})",
+            cargo_doc.code()
         );
     }
-    info!("collect-sources completed");
 
-    // Step 2: generate docs
-    println!("Generating docs to {}...", output_dir.display());
+    // Step 2: filter JSON to workspace crates + direct dependencies only
+    let allowed = collect_allowed_crates(&workspace_root, &config.rag.docs.exclude)?;
+    let json_src = workspace_root.join("target").join("doc");
+    let json_filtered = workspace_root.join("target").join("doc-rag-filtered");
+
+    if json_filtered.exists() {
+        std::fs::remove_dir_all(&json_filtered)
+            .context("failed to clean filtered JSON directory")?;
+    }
+    std::fs::create_dir_all(&json_filtered).context("failed to create filtered JSON directory")?;
+
+    let mut copied = 0;
+    for name in &allowed {
+        let src = json_src.join(format!("{name}.json"));
+        if src.exists() {
+            std::fs::copy(&src, json_filtered.join(format!("{name}.json")))
+                .with_context(|| format!("failed to copy {}", src.display()))?;
+            copied += 1;
+        }
+    }
+
+    info!(
+        allowed = allowed.len(),
+        copied, "filtered rustdoc JSON to allowed crates"
+    );
+    println!(
+        "Generating docs for {copied} crates to {}...",
+        output_dir.display()
+    );
+
+    // Step 3: generate markdown from filtered JSON
     let docs = Command::new("cargo-docs-md")
         .arg("docs-md")
-        .arg("docs")
+        .arg("--dir")
+        .arg(&json_filtered)
         .arg("--output")
         .arg(&output_dir)
         .status()
-        .context("failed to run cargo-docs-md docs")?;
+        .context("failed to run cargo-docs-md")?;
     if !docs.success() {
-        bail!("cargo-docs-md docs failed (exit code: {:?})", docs.code());
+        bail!("cargo-docs-md failed (exit code: {:?})", docs.code());
     }
 
-    // Step 3: filter to workspace crates + direct dependencies only
-    let removed = filter_docs(&output_dir, &config.rag.docs.exclude)?;
-    if removed > 0 {
-        info!(removed, "filtered transitive dependency docs");
-        println!("Filtered {removed} transitive dependency directories.");
-    }
+    let _ = std::fs::remove_dir_all(&json_filtered);
 
     info!(output_dir = %output_dir.display(), "RAG docs generated");
     println!("Done. Docs written to {}", output_dir.display());
     Ok(())
-}
-
-/// Build the set of allowed crate names from workspace members and their direct
-/// dependencies, then delete any doc directory under `output_dir` that isn't in
-/// the set. Returns the number of directories removed.
-fn filter_docs(output_dir: &Path, exclude: &[String]) -> Result<usize> {
-    let workspace_root = find_workspace_root()?;
-    let allowed = collect_allowed_crates(&workspace_root, exclude)?;
-
-    info!(
-        allowed_count = allowed.len(),
-        "allowed crates for RAG docs: {:?}",
-        {
-            let mut sorted: Vec<&str> = allowed.iter().map(String::as_str).collect();
-            sorted.sort();
-            sorted
-        }
-    );
-
-    let mut removed = 0;
-    let entries = match std::fs::read_dir(output_dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e).context("failed to read docs output directory"),
-    };
-
-    for entry in entries {
-        let entry = entry.context("failed to read directory entry")?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let dir_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        if !allowed.contains(&dir_name) {
-            debug!(dir = %dir_name, "removing filtered dependency docs");
-            std::fs::remove_dir_all(&path)
-                .with_context(|| format!("failed to remove doc directory: {}", path.display()))?;
-            removed += 1;
-        }
-    }
-
-    Ok(removed)
 }
 
 /// Find the workspace root by looking for the top-level `Cargo.toml` with a
@@ -524,79 +505,6 @@ tokio-stream = "0.1"
             "dep name should be normalized: {:?}",
             allowed
         );
-    }
-
-    #[test]
-    fn filter_docs_removes_non_allowed_directories() {
-        let tmp = TempDir::new().unwrap();
-        let root = create_test_workspace(&tmp);
-
-        // Create a fake docs output directory with some crate dirs
-        let docs_dir = tmp.path().join("docs_output");
-        std::fs::create_dir_all(&docs_dir).unwrap();
-
-        // Allowed: workspace crate + direct dep
-        std::fs::create_dir_all(docs_dir.join("alpha")).unwrap();
-        std::fs::write(docs_dir.join("alpha").join("README.md"), "alpha docs").unwrap();
-        std::fs::create_dir_all(docs_dir.join("serde")).unwrap();
-        std::fs::write(docs_dir.join("serde").join("README.md"), "serde docs").unwrap();
-
-        // Not allowed: transitive deps
-        std::fs::create_dir_all(docs_dir.join("syn")).unwrap();
-        std::fs::write(docs_dir.join("syn").join("README.md"), "syn docs").unwrap();
-        std::fs::create_dir_all(docs_dir.join("proc_macro2")).unwrap();
-        std::fs::write(
-            docs_dir.join("proc_macro2").join("README.md"),
-            "proc_macro2 docs",
-        )
-        .unwrap();
-
-        // We need to override workspace root detection for this test.
-        // Use collect_allowed_crates directly and then test removal logic.
-        let allowed = collect_allowed_crates(&root, &[]).unwrap();
-
-        // Verify what's allowed
-        assert!(allowed.contains("alpha"));
-        assert!(allowed.contains("serde"));
-        assert!(!allowed.contains("syn"));
-        assert!(!allowed.contains("proc_macro2"));
-
-        // Manually run the filter logic (can't call filter_docs since it uses find_workspace_root)
-        let mut removed = 0;
-        for entry in std::fs::read_dir(&docs_dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let dir_name = path.file_name().unwrap().to_str().unwrap().to_string();
-            if !allowed.contains(&dir_name) {
-                std::fs::remove_dir_all(&path).unwrap();
-                removed += 1;
-            }
-        }
-
-        assert_eq!(removed, 2);
-        assert!(docs_dir.join("alpha").exists());
-        assert!(docs_dir.join("serde").exists());
-        assert!(!docs_dir.join("syn").exists());
-        assert!(!docs_dir.join("proc_macro2").exists());
-    }
-
-    #[test]
-    fn filter_docs_returns_zero_for_missing_output_dir() {
-        let tmp = TempDir::new().unwrap();
-        let root = create_test_workspace(&tmp);
-        let nonexistent = tmp.path().join("does_not_exist");
-
-        let allowed = collect_allowed_crates(&root, &[]).unwrap();
-        assert!(!allowed.is_empty());
-
-        // filter_docs uses find_workspace_root, but we can test the NotFound path
-        // by checking the read_dir branch directly
-        let result = std::fs::read_dir(&nonexistent);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
