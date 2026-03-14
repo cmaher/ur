@@ -85,6 +85,14 @@ pub const UR_AGENT_ID_ENV: &str = "UR_AGENT_ID";
 /// which agent is making the call.
 pub const AGENT_ID_HEADER: &str = "ur-agent-id";
 
+/// Environment variable: per-agent secret (UUID v4) injected into containers at launch.
+/// Used alongside `UR_AGENT_ID` to authenticate worker requests to the shared worker server.
+pub const UR_AGENT_SECRET_ENV: &str = "UR_AGENT_SECRET";
+
+/// gRPC metadata header key for the agent secret.
+/// Sent by ur-tools on every request to the worker server for authentication.
+pub const AGENT_SECRET_HEADER: &str = "ur-agent-secret";
+
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 
@@ -243,6 +251,7 @@ pub const DEFAULT_BACKUP_INTERVAL_MINUTES: u64 = 30;
 struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
+    worker_port: Option<u16>,
     hostd_port: Option<u16>,
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
@@ -426,6 +435,8 @@ pub struct Config {
     pub workspace: PathBuf,
     /// TCP port the server listens on (default: 42069).
     pub daemon_port: u16,
+    /// TCP port the shared worker gRPC server listens on (default: `daemon_port + 1`).
+    pub worker_port: u16,
     /// TCP port the host execution daemon listens on (default: 42070).
     pub hostd_port: u16,
     /// Path to the Docker Compose file for starting the server (default: `<config_dir>/docker-compose.yml`).
@@ -486,6 +497,7 @@ impl Config {
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
+        let worker_port = raw.worker_port.unwrap_or(daemon_port + 1);
         let hostd_port = raw.hostd_port.unwrap_or(DEFAULT_HOSTD_PORT);
         let compose_file = raw
             .compose_file
@@ -600,6 +612,7 @@ impl Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
             daemon_port,
+            worker_port,
             hostd_port,
             compose_file,
             proxy,
@@ -1319,5 +1332,33 @@ make = { lua = "make-safe.lua" }
             Some(std::path::PathBuf::from("/backups/ur"))
         );
         assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+    }
+
+    #[test]
+    fn worker_port_defaults_to_daemon_port_plus_one() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.worker_port, DEFAULT_DAEMON_PORT + 1);
+    }
+
+    #[test]
+    fn worker_port_follows_custom_daemon_port() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 9000\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.worker_port, 9001);
+    }
+
+    #[test]
+    fn worker_port_reads_explicit_value() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "daemon_port = 9000\nworker_port = 8000\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.worker_port, 8000);
     }
 }
