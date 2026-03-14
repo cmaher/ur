@@ -456,9 +456,7 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<i32> {
 #[instrument(skip(client))]
 async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
     info!("listing processes");
-    let resp = client
-        .process_list(ProcessListRequest {})
-        .await?;
+    let resp = client.process_list(ProcessListRequest {}).await?;
     let processes = resp.into_inner().processes;
     if processes.is_empty() {
         println!("No running processes.");
