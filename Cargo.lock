@@ -4359,6 +4359,7 @@ dependencies = [
  "ur_config",
  "ur_db",
  "ur_rpc",
+ "ur_utils",
  "uuid",
 ]
 
@@ -4407,6 +4408,14 @@ dependencies = [
  "tokio-stream",
  "tonic 0.13.1",
  "tonic-build",
+ "tracing",
+]
+
+[[package]]
+name = "ur_utils"
+version = "0.1.0"
+dependencies = [
+ "tokio",
  "tracing",
 ]
 

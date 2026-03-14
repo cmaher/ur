@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -345,20 +346,27 @@ impl RepoPoolManager {
         let host_slot = self.host_slot_path(project_key, slot_name);
         let host_parent = self.host_project_pool_dir(project_key);
 
-        // Remove the corrupted slot directory on the host
-        self.hostd_client
-            .exec_and_check(
-                "rm",
-                &["-rf", &host_slot.to_string_lossy()],
-                &host_parent.to_string_lossy(),
+        // Remove the corrupted slot directory on the host.
+        // Retries because macOS `rm -rf` can transiently fail with "Directory not
+        // empty" when Spotlight or other background processes touch files during removal.
+        let host_slot_str = host_slot.to_string_lossy().to_string();
+        let host_parent_str = host_parent.to_string_lossy().to_string();
+        ur_utils::retry(3, Duration::from_secs(1), "rm -rf slot", || {
+            let slot = &host_slot_str;
+            let parent = &host_parent_str;
+            async move {
+                self.hostd_client
+                    .exec_and_check("rm", &["-rf", slot], parent)
+                    .await
+            }
+        })
+        .await
+        .map_err(|e| {
+            format!(
+                "failed to remove corrupted slot {}: {e}",
+                host_slot.display()
             )
-            .await
-            .map_err(|e| {
-                format!(
-                    "failed to remove corrupted slot {}: {e}",
-                    host_slot.display()
-                )
-            })?;
+        })?;
 
         // Clone fresh
         self.clone_slot(repo_url, project_key, slot_name)

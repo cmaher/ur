@@ -25,6 +25,7 @@ serde = { workspace = true }
 toml = "0.8"
 rag = { path = "../rag" }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
+ur_utils = { path = "../ur_utils" }
 
 [features]
 default = ["core", "hostexec", "hostd", "rag", "ticket"]
