@@ -552,28 +552,43 @@ async fn handle_process(
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            // Resolve project key: explicit -p flag, or derive from cwd name
-            // when neither -p nor -w is specified.
+            // Resolve project key: explicit -p flag, derive from ticket ID prefix,
+            // derive from cwd name, or empty when -w is specified.
             let resolved_project = if let Some(p) = project {
                 p
             } else if workspace.is_none() {
-                // Derive from current working directory name
-                let cwd =
-                    std::env::current_dir().context("failed to get current working directory")?;
-                let dir_name = cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+                // Try to derive from ticket ID prefix (before first '-' or '.')
+                let id_prefix = ticket_id
+                    .split(&['-', '.'][..])
+                    .next()
+                    .unwrap_or("")
                     .to_owned();
-                if project_keys.contains(&dir_name) {
-                    debug!(project_key = %dir_name, "derived project from cwd");
-                    dir_name
+                if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+                    debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+                    id_prefix
                 } else {
-                    bail!(
-                        "could not derive project from cwd directory name '{}' \
-                         (not a configured project key). Use -p <project> or -w <path>.",
+                    // Fall back to current working directory name
+                    let cwd = std::env::current_dir()
+                        .context("failed to get current working directory")?;
+                    let dir_name = cwd
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("cannot determine directory name from cwd")
+                        })?
+                        .to_owned();
+                    if project_keys.contains(&dir_name) {
+                        debug!(project_key = %dir_name, "derived project from cwd");
                         dir_name
-                    );
+                    } else {
+                        bail!(
+                            "could not derive project from ticket ID prefix '{}' or \
+                             cwd directory name '{}' \
+                             (neither is a configured project key). Use -p <project> or -w <path>.",
+                            id_prefix,
+                            dir_name
+                        );
+                    }
                 }
             } else {
                 // -w specified: no project association
