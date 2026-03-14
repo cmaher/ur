@@ -4286,6 +4286,7 @@ name = "ur"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "container",
  "dirs",
@@ -4300,6 +4301,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ur_config",
+ "ur_db",
  "ur_rpc",
 ]
 
