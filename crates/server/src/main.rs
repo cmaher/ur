@@ -30,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     info!(
         config_dir = %cfg.config_dir.display(),
         daemon_port = cfg.daemon_port,
+        worker_port = cfg.worker_port,
         network = cfg.network.name,
         workers = cfg.network.worker_name,
         "server config loaded"
@@ -124,20 +125,6 @@ async fn main() -> anyhow::Result<()> {
         ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
             .expect("failed to load hostexec config");
 
-    let grpc_handler = ur_server::grpc::CoreServiceHandler {
-        process_manager,
-        repo_pool_manager,
-        repo_registry,
-        workspace: cfg.workspace,
-        proxy_hostname: cfg.proxy.hostname,
-        projects: cfg.projects,
-        #[cfg(feature = "hostexec")]
-        hostexec_config,
-        #[cfg(feature = "hostexec")]
-        hostd_addr,
-    };
-    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
-
     #[cfg(feature = "rag")]
     let rag_handler = {
         use std::sync::Arc;
@@ -191,15 +178,47 @@ async fn main() -> anyhow::Result<()> {
         ur_server::grpc_ticket::TicketServiceHandler { ticket_repo }
     };
 
-    let result = ur_server::grpc_server::serve_grpc(
-        addr,
+    let grpc_handler = ur_server::grpc::CoreServiceHandler {
+        process_manager: process_manager.clone(),
+        repo_pool_manager,
+        repo_registry: repo_registry.clone(),
+        workspace: cfg.workspace,
+        proxy_hostname: cfg.proxy.hostname,
+        projects: cfg.projects.clone(),
+        #[cfg(feature = "hostexec")]
+        hostexec_config: hostexec_config.clone(),
+        #[cfg(feature = "hostexec")]
+        hostd_addr: hostd_addr.clone(),
+    };
+
+    let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
+    let worker_addr = SocketAddr::from(([0, 0, 0, 0], cfg.worker_port));
+
+    let host_server = ur_server::grpc_server::serve_grpc(
+        host_addr,
         grpc_handler,
+        #[cfg(feature = "rag")]
+        rag_handler.clone(),
+        #[cfg(feature = "ticket")]
+        ticket_handler.clone(),
+    );
+
+    let worker_server = ur_server::grpc_server::serve_worker_grpc(
+        worker_addr,
+        process_manager,
+        repo_registry,
+        cfg.projects,
+        #[cfg(feature = "hostexec")]
+        hostexec_config,
+        #[cfg(feature = "hostexec")]
+        hostd_addr,
         #[cfg(feature = "rag")]
         rag_handler,
         #[cfg(feature = "ticket")]
         ticket_handler,
-    )
-    .await;
+    );
+
+    let result = tokio::try_join!(host_server, worker_server).map(|_| ());
 
     // Signal backup task to stop and wait for it
     let _ = shutdown_tx.send(true);
