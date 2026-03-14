@@ -53,8 +53,7 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
         std::fs::remove_dir_all(&json_filtered)
             .context("failed to clean filtered JSON directory")?;
     }
-    std::fs::create_dir_all(&json_filtered)
-        .context("failed to create filtered JSON directory")?;
+    std::fs::create_dir_all(&json_filtered).context("failed to create filtered JSON directory")?;
 
     let mut copied = 0;
     for name in &allowed {
@@ -68,10 +67,12 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
 
     info!(
         allowed = allowed.len(),
-        copied,
-        "filtered rustdoc JSON to allowed crates"
+        copied, "filtered rustdoc JSON to allowed crates"
     );
-    println!("Generating docs for {copied} crates to {}...", output_dir.display());
+    println!(
+        "Generating docs for {copied} crates to {}...",
+        output_dir.display()
+    );
 
     // Step 3: generate markdown from filtered JSON
     let docs = Command::new("cargo-docs-md")
