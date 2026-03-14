@@ -481,10 +481,12 @@ mod tests {
         let args: Vec<String> = vec!["install".into(), "ripgrep".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: install"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: install")
+        );
     }
 
     #[test]
@@ -494,10 +496,12 @@ mod tests {
         let args: Vec<String> = vec!["uninstall".into(), "ripgrep".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: uninstall"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: uninstall")
+        );
     }
 
     #[test]
@@ -507,10 +511,12 @@ mod tests {
         let args: Vec<String> = vec!["publish".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: publish"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: publish")
+        );
     }
 
     #[test]
@@ -520,10 +526,12 @@ mod tests {
         let args: Vec<String> = vec!["login".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: login"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: login")
+        );
     }
 
     #[test]
@@ -533,10 +541,12 @@ mod tests {
         let args: Vec<String> = vec!["yank".into(), "--version".into(), "1.0.0".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: yank"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: yank")
+        );
     }
 
     #[test]
@@ -546,10 +556,12 @@ mod tests {
         let args: Vec<String> = vec!["owner".into(), "--add".into(), "user".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked cargo subcommand: owner"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked cargo subcommand: owner")
+        );
     }
 
     #[test]
@@ -563,10 +575,12 @@ mod tests {
         ];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked flag: --manifest-path"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --manifest-path")
+        );
     }
 
     #[test]
@@ -579,10 +593,12 @@ mod tests {
         ];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("blocked flag: --manifest-path="));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --manifest-path=")
+        );
     }
 
     #[test]
@@ -626,10 +642,12 @@ mod tests {
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", Some(&ctx));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("does not match project key"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
     }
 
     #[test]

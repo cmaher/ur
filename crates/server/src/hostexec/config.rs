@@ -209,7 +209,6 @@ mod tests {
         assert!(cargo_cfg.lua_source.as_ref().unwrap().contains("blocked"));
     }
 
-
     #[test]
     fn test_with_passthrough_commands_adds_new() {
         let tmp = TempDir::new().unwrap();
