@@ -1,0 +1,13 @@
+[package]
+name = "ur_db_sql"
+edition = "2024"
+version = "0.1.0"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+petgraph = "0.7"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
