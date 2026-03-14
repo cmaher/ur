@@ -11,9 +11,9 @@ const EXAMPLE_LUA: &str = "\
 --   [hostexec.commands]
 --   mycommand = { lua = \"example.lua\" }
 --
--- The transform function validates and optionally modifies command arguments
--- before the command is executed on the host. Return the args table to allow
--- execution, or call error() to block it.
+-- The transform function validates and optionally modifies the execution spec
+-- before the command is executed on the host. Return a table with the full
+-- execution spec, or call error() to block execution.
 --
 -- Parameters:
 --   command       (string) - the command name (e.g. \"cargo\", \"make\")
@@ -24,10 +24,18 @@ const EXAMPLE_LUA: &str = "\
 --     .project_key (string) - project key from ur.toml (e.g. \"ur\")
 --     .slot_path   (string) - host-side repo pool slot path
 --
--- Returns:
---   table - the (possibly modified) args array to execute
+-- Returns a table with:
+--   command     (string)           - command to execute (required)
+--   args        (table)            - array of argument strings (required)
+--   working_dir (string)           - working directory for the command (required)
+--   env         (table|nil)        - string->string env vars added to the process (optional)
 function transform(command, args, working_dir, agent_context)
-    return args
+    return {
+        command = command,
+        args = args,
+        working_dir = working_dir,
+        -- env = { MY_VAR = \"value\" },
+    }
 end
 ";
 
