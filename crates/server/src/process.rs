@@ -329,6 +329,36 @@ impl ProcessManager {
             .is_some_and(|entry| entry.agent_secret == secret)
     }
 
+    /// Register an agent in the process table without running a container.
+    ///
+    /// Used by tests that need a registered agent but cannot (or should not) spawn
+    /// a real container. The caller supplies the agent_secret and container_id
+    /// directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_agent(
+        &self,
+        agent_id: AgentId,
+        process_id: String,
+        project_key: String,
+        slot_path: Option<PathBuf>,
+        strategy: WorkerStrategy,
+        container_id: String,
+        agent_secret: String,
+    ) {
+        let mut procs = self.processes.write().expect("process lock poisoned");
+        procs.insert(
+            agent_id,
+            ProcessEntry {
+                process_id,
+                project_key,
+                slot_path,
+                strategy,
+                container_id,
+                agent_secret,
+            },
+        );
+    }
+
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
     /// When `workspace_dir` is Some, the directory is used as-is (no git init)
     /// and registered via `register_absolute`.
@@ -920,5 +950,134 @@ skills = ["only-one"]
         let (strategy, skills) = cfg.resolve_mode("code").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
+    }
+
+    #[test]
+    fn verify_agent_valid_pair_returns_true() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("test-ab12".into());
+        let secret = "my-secret-token";
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "test".into(),
+                    project_key: "proj".into(),
+                    slot_path: Some(PathBuf::from("/tmp/slot")),
+                    strategy: WorkerStrategy::Code,
+                    container_id: "cid".into(),
+                    agent_secret: secret.into(),
+                },
+            );
+        }
+        assert!(mgr.verify_agent("test-ab12", secret));
+    }
+
+    #[test]
+    fn verify_agent_wrong_secret_returns_false() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("test-ab12".into());
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "test".into(),
+                    project_key: String::new(),
+                    slot_path: None,
+                    strategy: WorkerStrategy::Code,
+                    container_id: "cid".into(),
+                    agent_secret: "correct-secret".into(),
+                },
+            );
+        }
+        assert!(!mgr.verify_agent("test-ab12", "wrong-secret"));
+    }
+
+    #[test]
+    fn verify_agent_unknown_id_returns_false() {
+        let (mgr, _workspace) = test_manager();
+        assert!(!mgr.verify_agent("unknown-ab12", "any-secret"));
+    }
+
+    #[test]
+    fn verify_agent_invalid_id_format_returns_false() {
+        let (mgr, _workspace) = test_manager();
+        assert!(!mgr.verify_agent("nodash", "any-secret"));
+    }
+
+    #[test]
+    fn get_agent_context_returns_context_for_registered_agent() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("ctx-ab12".into());
+        let slot = PathBuf::from("/tmp/slot");
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "ctx".into(),
+                    project_key: "myproject".into(),
+                    slot_path: Some(slot.clone()),
+                    strategy: WorkerStrategy::Code,
+                    container_id: "cid".into(),
+                    agent_secret: "secret".into(),
+                },
+            );
+        }
+        let ctx = mgr.get_agent_context(&agent_id).unwrap();
+        assert_eq!(ctx.project_key, Some("myproject".to_string()));
+        assert_eq!(ctx.slot_path, slot);
+    }
+
+    #[test]
+    fn get_agent_context_empty_project_key_maps_to_none() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("ws-ab12".into());
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "ws".into(),
+                    project_key: String::new(),
+                    slot_path: Some(PathBuf::from("/tmp/ws")),
+                    strategy: WorkerStrategy::Code,
+                    container_id: "cid".into(),
+                    agent_secret: "secret".into(),
+                },
+            );
+        }
+        let ctx = mgr.get_agent_context(&agent_id).unwrap();
+        assert_eq!(ctx.project_key, None);
+    }
+
+    #[test]
+    fn get_agent_context_returns_none_for_unknown_agent() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("missing-ab12".into());
+        assert!(mgr.get_agent_context(&agent_id).is_none());
+    }
+
+    #[test]
+    fn get_agent_context_returns_none_when_no_slot_path() {
+        let (mgr, _workspace) = test_manager();
+        let agent_id = AgentId("nosl-ab12".into());
+        {
+            let mut procs = mgr.processes.write().unwrap();
+            procs.insert(
+                agent_id.clone(),
+                ProcessEntry {
+                    process_id: "nosl".into(),
+                    project_key: "proj".into(),
+                    slot_path: None,
+                    strategy: WorkerStrategy::Code,
+                    container_id: "cid".into(),
+                    agent_secret: "secret".into(),
+                },
+            );
+        }
+        assert!(mgr.get_agent_context(&agent_id).is_none());
     }
 }
