@@ -151,7 +151,10 @@ pub async fn show(port: u16, ticket_id: &str) -> Result<()> {
         .as_ref()
         .context("server returned empty ticket")?;
 
-    println!("{}", format_ticket_detail(t, &inner.metadata, &inner.activities));
+    println!(
+        "{}",
+        format_ticket_detail(t, &inner.metadata, &inner.activities)
+    );
     Ok(())
 }
 

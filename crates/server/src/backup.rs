@@ -334,7 +334,10 @@ mod tests {
             !tmp.path().join("ur-backup-20260101T000000Z.db").exists(),
             "oldest should be removed"
         );
-        assert!(tmp.path().join("other.txt").exists(), "non-backup preserved");
+        assert!(
+            tmp.path().join("other.txt").exists(),
+            "non-backup preserved"
+        );
     }
 
     #[test]
@@ -464,21 +467,9 @@ mod tests {
         let (_db, sm) = create_test_db(&db_tmp).await;
 
         // Create fake backup files
-        std::fs::write(
-            backup_tmp.path().join("ur-backup-20260101T000000Z.db"),
-            "a",
-        )
-        .unwrap();
-        std::fs::write(
-            backup_tmp.path().join("ur-backup-20260103T000000Z.db"),
-            "c",
-        )
-        .unwrap();
-        std::fs::write(
-            backup_tmp.path().join("ur-backup-20260102T000000Z.db"),
-            "b",
-        )
-        .unwrap();
+        std::fs::write(backup_tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
+        std::fs::write(backup_tmp.path().join("ur-backup-20260103T000000Z.db"), "c").unwrap();
+        std::fs::write(backup_tmp.path().join("ur-backup-20260102T000000Z.db"), "b").unwrap();
         // Non-backup file should be excluded
         std::fs::write(backup_tmp.path().join("other.txt"), "x").unwrap();
 
@@ -492,15 +483,19 @@ mod tests {
         let backups = mgr.list_backups().expect("list should succeed");
         assert_eq!(backups.len(), 3);
         // Newest first
-        assert!(backups[0]
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains("20260103"));
-        assert!(backups[2]
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .contains("20260101"));
+        assert!(
+            backups[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("20260103")
+        );
+        assert!(
+            backups[2]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("20260101")
+        );
     }
 }
