@@ -4,9 +4,15 @@
 default_to_workspace = false
 
 [tasks.fmt]
-description = "Check code formatting"
-command = "cargo"
-args = ["fmt", "--all", "--check"]
+description = "Auto-fix formatting, then fail if changes were needed"
+script_runner = "@shell"
+script = ["""
+if ! cargo fmt --all --check 2>/dev/null; then
+    cargo fmt --all
+    echo "error: cargo fmt made changes — please commit the formatting fixes and push again."
+    exit 1
+fi
+"""]
 
 [tasks.fmt-fix]
 description = "Fix code formatting"
