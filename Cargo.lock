@@ -4783,6 +4783,7 @@ name = "ur-workerd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "tokio",
  "tonic 0.13.1",
  "tracing",
@@ -5479,8 +5480,6 @@ dependencies = [
  "clap",
  "tokio",
  "tonic 0.13.1",
- "tracing",
- "tracing-subscriber",
  "ur_config",
  "ur_rpc",
 ]

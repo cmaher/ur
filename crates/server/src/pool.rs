@@ -280,6 +280,20 @@ impl RepoPoolManager {
         existing.len() as u32
     }
 
+    /// Convert a host-side path to a local (container-side) path.
+    ///
+    /// Replaces the host_workspace prefix with local_workspace prefix.
+    /// Falls back to the input path if no prefix match (e.g., in tests).
+    fn host_to_local_path(&self, host_path: &Path) -> PathBuf {
+        let host_prefix = self.host_workspace.to_string_lossy();
+        let path_str = host_path.to_string_lossy();
+        if let Some(suffix) = path_str.strip_prefix(host_prefix.as_ref()) {
+            self.local_workspace.join(suffix.trim_start_matches('/'))
+        } else {
+            host_path.to_path_buf()
+        }
+    }
+
     /// Clone a repo into a new slot directory via ur-hostd.
     ///
     /// Creates the parent directory locally (container-side, bind-mounted),
@@ -311,6 +325,7 @@ impl RepoPoolManager {
             .map_err(|e| format!("git clone failed for {repo_url}: {e}"))?;
 
         self.init_submodules(&host_slot).await?;
+        self.trust_mise(&host_slot).await;
 
         Ok(())
     }
@@ -387,16 +402,7 @@ impl RepoPoolManager {
     /// Uses the local (container-side) path to check for `.gitmodules` existence,
     /// then runs `git submodule update --init --recursive` on the host via hostd.
     async fn init_submodules(&self, host_slot_path: &Path) -> Result<(), String> {
-        // Convert host path to local path to check for .gitmodules on the container filesystem.
-        // host_workspace prefix is replaced with local_workspace prefix.
-        let host_prefix = self.host_workspace.to_string_lossy();
-        let slot_str = host_slot_path.to_string_lossy();
-        let local_slot_path = if let Some(suffix) = slot_str.strip_prefix(host_prefix.as_ref()) {
-            self.local_workspace.join(suffix.trim_start_matches('/'))
-        } else {
-            // Fallback: assume host and local paths are the same (e.g., in tests)
-            host_slot_path.to_path_buf()
-        };
+        let local_slot_path = self.host_to_local_path(host_slot_path);
 
         let gitmodules = local_slot_path.join(".gitmodules");
         if !tokio::fs::try_exists(&gitmodules).await.unwrap_or(false) {
@@ -418,6 +424,33 @@ impl RepoPoolManager {
                     host_slot_path.display()
                 )
             })
+    }
+
+    /// Trust mise configuration in a newly cloned slot if `mise.toml` exists.
+    ///
+    /// Runs `mise trust` on the host via hostd. If mise is not installed or the
+    /// command fails, logs a warning and continues — mise trust is best-effort.
+    async fn trust_mise(&self, host_slot_path: &Path) {
+        let local_slot_path = self.host_to_local_path(host_slot_path);
+        let mise_toml = local_slot_path.join("mise.toml");
+
+        if !tokio::fs::try_exists(&mise_toml).await.unwrap_or(false) {
+            return;
+        }
+
+        info!(path = %host_slot_path.display(), "trusting mise.toml in cloned slot");
+        let cwd = host_slot_path.to_string_lossy();
+        if let Err(e) = self
+            .hostd_client
+            .exec_and_check("mise", &["trust"], &cwd)
+            .await
+        {
+            warn!(
+                path = %host_slot_path.display(),
+                error = %e,
+                "mise trust failed (mise may not be installed)"
+            );
+        }
     }
 
     /// Mark a slot path as in-use (host-side path).

@@ -79,6 +79,12 @@ impl HostExecConfigManager {
                 lua_source: Some(include_str!("default_scripts/gh.lua").into()),
             },
         );
+        commands.insert(
+            "cargo".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/cargo.lua").into()),
+            },
+        );
         commands
     }
 
@@ -86,6 +92,7 @@ impl HostExecConfigManager {
         match name {
             "git" => Some(include_str!("default_scripts/git.lua").into()),
             "gh" => Some(include_str!("default_scripts/gh.lua").into()),
+            "cargo" => Some(include_str!("default_scripts/cargo.lua").into()),
             _ => None,
         }
     }
@@ -124,7 +131,7 @@ mod tests {
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
         assert!(!mgr.is_allowed("tk"));
-        assert_eq!(mgr.command_names(), vec!["gh", "git"]);
+        assert_eq!(mgr.command_names(), vec!["cargo", "gh", "git"]);
     }
 
     #[test]
@@ -189,6 +196,17 @@ mod tests {
 
         let git_cfg = mgr.get("git").unwrap();
         assert!(git_cfg.lua_source.as_ref().unwrap().contains("blocked"));
+    }
+
+    #[test]
+    fn test_defaults_include_cargo_with_lua() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+
+        assert!(mgr.is_allowed("cargo"));
+        let cargo_cfg = mgr.get("cargo").unwrap();
+        assert!(cargo_cfg.lua_source.is_some());
+        assert!(cargo_cfg.lua_source.as_ref().unwrap().contains("blocked"));
     }
 
     #[test]

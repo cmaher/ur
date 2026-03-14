@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-# Activate mise so Rust toolchain and bacon are on PATH
-eval "$(/home/worker/.local/bin/mise activate bash)"
-
 # Ensure the Claude config directory exists.
 # The credentials file is bind-mounted from the host at
 # ~/.claude/.credentials.json — this just ensures the parent dir exists
@@ -11,16 +8,15 @@ eval "$(/home/worker/.local/bin/mise activate bash)"
 mkdir -p ~/.claude
 mkdir -p ~/.local/bin
 
-# Run all container initialization (skills, git hooks)
-ur-tools init
+# Initialize: skills, git hooks, hostexec shims (synchronous)
+ur-workerd init
 
-# Start ur-workerd in background (creates command shims)
+# Start daemon in background
 ur-workerd &
 
-# Start bacon in headless mode for background compilation checking.
+# Start bacon on the host via hostexec shim.
 # Uses the 'ai' job (cargo check --message-format short) and exports
 # diagnostics to .bacon-locations for agents to read.
-# Runs from /workspace where the project and bacon.toml live.
 (cd /workspace && bacon --headless ai &)
 
 # Start a detached tmux session (no PTY required).

@@ -2,12 +2,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
 use tonic::transport::Endpoint;
 use tracing::{debug, info, warn};
 
 use ur_rpc::proto::hostexec::ListHostExecCommandsRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 
+mod init_git_hooks;
+mod init_skills;
 mod logging;
 
 const SHIM_DIR: &str = ".local/bin";
@@ -15,12 +18,50 @@ const MAX_RETRIES: u32 = 30;
 const INITIAL_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 5000;
 
+#[derive(Parser)]
+#[command(name = "ur-workerd", about = "Ur worker daemon")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run all container initialization: skills, git hooks, hostexec shims
+    Init,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     logging::init();
 
-    info!("ur-workerd starting");
+    let cli = Cli::parse();
 
+    match cli.command {
+        Some(Commands::Init) => run_init().await,
+        None => run_daemon().await,
+    }
+}
+
+/// Synchronous initialization: skills, git hooks, and hostexec shim creation.
+async fn run_init() -> Result<()> {
+    info!("ur-workerd init starting");
+
+    // Initialize skills
+    let skills_manager = init_skills::InitSkillsManager::from_env();
+    let exit_code = skills_manager.run().await;
+    if exit_code != 0 {
+        anyhow::bail!("skills initialization failed");
+    }
+
+    // Initialize git hooks
+    let git_hooks_manager = init_git_hooks::InitGitHooksManager;
+    git_hooks_manager
+        .run()
+        .await
+        .context("git hooks initialization failed")?;
+
+    // Create hostexec shims
     let shim_dir = resolve_shim_dir();
     info!(shim_dir = %shim_dir.display(), "resolved shim directory");
 
@@ -34,10 +75,13 @@ async fn main() -> Result<()> {
         create_shim(&shim_dir, command).await?;
     }
 
-    info!(count = commands.len(), ?commands, "all shims created");
+    info!(count = commands.len(), ?commands, "init complete");
+    Ok(())
+}
 
-    // Stay alive for future daemon uses
-    info!("entering daemon loop");
+/// Background daemon loop. Stays alive for future daemon uses.
+async fn run_daemon() -> Result<()> {
+    info!("ur-workerd daemon starting");
     loop {
         tokio::time::sleep(Duration::from_secs(3600)).await;
     }
