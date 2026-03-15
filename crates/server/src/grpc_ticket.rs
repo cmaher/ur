@@ -230,6 +230,20 @@ impl TicketService for TicketServiceHandler {
             parent_id: None,
         };
 
+        if update.status.as_deref() == Some("closed") && !req.force {
+            let all_closed = self
+                .ticket_repo
+                .epic_all_children_closed(&req.id)
+                .await
+                .map_err(db_err)?;
+            if !all_closed {
+                return Err(Status::failed_precondition(format!(
+                    "ticket {} has open children; close them first or use --force",
+                    req.id
+                )));
+            }
+        }
+
         self.ticket_repo
             .update_ticket(&req.id, &update)
             .await

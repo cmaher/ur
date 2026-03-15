@@ -115,6 +115,7 @@ message UpdateTicketRequest {
   optional int64 priority = 3;
   optional string title = 4;
   optional string body = 5;
+  bool force = 6;
 }
 
 message UpdateTicketResponse {}

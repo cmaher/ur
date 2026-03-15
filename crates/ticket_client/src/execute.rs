@@ -97,6 +97,7 @@ where
             priority,
             ticket_type: _,
             parent: _,
+            force,
         } => {
             client
                 .update_ticket(UpdateTicketRequest {
@@ -105,6 +106,7 @@ where
                     priority,
                     title,
                     body,
+                    force,
                 })
                 .await
                 .context("failed to update ticket")?;

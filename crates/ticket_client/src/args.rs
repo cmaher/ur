@@ -74,6 +74,10 @@ pub enum TicketArgs {
         /// New parent ticket ID
         #[arg(long)]
         parent: Option<String>,
+
+        /// Force the update (e.g. close an epic with open children)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Set a metadata key-value pair on a ticket
