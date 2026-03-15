@@ -220,6 +220,8 @@ enum ProcessCommands {
     Kill { process_id: String },
     /// Save credentials from a running container for reuse
     SaveCredentials { process_id: String },
+    /// Print the host directory assigned to a running process
+    Dir { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -609,6 +611,20 @@ async fn handle_process(
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
         }
+        ProcessCommands::Dir { process_id } => {
+            let mut client = connect(port).await?;
+            let resp = client
+                .process_info(ProcessInfoRequest {
+                    process_id: process_id.clone(),
+                })
+                .await?;
+            let workspace_dir = resp.into_inner().workspace_dir;
+            if workspace_dir.is_empty() {
+                bail!("no workspace directory for process {process_id}");
+            }
+            println!("{workspace_dir}");
+            Ok(())
+        }
     }
 }
 
@@ -622,6 +638,7 @@ fn command_name(cmd: &ProcessCommands) -> &'static str {
         ProcessCommands::Launch { .. } => "launch",
         ProcessCommands::Status { .. } => "status",
         ProcessCommands::Stop { .. } => "stop",
+        ProcessCommands::Dir { .. } => "dir",
     }
 }
 
