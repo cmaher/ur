@@ -366,7 +366,7 @@ fn e2e_ping_and_git() {
         );
 
         // ---- (5) Test hostexec: git commands via worker → server → hostd → host ----
-        // The git shim calls ur-tools host-exec git, which goes through the full
+        // The git shim calls workertools host-exec git, which goes through the full
         // hostexec pipeline. This verifies ur-hostd is running and reachable.
         let git_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "status"])

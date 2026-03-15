@@ -7,4 +7,4 @@ Extends `ur-worker:latest` with build dependencies for Rust projects. Cargo and 
 - Inherits everything from `ur-worker` (Claude Code, tmux entrypoint, worker binaries)
 - Adds: build-essential, pkg-config, libssl-dev, git for native compilation support
 - Rust toolchain (cargo, bacon, etc.) runs on the host via hostexec shims — no mise or local toolchain in the container
-- At runtime, ur-workerd creates shims for hostexec commands (git, gh, cargo, bacon, etc.)
+- At runtime, workerd creates shims for hostexec commands (git, gh, cargo, bacon, etc.)

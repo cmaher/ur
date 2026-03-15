@@ -58,7 +58,7 @@ enum Commands {
     /// Manage tickets
     Ticket {
         #[command(subcommand)]
-        command: TicketCommands,
+        command: ticket_client::TicketArgs,
     },
     /// Start the server
     Start,
@@ -226,111 +226,6 @@ enum ProcessCommands {
 enum AgentCommands {
     /// Print the host workspace directory for a running agent
     Dir { process_id: String },
-}
-
-#[derive(Subcommand)]
-enum TicketCommands {
-    /// Create a new ticket
-    Create {
-        /// Ticket title
-        title: String,
-        /// Ticket type (task, epic, bug, chore, design, milestone, initiative)
-        #[arg(long, default_value = "task")]
-        r#type: String,
-        /// Parent ticket ID (e.g. ur.o79g)
-        #[arg(long)]
-        parent: Option<String>,
-        /// Priority (lower = higher priority)
-        #[arg(long, default_value = "3")]
-        priority: i64,
-        /// Ticket body/description
-        #[arg(long, default_value = "")]
-        body: String,
-        /// Project prefix
-        #[arg(long, default_value = "ur")]
-        project: String,
-    },
-    /// List tickets
-    Ls {
-        /// Filter by parent/epic ID
-        #[arg(long)]
-        epic: Option<String>,
-        /// Filter by ticket type
-        #[arg(long)]
-        r#type: Option<String>,
-        /// Filter by status
-        #[arg(long)]
-        status: Option<String>,
-    },
-    /// Show ticket details
-    Show {
-        /// Ticket ID
-        ticket_id: String,
-    },
-    /// Update ticket fields
-    Update {
-        /// Ticket ID
-        ticket_id: String,
-        /// New status
-        #[arg(long)]
-        status: Option<String>,
-        /// New priority
-        #[arg(long)]
-        priority: Option<i64>,
-        /// New title
-        #[arg(long)]
-        title: Option<String>,
-        /// New body
-        #[arg(long)]
-        body: Option<String>,
-    },
-    /// Add a blocking dependency (BLOCKER blocks TICKET)
-    Dep {
-        /// Ticket that is blocked
-        ticket_id: String,
-        /// Ticket that blocks it
-        blocker_id: String,
-    },
-    /// Remove a blocking dependency
-    Undep {
-        /// Ticket that was blocked
-        ticket_id: String,
-        /// Ticket that was blocking it
-        blocker_id: String,
-    },
-    /// Link two related tickets
-    Link {
-        /// First ticket ID
-        id1: String,
-        /// Second ticket ID
-        id2: String,
-    },
-    /// Remove a link between two tickets
-    Unlink {
-        /// First ticket ID
-        id1: String,
-        /// Second ticket ID
-        id2: String,
-    },
-    /// Add a note to a ticket
-    Note {
-        /// Ticket ID
-        ticket_id: String,
-        /// Note message
-        message: String,
-    },
-    /// Set or delete ticket metadata
-    Meta {
-        /// Ticket ID
-        ticket_id: String,
-        /// Metadata key
-        key: String,
-        /// Metadata value (omit with --delete to remove)
-        value: Option<String>,
-        /// Delete the metadata key instead of setting it
-        #[arg(long)]
-        delete: bool,
-    },
 }
 
 #[instrument]
@@ -826,76 +721,7 @@ async fn main() -> Result<()> {
             DbCommands::Restore { path } => db::restore(&config, &path).await?,
             DbCommands::List => db::list(&config)?,
         },
-        Commands::Ticket { command } => match command {
-            TicketCommands::Create {
-                title,
-                r#type,
-                parent,
-                priority,
-                body,
-                project,
-            } => {
-                ticket::create(
-                    port,
-                    &title,
-                    &r#type,
-                    parent.as_deref(),
-                    priority,
-                    &body,
-                    &project,
-                )
-                .await?
-            }
-            TicketCommands::Ls {
-                epic,
-                r#type,
-                status,
-            } => ticket::list(port, epic.as_deref(), r#type.as_deref(), status.as_deref()).await?,
-            TicketCommands::Show { ticket_id } => ticket::show(port, &ticket_id).await?,
-            TicketCommands::Update {
-                ticket_id,
-                status,
-                priority,
-                title,
-                body,
-            } => {
-                ticket::update(
-                    port,
-                    &ticket_id,
-                    status.as_deref(),
-                    priority,
-                    title.as_deref(),
-                    body.as_deref(),
-                )
-                .await?
-            }
-            TicketCommands::Dep {
-                ticket_id,
-                blocker_id,
-            } => ticket::add_dep(port, &ticket_id, &blocker_id).await?,
-            TicketCommands::Undep {
-                ticket_id,
-                blocker_id,
-            } => ticket::remove_dep(port, &ticket_id, &blocker_id).await?,
-            TicketCommands::Link { id1, id2 } => ticket::add_link(port, &id1, &id2).await?,
-            TicketCommands::Unlink { id1, id2 } => ticket::remove_link(port, &id1, &id2).await?,
-            TicketCommands::Note { ticket_id, message } => {
-                ticket::add_note(port, &ticket_id, &message).await?
-            }
-            TicketCommands::Meta {
-                ticket_id,
-                key,
-                value,
-                delete,
-            } => {
-                if delete {
-                    ticket::delete_meta(port, &ticket_id, &key).await?
-                } else {
-                    let val = value.as_deref().unwrap_or("");
-                    ticket::set_meta(port, &ticket_id, &key, val).await?
-                }
-            }
-        },
+        Commands::Ticket { command } => ticket::handle(port, command).await?,
         Commands::Agent { command } => match command {
             AgentCommands::Dir { process_id } => {
                 let mut client = connect(port).await?;

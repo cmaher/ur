@@ -1,0 +1,19 @@
+[package]
+name = "ticket_client"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { workspace = true }
+http-body = "1"
+tonic = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["ticket"] }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["ticket"] }

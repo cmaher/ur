@@ -6,13 +6,13 @@ RUN chmod +x /entrypoint.sh
 # Copy pre-built worker command binaries into the image
 COPY ur-ping /usr/local/bin/ur-ping
 RUN chmod +x /usr/local/bin/ur-ping
-COPY ur-tools /usr/local/bin/ur-tools
-RUN chmod +x /usr/local/bin/ur-tools
+COPY workertools /usr/local/bin/workertools
+RUN chmod +x /usr/local/bin/workertools
 
-COPY ur-workerd /usr/local/bin/ur-workerd
-RUN chmod +x /usr/local/bin/ur-workerd
+COPY workerd /usr/local/bin/workerd
+RUN chmod +x /usr/local/bin/workerd
 
-# Shim directory — ur-workerd writes shims here at startup
+# Shim directory — workerd writes shims here at startup
 RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 

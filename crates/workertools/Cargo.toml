@@ -1,0 +1,16 @@
+[package]
+name = "workertools"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "workertools"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+ticket_client = { path = "../ticket_client" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+ur_config = { path = "../ur_config" }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "rag", "ticket"] }
