@@ -6,9 +6,9 @@ use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, ProcessInfo, ProcessInfoRequest, ProcessInfoResponse,
-    ProcessLaunchRequest, ProcessLaunchResponse, ProcessListRequest, ProcessListResponse,
-    ProcessStopRequest, ProcessStopResponse,
+    PingRequest, PingResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
+    WorkerLaunchResponse, WorkerListRequest, WorkerListResponse, WorkerStopRequest,
+    WorkerStopResponse, WorkerSummary,
 };
 
 use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
@@ -36,18 +36,18 @@ impl CoreService for CoreServiceHandler {
         }))
     }
 
-    async fn process_launch(
+    async fn worker_launch(
         &self,
-        req: Request<ProcessLaunchRequest>,
-    ) -> Result<Response<ProcessLaunchResponse>, Status> {
+        req: Request<WorkerLaunchRequest>,
+    ) -> Result<Response<WorkerLaunchResponse>, Status> {
         let req = req.into_inner();
 
         info!(
-            process_id = req.process_id,
+            worker_id = req.worker_id,
             image_id = req.image_id,
             workspace_dir = req.workspace_dir,
             project_key = req.project_key,
-            "process_launch request received"
+            "worker_launch request received"
         );
 
         // Resolve worker strategy from the mode field early in the launch flow.
@@ -64,7 +64,7 @@ impl CoreService for CoreServiceHandler {
                 .await
                 .map_err(Status::internal)?;
             info!(
-                process_id = req.process_id,
+                worker_id = req.worker_id,
                 project_key = req.project_key,
                 slot_path = %slot_path.display(),
                 strategy = strategy.name(),
@@ -78,16 +78,16 @@ impl CoreService for CoreServiceHandler {
         };
 
         // Generate unique agent ID for this launch
-        let agent_id = self.process_manager.generate_agent_id(&req.process_id);
+        let agent_id = self.process_manager.generate_agent_id(&req.worker_id);
         info!(
-            process_id = req.process_id,
+            worker_id = req.worker_id,
             agent_id = %agent_id,
             "generated agent ID"
         );
 
         // Phase 1: prepare (create repo, git init, register)
         self.process_manager
-            .prepare(&req.process_id, &agent_id, workspace_dir.clone())
+            .prepare(&req.worker_id, &agent_id, workspace_dir.clone())
             .await
             .map_err(Status::internal)?;
 
@@ -111,7 +111,7 @@ impl CoreService for CoreServiceHandler {
         };
 
         let config = crate::ProcessConfig {
-            process_id: req.process_id,
+            process_id: req.worker_id,
             agent_id,
             image_id: req.image_id,
             cpus: req.cpus,
@@ -130,48 +130,48 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(Status::internal)?;
 
-        Ok(Response::new(ProcessLaunchResponse { container_id }))
+        Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
 
-    async fn process_stop(
+    async fn worker_stop(
         &self,
-        req: Request<ProcessStopRequest>,
-    ) -> Result<Response<ProcessStopResponse>, Status> {
+        req: Request<WorkerStopRequest>,
+    ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
-        info!(process_id = req.process_id, "process_stop request received");
+        info!(worker_id = req.worker_id, "worker_stop request received");
         self.process_manager
-            .stop(&req.process_id)
+            .stop(&req.worker_id)
             .await
             .map_err(Status::internal)?;
-        Ok(Response::new(ProcessStopResponse {}))
+        Ok(Response::new(WorkerStopResponse {}))
     }
 
-    async fn process_info(
+    async fn worker_info(
         &self,
-        req: Request<ProcessInfoRequest>,
-    ) -> Result<Response<ProcessInfoResponse>, Status> {
+        req: Request<WorkerInfoRequest>,
+    ) -> Result<Response<WorkerInfoResponse>, Status> {
         let req = req.into_inner();
-        info!(process_id = req.process_id, "process_info request received");
+        info!(worker_id = req.worker_id, "worker_info request received");
         let workspace_dir = self
             .process_manager
-            .get_workspace_dir(&req.process_id)
+            .get_workspace_dir(&req.worker_id)
             .map_err(Status::not_found)?;
         let workspace_dir = workspace_dir
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        Ok(Response::new(ProcessInfoResponse { workspace_dir }))
+        Ok(Response::new(WorkerInfoResponse { workspace_dir }))
     }
 
-    async fn process_list(
+    async fn worker_list(
         &self,
-        _req: Request<ProcessListRequest>,
-    ) -> Result<Response<ProcessListResponse>, Status> {
-        info!("process_list request received");
+        _req: Request<WorkerListRequest>,
+    ) -> Result<Response<WorkerListResponse>, Status> {
+        info!("worker_list request received");
         let summaries = self.process_manager.list();
-        let processes = summaries
+        let workers = summaries
             .into_iter()
-            .map(|s| ProcessInfo {
-                process_id: s.process_id,
+            .map(|s| WorkerSummary {
+                worker_id: s.process_id,
                 agent_id: s.agent_id,
                 container_id: s.container_id,
                 project_key: s.project_key,
@@ -179,13 +179,13 @@ impl CoreService for CoreServiceHandler {
                 grpc_port: 0,
             })
             .collect();
-        Ok(Response::new(ProcessListResponse { processes }))
+        Ok(Response::new(WorkerListResponse { workers }))
     }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
 ///
-/// Only implements `Ping` (health check for workers); process management RPCs
+/// Only implements `Ping` (health check for workers); worker management RPCs
 /// return `Unimplemented` because they are host-only operations.
 #[derive(Clone)]
 pub struct WorkerCoreServiceHandler;
@@ -198,39 +198,39 @@ impl CoreService for WorkerCoreServiceHandler {
         }))
     }
 
-    async fn process_launch(
+    async fn worker_launch(
         &self,
-        _req: Request<ProcessLaunchRequest>,
-    ) -> Result<Response<ProcessLaunchResponse>, Status> {
+        _req: Request<WorkerLaunchRequest>,
+    ) -> Result<Response<WorkerLaunchResponse>, Status> {
         Err(Status::unimplemented(
-            "process_launch is only available on the host server",
+            "worker_launch is only available on the host server",
         ))
     }
 
-    async fn process_stop(
+    async fn worker_stop(
         &self,
-        _req: Request<ProcessStopRequest>,
-    ) -> Result<Response<ProcessStopResponse>, Status> {
+        _req: Request<WorkerStopRequest>,
+    ) -> Result<Response<WorkerStopResponse>, Status> {
         Err(Status::unimplemented(
-            "process_stop is only available on the host server",
+            "worker_stop is only available on the host server",
         ))
     }
 
-    async fn process_info(
+    async fn worker_info(
         &self,
-        _req: Request<ProcessInfoRequest>,
-    ) -> Result<Response<ProcessInfoResponse>, Status> {
+        _req: Request<WorkerInfoRequest>,
+    ) -> Result<Response<WorkerInfoResponse>, Status> {
         Err(Status::unimplemented(
-            "process_info is only available on the host server",
+            "worker_info is only available on the host server",
         ))
     }
 
-    async fn process_list(
+    async fn worker_list(
         &self,
-        _req: Request<ProcessListRequest>,
-    ) -> Result<Response<ProcessListResponse>, Status> {
+        _req: Request<WorkerListRequest>,
+    ) -> Result<Response<WorkerListResponse>, Status> {
         Err(Status::unimplemented(
-            "process_list is only available on the host server",
+            "worker_list is only available on the host server",
         ))
     }
 }

@@ -14,10 +14,10 @@ message CommandOutput {
 // Core always-on service
 service CoreService {
   rpc Ping(PingRequest) returns (PingResponse);
-  rpc ProcessLaunch(ProcessLaunchRequest) returns (ProcessLaunchResponse);
-  rpc ProcessStop(ProcessStopRequest) returns (ProcessStopResponse);
-  rpc ProcessInfo(ProcessInfoRequest) returns (ProcessInfoResponse);
-  rpc ProcessList(ProcessListRequest) returns (ProcessListResponse);
+  rpc WorkerLaunch(WorkerLaunchRequest) returns (WorkerLaunchResponse);
+  rpc WorkerStop(WorkerStopRequest) returns (WorkerStopResponse);
+  rpc WorkerInfo(WorkerInfoRequest) returns (WorkerInfoResponse);
+  rpc WorkerList(WorkerListRequest) returns (WorkerListResponse);
 }
 
 message PingRequest {}
@@ -25,8 +25,8 @@ message PingResponse {
   string message = 1;
 }
 
-message ProcessLaunchRequest {
-  string process_id = 1;
+message WorkerLaunchRequest {
+  string worker_id = 1;
   string image_id = 2;
   uint32 cpus = 3;
   string memory = 4;
@@ -41,32 +41,32 @@ message ProcessLaunchRequest {
   string project_key = 9;
 }
 
-message ProcessLaunchResponse {
+message WorkerLaunchResponse {
   string container_id = 1;
 }
 
-message ProcessStopRequest {
-  string process_id = 1;
+message WorkerStopRequest {
+  string worker_id = 1;
 }
 
-message ProcessStopResponse {}
+message WorkerStopResponse {}
 
-message ProcessInfoRequest {
-  string process_id = 1;
+message WorkerInfoRequest {
+  string worker_id = 1;
 }
 
-message ProcessInfoResponse {
+message WorkerInfoResponse {
   string workspace_dir = 1;
 }
 
-message ProcessListRequest {}
+message WorkerListRequest {}
 
-message ProcessListResponse {
-  repeated ProcessInfo processes = 1;
+message WorkerListResponse {
+  repeated WorkerSummary workers = 1;
 }
 
-message ProcessInfo {
-  string process_id = 1;
+message WorkerSummary {
+  string worker_id = 1;
   string agent_id = 2;
   string container_id = 3;
   string project_key = 4;

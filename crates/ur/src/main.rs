@@ -50,10 +50,10 @@ enum Commands {
     },
     /// Launch the TUI dashboard
     Tui,
-    /// Manage processes
-    Process {
+    /// Manage workers
+    Worker {
         #[command(subcommand)]
-        command: ProcessCommands,
+        command: WorkerCommands,
     },
     /// Manage tickets
     Ticket {
@@ -177,7 +177,7 @@ enum DbCommands {
 }
 
 #[derive(Subcommand)]
-enum ProcessCommands {
+enum WorkerCommands {
     /// Launch a new agent process
     Launch {
         ticket_id: String,
@@ -206,26 +206,30 @@ enum ProcessCommands {
     /// List all running processes
     List,
     /// Show process status
-    Status { process_id: Option<String> },
+    Status { worker_id: Option<String> },
     /// Attach to a running process
     Attach {
-        process_id: String,
+        worker_id: String,
         /// Stop the process when the attach session exits
         #[arg(long)]
         rm: bool,
     },
     /// Stop a running agent process
-    Stop { process_id: String },
+    Stop { worker_id: String },
     /// Force-stop a running agent process (via server)
-    Kill { process_id: String },
+    Kill { worker_id: String },
     /// Save credentials from a running container for reuse
-    SaveCredentials { process_id: String },
+    SaveCredentials { worker_id: String },
+    /// Print the host directory assigned to a running process
+    Dir { worker_id: String },
+    /// Open the host directory for a running process in VS Code
+    Vscode { worker_id: String },
 }
 
 #[derive(Subcommand)]
 enum AgentCommands {
     /// Print the host workspace directory for a running agent
-    Dir { process_id: String },
+    Dir { worker_id: String },
 }
 
 #[instrument]
@@ -358,9 +362,9 @@ fn kill_all_containers(agent_prefix: &str) -> Result<()> {
 }
 
 #[instrument]
-fn process_attach(process_id: &str, agent_prefix: &str) -> Result<i32> {
+fn process_attach(worker_id: &str, agent_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
-    let id = ContainerId(format!("{agent_prefix}{process_id}"));
+    let id = ContainerId(format!("{agent_prefix}{worker_id}"));
     info!(container = %id.0, "attaching to process");
     // Create an independent tmux session instead of attaching to "agent".
     // `tmux attach -t agent` kills the session if the user exits the shell,
@@ -381,31 +385,31 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<i32> {
 #[instrument(skip(client))]
 async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
     info!("listing processes");
-    let resp = client.process_list(ProcessListRequest {}).await?;
-    let processes = resp.into_inner().processes;
-    if processes.is_empty() {
-        println!("No running processes.");
+    let resp = client.worker_list(WorkerListRequest {}).await?;
+    let workers = resp.into_inner().workers;
+    if workers.is_empty() {
+        println!("No running workers.");
         return Ok(());
     }
     // Print header
     println!(
         "{:<20} {:<12} {:<16} {:<8}",
-        "PROCESS", "PROJECT", "CONTAINER", "MODE"
+        "WORKER", "PROJECT", "CONTAINER", "MODE"
     );
-    for p in &processes {
-        let container_short = if p.container_id.len() > 12 {
-            &p.container_id[..12]
+    for w in &workers {
+        let container_short = if w.container_id.len() > 12 {
+            &w.container_id[..12]
         } else {
-            &p.container_id
+            &w.container_id
         };
-        let project = if p.project_key.is_empty() {
+        let project = if w.project_key.is_empty() {
             "-"
         } else {
-            &p.project_key
+            &w.project_key
         };
         println!(
             "{:<20} {:<12} {:<16} {:<8}",
-            p.process_id, project, container_short, p.mode
+            w.worker_id, project, container_short, w.mode
         );
     }
     Ok(())
@@ -443,8 +447,8 @@ async fn process_launch(
     let container_name = format!("{agent_prefix}{ticket_id}");
     println!("Launching agent {container_name}...");
     let resp = client
-        .process_launch(ProcessLaunchRequest {
-            process_id: ticket_id.into(),
+        .worker_launch(WorkerLaunchRequest {
+            worker_id: ticket_id.into(),
             image_id: image_id.into(),
             cpus: 2,
             memory: "8G".into(),
@@ -466,48 +470,48 @@ async fn process_launch(
 }
 
 #[instrument(skip(client))]
-async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str) -> Result<()> {
-    info!(process_id, "stopping agent process");
-    println!("Stopping {process_id}...");
+async fn process_stop(client: &mut CoreServiceClient<Channel>, worker_id: &str) -> Result<()> {
+    info!(worker_id, "stopping agent process");
+    println!("Stopping {worker_id}...");
     client
-        .process_stop(ProcessStopRequest {
-            process_id: process_id.into(),
+        .worker_stop(WorkerStopRequest {
+            worker_id: worker_id.into(),
         })
         .await?;
-    info!(process_id, "agent process stopped");
-    println!("Agent {process_id} stopped.");
+    info!(worker_id, "agent process stopped");
+    println!("Agent {worker_id} stopped.");
     Ok(())
 }
 
 #[instrument(skip(command, project_keys), fields(command_name = command_name(&command)))]
-async fn handle_process(
-    command: ProcessCommands,
+async fn handle_worker(
+    command: WorkerCommands,
     port: u16,
     agent_prefix: &str,
     project_keys: &[String],
 ) -> Result<()> {
     match command {
-        ProcessCommands::List => {
+        WorkerCommands::List => {
             let mut client = connect(port).await?;
             process_list(&mut client).await
         }
-        ProcessCommands::Attach { process_id, rm } => {
-            let exit_code = process_attach(&process_id, agent_prefix)?;
+        WorkerCommands::Attach { worker_id, rm } => {
+            let exit_code = process_attach(&worker_id, agent_prefix)?;
             if rm {
-                println!("Stopping {process_id} (--rm)...");
+                println!("Stopping {worker_id} (--rm)...");
                 let mut client = connect(port).await?;
-                process_stop(&mut client, &process_id).await?;
+                process_stop(&mut client, &worker_id).await?;
             }
             process::exit(exit_code);
         }
-        ProcessCommands::Kill { process_id } => {
+        WorkerCommands::Kill { worker_id } => {
             let mut client = connect(port).await?;
-            process_stop(&mut client, &process_id).await
+            process_stop(&mut client, &worker_id).await
         }
-        ProcessCommands::SaveCredentials { process_id } => {
-            info!(process_id = %process_id, "saving credentials from container");
+        WorkerCommands::SaveCredentials { worker_id } => {
+            info!(worker_id = %worker_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
-            let id = container::ContainerId(format!("{agent_prefix}{process_id}"));
+            let id = container::ContainerId(format!("{agent_prefix}{worker_id}"));
             let cred_mgr = credential::CredentialManager;
             let paths = cred_mgr.save_from_container(&runtime, &id)?;
             for path in &paths {
@@ -516,7 +520,7 @@ async fn handle_process(
             }
             Ok(())
         }
-        ProcessCommands::Launch {
+        WorkerCommands::Launch {
             ticket_id,
             workspace,
             project,
@@ -600,28 +604,61 @@ async fn handle_process(
             }
             Ok(())
         }
-        ProcessCommands::Status { process_id } => {
-            debug!(process_id = ?process_id, "querying process status");
-            println!("Status: {process_id:?}");
+        WorkerCommands::Status { worker_id } => {
+            debug!(worker_id = ?worker_id, "querying process status");
+            println!("Status: {worker_id:?}");
             Ok(())
         }
-        ProcessCommands::Stop { process_id } => {
+        WorkerCommands::Stop { worker_id } => {
             let mut client = connect(port).await?;
-            process_stop(&mut client, &process_id).await
+            process_stop(&mut client, &worker_id).await
+        }
+        WorkerCommands::Dir { worker_id } => {
+            let dir = process_workspace_dir(port, &worker_id).await?;
+            println!("{dir}");
+            Ok(())
+        }
+        WorkerCommands::Vscode { worker_id } => {
+            let dir = process_workspace_dir(port, &worker_id).await?;
+            let status = process::Command::new("code")
+                .arg(&dir)
+                .status()
+                .context("failed to launch VS Code — is `code` on your PATH?")?;
+            if !status.success() {
+                bail!("VS Code exited with {status}");
+            }
+            Ok(())
         }
     }
 }
 
+/// Fetch the host workspace directory for a running process via gRPC.
+async fn process_workspace_dir(port: u16, worker_id: &str) -> Result<String> {
+    let mut client = connect(port).await?;
+    let resp = client
+        .worker_info(WorkerInfoRequest {
+            worker_id: worker_id.to_owned(),
+        })
+        .await?;
+    let workspace_dir = resp.into_inner().workspace_dir;
+    if workspace_dir.is_empty() {
+        bail!("no workspace directory for process {worker_id}");
+    }
+    Ok(workspace_dir)
+}
+
 /// Extract the subcommand name for span fields.
-fn command_name(cmd: &ProcessCommands) -> &'static str {
+fn command_name(cmd: &WorkerCommands) -> &'static str {
     match cmd {
-        ProcessCommands::Attach { .. } => "attach",
-        ProcessCommands::Kill { .. } => "kill",
-        ProcessCommands::List => "list",
-        ProcessCommands::SaveCredentials { .. } => "save_credentials",
-        ProcessCommands::Launch { .. } => "launch",
-        ProcessCommands::Status { .. } => "status",
-        ProcessCommands::Stop { .. } => "stop",
+        WorkerCommands::Attach { .. } => "attach",
+        WorkerCommands::Kill { .. } => "kill",
+        WorkerCommands::List => "list",
+        WorkerCommands::SaveCredentials { .. } => "save_credentials",
+        WorkerCommands::Launch { .. } => "launch",
+        WorkerCommands::Status { .. } => "status",
+        WorkerCommands::Stop { .. } => "stop",
+        WorkerCommands::Dir { .. } => "dir",
+        WorkerCommands::Vscode { .. } => "vscode",
     }
 }
 
@@ -667,9 +704,9 @@ async fn main() -> Result<()> {
             info!("launching TUI");
             println!("Launching TUI...");
         }
-        Commands::Process { command } => {
+        Commands::Worker { command } => {
             let project_keys: Vec<String> = config.projects.keys().cloned().collect();
-            handle_process(command, port, &config.network.agent_prefix, &project_keys).await?
+            handle_worker(command, port, &config.network.agent_prefix, &project_keys).await?
         }
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
@@ -723,16 +760,16 @@ async fn main() -> Result<()> {
         },
         Commands::Ticket { command } => ticket::handle(port, command).await?,
         Commands::Agent { command } => match command {
-            AgentCommands::Dir { process_id } => {
+            AgentCommands::Dir { worker_id } => {
                 let mut client = connect(port).await?;
                 let resp = client
-                    .process_info(ProcessInfoRequest {
-                        process_id: process_id.clone(),
+                    .worker_info(WorkerInfoRequest {
+                        worker_id: worker_id.clone(),
                     })
                     .await?;
                 let workspace_dir = resp.into_inner().workspace_dir;
                 if workspace_dir.is_empty() {
-                    bail!("no workspace directory for agent {process_id}");
+                    bail!("no workspace directory for agent {worker_id}");
                 }
                 println!("{workspace_dir}");
             }

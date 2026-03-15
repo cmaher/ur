@@ -16,7 +16,7 @@ ur CLI: CredentialManager.ensure_credentials()        [crates/ur/src/credential.
     │
     ▼
 ur CLI: process_launch()                              [crates/ur/src/main.rs]
-    │   sends ProcessLaunchRequest via gRPC
+    │   sends WorkerLaunchRequest via gRPC
     │
     ▼  gRPC (TCP → 127.0.0.1:42069 → ur-server container)
     │
@@ -39,18 +39,18 @@ Container: Claude Code reads ~/.claude/.credentials.json
 ## Process Launch Sequence
 
 ```
-ur process launch <ticket-id> [-w <workspace>] [-a] [-f]
+ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 
 1. CLI (host)
    ├── -f flag? → kill_container() (docker stop + rm)
    ├── CredentialManager.ensure_credentials()
    │   └── seed from Keychain if ~/.ur/claude/.credentials.json missing
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
-   └── client.process_launch(ProcessLaunchRequest { ... })
+   └── client.worker_launch(WorkerLaunchRequest { ... })
 
 2. Server (ur-server container)
    ├── Phase 1: ProcessManager.prepare()
-   │   ├── Check for duplicate process_id
+   │   ├── Check for duplicate worker_id
    │   ├── workspace_dir provided? → register_absolute (no git init)
    │   └── no workspace? → create dir, git init, register
    │
@@ -120,5 +120,5 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 
 ## Manual Credential Management
 
-- `ur process save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
+- `ur worker save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
 - Delete `~/.ur/claude/.credentials.json` to force re-seeding from Keychain on next launch.
