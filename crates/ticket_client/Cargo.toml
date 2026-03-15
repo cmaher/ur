@@ -1,0 +1,13 @@
+[package]
+name = "ticket_client"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { workspace = true }
+tonic = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["ticket"] }
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }

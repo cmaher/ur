@@ -5,6 +5,7 @@ members = [
     "crates/container",
     "crates/hostd",
     "crates/rag",
+    "crates/ticket_client",
     "crates/ur",
     "crates/ur_config",
     "crates/ur_db",
