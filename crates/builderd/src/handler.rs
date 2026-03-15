@@ -23,11 +23,11 @@ pub struct BuilderDaemonHandler {
 
 impl BuilderDaemonHandler {
     fn resolve_working_dir(&self, working_dir: &str) -> String {
-        if working_dir.starts_with(WORKSPACE_TEMPLATE) {
-            if let Some(workspace) = &self.workspace {
-                let workspace_str = workspace.to_string_lossy();
-                return working_dir.replacen(WORKSPACE_TEMPLATE, &workspace_str, 1);
-            }
+        if working_dir.starts_with(WORKSPACE_TEMPLATE)
+            && let Some(workspace) = &self.workspace
+        {
+            let workspace_str = workspace.to_string_lossy();
+            return working_dir.replacen(WORKSPACE_TEMPLATE, &workspace_str, 1);
         }
         working_dir.to_string()
     }
