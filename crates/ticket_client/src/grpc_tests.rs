@@ -450,6 +450,7 @@ async fn execute_update_nonexistent_returns_error() {
             priority: None,
             ticket_type: None,
             parent: None,
+            force: false,
         },
         &mut client,
     )
@@ -754,6 +755,7 @@ async fn execute_update_existing_ticket() {
             priority: Some(5),
             ticket_type: None,
             parent: None,
+            force: false,
         },
         &mut client,
     )
