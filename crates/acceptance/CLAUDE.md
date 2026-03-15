@@ -4,7 +4,7 @@ End-to-end acceptance tests that exercise the full stack: server, container life
 
 - Gated behind the `acceptance` cargo feature: `cargo test -p acceptance --features acceptance`
 - Excluded from workspace default-members so `cargo test` does not run them
-- Tests require a container runtime (Apple `container` or Docker) — they will not pass in bare CI
+- Tests require Docker — they will not pass in bare CI
 - Tests use pre-built binaries from `target/` (ur-server, ur) and worker commands (ur-ping, git) baked into the container image
 - Each test creates a temp UR_CONFIG dir and starts its own server instance to avoid conflicts
 
