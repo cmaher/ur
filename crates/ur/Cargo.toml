@@ -18,6 +18,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
+ticket_client = { path = "../ticket_client" }
 ur_config = { path = "../ur_config" }
 ur_db = { path = "../ur_db" }
 ur_rpc = { path = "../ur_rpc", features = ["core", "rag", "ticket"] }
