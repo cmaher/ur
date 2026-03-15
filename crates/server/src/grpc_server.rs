@@ -5,8 +5,8 @@ use tonic::transport::Server;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-use crate::grpc::CoreServiceHandler;
 use crate::ProcessManager;
+use crate::grpc::CoreServiceHandler;
 
 /// Start the host gRPC server on a TCP socket.
 ///

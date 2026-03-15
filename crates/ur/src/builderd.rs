@@ -68,8 +68,12 @@ pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
             "--workspace",
             &config.workspace.display().to_string(),
         ])
-        .stdout(std::fs::File::create(config.config_dir.join("builderd.log"))?)
-        .stderr(std::fs::File::create(config.config_dir.join("builderd.err"))?)
+        .stdout(std::fs::File::create(
+            config.config_dir.join("builderd.log"),
+        )?)
+        .stderr(std::fs::File::create(
+            config.config_dir.join("builderd.err"),
+        )?)
         // Put builderd in its own process group so signals sent to the ur CLI
         // (e.g. Ctrl-C) don't propagate to the daemon.
         .process_group(0)

@@ -7,9 +7,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
-use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonService;
+use ur_rpc::proto::core::CommandOutput;
 
 const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
 

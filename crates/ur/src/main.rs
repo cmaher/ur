@@ -1,7 +1,7 @@
+mod builderd;
 mod compose;
 mod credential;
 mod db;
-mod builderd;
 mod init;
 mod lifecycle_log;
 mod logging;

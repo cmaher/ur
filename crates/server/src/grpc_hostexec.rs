@@ -6,16 +6,16 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
-use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
+use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
     HostExecRequest, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
 };
 
-use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
 use crate::ProcessManager;
+use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -243,8 +243,7 @@ mod tests {
 
     #[test]
     fn test_map_working_dir_subdir() {
-        let result =
-            HostExecServiceHandler::map_working_dir("/workspace/src/main").unwrap();
+        let result = HostExecServiceHandler::map_working_dir("/workspace/src/main").unwrap();
         assert_eq!(result, "%WORKSPACE%/src/main");
     }
 

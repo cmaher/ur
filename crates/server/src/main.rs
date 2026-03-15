@@ -107,8 +107,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
 
     let builderd_client = BuilderdClient::new(builderd_addr.clone());
-    let repo_pool_manager =
-        RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, builderd_client);
+    let repo_pool_manager = RepoPoolManager::new(
+        &cfg,
+        local_workspace.clone(),
+        host_workspace,
+        builderd_client,
+    );
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,

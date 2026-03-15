@@ -198,12 +198,7 @@ fn write_header(out: &mut String) {
 fn write_squid_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-squid:").unwrap();
     writeln!(out, "    image: ur-squid:latest").unwrap();
-    writeln!(
-        out,
-        "    container_name: {}",
-        params.squid_container_name
-    )
-    .unwrap();
+    writeln!(out, "    container_name: {}", params.squid_container_name).unwrap();
     writeln!(out, "    volumes:").unwrap();
     writeln!(
         out,
@@ -219,12 +214,7 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
 fn write_qdrant_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-qdrant:").unwrap();
     writeln!(out, "    image: qdrant/qdrant").unwrap();
-    writeln!(
-        out,
-        "    container_name: {}",
-        params.qdrant_container_name
-    )
-    .unwrap();
+    writeln!(out, "    container_name: {}", params.qdrant_container_name).unwrap();
     writeln!(out, "    volumes:").unwrap();
     writeln!(
         out,
@@ -239,41 +229,20 @@ fn write_qdrant_service(out: &mut String, params: &ComposeParams) {
 fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-server:").unwrap();
     writeln!(out, "    image: ur-server:latest").unwrap();
-    writeln!(
-        out,
-        "    container_name: {}",
-        params.server_container_name
-    )
-    .unwrap();
+    writeln!(out, "    container_name: {}", params.server_container_name).unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
     // Volumes
     writeln!(out, "    volumes:").unwrap();
-    writeln!(
-        out,
-        "      - /var/run/docker.sock:/var/run/docker.sock"
-    )
-    .unwrap();
+    writeln!(out, "      - /var/run/docker.sock:/var/run/docker.sock").unwrap();
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
-    writeln!(
-        out,
-        "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "      - ${{UR_CONFIG:-~/.ur}}/fastembed:/fastembed:ro"
-    )
-    .unwrap();
+    writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
+    writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}/fastembed:/fastembed:ro").unwrap();
 
     // Environment
     writeln!(out, "    environment:").unwrap();
     writeln!(out, "      - UR_CONFIG=/config").unwrap();
-    writeln!(
-        out,
-        "      - UR_HOST_CONFIG=${{UR_CONFIG:-~/.ur}}"
-    )
-    .unwrap();
+    writeln!(out, "      - UR_HOST_CONFIG=${{UR_CONFIG:-~/.ur}}").unwrap();
     writeln!(
         out,
         "      - UR_HOST_WORKSPACE=${{UR_WORKSPACE:-~/.ur/workspace}}"
