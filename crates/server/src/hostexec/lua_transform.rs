@@ -821,6 +821,513 @@ mod tests {
         assert_eq!(result.env.get("GIT_EDITOR").unwrap(), "true");
     }
 
+    // --- docker.lua tests ---
+
+    #[test]
+    fn test_docker_allows_ps() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["ps".into(), "-a".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_images() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["images".into(), "--format".into(), "json".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_inspect() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["inspect".into(), "my-container".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_logs() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["logs".into(), "--tail".into(), "100".into(), "my-ctr".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_version() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["version".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_info() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["info".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_container_ls() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "ls".into(), "-a".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_container_inspect() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "inspect".into(), "my-ctr".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_container_logs() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "logs".into(), "my-ctr".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_image_ls() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["image".into(), "ls".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_network_inspect() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["network".into(), "inspect".into(), "bridge".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_volume_ls() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["volume".into(), "ls".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_compose_ps() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["compose".into(), "ps".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_compose_logs() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["compose".into(), "logs".into(), "-f".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_system_df() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["system".into(), "df".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_stats() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["stats".into(), "--no-stream".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_blocks_run() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["run".into(), "--rm".into(), "alpine".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: run")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_exec() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["exec".into(), "my-ctr".into(), "bash".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: exec")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_rm() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["rm".into(), "my-ctr".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: rm")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_rmi() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["rmi".into(), "alpine:latest".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: rmi")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_build() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["build".into(), ".".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: build")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_stop() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["stop".into(), "my-ctr".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: stop")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_kill() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["kill".into(), "my-ctr".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: kill")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_pull() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["pull".into(), "alpine:latest".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: pull")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_push() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["push".into(), "myimage:latest".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: push")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_container_rm() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "rm".into(), "my-ctr".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: container rm")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_container_exec() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "exec".into(), "my-ctr".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: container exec")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_container_run() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["container".into(), "run".into(), "alpine".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: container run")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_compose_up() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["compose".into(), "up".into(), "-d".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: compose up")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_compose_down() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["compose".into(), "down".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: compose down")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_network_create() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["network".into(), "create".into(), "my-net".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: network create")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_volume_rm() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["volume".into(), "rm".into(), "my-vol".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: volume rm")
+        );
+    }
+
+    #[test]
+    fn test_docker_blocks_image_rm() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["image".into(), "rm".into(), "alpine".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: image rm")
+        );
+    }
+
+    #[test]
+    fn test_docker_allows_flags_before_command() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec![
+            "-H".into(),
+            "unix:///var/run/docker.sock".into(),
+            "ps".into(),
+            "-a".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_blocks_run_with_flags_before() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec![
+            "-H".into(),
+            "unix:///var/run/docker.sock".into(),
+            "run".into(),
+            "alpine".into(),
+        ];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: run")
+        );
+    }
+
+    #[test]
+    fn test_docker_allows_bare_invocation() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec![];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_allows_bare_management_command() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        // `docker container` with no subcommand prints help
+        let args: Vec<String> = vec!["container".into()];
+        let result = mgr
+            .run_transform(script, "docker", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_docker_blocks_system_prune() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/docker.lua");
+        let args: Vec<String> = vec!["system".into(), "prune".into(), "-a".into()];
+        let result = mgr.run_transform(script, "docker", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked docker command: system prune")
+        );
+    }
+
     #[test]
     fn test_cargo_allows_flags_before_subcommand() {
         let mgr = LuaTransformManager::new();
