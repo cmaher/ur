@@ -124,7 +124,7 @@ pub const WORKSPACE_MOUNT: &str = "/workspace";
 /// Environment variable: host-side workspace directory path.
 ///
 /// Like `UR_HOST_CONFIG`, the server container needs the original host path when
-/// constructing paths for ur-hostd (which runs on the host).
+/// constructing paths for builderd (which runs on the host).
 pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
 
 // ---- Defaults ----
@@ -132,13 +132,13 @@ pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
 /// Default TCP port for the server (ur→server communication).
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
-/// Default TCP port for the host execution daemon (hostd).
+/// Default TCP port for the builder daemon (builderd).
 pub const DEFAULT_HOSTD_PORT: u16 = 42070;
 
 /// PID file for the builderd process, stored in the config directory.
 pub const BUILDERD_PID_FILE: &str = "builderd.pid";
 
-/// Environment variable: `host:port` address for worker→hostd gRPC connections.
+/// Environment variable: `host:port` address for worker→builderd gRPC connections.
 pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";
 
 /// Subdirectory under `config_dir` for host execution configuration.

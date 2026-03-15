@@ -365,9 +365,9 @@ fn e2e_ping_and_git() {
             "ur-ping should return 'pong', got: {ping_stdout}"
         );
 
-        // ---- (5) Test hostexec: git commands via worker → server → hostd → host ----
+        // ---- (5) Test hostexec: git commands via worker → server → builderd → host ----
         // The git shim calls workertools host-exec git, which goes through the full
-        // hostexec pipeline. This verifies ur-hostd is running and reachable.
+        // hostexec pipeline. This verifies builderd is running and reachable.
         let git_output = Command::new(&runtime)
             .args(["exec", &container_name, "git", "status"])
             .output()
@@ -376,7 +376,7 @@ fn e2e_ping_and_git() {
         assert_eq!(
             git_output.status.code(),
             Some(0),
-            "git status should exit 0 (hostexec pipeline: worker → server → hostd → host).\n\
+            "git status should exit 0 (hostexec pipeline: worker → server → builderd → host).\n\
              stdout: {}\nstderr: {}",
             String::from_utf8_lossy(&git_output.stdout),
             String::from_utf8_lossy(&git_output.stderr),
@@ -487,8 +487,8 @@ fn e2e_ping_and_git() {
 /// Exercises the full workflow:
 ///   1. Create a bare git repo as clone source
 ///   2. Configure it as a project in ur.toml
-///   3. `ur start` starts the server + hostd
-///   4. `ur process launch <ticket> -p <project>` acquires a pool slot via hostd git clone
+///   3. `ur start` starts the server + builderd
+///   4. `ur process launch <ticket> -p <project>` acquires a pool slot via builderd git clone
 ///   5. Verify the cloned workspace has the expected content
 ///   6. Verify git commands work inside the container (hostexec pipeline)
 ///   7. `ur process stop` releases the pool slot
@@ -638,7 +638,7 @@ fn e2e_project_pool_launch() {
 ///
 /// Exercises:
 ///   1. Create a bare git repo as clone source, configure as project
-///   2. `ur start` starts the server + hostd
+///   2. `ur start` starts the server + builderd
 ///   3. `ur process launch -p <project> -m design <ticket>` acquires a shared design slot
 ///   4. Verify the `design/` slot directory is created under the pool path
 ///   5. Worker launches successfully

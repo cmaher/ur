@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // When running in a container, the workspace is mounted at /workspace.
-    // Use UR_HOST_WORKSPACE for host-side paths (ur-hostd CWD mapping),
+    // Use UR_HOST_WORKSPACE for host-side paths (builderd CWD mapping),
     // and the mount point for local filesystem operations (mkdir, git init).
     let host_workspace = std::env::var(ur_config::UR_HOST_WORKSPACE_ENV)
         .map(PathBuf::from)
