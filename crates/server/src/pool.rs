@@ -295,6 +295,26 @@ impl RepoPoolManager {
         }
     }
 
+    /// Convert a host-side path to a `%WORKSPACE%` template path for builderd CWD.
+    ///
+    /// Replaces the host_workspace prefix with `%WORKSPACE%` so builderd can resolve
+    /// it to its own local workspace path at exec time. Falls back to the input path
+    /// stringified if no prefix match (e.g., in tests where both are the same).
+    fn to_builderd_path(&self, host_path: &Path) -> String {
+        let host_prefix = self.host_workspace.to_string_lossy();
+        let path_str = host_path.to_string_lossy();
+        if let Some(suffix) = path_str.strip_prefix(host_prefix.as_ref()) {
+            let suffix = suffix.trim_start_matches('/');
+            if suffix.is_empty() {
+                "%WORKSPACE%".to_string()
+            } else {
+                format!("%WORKSPACE%/{suffix}")
+            }
+        } else {
+            path_str.to_string()
+        }
+    }
+
     /// Clone a repo into a new slot directory via builderd.
     ///
     /// Creates the parent directory locally (container-side, bind-mounted),
@@ -314,13 +334,14 @@ impl RepoPoolManager {
             .map_err(|e| format!("failed to create pool directory: {e}"))?;
 
         let host_slot = self.host_slot_path(project_key, slot_name);
-        let host_parent = self.host_project_pool_dir(project_key);
+        let builderd_slot = self.to_builderd_path(&host_slot);
+        let builderd_parent = self.to_builderd_path(&self.host_project_pool_dir(project_key));
 
         self.builderd_client
             .exec_and_check(
                 "git",
-                &["clone", repo_url, &host_slot.to_string_lossy()],
-                &host_parent.to_string_lossy(),
+                &["clone", repo_url, &builderd_slot],
+                &builderd_parent,
             )
             .await
             .map_err(|e| format!("git clone failed for {repo_url}: {e}"))?;
@@ -344,16 +365,15 @@ impl RepoPoolManager {
         slot_name: &str,
     ) -> Result<(), String> {
         let host_slot = self.host_slot_path(project_key, slot_name);
-        let host_parent = self.host_project_pool_dir(project_key);
+        let builderd_slot = self.to_builderd_path(&host_slot);
+        let builderd_parent = self.to_builderd_path(&self.host_project_pool_dir(project_key));
 
         // Remove the corrupted slot directory on the host.
         // Retries because macOS `rm -rf` can transiently fail with "Directory not
         // empty" when Spotlight or other background processes touch files during removal.
-        let host_slot_str = host_slot.to_string_lossy().to_string();
-        let host_parent_str = host_parent.to_string_lossy().to_string();
         ur_utils::retry(3, Duration::from_secs(1), "rm -rf slot", || {
-            let slot = &host_slot_str;
-            let parent = &host_parent_str;
+            let slot = &builderd_slot;
+            let parent = &builderd_parent;
             async move {
                 self.builderd_client
                     .exec_and_check("rm", &["-rf", slot], parent)
@@ -386,7 +406,7 @@ impl RepoPoolManager {
             &["clean", "-fdx"],
         ];
 
-        let cwd = host_slot_path.to_string_lossy();
+        let cwd = self.to_builderd_path(host_slot_path);
         for args in commands {
             self.builderd_client
                 .exec_and_check("git", args, &cwd)
@@ -418,7 +438,7 @@ impl RepoPoolManager {
         }
 
         info!(path = %host_slot_path.display(), "initializing git submodules");
-        let cwd = host_slot_path.to_string_lossy();
+        let cwd = self.to_builderd_path(host_slot_path);
         self.builderd_client
             .exec_and_check(
                 "git",
@@ -447,7 +467,7 @@ impl RepoPoolManager {
         }
 
         info!(path = %host_slot_path.display(), "trusting mise.toml in cloned slot");
-        let cwd = host_slot_path.to_string_lossy();
+        let cwd = self.to_builderd_path(host_slot_path);
         if let Err(e) = self
             .builderd_client
             .exec_and_check("mise", &["trust"], &cwd)
@@ -647,7 +667,7 @@ mod tests {
             PathBuf::from("/workspace/pool/proj")
         );
 
-        // Host paths for Docker mounts and builderd
+        // Host paths for Docker mounts
         assert_eq!(
             mgr.host_pool_root(),
             PathBuf::from("/home/user/.ur/workspace/pool")
@@ -656,6 +676,35 @@ mod tests {
             mgr.host_slot_path("proj", "0"),
             PathBuf::from("/home/user/.ur/workspace/pool/proj/0")
         );
+
+        // Builderd template paths for CWD in exec requests
+        assert_eq!(
+            mgr.to_builderd_path(&mgr.host_slot_path("proj", "0")),
+            "%WORKSPACE%/pool/proj/0"
+        );
+        assert_eq!(
+            mgr.to_builderd_path(&mgr.host_project_pool_dir("proj")),
+            "%WORKSPACE%/pool/proj"
+        );
+        assert_eq!(
+            mgr.to_builderd_path(&mgr.host_workspace.clone()),
+            "%WORKSPACE%"
+        );
+    }
+
+    #[test]
+    fn to_builderd_path_with_same_workspace() {
+        // When local and host workspace are the same (e.g., in tests or non-container mode),
+        // to_builderd_path still produces %WORKSPACE% templates.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10);
+
+        let slot_path = workspace.join("pool").join("myproj").join("0");
+        let builderd_path = mgr.to_builderd_path(&slot_path);
+        assert_eq!(builderd_path, "%WORKSPACE%/pool/myproj/0");
+
+        let workspace_root = mgr.to_builderd_path(&workspace);
+        assert_eq!(workspace_root, "%WORKSPACE%");
     }
 
     #[tokio::test]
