@@ -16,7 +16,7 @@ ur CLI: CredentialManager.ensure_credentials()        [crates/ur/src/credential.
     │
     ▼
 ur CLI: process_launch()                              [crates/ur/src/main.rs]
-    │   sends ProcessLaunchRequest via gRPC
+    │   sends WorkerLaunchRequest via gRPC
     │
     ▼  gRPC (TCP → 127.0.0.1:42069 → ur-server container)
     │
@@ -46,7 +46,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    ├── CredentialManager.ensure_credentials()
    │   └── seed from Keychain if ~/.ur/claude/.credentials.json missing
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
-   └── client.process_launch(ProcessLaunchRequest { ... })
+   └── client.worker_launch(WorkerLaunchRequest { ... })
 
 2. Server (ur-server container)
    ├── Phase 1: ProcessManager.prepare()

@@ -26,7 +26,7 @@ All skills land in `~/.claude/potential-skills/`. The `~/.claude/skills/` direct
 When a process launches, the server resolves which skills to activate.
 
 ```
-ProcessLaunchRequest { mode, skills }
+WorkerLaunchRequest { mode, skills }
     │
     ▼
 ProcessManager::resolve_skills()                [crates/server/src/process.rs]

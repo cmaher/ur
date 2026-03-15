@@ -385,31 +385,31 @@ fn process_attach(worker_id: &str, agent_prefix: &str) -> Result<i32> {
 #[instrument(skip(client))]
 async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
     info!("listing processes");
-    let resp = client.process_list(ProcessListRequest {}).await?;
-    let processes = resp.into_inner().processes;
-    if processes.is_empty() {
-        println!("No running processes.");
+    let resp = client.worker_list(WorkerListRequest {}).await?;
+    let workers = resp.into_inner().workers;
+    if workers.is_empty() {
+        println!("No running workers.");
         return Ok(());
     }
     // Print header
     println!(
         "{:<20} {:<12} {:<16} {:<8}",
-        "PROCESS", "PROJECT", "CONTAINER", "MODE"
+        "WORKER", "PROJECT", "CONTAINER", "MODE"
     );
-    for p in &processes {
-        let container_short = if p.container_id.len() > 12 {
-            &p.container_id[..12]
+    for w in &workers {
+        let container_short = if w.container_id.len() > 12 {
+            &w.container_id[..12]
         } else {
-            &p.container_id
+            &w.container_id
         };
-        let project = if p.project_key.is_empty() {
+        let project = if w.project_key.is_empty() {
             "-"
         } else {
-            &p.project_key
+            &w.project_key
         };
         println!(
             "{:<20} {:<12} {:<16} {:<8}",
-            p.process_id, project, container_short, p.mode
+            w.worker_id, project, container_short, w.mode
         );
     }
     Ok(())
@@ -447,8 +447,8 @@ async fn process_launch(
     let container_name = format!("{agent_prefix}{ticket_id}");
     println!("Launching agent {container_name}...");
     let resp = client
-        .process_launch(ProcessLaunchRequest {
-            process_id: ticket_id.into(),
+        .worker_launch(WorkerLaunchRequest {
+            worker_id: ticket_id.into(),
             image_id: image_id.into(),
             cpus: 2,
             memory: "8G".into(),
@@ -474,8 +474,8 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, worker_id: &str) 
     info!(worker_id, "stopping agent process");
     println!("Stopping {worker_id}...");
     client
-        .process_stop(ProcessStopRequest {
-            process_id: worker_id.into(),
+        .worker_stop(WorkerStopRequest {
+            worker_id: worker_id.into(),
         })
         .await?;
     info!(worker_id, "agent process stopped");
@@ -636,8 +636,8 @@ async fn handle_worker(
 async fn process_workspace_dir(port: u16, worker_id: &str) -> Result<String> {
     let mut client = connect(port).await?;
     let resp = client
-        .process_info(ProcessInfoRequest {
-            process_id: worker_id.to_owned(),
+        .worker_info(WorkerInfoRequest {
+            worker_id: worker_id.to_owned(),
         })
         .await?;
     let workspace_dir = resp.into_inner().workspace_dir;
@@ -763,8 +763,8 @@ async fn main() -> Result<()> {
             AgentCommands::Dir { worker_id } => {
                 let mut client = connect(port).await?;
                 let resp = client
-                    .process_info(ProcessInfoRequest {
-                        process_id: worker_id.clone(),
+                    .worker_info(WorkerInfoRequest {
+                        worker_id: worker_id.clone(),
                     })
                     .await?;
                 let workspace_dir = resp.into_inner().workspace_dir;

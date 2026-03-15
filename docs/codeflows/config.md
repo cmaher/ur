@@ -91,7 +91,7 @@ ur.toml
     → Config { projects: HashMap<String, ProjectConfig>, ... }
 
 CLI launch request
-  → grpc.rs: CoreServiceHandler::process_launch()
+  → grpc.rs: CoreServiceHandler::worker_launch()
     → reads ProjectConfig fields (git_hooks_dir, mounts, hostexec, etc.)
     → builds ProcessConfig struct (crates/server/src/process.rs)
 

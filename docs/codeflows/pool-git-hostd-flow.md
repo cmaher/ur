@@ -10,7 +10,7 @@ are routed through ur-hostd, which runs on the host with full credential access.
 
 ### Acquire Slot (new clone)
 
-1. CLI sends `ProcessLaunch` with `-p <project-key>`
+1. CLI sends `WorkerLaunch` with `-p <project-key>`
 2. ur-server `RepoPoolManager::acquire()`:
    a. Looks up project config (repo URL, pool limit)
    b. Scans existing slots via local filesystem (`read_dir` on container-side path)
