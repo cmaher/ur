@@ -287,8 +287,6 @@ struct TestEnv {
     ur: PathBuf,
     runtime: String,
     names: TestNames,
-    daemon_port: u16,
-    bare_repo: PathBuf,
     project_key: &'static str,
 }
 
@@ -375,14 +373,12 @@ fn e2e_all() {
         ur: ur.clone(),
         runtime,
         names,
-        daemon_port,
-        bare_repo,
         project_key,
     };
 
     // ---- (2) ur start (once for all scenarios) ----
     let env_pairs = env.env();
-    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let env_slice = env_pairs.to_vec();
     let up_output = run_cmd(&ur, &["start"], &env_slice);
     assert!(
         up_output.status.success(),
@@ -433,7 +429,7 @@ fn scenario_ping_and_git(env: &TestEnv) {
     let ticket_id = "ping-test";
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
-    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- Launch worker with workspace mount ----
@@ -591,7 +587,7 @@ fn scenario_project_pool_launch(env: &TestEnv) {
     let ticket_id = "pool-test";
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
-    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- Launch pool worker ----
@@ -692,7 +688,7 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
     let container_name_2 = env.container_name(ticket_id_2);
     let code_container_name = env.container_name(code_ticket_id);
     let env_pairs = env.env();
-    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- Launch first design worker ----
@@ -873,7 +869,7 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
 /// RAG index and search.
 fn scenario_rag_search(env: &TestEnv) {
     let env_pairs = env.env();
-    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let env_slice = env_pairs.to_vec();
 
     // No worker containers in this scenario — just CLI commands against the server.
 
