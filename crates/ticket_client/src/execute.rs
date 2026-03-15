@@ -40,6 +40,8 @@ where
                     parent_id: parent,
                     title,
                     body,
+                    id: None,
+                    created_at: None,
                 })
                 .await
                 .context("failed to create ticket")?;

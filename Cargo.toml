@@ -15,6 +15,7 @@ members = [
     "crates/ur-ping",
     "crates/workerd",
     "crates/workertools",
+    "tools/tk-import",
 ]
 default-members = [
     "crates/container",

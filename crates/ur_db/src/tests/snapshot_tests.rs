@@ -60,6 +60,7 @@ async fn vacuum_into_data_survives() {
         parent_id: None,
         title: "Snapshot ticket one".into(),
         body: "Body one".into(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -71,6 +72,7 @@ async fn vacuum_into_data_survives() {
         parent_id: None,
         title: "Snapshot ticket two".into(),
         body: "Body two".into(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -126,6 +128,7 @@ async fn restore_into_new_file() {
         parent_id: None,
         title: "Restore test ticket".into(),
         body: "Restore body".into(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -227,6 +230,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: None,
         title: "Integrity epic".into(),
         body: "Epic body".into(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -238,6 +242,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: Some("int-epic".into()),
         title: "Integrity task one".into(),
         body: "Task one body".into(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -249,6 +254,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: Some("int-epic".into()),
         title: "Integrity task two".into(),
         body: "Task two body".into(),
+        ..Default::default()
     })
     .await
     .unwrap();

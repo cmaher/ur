@@ -22,6 +22,7 @@ async fn create_ticket(repo: &TicketRepo, id: &str) {
         parent_id: None,
         title: format!("Ticket {id}"),
         body: String::new(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -89,6 +90,7 @@ async fn transitive_blockers_cross_epic() {
         parent_id: None,
         title: "Epic X".into(),
         body: String::new(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -100,6 +102,7 @@ async fn transitive_blockers_cross_epic() {
         parent_id: None,
         title: "Epic Y".into(),
         body: String::new(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -111,6 +114,7 @@ async fn transitive_blockers_cross_epic() {
         parent_id: Some("epic-x".into()),
         title: "Task in X".into(),
         body: String::new(),
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -122,6 +126,7 @@ async fn transitive_blockers_cross_epic() {
         parent_id: Some("epic-y".into()),
         title: "Task in Y".into(),
         body: String::new(),
+        ..Default::default()
     })
     .await
     .unwrap();

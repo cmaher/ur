@@ -27,8 +27,11 @@ impl TicketRepo {
     }
 
     pub async fn create_ticket(&self, ticket: &NewTicket) -> Result<Ticket, sqlx::Error> {
-        let now = Utc::now().to_rfc3339();
-        let status = "open";
+        let now = ticket
+            .created_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let status = ticket.status.as_deref().unwrap_or("open");
 
         sqlx::query(
             "INSERT INTO ticket (id, type, status, priority, parent_id, title, body, created_at, updated_at)

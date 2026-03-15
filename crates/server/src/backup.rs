@@ -261,6 +261,7 @@ mod tests {
             parent_id: None,
             title: "Test Epic".to_string(),
             body: "For backup testing.".to_string(),
+            ..Default::default()
         };
         repo.create_ticket(&ticket).await.expect("insert test data");
         let sm = SnapshotManager::new(db.pool().clone());
