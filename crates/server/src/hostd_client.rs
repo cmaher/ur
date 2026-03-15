@@ -40,6 +40,7 @@ impl HostdClient {
             command: command.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
             working_dir: working_dir.to_string(),
+            env: std::collections::HashMap::new(),
         };
 
         let response = client
