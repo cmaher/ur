@@ -206,7 +206,6 @@ async fn main() -> anyhow::Result<()> {
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         process_manager,
-        repo_registry,
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,
