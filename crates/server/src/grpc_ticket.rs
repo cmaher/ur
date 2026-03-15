@@ -35,9 +35,19 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(project = %req.project, title = %req.title, "create_ticket request");
 
-        let id = format!("ur-{}", &Uuid::new_v4().to_string()[..5]);
+        let id = req
+            .id
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("ur-{}", &Uuid::new_v4().to_string()[..5]));
 
         let parent_id = req.parent_id.filter(|s| !s.is_empty());
+
+        let status = if req.status.is_empty() {
+            None
+        } else {
+            Some(req.status)
+        };
+        let created_at = req.created_at.filter(|s| !s.is_empty());
 
         let new_ticket = NewTicket {
             id: id.clone(),
@@ -46,6 +56,8 @@ impl TicketService for TicketServiceHandler {
             parent_id,
             title: req.title,
             body: req.body,
+            status,
+            created_at,
         };
 
         self.ticket_repo

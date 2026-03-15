@@ -70,6 +70,10 @@ message CreateTicketRequest {
   optional string parent_id = 5;
   string title = 6;
   string body = 7;
+  // If set, use this ID instead of generating one (for migrations/imports).
+  optional string id = 8;
+  // If set, use this timestamp instead of now (for migrations/imports).
+  optional string created_at = 9;
 }
 
 message CreateTicketResponse {

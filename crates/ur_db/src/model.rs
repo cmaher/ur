@@ -12,6 +12,7 @@ pub struct Ticket {
     pub updated_at: String,
 }
 
+#[derive(Default)]
 pub struct NewTicket {
     pub id: String,
     pub type_: String,
@@ -19,6 +20,10 @@ pub struct NewTicket {
     pub parent_id: Option<String>,
     pub title: String,
     pub body: String,
+    /// If set, use this status instead of the default "open".
+    pub status: Option<String>,
+    /// If set, use this timestamp instead of now.
+    pub created_at: Option<String>,
 }
 
 pub struct TicketUpdate {
