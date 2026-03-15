@@ -4,10 +4,10 @@ set -euo pipefail
 # Build the ur CLI and ur-hostd binaries and install them.
 # ur-server is started via `ur start`.
 # Set UR_BUILD_PROFILE=debug for debug builds (default: release).
-# Set UR_INSTALL_DIR to override the install directory (default: ~/bin).
+# Set UR_INSTALL_DIR to override the install directory (default: ~/.local/bin).
 
 PROFILE="${UR_BUILD_PROFILE:-release}"
-INSTALL_DIR="${UR_INSTALL_DIR:-$HOME/bin}"
+INSTALL_DIR="${UR_INSTALL_DIR:-$HOME/.local/bin}"
 
 if [ "$PROFILE" = "debug" ]; then
     cargo build -p ur -p ur-hostd
