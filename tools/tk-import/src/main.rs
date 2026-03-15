@@ -123,10 +123,10 @@ async fn run_migration(
             return;
         }
         visited[idx] = true;
-        if let Some(ref parent) = tickets[idx].front.parent {
-            if let Some(&pidx) = id_to_idx.get(parent.as_str()) {
-                visit(pidx, tickets, id_to_idx, visited, order);
-            }
+        if let Some(ref parent) = tickets[idx].front.parent
+            && let Some(&pidx) = id_to_idx.get(parent.as_str())
+        {
+            visit(pidx, tickets, id_to_idx, visited, order);
         }
         order.push(idx);
     }
@@ -195,7 +195,7 @@ async fn run_migration(
             .map_err(|e| format!("create_ticket {}: {e}", f.id))?;
 
         created += 1;
-        if created % 50 == 0 {
+        if created.is_multiple_of(50) {
             println!("  created {created}/{} tickets...", insert_order.len());
         }
     }
