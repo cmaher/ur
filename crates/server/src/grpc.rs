@@ -6,9 +6,9 @@ use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, WorkerInfo, ProcessInfoRequest, ProcessInfoResponse,
-    ProcessLaunchRequest, ProcessLaunchResponse, ProcessListRequest, ProcessListResponse,
-    ProcessStopRequest, ProcessStopResponse,
+    PingRequest, PingResponse, ProcessInfoRequest, ProcessInfoResponse, ProcessLaunchRequest,
+    ProcessLaunchResponse, ProcessListRequest, ProcessListResponse, ProcessStopRequest,
+    ProcessStopResponse, WorkerInfo,
 };
 
 use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
