@@ -9,6 +9,7 @@ members = [
     "crates/ur_config",
     "crates/ur_db",
     "crates/ur_rpc",
+    "crates/ur_utils",
     "crates/server",
     "crates/workercmd/*",
 ]
@@ -18,6 +19,7 @@ default-members = [
     "crates/ur",
     "crates/ur_config",
     "crates/ur_rpc",
+    "crates/ur_utils",
     "crates/server",
     "crates/workercmd/tools",
     "crates/workercmd/workerd",

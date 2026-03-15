@@ -10,4 +10,5 @@ message HostDaemonExecRequest {
   string command = 1;
   repeated string args = 2;
   string working_dir = 3;
+  map<string, string> env = 4;
 }

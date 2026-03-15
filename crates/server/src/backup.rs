@@ -11,7 +11,7 @@ use ur_db::SnapshotManager;
 /// Reads backup configuration from `ur.toml`, validates the backup path at
 /// startup, and spawns a background task that periodically calls SQLite's
 /// VACUUM INTO via [`SnapshotManager`]. The task gracefully stops when the
-/// shutdown signal is received.
+/// shutdown signal is received, performing a final backup before exit.
 #[derive(Clone)]
 pub struct BackupTaskManager {
     snapshot_manager: SnapshotManager,
@@ -50,11 +50,12 @@ impl BackupTaskManager {
 
     /// Spawn the periodic backup task.
     ///
-    /// Returns `None` if backup is disabled (no path configured).
+    /// Returns `None` if backup is disabled (no path configured, or `enabled = false`).
     /// Returns an error if the backup path is invalid.
     ///
     /// The returned [`tokio::task::JoinHandle`] represents the background task.
-    /// Send `true` on the `shutdown_tx` channel to stop it gracefully.
+    /// Send `true` on the `shutdown_tx` channel to stop it gracefully (triggers
+    /// a final backup before exit).
     pub fn spawn(
         &self,
         shutdown_rx: watch::Receiver<bool>,
@@ -67,19 +68,78 @@ impl BackupTaskManager {
             }
         };
 
+        if !self.config.enabled {
+            info!("backup disabled (enabled = false in [backup] config)");
+            return Ok(None);
+        }
+
         Self::validate_backup_path(&backup_path)?;
 
         let interval = Duration::from_secs(self.config.interval_minutes * 60);
         let manager = self.snapshot_manager.clone();
+        let retain_count = self.config.retain_count;
 
         info!(
             path = %backup_path.display(),
             interval_minutes = self.config.interval_minutes,
+            retain_count = retain_count,
             "periodic backup task starting"
         );
 
-        let handle = tokio::spawn(backup_loop(manager, backup_path, interval, shutdown_rx));
+        let handle = tokio::spawn(backup_loop(
+            manager,
+            backup_path,
+            interval,
+            retain_count,
+            shutdown_rx,
+        ));
         Ok(Some(handle))
+    }
+
+    /// Run a single on-demand backup. Used by CLI `ur db backup`.
+    ///
+    /// Returns the path to the created backup file.
+    pub async fn run_once(&self) -> Result<PathBuf, String> {
+        let backup_path = match &self.config.path {
+            Some(p) => p.clone(),
+            None => return Err("no backup path configured in [backup] section".to_string()),
+        };
+        Self::validate_backup_path(&backup_path)?;
+        let filename = backup_filename();
+        let target = backup_path.join(&filename);
+        let target_str = target.to_string_lossy();
+        self.snapshot_manager
+            .vacuum_into(&target_str)
+            .await
+            .map_err(|e| format!("backup failed: {e}"))?;
+        clean_old_backups(&backup_path, &filename, self.config.retain_count);
+        Ok(target)
+    }
+
+    /// List existing backup files in the configured backup directory.
+    ///
+    /// Returns backup file paths sorted newest-first (by filename timestamp).
+    pub fn list_backups(&self) -> Result<Vec<PathBuf>, String> {
+        let backup_path = match &self.config.path {
+            Some(p) => p.clone(),
+            None => return Err("no backup path configured in [backup] section".to_string()),
+        };
+        if !backup_path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(&backup_path)
+            .map_err(|e| format!("failed to read backup directory: {e}"))?
+            .flatten()
+            .filter(|e| {
+                let name = e.file_name();
+                let name_str = name.to_string_lossy();
+                name_str.starts_with("ur-backup-") && name_str.ends_with(".db")
+            })
+            .map(|e| e.path())
+            .collect();
+        // Sort by filename descending (newest first, since filenames are timestamped)
+        entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Ok(entries)
     }
 }
 
@@ -90,20 +150,24 @@ fn backup_filename() -> String {
 }
 
 /// Run the periodic backup loop until shutdown is signaled.
+///
+/// On shutdown, performs one final backup before returning.
 async fn backup_loop(
     manager: SnapshotManager,
     backup_dir: PathBuf,
     interval: Duration,
+    retain_count: u64,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
-                run_backup(&manager, &backup_dir).await;
+                run_backup(&manager, &backup_dir, retain_count).await;
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
-                    info!("backup task shutting down");
+                    info!("backup task shutting down — running final backup");
+                    run_backup(&manager, &backup_dir, retain_count).await;
                     return;
                 }
             }
@@ -111,8 +175,8 @@ async fn backup_loop(
     }
 }
 
-/// Execute a single backup, rotating the previous file if needed.
-async fn run_backup(manager: &SnapshotManager, backup_dir: &Path) {
+/// Execute a single backup, cleaning up old files based on retain count.
+async fn run_backup(manager: &SnapshotManager, backup_dir: &Path, retain_count: u64) {
     let filename = backup_filename();
     let target = backup_dir.join(&filename);
     let target_str = target.to_string_lossy();
@@ -120,8 +184,7 @@ async fn run_backup(manager: &SnapshotManager, backup_dir: &Path) {
     match manager.vacuum_into(&target_str).await {
         Ok(()) => {
             info!(path = %target.display(), "backup completed successfully");
-            // Clean up older backups — keep only the latest
-            clean_old_backups(backup_dir, &filename);
+            clean_old_backups(backup_dir, &filename, retain_count);
         }
         Err(e) => {
             error!(error = %e, path = %target.display(), "backup failed");
@@ -129,10 +192,13 @@ async fn run_backup(manager: &SnapshotManager, backup_dir: &Path) {
     }
 }
 
-/// Remove backup files in the directory that are older than the current one.
+/// Remove backup files that exceed the retain count.
 ///
-/// Only removes files matching the `ur-backup-*.db` naming pattern.
-fn clean_old_backups(backup_dir: &Path, current_filename: &str) {
+/// Keeps the `retain_count` most recent backup files (by filename, which
+/// contains a timestamp). Only removes files matching the `ur-backup-*.db`
+/// naming pattern. The `current_filename` is always preserved regardless
+/// of retain count.
+fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u64) {
     let entries = match std::fs::read_dir(backup_dir) {
         Ok(e) => e,
         Err(e) => {
@@ -141,17 +207,32 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str) {
         }
     };
 
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("ur-backup-")
-            && name_str.ends_with(".db")
-            && name_str.as_ref() != current_filename
-            && let Err(e) = std::fs::remove_file(entry.path())
-        {
+    let mut backup_files: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy().to_string();
+            if name_str.starts_with("ur-backup-") && name_str.ends_with(".db") {
+                Some(name_str)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Sort descending (newest first) — filenames contain ISO timestamps
+    backup_files.sort_by(|a, b| b.cmp(a));
+
+    // Keep the newest `retain_count` files; delete everything else
+    for name in backup_files.iter().skip(retain_count as usize) {
+        if name == current_filename {
+            continue;
+        }
+        let path = backup_dir.join(name);
+        if let Err(e) = std::fs::remove_file(&path) {
             warn!(
                 error = %e,
-                file = %entry.path().display(),
+                file = %path.display(),
                 "failed to remove old backup"
             );
         }
@@ -213,7 +294,7 @@ mod tests {
         let db_tmp = TempDir::new().unwrap();
         let backup_tmp = TempDir::new().unwrap();
         let (_db, sm) = create_test_db(&db_tmp).await;
-        run_backup(&sm, backup_tmp.path()).await;
+        run_backup(&sm, backup_tmp.path(), 3).await;
 
         let entries: Vec<_> = std::fs::read_dir(backup_tmp.path())
             .unwrap()
@@ -225,23 +306,51 @@ mod tests {
     }
 
     #[test]
-    fn clean_old_backups_removes_previous() {
+    fn clean_old_backups_respects_retain_count() {
         let tmp = TempDir::new().unwrap();
-        // Create fake old backups
+        // Create fake backups with ascending timestamps
         std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "old1").unwrap();
         std::fs::write(tmp.path().join("ur-backup-20260102T000000Z.db"), "old2").unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260103T000000Z.db"), "old3").unwrap();
         // Create a non-backup file that should be preserved
         std::fs::write(tmp.path().join("other.txt"), "keep").unwrap();
 
         let current = "ur-backup-20260313T120000Z.db";
         std::fs::write(tmp.path().join(current), "current").unwrap();
 
-        clean_old_backups(tmp.path(), current);
+        // retain_count = 2: keep current + 20260103, remove the rest
+        clean_old_backups(tmp.path(), current, 2);
 
-        assert!(!tmp.path().join("ur-backup-20260101T000000Z.db").exists());
-        assert!(!tmp.path().join("ur-backup-20260102T000000Z.db").exists());
+        assert!(tmp.path().join(current).exists(), "current must be kept");
+        assert!(
+            tmp.path().join("ur-backup-20260103T000000Z.db").exists(),
+            "second newest must be kept"
+        );
+        assert!(
+            !tmp.path().join("ur-backup-20260102T000000Z.db").exists(),
+            "third should be removed"
+        );
+        assert!(
+            !tmp.path().join("ur-backup-20260101T000000Z.db").exists(),
+            "oldest should be removed"
+        );
+        assert!(
+            tmp.path().join("other.txt").exists(),
+            "non-backup preserved"
+        );
+    }
+
+    #[test]
+    fn clean_old_backups_keeps_all_when_under_retain() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
+        let current = "ur-backup-20260102T000000Z.db";
+        std::fs::write(tmp.path().join(current), "b").unwrap();
+
+        clean_old_backups(tmp.path(), current, 5);
+
+        assert!(tmp.path().join("ur-backup-20260101T000000Z.db").exists());
         assert!(tmp.path().join(current).exists());
-        assert!(tmp.path().join("other.txt").exists());
     }
 
     #[tokio::test]
@@ -251,6 +360,25 @@ mod tests {
         let config = BackupConfig {
             path: None,
             interval_minutes: 30,
+            enabled: true,
+            retain_count: 3,
+        };
+        let mgr = BackupTaskManager::new(sm, config);
+        let (_tx, rx) = watch::channel(false);
+        let result = mgr.spawn(rx).expect("should not error");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn spawn_returns_none_when_disabled() {
+        let db_tmp = TempDir::new().unwrap();
+        let backup_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
+        let config = BackupConfig {
+            path: Some(backup_tmp.path().to_path_buf()),
+            interval_minutes: 30,
+            enabled: false,
+            retain_count: 3,
         };
         let mgr = BackupTaskManager::new(sm, config);
         let (_tx, rx) = watch::channel(false);
@@ -265,6 +393,8 @@ mod tests {
         let config = BackupConfig {
             path: Some(PathBuf::from("/nonexistent/backup/path")),
             interval_minutes: 30,
+            enabled: true,
+            retain_count: 3,
         };
         let mgr = BackupTaskManager::new(sm, config);
         let (_tx, rx) = watch::channel(false);
@@ -273,13 +403,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_and_shutdown() {
+    async fn spawn_and_shutdown_triggers_final_backup() {
         let db_tmp = TempDir::new().unwrap();
         let backup_tmp = TempDir::new().unwrap();
         let (_db, sm) = create_test_db(&db_tmp).await;
         let config = BackupConfig {
             path: Some(backup_tmp.path().to_path_buf()),
-            interval_minutes: 1, // Won't actually tick in this test
+            interval_minutes: 60, // Won't tick in this test
+            enabled: true,
+            retain_count: 3,
         };
         let mgr = BackupTaskManager::new(sm, config);
         let (tx, rx) = watch::channel(false);
@@ -290,12 +422,80 @@ mod tests {
             .expect("should be Some");
         assert!(!handle.is_finished());
 
-        // Signal shutdown
+        // Signal shutdown — should trigger final backup
         tx.send(true).unwrap();
-        // Wait for task to finish
-        tokio::time::timeout(Duration::from_secs(2), handle)
+        tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("task should finish within timeout")
             .expect("task should not panic");
+
+        // Verify final backup was created
+        let entries: Vec<_> = std::fs::read_dir(backup_tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("ur-backup-"))
+            .collect();
+        assert_eq!(entries.len(), 1, "shutdown should create a final backup");
+    }
+
+    #[tokio::test]
+    async fn run_once_creates_backup() {
+        let db_tmp = TempDir::new().unwrap();
+        let backup_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
+        let config = BackupConfig {
+            path: Some(backup_tmp.path().to_path_buf()),
+            interval_minutes: 30,
+            enabled: true,
+            retain_count: 3,
+        };
+        let mgr = BackupTaskManager::new(sm, config);
+        let path = mgr.run_once().await.expect("backup should succeed");
+        assert!(path.exists());
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("ur-backup-")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_backups_returns_sorted() {
+        let db_tmp = TempDir::new().unwrap();
+        let backup_tmp = TempDir::new().unwrap();
+        let (_db, sm) = create_test_db(&db_tmp).await;
+
+        // Create fake backup files
+        std::fs::write(backup_tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
+        std::fs::write(backup_tmp.path().join("ur-backup-20260103T000000Z.db"), "c").unwrap();
+        std::fs::write(backup_tmp.path().join("ur-backup-20260102T000000Z.db"), "b").unwrap();
+        // Non-backup file should be excluded
+        std::fs::write(backup_tmp.path().join("other.txt"), "x").unwrap();
+
+        let config = BackupConfig {
+            path: Some(backup_tmp.path().to_path_buf()),
+            interval_minutes: 30,
+            enabled: true,
+            retain_count: 3,
+        };
+        let mgr = BackupTaskManager::new(sm, config);
+        let backups = mgr.list_backups().expect("list should succeed");
+        assert_eq!(backups.len(), 3);
+        // Newest first
+        assert!(
+            backups[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("20260103")
+        );
+        assert!(
+            backups[2]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("20260101")
+        );
     }
 }

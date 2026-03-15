@@ -17,6 +17,7 @@ service CoreService {
   rpc ProcessLaunch(ProcessLaunchRequest) returns (ProcessLaunchResponse);
   rpc ProcessStop(ProcessStopRequest) returns (ProcessStopResponse);
   rpc ProcessInfo(ProcessInfoRequest) returns (ProcessInfoResponse);
+  rpc ProcessList(ProcessListRequest) returns (ProcessListResponse);
 }
 
 message PingRequest {}
@@ -56,4 +57,19 @@ message ProcessInfoRequest {
 
 message ProcessInfoResponse {
   string workspace_dir = 1;
+}
+
+message ProcessListRequest {}
+
+message ProcessListResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message ProcessInfo {
+  string process_id = 1;
+  string agent_id = 2;
+  string container_id = 3;
+  string project_key = 4;
+  string mode = 5;
+  uint32 grpc_port = 6;
 }

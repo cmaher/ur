@@ -246,6 +246,9 @@ fn default_proxy_allowlist() -> Vec<String> {
 /// Default backup interval in minutes.
 pub const DEFAULT_BACKUP_INTERVAL_MINUTES: u64 = 30;
 
+/// Default number of backup files to retain.
+pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
+
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
@@ -344,6 +347,8 @@ struct RawRagDocsConfig {
 struct RawBackupConfig {
     path: Option<PathBuf>,
     interval_minutes: Option<u64>,
+    enabled: Option<bool>,
+    retain_count: Option<u64>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -399,6 +404,13 @@ pub struct BackupConfig {
     pub path: Option<PathBuf>,
     /// Interval between backups in minutes (default: 30).
     pub interval_minutes: u64,
+    /// Whether periodic backups are enabled (default: true). When false,
+    /// disables periodic backups even if a path is configured. Manual
+    /// `ur db backup` still works.
+    pub enabled: bool,
+    /// Number of backup files to retain (default: 3). Older backups beyond
+    /// this count are deleted after each successful backup.
+    pub retain_count: u64,
 }
 
 /// Resolved project configuration for a single project.
@@ -578,10 +590,14 @@ impl Config {
                 interval_minutes: b
                     .interval_minutes
                     .unwrap_or(DEFAULT_BACKUP_INTERVAL_MINUTES),
+                enabled: b.enabled.unwrap_or(true),
+                retain_count: b.retain_count.unwrap_or(DEFAULT_BACKUP_RETAIN_COUNT),
             },
             None => BackupConfig {
                 path: None,
                 interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
             },
         };
 
@@ -1291,6 +1307,8 @@ make = { lua = "make-safe.lua" }
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.backup.path, None);
         assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+        assert!(cfg.backup.enabled);
+        assert_eq!(cfg.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
     }
 
     #[test]
@@ -1300,6 +1318,8 @@ make = { lua = "make-safe.lua" }
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.backup.path, None);
         assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+        assert!(cfg.backup.enabled);
+        assert_eq!(cfg.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
     }
 
     #[test]
@@ -1360,5 +1380,29 @@ make = { lua = "make-safe.lua" }
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, 8000);
+    }
+
+    #[test]
+    fn backup_enabled_false_disables() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[backup]\npath = \"/backups/ur\"\nenabled = false\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(!cfg.backup.enabled);
+    }
+
+    #[test]
+    fn backup_retain_count_configurable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.backup.retain_count, 7);
     }
 }

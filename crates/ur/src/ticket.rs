@@ -1,8 +1,75 @@
+use std::fmt::Write;
+
 use anyhow::{Context, Result};
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, info};
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
+
+/// Format a single ticket's full detail view (used by `show`).
+pub fn format_ticket_detail(
+    ticket: &Ticket,
+    metadata: &[MetadataEntry],
+    activities: &[ActivityEntry],
+) -> String {
+    let mut out = String::new();
+    writeln!(out, "ID:       {}", ticket.id).unwrap();
+    writeln!(out, "Title:    {}", ticket.title).unwrap();
+    writeln!(out, "Type:     {}", ticket.ticket_type).unwrap();
+    writeln!(out, "Status:   {}", ticket.status).unwrap();
+    writeln!(out, "Priority: {}", ticket.priority).unwrap();
+    if !ticket.parent_id.is_empty() {
+        writeln!(out, "Parent:   {}", ticket.parent_id).unwrap();
+    }
+    writeln!(out, "Created:  {}", ticket.created_at).unwrap();
+    writeln!(out, "Updated:  {}", ticket.updated_at).unwrap();
+    if !ticket.body.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "{}", ticket.body).unwrap();
+    }
+    if !metadata.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "Metadata:").unwrap();
+        for m in metadata {
+            writeln!(out, "  {}: {}", m.key, m.value).unwrap();
+        }
+    }
+    if !activities.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "Activity:").unwrap();
+        for a in activities {
+            writeln!(out, "  [{}] {}: {}", a.timestamp, a.author, a.message).unwrap();
+        }
+    }
+    // Remove the trailing newline that writeln always adds
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// Format a table of tickets (used by `list`).
+pub fn format_ticket_list(tickets: &[Ticket]) -> String {
+    let mut out = String::new();
+    writeln!(
+        out,
+        "{:<20} {:<10} {:<14} {:<4} TITLE",
+        "ID", "TYPE", "STATUS", "PRI"
+    )
+    .unwrap();
+    let separator: String = std::iter::repeat_n('-', 72).collect();
+    writeln!(out, "{separator}").unwrap();
+    for t in tickets {
+        writeln!(
+            out,
+            "{:<20} {:<10} {:<14} {:<4} {}",
+            t.id, t.ticket_type, t.status, t.priority, t.title
+        )
+        .unwrap();
+    }
+    write!(out, "\n{} ticket(s)", tickets.len()).unwrap();
+    out
+}
 
 async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
     let addr = format!("http://127.0.0.1:{port}");
@@ -65,20 +132,7 @@ pub async fn list(
         println!("No tickets found.");
         return Ok(());
     }
-    // Header
-    println!(
-        "{:<20} {:<10} {:<14} {:<4} TITLE",
-        "ID", "TYPE", "STATUS", "PRI"
-    );
-    let separator: String = std::iter::repeat_n('-', 72).collect();
-    println!("{separator}");
-    for t in &tickets {
-        println!(
-            "{:<20} {:<10} {:<14} {:<4} {}",
-            t.id, t.ticket_type, t.status, t.priority, t.title
-        );
-    }
-    println!("\n{} ticket(s)", tickets.len());
+    println!("{}", format_ticket_list(&tickets));
     Ok(())
 }
 
@@ -97,31 +151,10 @@ pub async fn show(port: u16, ticket_id: &str) -> Result<()> {
         .as_ref()
         .context("server returned empty ticket")?;
 
-    println!("ID:       {}", t.id);
-    println!("Title:    {}", t.title);
-    println!("Type:     {}", t.ticket_type);
-    println!("Status:   {}", t.status);
-    println!("Priority: {}", t.priority);
-    if !t.parent_id.is_empty() {
-        println!("Parent:   {}", t.parent_id);
-    }
-    println!("Created:  {}", t.created_at);
-    println!("Updated:  {}", t.updated_at);
-    if !t.body.is_empty() {
-        println!("\n{}", t.body);
-    }
-    if !inner.metadata.is_empty() {
-        println!("\nMetadata:");
-        for m in &inner.metadata {
-            println!("  {}: {}", m.key, m.value);
-        }
-    }
-    if !inner.activities.is_empty() {
-        println!("\nActivity:");
-        for a in &inner.activities {
-            println!("  [{}] {}: {}", a.timestamp, a.author, a.message);
-        }
-    }
+    println!(
+        "{}",
+        format_ticket_detail(t, &inner.metadata, &inner.activities)
+    );
     Ok(())
 }
 

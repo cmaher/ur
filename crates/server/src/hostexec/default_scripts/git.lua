@@ -67,5 +67,5 @@ function transform(command, args, working_dir, agent_context)
         end
     end
 
-    return args
+    return { command = command, args = args, working_dir = working_dir, env = { GIT_EDITOR = "true" } }
 end

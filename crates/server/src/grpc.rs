@@ -6,8 +6,9 @@ use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, ProcessInfoRequest, ProcessInfoResponse, ProcessLaunchRequest,
-    ProcessLaunchResponse, ProcessStopRequest, ProcessStopResponse,
+    PingRequest, PingResponse, ProcessInfo, ProcessInfoRequest, ProcessInfoResponse,
+    ProcessLaunchRequest, ProcessLaunchResponse, ProcessListRequest, ProcessListResponse,
+    ProcessStopRequest, ProcessStopResponse,
 };
 
 use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
@@ -160,6 +161,26 @@ impl CoreService for CoreServiceHandler {
             .unwrap_or_default();
         Ok(Response::new(ProcessInfoResponse { workspace_dir }))
     }
+
+    async fn process_list(
+        &self,
+        _req: Request<ProcessListRequest>,
+    ) -> Result<Response<ProcessListResponse>, Status> {
+        info!("process_list request received");
+        let summaries = self.process_manager.list();
+        let processes = summaries
+            .into_iter()
+            .map(|s| ProcessInfo {
+                process_id: s.process_id,
+                agent_id: s.agent_id,
+                container_id: s.container_id,
+                project_key: s.project_key,
+                mode: s.mode,
+                grpc_port: 0,
+            })
+            .collect();
+        Ok(Response::new(ProcessListResponse { processes }))
+    }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -201,6 +222,15 @@ impl CoreService for WorkerCoreServiceHandler {
     ) -> Result<Response<ProcessInfoResponse>, Status> {
         Err(Status::unimplemented(
             "process_info is only available on the host server",
+        ))
+    }
+
+    async fn process_list(
+        &self,
+        _req: Request<ProcessListRequest>,
+    ) -> Result<Response<ProcessListResponse>, Status> {
+        Err(Status::unimplemented(
+            "process_list is only available on the host server",
         ))
     }
 }

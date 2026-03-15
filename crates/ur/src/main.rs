@@ -1,5 +1,6 @@
 mod compose;
 mod credential;
+mod db;
 mod hostd;
 mod init;
 mod lifecycle_log;
@@ -83,6 +84,11 @@ enum Commands {
         #[command(subcommand)]
         command: AgentCommands,
     },
+    /// Database backup and restore
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -158,6 +164,19 @@ enum ModelCommands {
 }
 
 #[derive(Subcommand)]
+enum DbCommands {
+    /// Create an on-demand database backup
+    Backup,
+    /// Restore a database from a backup file
+    Restore {
+        /// Path to the backup file to restore
+        path: PathBuf,
+    },
+    /// List available backup files
+    List,
+}
+
+#[derive(Subcommand)]
 enum ProcessCommands {
     /// Launch a new agent process
     Launch {
@@ -171,6 +190,9 @@ enum ProcessCommands {
         /// Attach to the process after launching
         #[arg(short = 'a', long = "attach")]
         attach: bool,
+        /// Stop the process when the attach session exits (implies -a)
+        #[arg(long)]
+        rm: bool,
         /// Stop existing process with this ID before launching
         #[arg(short = 'f', long = "force")]
         force: bool,
@@ -181,10 +203,17 @@ enum ProcessCommands {
         #[arg(short = 's', long = "skills")]
         skills: Option<String>,
     },
+    /// List all running processes
+    List,
     /// Show process status
     Status { process_id: Option<String> },
     /// Attach to a running process
-    Attach { process_id: String },
+    Attach {
+        process_id: String,
+        /// Stop the process when the attach session exits
+        #[arg(long)]
+        rm: bool,
+    },
     /// Stop a running agent process
     Stop { process_id: String },
     /// Force-stop a running agent process (via server)
@@ -434,7 +463,7 @@ fn kill_all_containers(agent_prefix: &str) -> Result<()> {
 }
 
 #[instrument]
-fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
+fn process_attach(process_id: &str, agent_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("{agent_prefix}{process_id}"));
     info!(container = %id.0, "attaching to process");
@@ -451,7 +480,40 @@ fn process_attach(process_id: &str, agent_prefix: &str) -> Result<()> {
         "attach".into(),
     ];
     let status = runtime.exec_interactive(&id, &command)?;
-    process::exit(status.code().unwrap_or(1));
+    Ok(status.code().unwrap_or(1))
+}
+
+#[instrument(skip(client))]
+async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
+    info!("listing processes");
+    let resp = client.process_list(ProcessListRequest {}).await?;
+    let processes = resp.into_inner().processes;
+    if processes.is_empty() {
+        println!("No running processes.");
+        return Ok(());
+    }
+    // Print header
+    println!(
+        "{:<20} {:<12} {:<16} {:<8}",
+        "PROCESS", "PROJECT", "CONTAINER", "MODE"
+    );
+    for p in &processes {
+        let container_short = if p.container_id.len() > 12 {
+            &p.container_id[..12]
+        } else {
+            &p.container_id
+        };
+        let project = if p.project_key.is_empty() {
+            "-"
+        } else {
+            &p.project_key
+        };
+        println!(
+            "{:<20} {:<12} {:<16} {:<8}",
+            p.process_id, project, container_short, p.mode
+        );
+    }
+    Ok(())
 }
 
 #[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
@@ -530,7 +592,19 @@ async fn handle_process(
     project_keys: &[String],
 ) -> Result<()> {
     match command {
-        ProcessCommands::Attach { process_id } => process_attach(&process_id, agent_prefix),
+        ProcessCommands::List => {
+            let mut client = connect(port).await?;
+            process_list(&mut client).await
+        }
+        ProcessCommands::Attach { process_id, rm } => {
+            let exit_code = process_attach(&process_id, agent_prefix)?;
+            if rm {
+                println!("Stopping {process_id} (--rm)...");
+                let mut client = connect(port).await?;
+                process_stop(&mut client, &process_id).await?;
+            }
+            process::exit(exit_code);
+        }
         ProcessCommands::Kill { process_id } => {
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
@@ -552,6 +626,7 @@ async fn handle_process(
             workspace,
             project,
             attach,
+            rm,
             force,
             mode,
             skills,
@@ -563,28 +638,41 @@ async fn handle_process(
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            // Resolve project key: explicit -p flag, or derive from cwd name
-            // when neither -p nor -w is specified.
+            // Resolve project key: explicit -p flag, derive from ticket ID prefix,
+            // derive from cwd name, or empty when -w is specified.
             let resolved_project = if let Some(p) = project {
                 p
             } else if workspace.is_none() {
-                // Derive from current working directory name
-                let cwd =
-                    std::env::current_dir().context("failed to get current working directory")?;
-                let dir_name = cwd
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+                // Try to derive from ticket ID prefix (before first '-' or '.')
+                let id_prefix = ticket_id
+                    .split(&['-', '.'][..])
+                    .next()
+                    .unwrap_or("")
                     .to_owned();
-                if project_keys.contains(&dir_name) {
-                    debug!(project_key = %dir_name, "derived project from cwd");
-                    dir_name
+                if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+                    debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+                    id_prefix
                 } else {
-                    bail!(
-                        "could not derive project from cwd directory name '{}' \
-                         (not a configured project key). Use -p <project> or -w <path>.",
+                    // Fall back to current working directory name
+                    let cwd = std::env::current_dir()
+                        .context("failed to get current working directory")?;
+                    let dir_name = cwd
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+                        .to_owned();
+                    if project_keys.contains(&dir_name) {
+                        debug!(project_key = %dir_name, "derived project from cwd");
                         dir_name
-                    );
+                    } else {
+                        bail!(
+                            "could not derive project from ticket ID prefix '{}' or \
+                             cwd directory name '{}' \
+                             (neither is a configured project key). Use -p <project> or -w <path>.",
+                            id_prefix,
+                            dir_name
+                        );
+                    }
                 }
             } else {
                 // -w specified: no project association
@@ -606,8 +694,14 @@ async fn handle_process(
                 &skills_vec,
             )
             .await?;
-            if attach {
-                process_attach(&ticket_id, agent_prefix)?;
+            if attach || rm {
+                let exit_code = process_attach(&ticket_id, agent_prefix)?;
+                if rm {
+                    println!("Stopping {ticket_id} (--rm)...");
+                    let mut client = connect(port).await?;
+                    process_stop(&mut client, &ticket_id).await?;
+                }
+                process::exit(exit_code);
             }
             Ok(())
         }
@@ -628,6 +722,7 @@ fn command_name(cmd: &ProcessCommands) -> &'static str {
     match cmd {
         ProcessCommands::Attach { .. } => "attach",
         ProcessCommands::Kill { .. } => "kill",
+        ProcessCommands::List => "list",
         ProcessCommands::SaveCredentials { .. } => "save_credentials",
         ProcessCommands::Launch { .. } => "launch",
         ProcessCommands::Status { .. } => "status",
@@ -725,6 +820,11 @@ async fn main() -> Result<()> {
             RagCommands::Model { command } => match command {
                 ModelCommands::Download => rag::download_model(&config)?,
             },
+        },
+        Commands::Db { command } => match command {
+            DbCommands::Backup => db::backup(&config).await?,
+            DbCommands::Restore { path } => db::restore(&config, &path).await?,
+            DbCommands::List => db::list(&config)?,
         },
         Commands::Ticket { command } => match command {
             TicketCommands::Create {
