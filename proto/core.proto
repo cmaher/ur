@@ -62,10 +62,10 @@ message ProcessInfoResponse {
 message ProcessListRequest {}
 
 message ProcessListResponse {
-  repeated ProcessInfo processes = 1;
+  repeated WorkerInfo processes = 1;
 }
 
-message ProcessInfo {
+message WorkerInfo {
   string process_id = 1;
   string agent_id = 2;
   string container_id = 3;

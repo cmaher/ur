@@ -50,7 +50,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 
 2. Server (ur-server container)
    ├── Phase 1: ProcessManager.prepare()
-   │   ├── Check for duplicate process_id
+   │   ├── Check for duplicate worker_id
    │   ├── workspace_dir provided? → register_absolute (no git init)
    │   └── no workspace? → create dir, git init, register
    │

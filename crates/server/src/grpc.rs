@@ -6,7 +6,7 @@ use tracing::info;
 
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, ProcessInfo, ProcessInfoRequest, ProcessInfoResponse,
+    PingRequest, PingResponse, WorkerInfo, ProcessInfoRequest, ProcessInfoResponse,
     ProcessLaunchRequest, ProcessLaunchResponse, ProcessListRequest, ProcessListResponse,
     ProcessStopRequest, ProcessStopResponse,
 };
@@ -170,7 +170,7 @@ impl CoreService for CoreServiceHandler {
         let summaries = self.process_manager.list();
         let processes = summaries
             .into_iter()
-            .map(|s| ProcessInfo {
+            .map(|s| WorkerInfo {
                 process_id: s.process_id,
                 agent_id: s.agent_id,
                 container_id: s.container_id,
