@@ -421,8 +421,36 @@ impl RepoPoolManager {
         }
 
         self.init_submodules(host_slot_path).await?;
+        self.sweep_cargo(host_slot_path).await;
 
         Ok(())
+    }
+
+    /// Run `cargo sweep --time 1` to remove build artifacts older than 1 day.
+    ///
+    /// Best-effort: logs a warning if cargo-sweep is not installed or fails.
+    /// Only runs if a `Cargo.toml` exists in the slot (i.e., it's a Rust project).
+    async fn sweep_cargo(&self, host_slot_path: &Path) {
+        let local_slot_path = self.host_to_local_path(host_slot_path);
+        let cargo_toml = local_slot_path.join("Cargo.toml");
+
+        if !tokio::fs::try_exists(&cargo_toml).await.unwrap_or(false) {
+            return;
+        }
+
+        info!(path = %host_slot_path.display(), "sweeping stale cargo artifacts");
+        let cwd = self.to_builderd_path(host_slot_path);
+        if let Err(e) = self
+            .builderd_client
+            .exec_and_check("cargo", &["sweep", "--time", "1"], &cwd)
+            .await
+        {
+            warn!(
+                path = %host_slot_path.display(),
+                error = %e,
+                "cargo sweep failed (cargo-sweep may not be installed)"
+            );
+        }
     }
 
     /// Initialize/update git submodules recursively if the repo has a `.gitmodules` file.
