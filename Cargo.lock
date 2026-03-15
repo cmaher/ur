@@ -3612,7 +3612,9 @@ name = "ticket_client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
+ "http-body",
  "tonic 0.13.1",
  "ur_rpc",
 ]
@@ -4937,6 +4939,7 @@ name = "workertools"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "ticket_client",
  "tokio",
  "tonic 0.13.1",
  "ur_config",

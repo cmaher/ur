@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use anyhow::{Context, Result};
-use tonic::transport::Channel;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
@@ -13,7 +12,17 @@ use crate::format::{format_ticket_detail, format_ticket_list};
 ///
 /// This is a pure dispatch function with no state. The caller is responsible
 /// for constructing the client (with any auth interceptors, channel config, etc).
-pub async fn execute(args: TicketArgs, client: &mut TicketServiceClient<Channel>) -> Result<()> {
+///
+/// Generic over the transport type `T` so callers can pass a plain `Channel`
+/// or an `InterceptedService<Channel, F>` with auth headers.
+pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>) -> Result<()>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
     match args {
         TicketArgs::Create {
             title,

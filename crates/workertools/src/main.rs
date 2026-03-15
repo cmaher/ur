@@ -8,6 +8,7 @@ use ur_rpc::proto::hostexec::HostExecRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
+use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 
 #[derive(Parser)]
 #[command(name = "workertools", about = "Ur worker toolkit")]
@@ -30,6 +31,11 @@ enum Commands {
     Rag {
         #[command(subcommand)]
         command: RagCommands,
+    },
+    /// Ticket management via ur-server
+    Ticket {
+        #[command(subcommand)]
+        command: ticket_client::TicketArgs,
     },
 }
 
@@ -65,6 +71,9 @@ async fn main() {
                 std::process::exit(run_rag_search(&query, &language, top_k).await);
             }
         },
+        Commands::Ticket { command } => {
+            std::process::exit(run_ticket(command).await);
+        }
     }
 }
 
@@ -139,6 +148,53 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
     }
 
     exit_code
+}
+
+async fn run_ticket(args: ticket_client::TicketArgs) -> i32 {
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    let addr = format!("http://{server_addr}");
+
+    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
+        Ok(ch) => ch,
+        Err(e) => {
+            eprintln!("ticket: failed to connect to ur server: {e}");
+            return 1;
+        }
+    };
+
+    // Build interceptor that injects agent auth headers (same pattern as host-exec)
+    let agent_id = std::env::var(ur_config::UR_AGENT_ID_ENV).ok();
+    let agent_secret = std::env::var(ur_config::UR_AGENT_SECRET_ENV).ok();
+    let interceptor = move |mut req: tonic::Request<()>| {
+        if let Some(ref id) = agent_id {
+            if let Ok(val) =
+                id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            {
+                req.metadata_mut()
+                    .insert(ur_config::AGENT_ID_HEADER, val);
+            }
+        }
+        if let Some(ref secret) = agent_secret {
+            if let Ok(val) =
+                secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            {
+                req.metadata_mut()
+                    .insert(ur_config::AGENT_SECRET_HEADER, val);
+            }
+        }
+        Ok(req)
+    };
+
+    let mut client = TicketServiceClient::with_interceptor(channel, interceptor);
+
+    match ticket_client::execute(args, &mut client).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("ticket: {e:#}");
+            1
+        }
+    }
 }
 
 fn parse_language(s: &str) -> Option<Language> {
