@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 anyhow = "1"
-clap = { workspace = true }
+clap = { workspace = true, features = ["env"] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

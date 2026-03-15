@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
 
@@ -10,11 +11,27 @@ use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonService;
 
+const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
+
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
 
 #[derive(Clone)]
-pub struct BuilderDaemonHandler;
+pub struct BuilderDaemonHandler {
+    pub workspace: Option<PathBuf>,
+}
+
+impl BuilderDaemonHandler {
+    fn resolve_working_dir(&self, working_dir: &str) -> String {
+        if working_dir.starts_with(WORKSPACE_TEMPLATE) {
+            if let Some(workspace) = &self.workspace {
+                let workspace_str = workspace.to_string_lossy();
+                return working_dir.replacen(WORKSPACE_TEMPLATE, &workspace_str, 1);
+            }
+        }
+        working_dir.to_string()
+    }
+}
 
 #[tonic::async_trait]
 impl BuilderDaemonService for BuilderDaemonHandler {
@@ -26,11 +43,13 @@ impl BuilderDaemonService for BuilderDaemonHandler {
     ) -> Result<Response<Self::ExecStream>, Status> {
         let req = req.into_inner();
 
+        let resolved_dir = self.resolve_working_dir(&req.working_dir);
         let arg_count = req.args.len();
 
         info!(
             command = %req.command,
             working_dir = %req.working_dir,
+            resolved_dir = %resolved_dir,
             arg_count,
             args = ?req.args,
             "host exec request received"
@@ -38,7 +57,7 @@ impl BuilderDaemonService for BuilderDaemonHandler {
 
         let mut cmd = tokio::process::Command::new(&req.command);
         cmd.args(&req.args)
-            .current_dir(&req.working_dir)
+            .current_dir(&resolved_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (k, v) in &req.env {
@@ -47,7 +66,7 @@ impl BuilderDaemonService for BuilderDaemonHandler {
         let child = cmd.spawn().map_err(|e| {
             error!(
                 command = %req.command,
-                working_dir = %req.working_dir,
+                working_dir = %resolved_dir,
                 error = %e,
                 "failed to spawn process"
             );
@@ -83,9 +102,57 @@ mod tests {
         (stdout_data, exit_code)
     }
 
+    fn handler_with_workspace(workspace: Option<&str>) -> BuilderDaemonHandler {
+        BuilderDaemonHandler {
+            workspace: workspace.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn test_resolve_workspace_with_subpath() {
+        let handler = handler_with_workspace(Some("/home/builder/ws"));
+        assert_eq!(
+            handler.resolve_working_dir("%WORKSPACE%/pool/ur/0"),
+            "/home/builder/ws/pool/ur/0"
+        );
+    }
+
+    #[test]
+    fn test_resolve_workspace_alone() {
+        let handler = handler_with_workspace(Some("/home/builder/ws"));
+        assert_eq!(
+            handler.resolve_working_dir("%WORKSPACE%"),
+            "/home/builder/ws"
+        );
+    }
+
+    #[test]
+    fn test_resolve_absolute_path_no_replacement() {
+        let handler = handler_with_workspace(Some("/home/builder/ws"));
+        assert_eq!(
+            handler.resolve_working_dir("/absolute/path"),
+            "/absolute/path"
+        );
+    }
+
+    #[test]
+    fn test_resolve_empty_string() {
+        let handler = handler_with_workspace(Some("/home/builder/ws"));
+        assert_eq!(handler.resolve_working_dir(""), "");
+    }
+
+    #[test]
+    fn test_resolve_workspace_template_without_configured_workspace() {
+        let handler = handler_with_workspace(None);
+        assert_eq!(
+            handler.resolve_working_dir("%WORKSPACE%/pool/ur/0"),
+            "%WORKSPACE%/pool/ur/0"
+        );
+    }
+
     #[tokio::test]
     async fn test_exec_echo() {
-        let handler = BuilderDaemonHandler;
+        let handler = handler_with_workspace(None);
         let req = Request::new(BuilderExecRequest {
             command: "echo".into(),
             args: vec!["hello".into()],
@@ -102,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_nonexistent_command() {
-        let handler = BuilderDaemonHandler;
+        let handler = handler_with_workspace(None);
         let req = Request::new(BuilderExecRequest {
             command: "nonexistent_command_xyz".into(),
             args: vec![],
