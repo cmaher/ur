@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build the ur CLI and ur-hostd binaries and install them.
-# ur-server runs in a container (built by image task), not installed locally.
+# ur-server is started via `ur start`.
 # Set UR_BUILD_PROFILE=debug for debug builds (default: release).
 # Set UR_INSTALL_DIR to override the install directory (default: ~/bin).
 
@@ -31,7 +31,7 @@ rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/ur-hostd"
 cp "$TARGET_DIR/ur" "$INSTALL_DIR/ur"
 cp "$TARGET_DIR/ur-hostd" "$INSTALL_DIR/ur-hostd"
 echo "Installed ur and ur-hostd to $INSTALL_DIR/"
-echo "ur-server runs in a container — use 'docker compose -f containers/docker-compose.yml up -d' to start"
+echo "Run 'ur start' to launch the server"
 
 # Download the default embedding model for RAG if not already cached.
 # This matches the hf_hub cache layout fastembed expects.
