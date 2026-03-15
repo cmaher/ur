@@ -339,11 +339,7 @@ impl RepoPoolManager {
         // Use slot_name as relative path since CWD is the parent directory.
         // builderd only resolves %WORKSPACE% in working_dir, not in args.
         self.builderd_client
-            .exec_and_check(
-                "git",
-                &["clone", repo_url, slot_name],
-                &builderd_parent,
-            )
+            .exec_and_check("git", &["clone", repo_url, slot_name], &builderd_parent)
             .await
             .map_err(|e| format!("git clone failed for {repo_url}: {e}"))?;
 
