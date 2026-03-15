@@ -9,10 +9,10 @@ mkdir -p ~/.claude
 mkdir -p ~/.local/bin
 
 # Initialize: skills, git hooks, hostexec shims (synchronous)
-ur-workerd init
+workerd init
 
 # Start daemon in background
-ur-workerd &
+workerd &
 
 # Start a detached tmux session (no PTY required).
 # The container stays alive via sleep; attach with `tmux attach -t agent`.

@@ -9,10 +9,10 @@ mkdir -p ~/.claude
 mkdir -p ~/.local/bin
 
 # Initialize: skills, git hooks, hostexec shims (synchronous)
-ur-workerd init
+workerd init
 
 # Start daemon in background
-ur-workerd &
+workerd &
 
 # Start bacon on the host via hostexec shim.
 # Uses the 'ai' job (cargo check --message-format short) and exports

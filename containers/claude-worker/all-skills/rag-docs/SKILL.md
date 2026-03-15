@@ -20,7 +20,7 @@ Search indexed dependency documentation using semantic search. **Always use this
 ## Command
 
 ```bash
-ur-tools rag search "<query>" [--language rust] [--top-k 5]
+workertools rag search "<query>" [--language rust] [--top-k 5]
 ```
 
 - `--language`: Documentation language (default: `rust`)
@@ -29,9 +29,9 @@ ur-tools rag search "<query>" [--language rust] [--top-k 5]
 ## Examples
 
 ```bash
-ur-tools rag search "qdrant create collection cosine distance"
-ur-tools rag search "tonic gRPC streaming response"
-ur-tools rag search "fastembed embedding model" --top-k 10
+workertools rag search "qdrant create collection cosine distance"
+workertools rag search "tonic gRPC streaming response"
+workertools rag search "fastembed embedding model" --top-k 10
 ```
 
 ## Tips

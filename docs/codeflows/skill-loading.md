@@ -57,13 +57,13 @@ skills = ["a", "b", "c"]
 
 Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved.
 
-## Container Startup (entrypoint.sh → ur-tools init-skills)
+## Container Startup (entrypoint.sh → workerd init)
 
 ```
 entrypoint.sh
     │
     ▼
-ur-tools init-skills                            [crates/workercmd/tools/src/init_skills.rs]
+workerd init                                     [crates/workerd/src/init_skills.rs]
     │   InitSkillsManager::init_skills()
     │     1. Wipe ~/.claude/skills/ (remove + recreate)
     │     2. Read UR_WORKER_SKILLS env var
@@ -87,6 +87,6 @@ Claude Code reads ~/.claude/skills/ at session start
 | `containers/claude-worker/Dockerfile` | Bakes both skill sources into potential-skills/ |
 | `containers/claude-worker/all-skills/` | Project-specific skills (override vendor) |
 | `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
-| `containers/claude-worker/entrypoint.sh` | Calls `ur-tools init-skills` at container start |
-| `crates/workercmd/tools/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
+| `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
+| `crates/workerd/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
 | `crates/server/src/process.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |
