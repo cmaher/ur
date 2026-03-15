@@ -228,7 +228,6 @@ enum AgentCommands {
     Dir { process_id: String },
 }
 
-
 #[instrument]
 fn load_config() -> Result<ur_config::Config> {
     debug!("loading ur config");

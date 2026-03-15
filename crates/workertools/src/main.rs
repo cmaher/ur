@@ -166,25 +166,24 @@ async fn run_ticket(args: ticket_client::TicketArgs) -> i32 {
     // Build interceptor that injects agent auth headers (same pattern as host-exec)
     let agent_id = std::env::var(ur_config::UR_AGENT_ID_ENV).ok();
     let agent_secret = std::env::var(ur_config::UR_AGENT_SECRET_ENV).ok();
-    let interceptor = move |mut req: tonic::Request<()>| {
-        if let Some(ref id) = agent_id {
-            if let Ok(val) =
-                id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    #[allow(clippy::result_large_err)]
+    let interceptor =
+        move |mut req: tonic::Request<()>| -> Result<tonic::Request<()>, tonic::Status> {
+            if let Some(ref id) = agent_id
+                && let Ok(val) =
+                    id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
             {
-                req.metadata_mut()
-                    .insert(ur_config::AGENT_ID_HEADER, val);
+                req.metadata_mut().insert(ur_config::AGENT_ID_HEADER, val);
             }
-        }
-        if let Some(ref secret) = agent_secret {
-            if let Ok(val) =
-                secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            if let Some(ref secret) = agent_secret
+                && let Ok(val) =
+                    secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
             {
                 req.metadata_mut()
                     .insert(ur_config::AGENT_SECRET_HEADER, val);
             }
-        }
-        Ok(req)
-    };
+            Ok(req)
+        };
 
     let mut client = TicketServiceClient::with_interceptor(channel, interceptor);
 

@@ -55,7 +55,11 @@ impl TicketService for MockTicketStore {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         };
-        self.inner.lock().unwrap().tickets.insert(id.clone(), ticket);
+        self.inner
+            .lock()
+            .unwrap()
+            .tickets
+            .insert(id.clone(), ticket);
         Ok(Response::new(CreateTicketResponse { id }))
     }
 
@@ -69,20 +73,23 @@ impl TicketService for MockTicketStore {
             .tickets
             .values()
             .filter(|t| {
-                if let Some(ref s) = req.status {
-                    if !s.is_empty() && t.status != *s {
-                        return false;
-                    }
+                if let Some(ref s) = req.status
+                    && !s.is_empty()
+                    && t.status != *s
+                {
+                    return false;
                 }
-                if let Some(ref tt) = req.ticket_type {
-                    if !tt.is_empty() && t.ticket_type != *tt {
-                        return false;
-                    }
+                if let Some(ref tt) = req.ticket_type
+                    && !tt.is_empty()
+                    && t.ticket_type != *tt
+                {
+                    return false;
                 }
-                if let Some(ref pid) = req.parent_id {
-                    if !pid.is_empty() && t.parent_id != *pid {
-                        return false;
-                    }
+                if let Some(ref pid) = req.parent_id
+                    && !pid.is_empty()
+                    && t.parent_id != *pid
+                {
+                    return false;
                 }
                 true
             })
@@ -132,23 +139,23 @@ impl TicketService for MockTicketStore {
             .tickets
             .get_mut(&req.id)
             .ok_or_else(|| Status::not_found(format!("ticket not found: {}", req.id)))?;
-        if let Some(status) = req.status {
-            if !status.is_empty() {
-                ticket.status = status;
-            }
+        if let Some(status) = req.status
+            && !status.is_empty()
+        {
+            ticket.status = status;
         }
-        if let Some(title) = req.title {
-            if !title.is_empty() {
-                ticket.title = title;
-            }
+        if let Some(title) = req.title
+            && !title.is_empty()
+        {
+            ticket.title = title;
         }
         if let Some(priority) = req.priority {
             ticket.priority = priority;
         }
-        if let Some(body) = req.body {
-            if !body.is_empty() {
-                ticket.body = body;
-            }
+        if let Some(body) = req.body
+            && !body.is_empty()
+        {
+            ticket.body = body;
         }
         Ok(Response::new(UpdateTicketResponse {}))
     }
@@ -882,15 +889,17 @@ async fn auth_rejection_propagates_error() {
 
     let store_clone = store.clone();
     tokio::spawn(async move {
+        #[allow(clippy::result_large_err)]
         let interceptor = move |req: Request<()>| -> Result<Request<()>, Status> {
             let _ = req;
-            Err(Status::unauthenticated(
-                "missing ur-agent-id header",
-            ))
+            Err(Status::unauthenticated("missing ur-agent-id header"))
         };
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(TicketServiceServer::with_interceptor(store_clone, interceptor))
+            .add_service(TicketServiceServer::with_interceptor(
+                store_clone,
+                interceptor,
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -910,10 +919,15 @@ async fn auth_rejection_propagates_error() {
     )
     .await;
 
-    assert!(result.is_err(), "request to auth-gated server without credentials should fail");
+    assert!(
+        result.is_err(),
+        "request to auth-gated server without credentials should fail"
+    );
     let err_msg = format!("{:#}", result.unwrap_err());
     assert!(
-        err_msg.contains("unauthenticated") || err_msg.contains("Unauthenticated") || err_msg.contains("missing"),
+        err_msg.contains("unauthenticated")
+            || err_msg.contains("Unauthenticated")
+            || err_msg.contains("missing"),
         "error should indicate auth failure, got: {err_msg}"
     );
 }

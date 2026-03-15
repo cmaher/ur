@@ -159,23 +159,7 @@ where
             if activities.is_empty() {
                 println!("No activities found for {id}.");
             } else {
-                let mut out = String::new();
-                for a in &activities {
-                    if let Some(entry) = &a.entry {
-                        write!(out, "[{}] {}: {}", entry.timestamp, entry.author, entry.message)
-                            .unwrap();
-                        if !a.metadata.is_empty() {
-                            for m in &a.metadata {
-                                write!(out, "\n  {}: {}", m.key, m.value).unwrap();
-                            }
-                        }
-                        writeln!(out).unwrap();
-                    }
-                }
-                if out.ends_with('\n') {
-                    out.pop();
-                }
-                println!("{out}");
+                println!("{}", format_activities(&activities));
             }
         }
 
@@ -248,4 +232,27 @@ where
     }
 
     Ok(())
+}
+
+fn format_activities(activities: &[ActivityDetail]) -> String {
+    let mut out = String::new();
+    for a in activities {
+        let Some(entry) = &a.entry else {
+            continue;
+        };
+        write!(
+            out,
+            "[{}] {}: {}",
+            entry.timestamp, entry.author, entry.message
+        )
+        .unwrap();
+        for m in &a.metadata {
+            write!(out, "\n  {}: {}", m.key, m.value).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
