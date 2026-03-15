@@ -334,13 +334,14 @@ impl RepoPoolManager {
             .map_err(|e| format!("failed to create pool directory: {e}"))?;
 
         let host_slot = self.host_slot_path(project_key, slot_name);
-        let builderd_slot = self.to_builderd_path(&host_slot);
         let builderd_parent = self.to_builderd_path(&self.host_project_pool_dir(project_key));
 
+        // Use slot_name as relative path since CWD is the parent directory.
+        // builderd only resolves %WORKSPACE% in working_dir, not in args.
         self.builderd_client
             .exec_and_check(
                 "git",
-                &["clone", repo_url, &builderd_slot],
+                &["clone", repo_url, slot_name],
                 &builderd_parent,
             )
             .await
@@ -365,18 +366,17 @@ impl RepoPoolManager {
         slot_name: &str,
     ) -> Result<(), String> {
         let host_slot = self.host_slot_path(project_key, slot_name);
-        let builderd_slot = self.to_builderd_path(&host_slot);
         let builderd_parent = self.to_builderd_path(&self.host_project_pool_dir(project_key));
 
         // Remove the corrupted slot directory on the host.
         // Retries because macOS `rm -rf` can transiently fail with "Directory not
         // empty" when Spotlight or other background processes touch files during removal.
+        // Use slot_name as relative path since builderd only resolves %WORKSPACE% in working_dir.
         ur_utils::retry(3, Duration::from_secs(1), "rm -rf slot", || {
-            let slot = &builderd_slot;
             let parent = &builderd_parent;
             async move {
                 self.builderd_client
-                    .exec_and_check("rm", &["-rf", slot], parent)
+                    .exec_and_check("rm", &["-rf", slot_name], parent)
                     .await
             }
         })
