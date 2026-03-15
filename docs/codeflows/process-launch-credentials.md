@@ -39,7 +39,7 @@ Container: Claude Code reads ~/.claude/.credentials.json
 ## Process Launch Sequence
 
 ```
-ur process launch <ticket-id> [-w <workspace>] [-a] [-f]
+ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 
 1. CLI (host)
    ├── -f flag? → kill_container() (docker stop + rm)
@@ -120,5 +120,5 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 
 ## Manual Credential Management
 
-- `ur process save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
+- `ur worker save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
 - Delete `~/.ur/claude/.credentials.json` to force re-seeding from Keychain on next launch.

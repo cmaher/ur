@@ -329,7 +329,7 @@ fn e2e_ping_and_git() {
         let workspace_str = workspace_dir.to_str().unwrap();
         let launch_output = run_cmd(
             &ur,
-            &["process", "launch", "-w", workspace_str, ticket_id],
+            &["worker", "launch", "-w", workspace_str, ticket_id],
             &env,
         );
         assert!(
@@ -464,7 +464,7 @@ fn e2e_ping_and_git() {
         );
 
         // ---- (7) ur process stop ----
-        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id], &env);
+        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id], &env);
         assert!(
             stop_output.status.success(),
             "ur process stop failed.\nstdout: {}\nstderr: {}",
@@ -546,7 +546,7 @@ fn e2e_project_pool_launch() {
         // ---- (3) ur process launch -p <project> ----
         let launch_output = run_cmd(
             &ur,
-            &["process", "launch", "-p", project_key, ticket_id],
+            &["worker", "launch", "-p", project_key, ticket_id],
             &env,
         );
         assert!(
@@ -617,7 +617,7 @@ fn e2e_project_pool_launch() {
         );
 
         // ---- (7) ur process stop ----
-        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id], &env);
+        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id], &env);
         assert!(
             stop_output.status.success(),
             "ur process stop failed.\nstdout: {}\nstderr: {}",
@@ -704,7 +704,7 @@ fn e2e_design_mode_pool_launch() {
         let launch_output = run_cmd(
             &ur,
             &[
-                "process",
+                "worker",
                 "launch",
                 "-p",
                 project_key,
@@ -761,7 +761,7 @@ fn e2e_design_mode_pool_launch() {
         );
 
         // ---- (6) Stop first worker ----
-        let stop_output = run_cmd(&ur, &["process", "stop", ticket_id_1], &env);
+        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id_1], &env);
         assert!(
             stop_output.status.success(),
             "ur process stop failed.\nstdout: {}\nstderr: {}",
@@ -773,7 +773,7 @@ fn e2e_design_mode_pool_launch() {
         let launch2_output = run_cmd(
             &ur,
             &[
-                "process",
+                "worker",
                 "launch",
                 "-p",
                 project_key,
@@ -813,7 +813,7 @@ fn e2e_design_mode_pool_launch() {
         let code_launch = run_cmd(
             &ur,
             &[
-                "process",
+                "worker",
                 "launch",
                 "-p",
                 project_key,
@@ -838,7 +838,7 @@ fn e2e_design_mode_pool_launch() {
         );
 
         // Stop both workers
-        let stop2_output = run_cmd(&ur, &["process", "stop", ticket_id_2], &env);
+        let stop2_output = run_cmd(&ur, &["worker", "stop", ticket_id_2], &env);
         assert!(
             stop2_output.status.success(),
             "ur process stop (second design) failed.\nstdout: {}\nstderr: {}",
@@ -846,7 +846,7 @@ fn e2e_design_mode_pool_launch() {
             String::from_utf8_lossy(&stop2_output.stderr),
         );
 
-        let stop_code = run_cmd(&ur, &["process", "stop", code_ticket_id], &env);
+        let stop_code = run_cmd(&ur, &["worker", "stop", code_ticket_id], &env);
         assert!(
             stop_code.status.success(),
             "ur process stop (code) failed.\nstdout: {}\nstderr: {}",

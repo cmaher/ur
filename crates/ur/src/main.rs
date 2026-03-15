@@ -50,10 +50,10 @@ enum Commands {
     },
     /// Launch the TUI dashboard
     Tui,
-    /// Manage processes
-    Process {
+    /// Manage workers
+    Worker {
         #[command(subcommand)]
-        command: ProcessCommands,
+        command: WorkerCommands,
     },
     /// Manage tickets
     Ticket {
@@ -177,7 +177,7 @@ enum DbCommands {
 }
 
 #[derive(Subcommand)]
-enum ProcessCommands {
+enum WorkerCommands {
     /// Launch a new agent process
     Launch {
         ticket_id: String,
@@ -484,18 +484,18 @@ async fn process_stop(client: &mut CoreServiceClient<Channel>, process_id: &str)
 }
 
 #[instrument(skip(command, project_keys), fields(command_name = command_name(&command)))]
-async fn handle_process(
-    command: ProcessCommands,
+async fn handle_worker(
+    command: WorkerCommands,
     port: u16,
     agent_prefix: &str,
     project_keys: &[String],
 ) -> Result<()> {
     match command {
-        ProcessCommands::List => {
+        WorkerCommands::List => {
             let mut client = connect(port).await?;
             process_list(&mut client).await
         }
-        ProcessCommands::Attach { process_id, rm } => {
+        WorkerCommands::Attach { process_id, rm } => {
             let exit_code = process_attach(&process_id, agent_prefix)?;
             if rm {
                 println!("Stopping {process_id} (--rm)...");
@@ -504,11 +504,11 @@ async fn handle_process(
             }
             process::exit(exit_code);
         }
-        ProcessCommands::Kill { process_id } => {
+        WorkerCommands::Kill { process_id } => {
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
         }
-        ProcessCommands::SaveCredentials { process_id } => {
+        WorkerCommands::SaveCredentials { process_id } => {
             info!(process_id = %process_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
             let id = container::ContainerId(format!("{agent_prefix}{process_id}"));
@@ -520,7 +520,7 @@ async fn handle_process(
             }
             Ok(())
         }
-        ProcessCommands::Launch {
+        WorkerCommands::Launch {
             ticket_id,
             workspace,
             project,
@@ -604,21 +604,21 @@ async fn handle_process(
             }
             Ok(())
         }
-        ProcessCommands::Status { process_id } => {
+        WorkerCommands::Status { process_id } => {
             debug!(process_id = ?process_id, "querying process status");
             println!("Status: {process_id:?}");
             Ok(())
         }
-        ProcessCommands::Stop { process_id } => {
+        WorkerCommands::Stop { process_id } => {
             let mut client = connect(port).await?;
             process_stop(&mut client, &process_id).await
         }
-        ProcessCommands::Dir { process_id } => {
+        WorkerCommands::Dir { process_id } => {
             let dir = process_workspace_dir(port, &process_id).await?;
             println!("{dir}");
             Ok(())
         }
-        ProcessCommands::Vscode { process_id } => {
+        WorkerCommands::Vscode { process_id } => {
             let dir = process_workspace_dir(port, &process_id).await?;
             let status = process::Command::new("code")
                 .arg(&dir)
@@ -648,17 +648,17 @@ async fn process_workspace_dir(port: u16, process_id: &str) -> Result<String> {
 }
 
 /// Extract the subcommand name for span fields.
-fn command_name(cmd: &ProcessCommands) -> &'static str {
+fn command_name(cmd: &WorkerCommands) -> &'static str {
     match cmd {
-        ProcessCommands::Attach { .. } => "attach",
-        ProcessCommands::Kill { .. } => "kill",
-        ProcessCommands::List => "list",
-        ProcessCommands::SaveCredentials { .. } => "save_credentials",
-        ProcessCommands::Launch { .. } => "launch",
-        ProcessCommands::Status { .. } => "status",
-        ProcessCommands::Stop { .. } => "stop",
-        ProcessCommands::Dir { .. } => "dir",
-        ProcessCommands::Vscode { .. } => "vscode",
+        WorkerCommands::Attach { .. } => "attach",
+        WorkerCommands::Kill { .. } => "kill",
+        WorkerCommands::List => "list",
+        WorkerCommands::SaveCredentials { .. } => "save_credentials",
+        WorkerCommands::Launch { .. } => "launch",
+        WorkerCommands::Status { .. } => "status",
+        WorkerCommands::Stop { .. } => "stop",
+        WorkerCommands::Dir { .. } => "dir",
+        WorkerCommands::Vscode { .. } => "vscode",
     }
 }
 
@@ -704,9 +704,9 @@ async fn main() -> Result<()> {
             info!("launching TUI");
             println!("Launching TUI...");
         }
-        Commands::Process { command } => {
+        Commands::Worker { command } => {
             let project_keys: Vec<String> = config.projects.keys().cloned().collect();
-            handle_process(command, port, &config.network.agent_prefix, &project_keys).await?
+            handle_worker(command, port, &config.network.agent_prefix, &project_keys).await?
         }
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
