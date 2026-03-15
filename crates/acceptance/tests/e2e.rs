@@ -298,7 +298,7 @@ fn e2e_ping_and_git() {
     // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let daemon_port = 19876u16;
+    let daemon_port = 19860u16;
 
     write_test_config(config_path, daemon_port, &names, &[]);
 
@@ -513,7 +513,7 @@ fn e2e_project_pool_launch() {
     // ---- (1) Create bare git repo and test config with project ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let daemon_port = 19877u16; // different port from e2e_ping_and_git
+    let daemon_port = 19870u16; // spaced by 10 to avoid worker/builderd port overlap
 
     // Create bare repo before writing config (config needs the repo path)
     let bare_repo = create_bare_repo(config_path);
@@ -671,7 +671,7 @@ fn e2e_design_mode_pool_launch() {
     // ---- (1) Create bare git repo and test config with project ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let daemon_port = 19878u16; // unique port for this test
+    let daemon_port = 19880u16; // spaced by 10 to avoid worker/builderd port overlap
 
     let bare_repo = create_bare_repo(config_path);
 
@@ -891,7 +891,7 @@ fn e2e_rag_search() {
     // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path();
-    let daemon_port = 19879u16; // unique port for RAG test
+    let daemon_port = 19890u16; // spaced by 10 to avoid worker/builderd port overlap
 
     write_test_config(config_path, daemon_port, &names, &[]);
 
