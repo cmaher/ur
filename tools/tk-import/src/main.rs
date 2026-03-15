@@ -37,8 +37,8 @@ struct ParsedTicket {
 }
 
 fn parse_ticket_file(path: &Path) -> Result<ParsedTicket, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
 
     let content = content.trim_start();
     if !content.starts_with("---") {
@@ -332,7 +332,9 @@ async fn main() {
                 println!();
                 println!("Options:");
                 println!("  -t, --tickets <DIR>    Tickets directory (default: .tickets)");
-                println!("  -s, --server <ADDR>    Server address (default: http://127.0.0.1:42069)");
+                println!(
+                    "  -s, --server <ADDR>    Server address (default: http://127.0.0.1:42069)"
+                );
                 println!("  -n, --dry-run          Parse and show what would be imported");
                 println!("  -h, --help             Show this help");
                 return;

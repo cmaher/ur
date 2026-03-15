@@ -52,7 +52,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Epic One".into(),
         body: "First epic".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -64,7 +64,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Epic Two".into(),
         body: "Second epic".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -77,7 +77,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1A".into(),
         body: "First task in epic 1".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -89,7 +89,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1B".into(),
         body: "Second task in epic 1".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -101,7 +101,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1C".into(),
         body: "Third task in epic 1".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -128,7 +128,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-2".into()),
         title: "Task 2A".into(),
         body: "First task in epic 2".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -140,7 +140,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-2".into()),
         title: "Task 2B".into(),
         body: "Second task in epic 2".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -153,7 +153,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Standalone Task".into(),
         body: "No parent".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -223,7 +223,7 @@ async fn create_and_get_ticket() {
             parent_id: None,
             title: "Test ticket".into(),
             body: "A body".into(),
-        ..Default::default()
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -266,7 +266,7 @@ async fn create_ticket_with_parent() {
         parent_id: None,
         title: "Parent".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -279,7 +279,7 @@ async fn create_ticket_with_parent() {
             parent_id: Some("parent".into()),
             title: "Child".into(),
             body: "".into(),
-        ..Default::default()
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -304,7 +304,7 @@ async fn update_ticket_partial_fields() {
         parent_id: None,
         title: "Original".into(),
         body: "Original body".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -344,7 +344,7 @@ async fn update_ticket_clear_parent() {
         parent_id: None,
         title: "E".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -356,7 +356,7 @@ async fn update_ticket_clear_parent() {
         parent_id: Some("epic".into()),
         title: "C".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -546,7 +546,7 @@ async fn set_and_get_ticket_metadata() {
         parent_id: None,
         title: "Meta test".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -578,7 +578,7 @@ async fn set_meta_upserts_existing_key() {
         parent_id: None,
         title: "Upsert".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -765,7 +765,7 @@ async fn add_activity_returns_generated_fields() {
         parent_id: None,
         title: "Act".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -938,7 +938,7 @@ async fn dispatchable_tickets_empty_epic() {
         parent_id: None,
         title: "Empty".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
@@ -1001,7 +1001,7 @@ async fn epic_all_children_closed_true_for_no_children() {
         parent_id: None,
         title: "No kids".into(),
         body: "".into(),
-    ..Default::default()
+        ..Default::default()
     })
     .await
     .unwrap();
