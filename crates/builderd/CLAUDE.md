@@ -1,6 +1,6 @@
-# ur-hostd
+# builderd
 
-Host daemon for executing commands on the macOS host. Receives already-validated
+Builder daemon for executing commands on the macOS host. Receives already-validated
 requests from ur-server and spawns processes locally.
 
 - Standalone binary, runs natively on host (not containerized)

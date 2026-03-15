@@ -7,7 +7,7 @@ pub mod grpc_hostexec;
 pub mod grpc_server;
 #[cfg(feature = "ticket")]
 pub mod grpc_ticket;
-pub mod hostd_client;
+pub mod builderd_client;
 #[cfg(feature = "hostexec")]
 pub mod hostexec;
 pub mod logging;
@@ -23,7 +23,7 @@ pub mod stream;
 
 pub use backup::BackupTaskManager;
 pub use config::Config;
-pub use hostd_client::HostdClient;
+pub use builderd_client::BuilderdClient;
 pub use pool::RepoPoolManager;
 pub use process::{AgentContext, AgentId, ProcessConfig, ProcessManager};
 pub use proxy::SquidManager;

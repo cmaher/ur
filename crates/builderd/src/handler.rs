@@ -7,22 +7,22 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
 use ur_rpc::proto::core::CommandOutput;
-use ur_rpc::proto::hostd::HostDaemonExecRequest;
-use ur_rpc::proto::hostd::host_daemon_service_server::HostDaemonService;
+use ur_rpc::proto::builder::BuilderExecRequest;
+use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonService;
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
 
 #[derive(Clone)]
-pub struct HostDaemonHandler;
+pub struct BuilderDaemonHandler;
 
 #[tonic::async_trait]
-impl HostDaemonService for HostDaemonHandler {
+impl BuilderDaemonService for BuilderDaemonHandler {
     type ExecStream = CommandOutputStream;
 
     async fn exec(
         &self,
-        req: Request<HostDaemonExecRequest>,
+        req: Request<BuilderExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
         let req = req.into_inner();
 
@@ -85,8 +85,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_echo() {
-        let handler = HostDaemonHandler;
-        let req = Request::new(HostDaemonExecRequest {
+        let handler = BuilderDaemonHandler;
+        let req = Request::new(BuilderExecRequest {
             command: "echo".into(),
             args: vec!["hello".into()],
             working_dir: "/tmp".into(),
@@ -102,8 +102,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_nonexistent_command() {
-        let handler = HostDaemonHandler;
-        let req = Request::new(HostDaemonExecRequest {
+        let handler = BuilderDaemonHandler;
+        let req = Request::new(BuilderExecRequest {
             command: "nonexistent_command_xyz".into(),
             args: vec![],
             working_dir: "/tmp".into(),

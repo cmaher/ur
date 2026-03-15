@@ -52,7 +52,7 @@ pub async fn serve_worker_grpc(
     repo_registry: Arc<RepoRegistry>,
     projects: HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
-    #[cfg(feature = "hostexec")] hostd_addr: String,
+    #[cfg(feature = "hostexec")] builderd_addr: String,
     #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
     #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
 ) -> anyhow::Result<()> {
@@ -79,7 +79,7 @@ pub async fn serve_worker_grpc(
             repo_registry,
             process_manager,
             projects,
-            hostd_addr,
+            builderd_addr,
         };
 
         routes.add_service(HostExecServiceServer::with_interceptor(

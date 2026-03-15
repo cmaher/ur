@@ -668,7 +668,7 @@ mod tests {
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
-            crate::HostdClient::new("http://localhost:42070".into()),
+            crate::BuilderdClient::new("http://localhost:42070".into()),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),

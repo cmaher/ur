@@ -57,7 +57,7 @@ fn make_test_components(
         &config,
         workspace.clone(),
         workspace.clone(),
-        ur_server::HostdClient::new(format!(
+        ur_server::BuilderdClient::new(format!(
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_HOSTD_PORT
         )),
@@ -85,7 +85,7 @@ fn make_test_components(
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),
         hostexec_config,
-        hostd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_HOSTD_PORT),
+        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_HOSTD_PORT),
     };
     (process_manager, handler)
 }

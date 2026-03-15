@@ -10,7 +10,7 @@ use container::NetworkManager;
 use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
 use ur_server::{
-    BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry,
+    BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager, RepoRegistry,
 };
 
 #[derive(Parser)]
@@ -103,12 +103,12 @@ async fn main() -> anyhow::Result<()> {
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
 
-    let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
+    let builderd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
 
-    let hostd_client = HostdClient::new(hostd_addr.clone());
+    let builderd_client = BuilderdClient::new(builderd_addr.clone());
     let repo_pool_manager =
-        RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, hostd_client);
+        RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, builderd_client);
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "hostexec")]
         hostexec_config: hostexec_config.clone(),
         #[cfg(feature = "hostexec")]
-        hostd_addr: hostd_addr.clone(),
+        builderd_addr: builderd_addr.clone(),
     };
 
     let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
@@ -211,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "hostexec")]
         hostexec_config,
         #[cfg(feature = "hostexec")]
-        hostd_addr,
+        builderd_addr,
         #[cfg(feature = "rag")]
         rag_handler,
         #[cfg(feature = "ticket")]

@@ -4,13 +4,13 @@ use clap::Parser;
 use tonic::transport::Server;
 use tracing::info;
 
-use ur_rpc::proto::hostd::host_daemon_service_server::HostDaemonServiceServer;
+use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonServiceServer;
 
 mod handler;
 mod logging;
 
 #[derive(Parser)]
-#[command(name = "ur-hostd", about = "Ur host execution daemon")]
+#[command(name = "builderd", about = "Ur builder execution daemon")]
 struct Cli {
     #[arg(long, default_value_t = ur_config::DEFAULT_HOSTD_PORT)]
     port: u16,
@@ -27,11 +27,11 @@ async fn main() -> anyhow::Result<()> {
     info!(
         %addr,
         config_dir = %config_dir.display(),
-        "ur-hostd starting"
+        "builderd starting"
     );
 
     Server::builder()
-        .add_service(HostDaemonServiceServer::new(handler::HostDaemonHandler))
+        .add_service(BuilderDaemonServiceServer::new(handler::BuilderDaemonHandler))
         .serve(addr)
         .await?;
 

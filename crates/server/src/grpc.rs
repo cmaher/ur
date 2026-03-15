@@ -25,7 +25,7 @@ pub struct CoreServiceHandler {
     #[cfg(feature = "hostexec")]
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     #[cfg(feature = "hostexec")]
-    pub hostd_addr: String,
+    pub builderd_addr: String,
 }
 
 #[tonic::async_trait]

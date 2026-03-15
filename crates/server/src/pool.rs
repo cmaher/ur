@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use ur_config::{Config, ProjectConfig};
 
-use crate::HostdClient;
+use crate::BuilderdClient;
 
 /// Per-slot mutexes for serializing concurrent shared slot acquires.
 /// Keyed by (project_key, slot_name). Lock is held only during reset_slot,
@@ -19,7 +19,7 @@ type SharedLockMap = Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>;
 ///
 /// Directory layout: `$WORKSPACE/pool/<project-key>/<slot-name>/`
 ///
-/// Git operations (clone, fetch, reset) are executed on the host via ur-hostd,
+/// Git operations (clone, fetch, reset) are executed on the host via builderd,
 /// since the server runs inside a Docker container without SSH keys or git credentials.
 ///
 /// Supports two acquisition modes:
@@ -34,10 +34,10 @@ pub struct RepoPoolManager {
     /// Inside the server container this is `/workspace`.
     local_workspace: PathBuf,
     /// Host-side workspace path for returned slot paths (used in Docker volume
-    /// mounts and ur-hostd CWD). e.g., `~/.ur/workspace`.
+    /// mounts and builderd CWD). e.g., `~/.ur/workspace`.
     host_workspace: PathBuf,
-    /// Client for executing commands on the host via ur-hostd.
-    hostd_client: HostdClient,
+    /// Client for executing commands on the host via builderd.
+    builderd_client: BuilderdClient,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
     /// Set of slot paths (host-side) currently in use by running agents (exclusive slots only).
@@ -50,12 +50,12 @@ impl RepoPoolManager {
         config: &Config,
         local_workspace: PathBuf,
         host_workspace: PathBuf,
-        hostd_client: HostdClient,
+        builderd_client: BuilderdClient,
     ) -> Self {
         Self {
             local_workspace,
             host_workspace,
-            hostd_client,
+            builderd_client,
             projects: config.projects.clone(),
             in_use: Arc::new(RwLock::new(HashSet::new())),
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -82,7 +82,7 @@ impl RepoPoolManager {
         self.host_pool_root().join(project_key)
     }
 
-    /// Host-side path for a specific slot (returned for Docker mounts and hostd CWD).
+    /// Host-side path for a specific slot (returned for Docker mounts and builderd CWD).
     ///
     /// `slot_name` can be a numeric index (e.g., "0", "1") for exclusive slots
     /// or a named identifier (e.g., "design") for shared slots.
@@ -153,7 +153,7 @@ impl RepoPoolManager {
             slot_index = next_index,
             repo = %project.repo,
             host_path = %host_path.display(),
-            "cloning new pool slot via hostd"
+            "cloning new pool slot via builderd"
         );
 
         self.clone_slot(&project.repo, project_key, &slot_name)
@@ -225,7 +225,7 @@ impl RepoPoolManager {
                 slot_name,
                 repo = %project.repo,
                 host_path = %host_path.display(),
-                "cloning new shared pool slot via hostd"
+                "cloning new shared pool slot via builderd"
             );
             self.clone_slot(&project.repo, project_key, slot_name)
                 .await?;
@@ -295,10 +295,10 @@ impl RepoPoolManager {
         }
     }
 
-    /// Clone a repo into a new slot directory via ur-hostd.
+    /// Clone a repo into a new slot directory via builderd.
     ///
     /// Creates the parent directory locally (container-side, bind-mounted),
-    /// then sends `git clone` to hostd which runs on the host with SSH credentials.
+    /// then sends `git clone` to builderd which runs on the host with SSH credentials.
     ///
     /// `slot_name` can be a numeric index (e.g., "0") or a named identifier (e.g., "design").
     async fn clone_slot(
@@ -316,7 +316,7 @@ impl RepoPoolManager {
         let host_slot = self.host_slot_path(project_key, slot_name);
         let host_parent = self.host_project_pool_dir(project_key);
 
-        self.hostd_client
+        self.builderd_client
             .exec_and_check(
                 "git",
                 &["clone", repo_url, &host_slot.to_string_lossy()],
@@ -333,7 +333,7 @@ impl RepoPoolManager {
 
     /// Delete a corrupted slot and re-clone it from scratch.
     ///
-    /// Removes the slot directory via hostd (`rm -rf`), then clones fresh.
+    /// Removes the slot directory via builderd (`rm -rf`), then clones fresh.
     /// This recovers from any corruption (missing .git/config, partial clones, etc.).
     ///
     /// `slot_name` can be a numeric index (e.g., "0") or a named identifier (e.g., "design").
@@ -355,7 +355,7 @@ impl RepoPoolManager {
             let slot = &host_slot_str;
             let parent = &host_parent_str;
             async move {
-                self.hostd_client
+                self.builderd_client
                     .exec_and_check("rm", &["-rf", slot], parent)
                     .await
             }
@@ -374,7 +374,7 @@ impl RepoPoolManager {
             .map_err(|e| format!("reclone failed for slot {}: {e}", host_slot.display()))
     }
 
-    /// Reset an existing slot to a clean origin/master state via ur-hostd.
+    /// Reset an existing slot to a clean origin/master state via builderd.
     ///
     /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx && git submodule update --init --recursive`
     /// `host_slot_path` is the host-side path to the slot.
@@ -388,7 +388,7 @@ impl RepoPoolManager {
 
         let cwd = host_slot_path.to_string_lossy();
         for args in commands {
-            self.hostd_client
+            self.builderd_client
                 .exec_and_check("git", args, &cwd)
                 .await
                 .map_err(|e| {
@@ -408,7 +408,7 @@ impl RepoPoolManager {
     /// Initialize/update git submodules recursively if the repo has a `.gitmodules` file.
     ///
     /// Uses the local (container-side) path to check for `.gitmodules` existence,
-    /// then runs `git submodule update --init --recursive` on the host via hostd.
+    /// then runs `git submodule update --init --recursive` on the host via builderd.
     async fn init_submodules(&self, host_slot_path: &Path) -> Result<(), String> {
         let local_slot_path = self.host_to_local_path(host_slot_path);
 
@@ -419,7 +419,7 @@ impl RepoPoolManager {
 
         info!(path = %host_slot_path.display(), "initializing git submodules");
         let cwd = host_slot_path.to_string_lossy();
-        self.hostd_client
+        self.builderd_client
             .exec_and_check(
                 "git",
                 &["submodule", "update", "--init", "--recursive"],
@@ -436,7 +436,7 @@ impl RepoPoolManager {
 
     /// Trust mise configuration in a newly cloned slot if `mise.toml` exists.
     ///
-    /// Runs `mise trust` on the host via hostd. If mise is not installed or the
+    /// Runs `mise trust` on the host via builderd. If mise is not installed or the
     /// command fails, logs a warning and continues — mise trust is best-effort.
     async fn trust_mise(&self, host_slot_path: &Path) {
         let local_slot_path = self.host_to_local_path(host_slot_path);
@@ -449,7 +449,7 @@ impl RepoPoolManager {
         info!(path = %host_slot_path.display(), "trusting mise.toml in cloned slot");
         let cwd = host_slot_path.to_string_lossy();
         if let Err(e) = self
-            .hostd_client
+            .builderd_client
             .exec_and_check("mise", &["trust"], &cwd)
             .await
         {
@@ -498,7 +498,7 @@ mod tests {
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
-            hostd_client: HostdClient::new("http://localhost:42070".into()),
+            builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -634,7 +634,7 @@ mod tests {
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
-            hostd_client: HostdClient::new("http://localhost:42070".into()),
+            builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
             in_use: Arc::new(RwLock::new(HashSet::new())),
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
@@ -647,7 +647,7 @@ mod tests {
             PathBuf::from("/workspace/pool/proj")
         );
 
-        // Host paths for Docker mounts and hostd
+        // Host paths for Docker mounts and builderd
         assert_eq!(
             mgr.host_pool_root(),
             PathBuf::from("/home/user/.ur/workspace/pool")
@@ -675,11 +675,11 @@ mod tests {
         mgr.mark_in_use(&slot0);
         mgr.mark_in_use(&slot1);
 
-        // Acquire should try slot 2, which will fail on hostd connection (expected in
+        // Acquire should try slot 2, which will fail on builderd connection (expected in
         // unit tests — the important thing is it selects the right slot).
         // We test the selection logic by checking what the error says.
         let result = mgr.acquire_exclusive("testproj").await;
-        // The git reset via hostd will fail because there's no hostd running,
+        // The git reset via builderd will fail because there's no builderd running,
         // but the error should reference slot 2's path (proving correct selection).
         match result {
             Ok(path) => assert_eq!(path, slot2),
@@ -695,12 +695,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
-        // No slots exist on disk. Acquire should attempt git clone via hostd into slot 0.
-        // The clone will fail (no hostd running), but we verify the error propagates.
+        // No slots exist on disk. Acquire should attempt git clone via builderd into slot 0.
+        // The clone will fail (no builderd running), but we verify the error propagates.
         let result = mgr.acquire_exclusive("testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        // Should be a hostd/clone error (not "pool limit" or "unknown project")
+        // Should be a builderd/clone error (not "pool limit" or "unknown project")
         assert!(
             err.contains("git clone failed"),
             "expected clone error, got: {err}"
@@ -724,8 +724,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
-        // No slot exists on disk. acquire_shared should attempt git clone via hostd.
-        // The clone will fail (no hostd running), but we verify the right path is used.
+        // No slot exists on disk. acquire_shared should attempt git clone via builderd.
+        // The clone will fail (no builderd running), but we verify the right path is used.
         let result = mgr.acquire_shared("design", "testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -748,7 +748,7 @@ mod tests {
         std::fs::create_dir_all(&design_slot).unwrap();
 
         // acquire_shared should attempt to reset (not clone).
-        // The reset will fail (no hostd running), then it will attempt reclone.
+        // The reset will fail (no builderd running), then it will attempt reclone.
         let result = mgr.acquire_shared("design", "testproj").await;
         assert!(result.is_err());
         // The error comes from the reclone fallback path
@@ -768,7 +768,7 @@ mod tests {
         let design_slot = workspace.join("pool").join("testproj").join("design");
         std::fs::create_dir_all(&design_slot).unwrap();
 
-        // Even after acquire_shared (which will fail on hostd), the in_use set remains empty
+        // Even after acquire_shared (which will fail on builderd), the in_use set remains empty
         let _ = mgr.acquire_shared("design", "testproj").await;
         assert!(mgr.in_use.read().unwrap().is_empty());
     }
@@ -779,7 +779,7 @@ mod tests {
         let (mgr, workspace) = test_pool(tmp.path(), 10);
 
         // Both calls target the same named slot — they should produce the same host path.
-        // First call: slot doesn't exist, tries to clone (fails on hostd).
+        // First call: slot doesn't exist, tries to clone (fails on builderd).
         let result1 = mgr.acquire_shared("design", "testproj").await;
         assert!(result1.is_err());
 
@@ -787,7 +787,7 @@ mod tests {
         let design_slot = workspace.join("pool").join("testproj").join("design");
         std::fs::create_dir_all(&design_slot).unwrap();
 
-        // Second call: slot exists, tries to reset (fails on hostd), then reclone.
+        // Second call: slot exists, tries to reset (fails on builderd), then reclone.
         let result2 = mgr.acquire_shared("design", "testproj").await;
         assert!(result2.is_err());
 
@@ -805,7 +805,7 @@ mod tests {
         let design_slot = workspace.join("pool").join("testproj").join("design");
         std::fs::create_dir_all(&design_slot).unwrap();
 
-        // Attempt shared acquire (will fail on hostd, but that's fine)
+        // Attempt shared acquire (will fail on builderd, but that's fine)
         let _ = mgr.acquire_shared("design", "testproj").await;
 
         // scan_slots only counts numeric directories — "design" is ignored
@@ -817,7 +817,7 @@ mod tests {
         );
 
         // Exclusive acquire should still be allowed (pool_limit=1, no numeric slots exist)
-        // It will fail on hostd clone, but the error should be a clone error, not pool limit
+        // It will fail on builderd clone, but the error should be a clone error, not pool limit
         let result = mgr.acquire_exclusive("testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();

@@ -8,8 +8,8 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use ur_rpc::proto::core::CommandOutput;
-use ur_rpc::proto::hostd::HostDaemonExecRequest;
-use ur_rpc::proto::hostd::host_daemon_service_client::HostDaemonServiceClient;
+use ur_rpc::proto::builder::BuilderExecRequest;
+use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
     HostExecRequest, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
@@ -28,7 +28,7 @@ pub struct HostExecServiceHandler {
     pub repo_registry: Arc<RepoRegistry>,
     pub process_manager: ProcessManager,
     pub projects: HashMap<String, ur_config::ProjectConfig>,
-    pub hostd_addr: String,
+    pub builderd_addr: String,
 }
 
 #[tonic::async_trait]
@@ -81,15 +81,15 @@ impl HostExecService for HostExecServiceHandler {
             process_id,
             working_dir = transform_result.working_dir,
             args_count = transform_result.args.len(),
-            "host exec forwarding to hostd"
+            "host exec forwarding to builderd"
         );
 
-        // 4. Forward to ur-hostd
-        let mut client = HostDaemonServiceClient::connect(self.hostd_addr.clone())
+        // 4. Forward to builderd
+        let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
             .await
-            .map_err(|e| Status::unavailable(format!("hostd unavailable: {e}")))?;
+            .map_err(|e| Status::unavailable(format!("builderd unavailable: {e}")))?;
 
-        let hostd_req = HostDaemonExecRequest {
+        let builder_req = BuilderExecRequest {
             command: transform_result.command,
             args: transform_result.args,
             working_dir: transform_result.working_dir,
@@ -97,11 +97,11 @@ impl HostExecService for HostExecServiceHandler {
         };
 
         let response = client
-            .exec(hostd_req)
+            .exec(builder_req)
             .await
-            .map_err(|e| Status::internal(format!("hostd exec failed: {e}")))?;
+            .map_err(|e| Status::internal(format!("builderd exec failed: {e}")))?;
 
-        // Stream hostd response back to worker
+        // Stream builderd response back to worker
         let mut inbound = response.into_inner();
         let (tx, rx) = mpsc::channel(32);
 
@@ -286,7 +286,7 @@ mod tests {
             &config,
             workspace.to_path_buf(),
             workspace.to_path_buf(),
-            crate::HostdClient::new("http://localhost:42070".into()),
+            crate::BuilderdClient::new("http://localhost:42070".into()),
         );
         let network_manager = container::NetworkManager::new(
             "docker".into(),
@@ -324,7 +324,7 @@ mod tests {
             repo_registry: registry,
             process_manager,
             projects: HashMap::new(),
-            hostd_addr: "http://localhost:42070".into(),
+            builderd_addr: "http://localhost:42070".into(),
         }
     }
 
