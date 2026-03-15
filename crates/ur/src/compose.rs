@@ -314,7 +314,10 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             config.workspace.to_string_lossy().into_owned(),
         ),
         ("UR_SERVER_PORT".to_string(), config.daemon_port.to_string()),
-        ("UR_BUILDERD_PORT".to_string(), config.builderd_port.to_string()),
+        (
+            "UR_BUILDERD_PORT".to_string(),
+            config.builderd_port.to_string(),
+        ),
     ];
 
     // Forward UR_CONTAINER if set so compose can potentially use it
