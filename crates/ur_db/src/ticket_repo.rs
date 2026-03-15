@@ -179,7 +179,7 @@ impl TicketRepo {
                 String,
                 String,
             ),
-        >(&query);
+        >(sqlx::AssertSqlSafe(query));
         for bind in &binds {
             q = q.bind(bind);
         }
@@ -437,7 +437,7 @@ impl TicketRepo {
         let query = format!(
             "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
         );
-        let mut q = sqlx::query_scalar::<_, i32>(&query);
+        let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query));
         for blocker_id in &blockers {
             q = q.bind(blocker_id);
         }
