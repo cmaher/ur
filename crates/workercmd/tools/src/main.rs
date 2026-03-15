@@ -93,13 +93,21 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
         working_dir,
     });
 
-    // Inject agent ID metadata header if available
+    // Inject agent ID and secret metadata headers if available
     if let Ok(agent_id) = std::env::var(ur_config::UR_AGENT_ID_ENV)
         && let Ok(val) = agent_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
     {
         request
             .metadata_mut()
             .insert(ur_config::AGENT_ID_HEADER, val);
+    }
+    if let Ok(agent_secret) = std::env::var(ur_config::UR_AGENT_SECRET_ENV)
+        && let Ok(val) =
+            agent_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_SECRET_HEADER, val);
     }
 
     let response = match client.exec(request).await {
@@ -163,14 +171,30 @@ async fn run_rag_search(query: &str, language: &str, top_k: u32) -> i32 {
 
     let mut client = RagServiceClient::new(channel);
 
-    let resp = match client
-        .rag_search(RagSearchRequest {
-            query: query.to_owned(),
-            language: lang.into(),
-            top_k: Some(top_k),
-        })
-        .await
+    let mut request = tonic::Request::new(RagSearchRequest {
+        query: query.to_owned(),
+        language: lang.into(),
+        top_k: Some(top_k),
+    });
+
+    // Inject agent ID and secret metadata headers if available
+    if let Ok(agent_id) = std::env::var(ur_config::UR_AGENT_ID_ENV)
+        && let Ok(val) = agent_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
     {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_ID_HEADER, val);
+    }
+    if let Ok(agent_secret) = std::env::var(ur_config::UR_AGENT_SECRET_ENV)
+        && let Ok(val) =
+            agent_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_SECRET_HEADER, val);
+    }
+
+    let resp = match client.rag_search(request).await {
         Ok(resp) => resp,
         Err(status) => {
             eprintln!("rag search: {}", status.message());

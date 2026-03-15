@@ -221,6 +221,7 @@ mod tests {
                 server_hostname: "ur-server".to_string(),
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
             },
+            worker_port: 10000,
             hostd_port: ur_config::DEFAULT_HOSTD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
             rag: ur_config::RagConfig {

@@ -74,6 +74,7 @@ fn make_grpc_handler(
             enabled: true,
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         },
+        worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         projects: std::collections::HashMap::new(),
     };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
@@ -92,6 +93,7 @@ fn make_grpc_handler(
         repo_pool_manager.clone(),
         network_manager,
         network_config,
+        ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(

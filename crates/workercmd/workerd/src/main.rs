@@ -138,13 +138,21 @@ async fn try_fetch_commands(addr: &str) -> Result<Vec<String>> {
 
     let mut request = tonic::Request::new(ListHostExecCommandsRequest {});
 
-    // Inject agent ID metadata header if available
+    // Inject agent ID and secret metadata headers if available
     if let Ok(agent_id) = std::env::var(ur_config::UR_AGENT_ID_ENV)
         && let Ok(val) = agent_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
     {
         request
             .metadata_mut()
             .insert(ur_config::AGENT_ID_HEADER, val);
+    }
+    if let Ok(agent_secret) = std::env::var(ur_config::UR_AGENT_SECRET_ENV)
+        && let Ok(val) =
+            agent_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::AGENT_SECRET_HEADER, val);
     }
 
     let resp = client.list_commands(request).await?;
