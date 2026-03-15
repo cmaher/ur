@@ -3608,6 +3608,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ticket_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tonic 0.13.1",
+ "ur_rpc",
+]
+
+[[package]]
 name = "tiff"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4142,6 +4152,7 @@ dependencies = [
  "fs4",
  "glob",
  "tempfile",
+ "ticket_client",
  "tokio",
  "toml",
  "toml_edit",
@@ -4210,20 +4221,6 @@ dependencies = [
  "ur_rpc",
  "ur_utils",
  "uuid",
-]
-
-[[package]]
-name = "ur-workerd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "tokio",
- "tonic 0.13.1",
- "tracing",
- "tracing-subscriber",
- "ur_config",
- "ur_rpc",
 ]
 
 [[package]]
@@ -4922,7 +4919,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "workercmd-tools"
+name = "workerd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tokio",
+ "tonic 0.13.1",
+ "tracing",
+ "tracing-subscriber",
+ "ur_config",
+ "ur_rpc",
+]
+
+[[package]]
+name = "workertools"
 version = "0.1.0"
 dependencies = [
  "clap",

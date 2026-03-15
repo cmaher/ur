@@ -1,6 +1,6 @@
 # ur-server (Server)
 
-Long-running server process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workercmd` binaries).
+Long-running server process. Auto-spawned by `ur` on first use (not a launchd service). Listens on TCP via tonic gRPC, serves both host CLI (`ur`) and in-container workers (`workertools` and `workerd` binaries).
 
 - Docker runtime is created via `container::runtime_from_env()` (supports docker and nerdctl)
 - Each RPC handler instantiates its own runtime via `runtime_from_env()` — there is no shared runtime state yet

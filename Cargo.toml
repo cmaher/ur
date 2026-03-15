@@ -12,7 +12,9 @@ members = [
     "crates/ur_rpc",
     "crates/ur_utils",
     "crates/server",
-    "crates/workercmd/*",
+    "crates/ur-ping",
+    "crates/workerd",
+    "crates/workertools",
 ]
 default-members = [
     "crates/container",
@@ -22,8 +24,8 @@ default-members = [
     "crates/ur_rpc",
     "crates/ur_utils",
     "crates/server",
-    "crates/workercmd/tools",
-    "crates/workercmd/workerd",
+    "crates/workerd",
+    "crates/workertools",
 ]
 
 [workspace.package]

@@ -19,7 +19,7 @@ const INITIAL_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 5000;
 
 #[derive(Parser)]
-#[command(name = "ur-workerd", about = "Ur worker daemon")]
+#[command(name = "workerd", about = "Ur worker daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 
 /// Synchronous initialization: skills, git hooks, and hostexec shim creation.
 async fn run_init() -> Result<()> {
-    info!("ur-workerd init starting");
+    info!("workerd init starting");
 
     // Initialize skills
     let skills_manager = init_skills::InitSkillsManager::from_env();
@@ -81,7 +81,7 @@ async fn run_init() -> Result<()> {
 
 /// Background daemon loop. Stays alive for future daemon uses.
 async fn run_daemon() -> Result<()> {
-    info!("ur-workerd daemon starting");
+    info!("workerd daemon starting");
     loop {
         tokio::time::sleep(Duration::from_secs(3600)).await;
     }
@@ -161,7 +161,7 @@ async fn try_fetch_commands(addr: &str) -> Result<Vec<String>> {
 
 async fn create_shim(shim_dir: &Path, command: &str) -> Result<()> {
     let shim_path = shim_dir.join(command);
-    let content = format!("#!/bin/sh\nexec ur-tools host-exec {command} \"$@\"\n");
+    let content = format!("#!/bin/sh\nexec workertools host-exec {command} \"$@\"\n");
 
     debug!(command, path = %shim_path.display(), "writing shim");
 

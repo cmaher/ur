@@ -1,15 +1,15 @@
 [package]
-name = "workercmd-tools"
+name = "workertools"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "ur-tools"
+name = "workertools"
 path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
-ur_config = { path = "../../ur_config" }
-ur_rpc = { path = "../../ur_rpc", features = ["core", "hostexec", "rag"] }
+ur_config = { path = "../ur_config" }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "rag"] }

@@ -81,7 +81,7 @@ pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 pub const UR_AGENT_ID_ENV: &str = "UR_AGENT_ID";
 
 /// gRPC metadata header key for the agent ID.
-/// Sent by ur-tools and workerd on every request so the server can identify
+/// Sent by workertools and workerd on every request so the server can identify
 /// which agent is making the call.
 pub const AGENT_ID_HEADER: &str = "ur-agent-id";
 
@@ -90,7 +90,7 @@ pub const AGENT_ID_HEADER: &str = "ur-agent-id";
 pub const UR_AGENT_SECRET_ENV: &str = "UR_AGENT_SECRET";
 
 /// gRPC metadata header key for the agent secret.
-/// Sent by ur-tools on every request to the worker server for authentication.
+/// Sent by workertools on every request to the worker server for authentication.
 pub const AGENT_SECRET_HEADER: &str = "ur-agent-secret";
 
 /// Environment variable: Claude credentials JSON blob injected into containers.

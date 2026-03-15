@@ -10,7 +10,7 @@ use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
 
 #[derive(Parser)]
-#[command(name = "ur-tools", about = "Ur worker toolkit")]
+#[command(name = "workertools", about = "Ur worker toolkit")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

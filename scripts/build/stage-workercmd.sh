@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Cross-compile workercmd binaries for linux-gnu and stage for Dockerfile
+# Cross-compile worker binaries for linux-gnu and stage for Dockerfile
 # Requires: zig + cargo-zigbuild
 
 ARCH=$(uname -m)
@@ -11,13 +11,13 @@ case "$ARCH" in
     *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 
-echo "Cross-compiling workercmd binaries for $TARGET"
-cargo zigbuild --release --target "$TARGET" -p ur-ping -p workercmd-tools -p ur-workerd
+echo "Cross-compiling worker binaries for $TARGET"
+cargo zigbuild --release --target "$TARGET" -p ur-ping -p workertools -p workerd
 
 DEST=containers/claude-worker
 cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
-cp "target/$TARGET/release/ur-tools" "$DEST/ur-tools"
-cp "target/$TARGET/release/ur-workerd" "$DEST/ur-workerd"
+cp "target/$TARGET/release/workertools" "$DEST/workertools"
+cp "target/$TARGET/release/workerd" "$DEST/workerd"
 
 rm -f "$DEST/tk"
 TK_PATH=$(which tk 2>/dev/null || true)
@@ -29,4 +29,4 @@ else
     echo "Staged tk stub (real tk not found)"
 fi
 
-echo "Staged workercmd binaries in $DEST/"
+echo "Staged worker binaries in $DEST/"
