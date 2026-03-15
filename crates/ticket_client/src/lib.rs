@@ -7,6 +7,11 @@ pub use execute::execute;
 pub use format::{format_ticket_detail, format_ticket_list};
 
 #[cfg(test)]
+mod format_tests;
+#[cfg(test)]
+mod grpc_tests;
+
+#[cfg(test)]
 mod tests {
     use clap::Parser;
 
