@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:rerun-if-changed=../../proto/core.proto");
     println!("cargo:rerun-if-changed=../../proto/hostexec.proto");
-    println!("cargo:rerun-if-changed=../../proto/hostd.proto");
+    println!("cargo:rerun-if-changed=../../proto/builder.proto");
     println!("cargo:rerun-if-changed=../../proto/rag.proto");
     println!("cargo:rerun-if-changed=../../proto/ticket.proto");
 
@@ -19,8 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         protos.push(proto_dir.join("hostexec.proto"));
     }
 
-    if cfg!(feature = "hostd") {
-        protos.push(proto_dir.join("hostd.proto"));
+    if cfg!(feature = "builder") {
+        protos.push(proto_dir.join("builder.proto"));
     }
 
     if cfg!(feature = "rag") {

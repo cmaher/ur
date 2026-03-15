@@ -5,9 +5,9 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-const LOG_FILE: &str = "hostd.log";
+const LOG_FILE: &str = "builderd.log";
 
-/// Initialize structured JSON logging to `<config_dir>/hostd.log`.
+/// Initialize structured JSON logging to `<config_dir>/builderd.log`.
 ///
 /// Returns a [`WorkerGuard`] that **must** be held for the lifetime of the
 /// program — dropping it flushes and stops the background writer.

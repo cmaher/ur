@@ -1,11 +1,11 @@
 [package]
-name = "ur-hostd"
+name = "builderd"
 edition.workspace = true
 version.workspace = true
 
 [dependencies]
 anyhow = "1"
-clap = { workspace = true }
+clap = { workspace = true, features = ["env"] }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -14,4 +14,4 @@ tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostd", "stream"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "builder", "stream"] }

@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use tonic::transport::Server;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
+use crate::ProcessManager;
 use crate::grpc::CoreServiceHandler;
-use crate::{ProcessManager, RepoRegistry};
 
 /// Start the host gRPC server on a TCP socket.
 ///
@@ -49,10 +48,10 @@ pub async fn serve_grpc(
 pub async fn serve_worker_grpc(
     addr: SocketAddr,
     process_manager: ProcessManager,
-    repo_registry: Arc<RepoRegistry>,
     projects: HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
-    #[cfg(feature = "hostexec")] hostd_addr: String,
+    #[cfg(feature = "hostexec")] builderd_addr: String,
+    #[cfg(feature = "hostexec")] host_workspace: std::path::PathBuf,
     #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
     #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
 ) -> anyhow::Result<()> {
@@ -76,10 +75,10 @@ pub async fn serve_worker_grpc(
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             config: hostexec_config,
             lua: crate::hostexec::LuaTransformManager::new(),
-            repo_registry,
             process_manager,
             projects,
-            hostd_addr,
+            builderd_addr,
+            host_workspace,
         };
 
         routes.add_service(HostExecServiceServer::with_interceptor(

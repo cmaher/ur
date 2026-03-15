@@ -3,7 +3,7 @@
 ## Overview
 
 Workers execute host commands (git, gh, tk, etc.) through a three-hop gRPC pipeline
-with Lua-based validation and CWD mapping.
+with Lua-based validation and `%WORKSPACE%` CWD templating.
 
 ## Flow
 
@@ -12,11 +12,11 @@ with Lua-based validation and CWD mapping.
 3. `workertools` captures CWD, sends `HostExecRequest` to ur-server (per-agent gRPC)
 4. ur-server `HostExecServiceHandler`:
    a. Checks command against merged allowlist (defaults + `[hostexec.commands]` from ur.toml)
-   b. Maps CWD: /workspace/... -> host workspace path via RepoRegistry
+   b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)
    c. Runs Lua transform if configured (validates/modifies args)
-   d. Forwards `HostDaemonExecRequest` to ur-hostd
-5. ur-hostd spawns the actual process on the host, streams CommandOutput
-6. Output streams back: ur-hostd -> ur-server -> workertools -> stdout/stderr
+   d. Forwards `BuilderDaemonExecRequest` to builderd
+5. builderd resolves `%WORKSPACE%` to its local workspace path (from env var or CLI flag), spawns the actual process
+6. Output streams back: builderd -> ur-server -> workertools -> stdout/stderr
 
 ## Shim Generation
 
@@ -30,12 +30,12 @@ creates bash shims in `/home/worker/.local/bin/` (on PATH, writable by worker us
 - Per-project passthrough commands: `hostexec = ["tk", "make"]` in `ur.toml` `[projects.<key>]`
 - Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from `[hostexec.commands]`)
 - Passthrough commands: `command = {}` in `[hostexec.commands]` (no Lua transform)
-- Merge order: built-in defaults → global `[hostexec.commands]` → per-project hostexec list (passthrough only, does not override existing commands)
+- Merge order: built-in defaults -> global `[hostexec.commands]` -> per-project hostexec list (passthrough only, does not override existing commands)
 
 ## Key Files
 
-- Proto: proto/hostexec.proto, proto/hostd.proto
+- Proto: proto/hostexec.proto, proto/builder.proto
 - Server handler: crates/server/src/grpc_hostexec.rs
 - Config: crates/server/src/hostexec/
-- Host daemon: crates/hostd/
+- Builder daemon: crates/builderd/
 - Worker tools: crates/workertools/, crates/workerd/

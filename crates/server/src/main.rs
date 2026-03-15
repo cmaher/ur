@@ -10,7 +10,7 @@ use container::NetworkManager;
 use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
 use ur_server::{
-    BackupTaskManager, Config, HostdClient, ProcessManager, RepoPoolManager, RepoRegistry,
+    BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager, RepoRegistry,
 };
 
 #[derive(Parser)]
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // When running in a container, the workspace is mounted at /workspace.
-    // Use UR_HOST_WORKSPACE for host-side paths (ur-hostd CWD mapping),
+    // Use UR_HOST_WORKSPACE for host-side paths (builderd CWD mapping),
     // and the mount point for local filesystem operations (mkdir, git init).
     let host_workspace = std::env::var(ur_config::UR_HOST_WORKSPACE_ENV)
         .map(PathBuf::from)
@@ -103,12 +103,16 @@ async fn main() -> anyhow::Result<()> {
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
 
-    let hostd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
+    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
-    let hostd_client = HostdClient::new(hostd_addr.clone());
-    let repo_pool_manager =
-        RepoPoolManager::new(&cfg, local_workspace.clone(), host_workspace, hostd_client);
+    let builderd_client = BuilderdClient::new(builderd_addr.clone());
+    let repo_pool_manager = RepoPoolManager::new(
+        &cfg,
+        local_workspace.clone(),
+        host_workspace.clone(),
+        builderd_client,
+    );
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
@@ -188,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "hostexec")]
         hostexec_config: hostexec_config.clone(),
         #[cfg(feature = "hostexec")]
-        hostd_addr: hostd_addr.clone(),
+        builderd_addr: builderd_addr.clone(),
     };
 
     let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
@@ -206,12 +210,13 @@ async fn main() -> anyhow::Result<()> {
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         process_manager,
-        repo_registry,
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,
         #[cfg(feature = "hostexec")]
-        hostd_addr,
+        builderd_addr,
+        #[cfg(feature = "hostexec")]
+        host_workspace,
         #[cfg(feature = "rag")]
         rag_handler,
         #[cfg(feature = "ticket")]

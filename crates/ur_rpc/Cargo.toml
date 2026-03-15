@@ -14,7 +14,7 @@ tracing = { workspace = true, optional = true }
 default = ["core"]
 core = []
 hostexec = []
-hostd = []
+builder = []
 rag = []
 ticket = []
 stream = ["dep:tokio", "dep:tracing"]

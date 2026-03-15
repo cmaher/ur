@@ -631,7 +631,7 @@ mod tests {
             config_dir: workspace_path.to_path_buf(),
             workspace: workspace_path.to_path_buf(),
             daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+            builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
             compose_file: workspace_path.join("docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
                 hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
@@ -668,7 +668,7 @@ mod tests {
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
-            crate::HostdClient::new("http://localhost:42070".into()),
+            crate::BuilderdClient::new("http://localhost:42070".into()),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),

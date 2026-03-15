@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the ur CLI and ur-hostd binaries and install them.
+# Build the ur CLI and builderd binaries and install them.
 # ur-server is started via `ur start`.
 # Set UR_BUILD_PROFILE=debug for debug builds (default: release).
 # Set UR_INSTALL_DIR to override the install directory (default: ~/.local/bin).
@@ -10,10 +10,10 @@ PROFILE="${UR_BUILD_PROFILE:-release}"
 INSTALL_DIR="${UR_INSTALL_DIR:-$HOME/.local/bin}"
 
 if [ "$PROFILE" = "debug" ]; then
-    cargo build -p ur -p ur-hostd
+    cargo build -p ur -p builderd
     TARGET_DIR="target/debug"
 else
-    cargo build --release -p ur -p ur-hostd
+    cargo build --release -p ur -p builderd
     TARGET_DIR="target/release"
 fi
 
@@ -27,10 +27,10 @@ mkdir -p "$INSTALL_DIR" "$HOME/.ur/logs"
 # Remove before copying: macOS caches code signature page hashes for running
 # binaries. Overwriting in-place (cp) invalidates the cache, causing the kernel
 # to SIGKILL the new binary on exec. Removing first creates a new inode.
-rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/ur-hostd"
+rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/builderd"
 cp "$TARGET_DIR/ur" "$INSTALL_DIR/ur"
-cp "$TARGET_DIR/ur-hostd" "$INSTALL_DIR/ur-hostd"
-echo "Installed ur and ur-hostd to $INSTALL_DIR/"
+cp "$TARGET_DIR/builderd" "$INSTALL_DIR/builderd"
+echo "Installed ur and builderd to $INSTALL_DIR/"
 echo "Run 'ur start' to launch the server"
 
 # Download the default embedding model for RAG if not already cached.

@@ -59,20 +59,30 @@ description = "Build ur-server binary for linux-musl (Alpine) and stage for Dock
 script_runner = "@shell"
 script = ["scripts/build/stage-server-native.sh"]
 
+[tasks.stage-builderd]
+description = "Cross-compile builderd binary for linux-gnu (aarch64) and stage for container build context (requires zig + cargo-zigbuild)"
+script_runner = "@shell"
+script = ["scripts/build/stage-builderd.sh"]
+
+[tasks.stage-builderd-native]
+description = "Build builderd binary for linux-gnu (aarch64) and stage for container build context (for Linux CI, requires zig + cargo-zigbuild)"
+script_runner = "@shell"
+script = ["scripts/build/stage-builderd-native.sh"]
+
 [tasks.image]
 description = "Build all container images (worker + server)"
-dependencies = ["stage-workercmd", "stage-server"]
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.image-native]
 description = "Build all container images using native compilation (for Linux CI)"
-dependencies = ["stage-workercmd-native", "stage-server-native"]
+dependencies = ["stage-workercmd-native", "stage-server-native", "stage-builderd-native"]
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.install]
-description = "Build ur CLI + ur-hostd, install to UR_INSTALL_DIR (default ~/bin), and build all container images"
+description = "Build ur CLI + builderd, install to UR_INSTALL_DIR (default ~/bin), and build all container images"
 dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]

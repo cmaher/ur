@@ -14,7 +14,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 |-------|------|---------|-------------|
 | `workspace` | path | `<config_dir>/workspace` | Agent workspace directory (host-side) |
 | `daemon_port` | u16 | 42069 | TCP port for ur→server gRPC |
-| `hostd_port` | u16 | 42070 | TCP port for hostd |
+| `builderd_port` | u16 | `daemon_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
 
 ## `[proxy]` Section

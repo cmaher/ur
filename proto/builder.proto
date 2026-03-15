@@ -1,0 +1,17 @@
+syntax = "proto3";
+package ur.builder;
+import "core.proto";
+
+service BuilderDaemonService {
+  rpc Exec(BuilderExecRequest) returns (stream ur.core.CommandOutput);
+}
+
+message BuilderExecRequest {
+  string command = 1;
+  repeated string args = 2;
+  // The working directory for the command. Accepts `%WORKSPACE%` template
+  // variables which are resolved by the builder daemon to its local workspace
+  // path. Actual resolution logic is handled separately from this proto definition.
+  string working_dir = 3;
+  map<string, string> env = 4;
+}

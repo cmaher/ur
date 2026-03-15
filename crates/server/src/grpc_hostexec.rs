@@ -1,22 +1,21 @@
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
+use ur_rpc::proto::builder::BuilderExecRequest;
+use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::core::CommandOutput;
-use ur_rpc::proto::hostd::HostDaemonExecRequest;
-use ur_rpc::proto::hostd::host_daemon_service_client::HostDaemonServiceClient;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
     HostExecRequest, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
 };
 
+use crate::ProcessManager;
 use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
-use crate::{ProcessManager, RepoRegistry};
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -25,10 +24,10 @@ type CommandOutputStream =
 pub struct HostExecServiceHandler {
     pub config: HostExecConfigManager,
     pub lua: LuaTransformManager,
-    pub repo_registry: Arc<RepoRegistry>,
     pub process_manager: ProcessManager,
     pub projects: HashMap<String, ur_config::ProjectConfig>,
-    pub hostd_addr: String,
+    pub builderd_addr: String,
+    pub host_workspace: std::path::PathBuf,
 }
 
 #[tonic::async_trait]
@@ -53,8 +52,10 @@ impl HostExecService for HostExecServiceHandler {
             Status::permission_denied(format!("command not allowed: {}", req.command))
         })?;
 
-        // 2. CWD mapping: /workspace prefix -> host workspace path
-        let host_working_dir = self.map_working_dir(&process_id, &req.working_dir)?;
+        // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution.
+        // For pool workers, /workspace maps to a specific slot subdirectory, not the root.
+        let slot_path = agent_context.as_ref().map(|ctx| ctx.slot_path.as_path());
+        let host_working_dir = self.map_working_dir(&req.working_dir, slot_path)?;
 
         // 3. Lua transform (if configured)
         let transform_result = if let Some(lua_source) = &cmd_config.lua_source {
@@ -81,15 +82,15 @@ impl HostExecService for HostExecServiceHandler {
             process_id,
             working_dir = transform_result.working_dir,
             args_count = transform_result.args.len(),
-            "host exec forwarding to hostd"
+            "host exec forwarding to builderd"
         );
 
-        // 4. Forward to ur-hostd
-        let mut client = HostDaemonServiceClient::connect(self.hostd_addr.clone())
+        // 4. Forward to builderd
+        let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
             .await
-            .map_err(|e| Status::unavailable(format!("hostd unavailable: {e}")))?;
+            .map_err(|e| Status::unavailable(format!("builderd unavailable: {e}")))?;
 
-        let hostd_req = HostDaemonExecRequest {
+        let builder_req = BuilderExecRequest {
             command: transform_result.command,
             args: transform_result.args,
             working_dir: transform_result.working_dir,
@@ -97,11 +98,11 @@ impl HostExecService for HostExecServiceHandler {
         };
 
         let response = client
-            .exec(hostd_req)
+            .exec(builder_req)
             .await
-            .map_err(|e| Status::internal(format!("hostd exec failed: {e}")))?;
+            .map_err(|e| Status::internal(format!("builderd exec failed: {e}")))?;
 
-        // Stream hostd response back to worker
+        // Stream builderd response back to worker
         let mut inbound = response.into_inner();
         let (tx, rx) = mpsc::channel(32);
 
@@ -207,147 +208,101 @@ impl HostExecServiceHandler {
         Ok((process_id, agent_context, config))
     }
 
+    /// Map container CWD to a `%WORKSPACE%` template path for builderd.
+    ///
+    /// For workspace mounts (`-w`), `/workspace/foo` maps to `%WORKSPACE%/foo`.
+    /// For pool mounts (`-p`), `/workspace/foo` maps to `%WORKSPACE%/<slot_relative>/foo`
+    /// where `slot_relative` is the slot's path relative to `host_workspace`.
     #[allow(clippy::result_large_err)]
-    fn map_working_dir(&self, process_id: &str, container_dir: &str) -> Result<String, Status> {
-        let host_base = self
-            .repo_registry
-            .resolve(process_id)
-            .map_err(Status::not_found)?;
-
-        let host_base_str = host_base.to_string_lossy();
-
-        // Replace /workspace prefix with host workspace path
-        let Some(suffix) = container_dir.strip_prefix("/workspace") else {
-            return Err(Status::invalid_argument(format!(
-                "working_dir must start with /workspace: {container_dir}"
-            )));
-        };
-
-        if !suffix.is_empty() && !suffix.starts_with('/') {
-            return Err(Status::invalid_argument(format!(
-                "invalid working_dir: {container_dir}"
-            )));
-        }
-
-        let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
-        if suffix.is_empty() {
-            Ok(host_base_str.into_owned())
-        } else {
-            Ok(format!("{host_base_str}/{suffix}"))
-        }
+    fn map_working_dir(
+        &self,
+        container_dir: &str,
+        slot_path: Option<&std::path::Path>,
+    ) -> Result<String, Status> {
+        map_working_dir_impl(container_dir, slot_path, &self.host_workspace)
     }
+}
+
+/// Map container CWD to a `%WORKSPACE%` template path for builderd (implementation).
+///
+/// Extracted as a free function for testability.
+#[allow(clippy::result_large_err)]
+fn map_working_dir_impl(
+    container_dir: &str,
+    slot_path: Option<&std::path::Path>,
+    host_workspace: &std::path::Path,
+) -> Result<String, Status> {
+    let Some(suffix) = container_dir.strip_prefix("/workspace") else {
+        return Err(Status::invalid_argument(format!(
+            "working_dir must start with /workspace: {container_dir}"
+        )));
+    };
+
+    if !suffix.is_empty() && !suffix.starts_with('/') {
+        return Err(Status::invalid_argument(format!(
+            "invalid working_dir: {container_dir}"
+        )));
+    }
+
+    // Compute the slot-relative prefix (empty for workspace mounts, e.g. "pool/proj/0" for pool).
+    let slot_relative = slot_path
+        .and_then(|sp| {
+            let host_ws = host_workspace.to_string_lossy();
+            let sp_str = sp.to_string_lossy();
+            sp_str
+                .strip_prefix(host_ws.as_ref())
+                .map(|rel| rel.trim_start_matches('/').to_string())
+        })
+        .unwrap_or_default();
+
+    let mut result = "%WORKSPACE%".to_string();
+    if !slot_relative.is_empty() {
+        result.push('/');
+        result.push_str(&slot_relative);
+    }
+    if !suffix.is_empty() {
+        result.push_str(suffix);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::Path;
 
-    fn test_registry(process_id: &str, path: &str) -> Arc<RepoRegistry> {
-        let registry = Arc::new(RepoRegistry::new(PathBuf::from("/tmp")));
-        registry.register_absolute(process_id, PathBuf::from(path));
-        registry
-    }
+    const HOST_WS: &str = "/home/user/.ur/workspace";
 
-    fn test_process_manager(workspace: &std::path::Path) -> ProcessManager {
-        let registry = Arc::new(RepoRegistry::new(workspace.to_path_buf()));
-        let config = ur_config::Config {
-            config_dir: workspace.to_path_buf(),
-            workspace: workspace.to_path_buf(),
-            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
-            compose_file: workspace.join("docker-compose.yml"),
-            proxy: ur_config::ProxyConfig {
-                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
-                allowlist: vec![],
-            },
-            network: ur_config::NetworkConfig {
-                name: ur_config::DEFAULT_NETWORK_NAME.into(),
-                worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
-            },
-            hostexec: ur_config::HostExecConfig::default(),
-            rag: ur_config::RagConfig {
-                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
-                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
-                docs: ur_config::RagDocsConfig::default(),
-            },
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
-            projects: HashMap::new(),
-        };
-        let repo_pool_manager = crate::RepoPoolManager::new(
-            &config,
-            workspace.to_path_buf(),
-            workspace.to_path_buf(),
-            crate::HostdClient::new("http://localhost:42070".into()),
-        );
-        let network_manager = container::NetworkManager::new(
-            "docker".into(),
-            ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-        );
-        let network_config = ur_config::NetworkConfig {
-            name: ur_config::DEFAULT_NETWORK_NAME.into(),
-            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
-            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-            agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
-        };
-        ProcessManager::new(
-            workspace.to_path_buf(),
-            workspace.to_path_buf(),
-            registry,
-            repo_pool_manager,
-            network_manager,
-            network_config,
-            ur_config::DEFAULT_DAEMON_PORT + 1,
-            crate::process::PromptModesConfig::default(),
-        )
-    }
-
-    fn test_handler(process_id: &str, path: &str) -> HostExecServiceHandler {
-        let registry = test_registry(process_id, path);
-        let tmp = tempfile::tempdir().unwrap();
-        let process_manager = test_process_manager(tmp.path());
-        HostExecServiceHandler {
-            config: HostExecConfigManager::load(
-                std::path::Path::new("/nonexistent"),
-                &ur_config::HostExecConfig::default(),
-            )
-            .unwrap(),
-            lua: LuaTransformManager::new(),
-            repo_registry: registry,
-            process_manager,
-            projects: HashMap::new(),
-            hostd_addr: "http://localhost:42070".into(),
-        }
+    #[test]
+    fn test_map_working_dir_workspace_mount() {
+        let result = map_working_dir_impl("/workspace", None, Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%");
     }
 
     #[test]
-    fn test_map_working_dir_root() {
-        let handler = test_handler("test", "/host/workspace/test");
-        let result = handler.map_working_dir("test", "/workspace").unwrap();
-        assert_eq!(result, "/host/workspace/test");
+    fn test_map_working_dir_workspace_mount_subdir() {
+        let result = map_working_dir_impl("/workspace/src/main", None, Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/src/main");
     }
 
     #[test]
-    fn test_map_working_dir_subdir() {
-        let handler = test_handler("test", "/host/workspace/test");
-        let result = handler
-            .map_working_dir("test", "/workspace/src/main")
-            .unwrap();
-        assert_eq!(result, "/host/workspace/test/src/main");
+    fn test_map_working_dir_pool_mount() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/proj/0");
+    }
+
+    #[test]
+    fn test_map_working_dir_pool_mount_subdir() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        let result =
+            map_working_dir_impl("/workspace/src/main", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/proj/0/src/main");
     }
 
     #[test]
     fn test_map_working_dir_rejects_invalid() {
-        let handler = test_handler("test", "/host/workspace/test");
-        assert!(handler.map_working_dir("test", "/tmp").is_err());
-        assert!(handler.map_working_dir("test", "/workspacefoo").is_err());
+        assert!(map_working_dir_impl("/tmp", None, Path::new(HOST_WS)).is_err());
+        assert!(map_working_dir_impl("/workspacefoo", None, Path::new(HOST_WS)).is_err());
     }
 }

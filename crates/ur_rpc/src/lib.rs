@@ -12,10 +12,10 @@ pub mod proto {
     pub mod hostexec {
         tonic::include_proto!("ur.hostexec");
     }
-    #[cfg(feature = "hostd")]
+    #[cfg(feature = "builder")]
     #[allow(clippy::excessive_nesting)]
-    pub mod hostd {
-        tonic::include_proto!("ur.hostd");
+    pub mod builder {
+        tonic::include_proto!("ur.builder");
     }
     #[cfg(feature = "rag")]
     #[allow(clippy::excessive_nesting)]
