@@ -6,11 +6,11 @@ End-to-end acceptance tests that exercise the full stack: server, container life
 - Excluded from workspace default-members so `cargo test` does not run them
 - Tests require Docker — they will not pass in bare CI
 - Tests use pre-built binaries from `target/` (ur-server, ur) and worker commands (ur-ping, git) baked into the container image
-- Each test creates a temp UR_CONFIG dir and starts its own server instance to avoid conflicts
+- All scenarios share a single `ur start` / `ur stop` cycle via `e2e_all` to avoid port collisions and reduce total runtime
 
-## Test isolation
+## Test architecture
 
-Each test must use its own `TestNames` const with unique container/network names (e.g., `DEFAULT_TEST_NAMES`, `POOL_TEST_NAMES`) and a unique `daemon_port` to avoid collisions when tests run concurrently. Never reuse another test's names or port.
+`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repo, RAG docs, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers on failure before re-raising.
 
 ## Design principle
 

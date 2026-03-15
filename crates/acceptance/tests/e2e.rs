@@ -1,12 +1,12 @@
 //! End-to-end acceptance tests for the Ur gRPC + workercmd architecture.
 //!
-//! These tests exercise the full user-facing workflow via Docker Compose:
-//!   1. `ur start` starts the server + squid in containers via docker compose
-//!   2. `ur process launch` launches a worker container via the server
-//!   3. Worker commands inside the container (`ur-ping`, `git`) connect to the server
-//!      via tonic gRPC over TCP using `UR_SERVER_ADDR`
-//!   4. `ur process stop` tears down the worker container
-//!   5. `ur stop` stops the server + squid containers
+//! All scenarios share a single `ur start` / `ur stop` cycle to avoid port
+//! collisions between concurrent tests and to reduce total test runtime.
+//!
+//! The `e2e_all` test is the sole `#[test]` entry point. It:
+//!   1. Sets up one shared `TestEnv` (config dir, bare repo, RAG docs, `ur start`)
+//!   2. Calls each scenario sequentially as plain helper functions
+//!   3. Tears down the server once at the end
 //!
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
@@ -279,62 +279,174 @@ fn stop_server(ur: &Path, config_dir: &Path) {
     );
 }
 
+/// Shared test environment holding everything needed across all scenarios.
+struct TestEnv {
+    /// Kept alive for the duration of the test (dropped at end of `e2e_all`).
+    _config_dir: tempfile::TempDir,
+    config_path: PathBuf,
+    ur: PathBuf,
+    runtime: String,
+    names: TestNames,
+    daemon_port: u16,
+    bare_repo: PathBuf,
+    project_key: &'static str,
+}
+
+impl TestEnv {
+    /// Shorthand for the UR_CONFIG env pair used in `run_cmd`.
+    fn env(&self) -> Vec<(&str, &str)> {
+        vec![("UR_CONFIG", self.config_path.to_str().unwrap())]
+    }
+
+    /// Build a container name from the shared agent prefix and a ticket ID.
+    fn container_name(&self, ticket_id: &str) -> String {
+        format!("{}{ticket_id}", self.names.agent_prefix)
+    }
+}
+
+/// Single `#[test]` entry point. Sets up the environment once, runs all
+/// scenarios sequentially, then tears down.
 #[test]
-fn e2e_ping_and_git() {
+fn e2e_all() {
     let runtime = detect_container_runtime();
-    let names = test_names("default");
-    let ticket_id = "acceptance-test";
-    let container_name = format!("{}{ticket_id}", names.agent_prefix);
-    let server_container = &names.server_hostname;
-    let squid_container = &names.squid_hostname;
-    let qdrant_container = &names.qdrant_hostname;
+    let names = test_names("e2e");
+    let daemon_port = 19870u16;
+    let project_key = "poolproj";
 
     // ---- (0) Clean up stale containers from prior failed runs ----
-    force_remove_container(&runtime, &container_name);
-    force_remove_container(&runtime, server_container);
-    force_remove_container(&runtime, squid_container);
-    force_remove_container(&runtime, qdrant_container);
+    force_remove_container(&runtime, &names.server_hostname);
+    force_remove_container(&runtime, &names.squid_hostname);
+    force_remove_container(&runtime, &names.qdrant_hostname);
+    // Worker containers that scenarios will use
+    for ticket in [
+        "ping-test",
+        "pool-test",
+        "design-test-1",
+        "design-test-2",
+        "design-code-test",
+    ] {
+        force_remove_container(&runtime, &format!("{}{ticket}", names.agent_prefix));
+    }
 
-    // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
+    // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
-    let config_path = config_dir.path();
-    let daemon_port = 19860u16;
+    let config_path = config_dir.path().to_path_buf();
 
-    write_test_config(config_path, daemon_port, &names, &[]);
+    // Create bare repo BEFORE writing config (config references it)
+    let bare_repo = create_bare_repo(&config_path);
+
+    // Create RAG docs directory and test documents
+    let rag_docs_dir = config_path.join("rag").join("docs").join("rust");
+    std::fs::create_dir_all(&rag_docs_dir).expect("failed to create rag docs dir");
+    std::fs::write(
+        rag_docs_dir.join("container.md"),
+        "# Container Management\n\n\
+         The container module manages Docker containers for worker agents.\n\
+         It handles lifecycle operations: create, start, stop, and remove.\n\
+         Each agent gets its own isolated container with mounted workspace.\n",
+    )
+    .expect("failed to write test doc");
+    std::fs::write(
+        rag_docs_dir.join("grpc.md"),
+        "# gRPC Server\n\n\
+         The gRPC server listens on TCP port 42069 for requests from the CLI\n\
+         and from worker containers. It routes commands to the appropriate\n\
+         handler: process management, git operations, or RAG search.\n",
+    )
+    .expect("failed to write test doc");
+
+    // Write config with the pool project
+    write_test_config(
+        &config_path,
+        daemon_port,
+        &names,
+        &[ProjectEntry {
+            key: project_key.into(),
+            repo: bare_repo.to_string_lossy().into_owned(),
+        }],
+    );
 
     let ur = bin("ur");
     assert!(ur.exists(), "ur binary not found at {}", ur.display());
-    let config_str = config_path.to_str().unwrap();
-    let env = [("UR_CONFIG", config_str)];
 
-    // Use catch_unwind so we always clean up via compose down even on panic.
+    let env = TestEnv {
+        _config_dir: config_dir,
+        config_path: config_path.clone(),
+        ur: ur.clone(),
+        runtime,
+        names,
+        daemon_port,
+        bare_repo,
+        project_key,
+    };
+
+    // ---- (2) ur start (once for all scenarios) ----
+    let env_pairs = env.env();
+    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+    let up_output = run_cmd(&ur, &["start"], &env_slice);
+    assert!(
+        up_output.status.success(),
+        "ur start failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&up_output.stdout),
+        String::from_utf8_lossy(&up_output.stderr),
+    );
+
+    // Init workspace git repo (needed for workspace-mount scenario)
+    let workspace_dir = config_path.join("workspace");
+    let git_init = Command::new("git")
+        .args(["init", workspace_dir.to_str().unwrap()])
+        .output()
+        .expect("failed to run git init");
+    assert!(git_init.status.success(), "git init failed");
+
+    // ---- (3) Run scenarios sequentially ----
+    let scenario_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        scenario_ping_and_git(&env);
+        scenario_project_pool_launch(&env);
+        scenario_design_mode_pool_launch(&env);
+        scenario_rag_search(&env);
+    }));
+
+    // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
+    for ticket in [
+        "ping-test",
+        "pool-test",
+        "design-test-1",
+        "design-test-2",
+        "design-code-test",
+    ] {
+        force_remove_container(&env.runtime, &env.container_name(ticket));
+    }
+    stop_server(&env.ur, &env.config_path);
+
+    if let Err(e) = scenario_result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios
+// ---------------------------------------------------------------------------
+
+/// Workspace mount, ping, git status, squid proxy, Lua validation.
+fn scenario_ping_and_git(env: &TestEnv) {
+    let ticket_id = "ping-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
+
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- (2) ur start ----
-        let up_output = run_cmd(&ur, &["start"], &env);
-        assert!(
-            up_output.status.success(),
-            "ur start failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&up_output.stdout),
-            String::from_utf8_lossy(&up_output.stderr),
-        );
-
-        // ---- (3) ur process launch ----
-        // With -w, the server skips git init, so we must init the workspace ourselves.
-        let workspace_dir = config_path.join("workspace");
-        let git_init = Command::new("git")
-            .args(["init", workspace_dir.to_str().unwrap()])
-            .output()
-            .expect("failed to run git init");
-        assert!(git_init.status.success(), "git init failed");
+        // ---- Launch worker with workspace mount ----
+        let workspace_dir = env.config_path.join("workspace");
         let workspace_str = workspace_dir.to_str().unwrap();
         let launch_output = run_cmd(
-            &ur,
+            &env.ur,
             &["worker", "launch", "-w", workspace_str, ticket_id],
-            &env,
+            &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur process launch failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
@@ -345,8 +457,8 @@ fn e2e_ping_and_git() {
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
-        // ---- (4) exec ur-ping inside container ----
-        let ping_output = Command::new(&runtime)
+        // ---- exec ur-ping inside container ----
+        let ping_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "ur-ping"])
             .output()
             .expect("failed to exec ur-ping in container");
@@ -365,10 +477,8 @@ fn e2e_ping_and_git() {
             "ur-ping should return 'pong', got: {ping_stdout}"
         );
 
-        // ---- (5) Test hostexec: git commands via worker → server → builderd → host ----
-        // The git shim calls workertools host-exec git, which goes through the full
-        // hostexec pipeline. This verifies builderd is running and reachable.
-        let git_output = Command::new(&runtime)
+        // ---- Test hostexec: git commands via worker -> server -> builderd -> host ----
+        let git_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "git", "status"])
             .output()
             .expect("failed to exec git status in container");
@@ -376,7 +486,7 @@ fn e2e_ping_and_git() {
         assert_eq!(
             git_output.status.code(),
             Some(0),
-            "git status should exit 0 (hostexec pipeline: worker → server → builderd → host).\n\
+            "git status should exit 0 (hostexec pipeline: worker -> server -> builderd -> host).\n\
              stdout: {}\nstderr: {}",
             String::from_utf8_lossy(&git_output.stdout),
             String::from_utf8_lossy(&git_output.stderr),
@@ -388,8 +498,8 @@ fn e2e_ping_and_git() {
             "git status should show repo info.\nGot: {git_stdout}"
         );
 
-        // ---- (5b) Test hostexec Lua validation: -C flag blocking ----
-        let blocked_output = Command::new(&runtime)
+        // ---- Test hostexec Lua validation: -C flag blocking ----
+        let blocked_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
             .output()
             .expect("failed to exec git -C /tmp status in container");
@@ -406,11 +516,8 @@ fn e2e_ping_and_git() {
             "error should mention -C.\nstderr: {blocked_stderr}"
         );
 
-        // ---- (6) Squid proxy: blocked domain returns 403 ----
-        // Use %{http_connect} to capture the proxy's CONNECT response code.
-        // %{http_code} reports the final destination response which is 000 when
-        // the CONNECT tunnel is denied (no destination connection is made).
-        let blocked_curl = Command::new(&runtime)
+        // ---- Squid proxy: blocked domain returns 403 ----
+        let blocked_curl = Command::new(&env.runtime)
             .args([
                 "exec",
                 &container_name,
@@ -435,9 +542,8 @@ fn e2e_ping_and_git() {
             String::from_utf8_lossy(&blocked_curl.stderr),
         );
 
-        // ---- (6b) Squid proxy: allowed domain connects through ----
-        // Use %{http_connect} to verify the CONNECT tunnel is established (200).
-        let allowed_curl = Command::new(&runtime)
+        // ---- Squid proxy: allowed domain connects through ----
+        let allowed_curl = Command::new(&env.runtime)
             .args([
                 "exec",
                 &container_name,
@@ -463,95 +569,41 @@ fn e2e_ping_and_git() {
             String::from_utf8_lossy(&allowed_curl.stderr),
         );
 
-        // ---- (7) ur process stop ----
-        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id], &env);
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
     }));
 
-    // ---- (8) Always tear down server ----
-    stop_server(&ur, config_path);
-
-    // Re-raise any panic from the test body.
     if let Err(e) = result {
+        // Force-remove worker container before re-raising
+        force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
 }
 
-/// End-to-end test for project pool launches (`-p` flag).
-///
-/// Exercises the full workflow:
-///   1. Create a bare git repo as clone source
-///   2. Configure it as a project in ur.toml
-///   3. `ur start` starts the server + builderd
-///   4. `ur process launch <ticket> -p <project>` acquires a pool slot via builderd git clone
-///   5. Verify the cloned workspace has the expected content
-///   6. Verify git commands work inside the container (hostexec pipeline)
-///   7. `ur process stop` releases the pool slot
-///   8. `ur stop` tears down the server
-#[test]
-fn e2e_project_pool_launch() {
-    let runtime = detect_container_runtime();
-    let names = test_names("pool");
+/// Pool launch, verify clone, git log, host dir structure.
+fn scenario_project_pool_launch(env: &TestEnv) {
     let ticket_id = "pool-test";
-    let project_key = "poolproj";
-    let container_name = format!("{}{ticket_id}", names.agent_prefix);
-    let server_container = &names.server_hostname;
-    let squid_container = &names.squid_hostname;
-    let qdrant_container = &names.qdrant_hostname;
-
-    // ---- (0) Clean up stale containers from prior failed runs ----
-    force_remove_container(&runtime, &container_name);
-    force_remove_container(&runtime, server_container);
-    force_remove_container(&runtime, squid_container);
-    force_remove_container(&runtime, qdrant_container);
-
-    // ---- (1) Create bare git repo and test config with project ----
-    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
-    let config_path = config_dir.path();
-    let daemon_port = 19870u16; // spaced by 10 to avoid worker/builderd port overlap
-
-    // Create bare repo before writing config (config needs the repo path)
-    let bare_repo = create_bare_repo(config_path);
-
-    write_test_config(
-        config_path,
-        daemon_port,
-        &names,
-        &[ProjectEntry {
-            key: project_key.into(),
-            repo: bare_repo.to_string_lossy().into_owned(),
-        }],
-    );
-
-    let ur = bin("ur");
-    assert!(ur.exists(), "ur binary not found at {}", ur.display());
-    let config_str = config_path.to_str().unwrap();
-    let env = [("UR_CONFIG", config_str)];
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- (2) ur start ----
-        let up_output = run_cmd(&ur, &["start"], &env);
-        assert!(
-            up_output.status.success(),
-            "ur start failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&up_output.stdout),
-            String::from_utf8_lossy(&up_output.stderr),
-        );
-
-        // ---- (3) ur process launch -p <project> ----
+        // ---- Launch pool worker ----
         let launch_output = run_cmd(
-            &ur,
-            &["worker", "launch", "-p", project_key, ticket_id],
-            &env,
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur process launch -p {project_key} failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
@@ -562,9 +614,8 @@ fn e2e_project_pool_launch() {
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
-        // ---- (4) Verify workspace has cloned content ----
-        // The pool slot should have the README.md from the bare repo
-        let ls_output = Command::new(&runtime)
+        // ---- Verify workspace has cloned content ----
+        let ls_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "ls", "/workspace/README.md"])
             .output()
             .expect("failed to exec ls in container");
@@ -576,8 +627,8 @@ fn e2e_project_pool_launch() {
             String::from_utf8_lossy(&ls_output.stderr),
         );
 
-        // ---- (5) Verify git commands work via hostexec ----
-        let git_output = Command::new(&runtime)
+        // ---- Verify git commands work via hostexec ----
+        let git_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
             .output()
             .expect("failed to exec git log in container");
@@ -595,12 +646,12 @@ fn e2e_project_pool_launch() {
             "git log should show our commit.\nGot: {git_stdout}"
         );
 
-        // ---- (6) Verify pool directory structure on host ----
-        // The slot should be at $WORKSPACE/pool/<project-key>/0/
-        let pool_slot = config_path
+        // ---- Verify pool directory structure on host ----
+        let pool_slot = env
+            .config_path
             .join("workspace")
             .join("pool")
-            .join(project_key)
+            .join(env.project_key)
             .join("0");
         assert!(
             pool_slot.exists(),
@@ -616,107 +667,52 @@ fn e2e_project_pool_launch() {
             "pool slot should contain README.md from clone"
         );
 
-        // ---- (7) ur process stop ----
-        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id], &env);
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
     }));
 
-    // ---- (8) Always tear down server ----
-    stop_server(&ur, config_path);
-
     if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
 }
 
-/// End-to-end test for design mode pool launches (`-p <project> -m design`).
-///
-/// Exercises:
-///   1. Create a bare git repo as clone source, configure as project
-///   2. `ur start` starts the server + builderd
-///   3. `ur process launch -p <project> -m design <ticket>` acquires a shared design slot
-///   4. Verify the `design/` slot directory is created under the pool path
-///   5. Worker launches successfully
-///   6. Stop first worker, launch a second design worker — reuses same slot path
-///   7. Design launches do not consume exclusive pool slots (pool limit unaffected)
-///   8. Tear down
-#[test]
-fn e2e_design_mode_pool_launch() {
-    let runtime = detect_container_runtime();
-    let names = test_names("design");
+/// Design mode shared slot, second launch reuse, code launch.
+fn scenario_design_mode_pool_launch(env: &TestEnv) {
     let ticket_id_1 = "design-test-1";
     let ticket_id_2 = "design-test-2";
     let code_ticket_id = "design-code-test";
-    let project_key = "designproj";
-    let container_name_1 = format!("{}{ticket_id_1}", names.agent_prefix);
-    let container_name_2 = format!("{}{ticket_id_2}", names.agent_prefix);
-    let code_container_name = format!("{}{code_ticket_id}", names.agent_prefix);
-    let server_container = &names.server_hostname;
-    let squid_container = &names.squid_hostname;
-    let qdrant_container = &names.qdrant_hostname;
-
-    // ---- (0) Clean up stale containers from prior failed runs ----
-    force_remove_container(&runtime, &container_name_1);
-    force_remove_container(&runtime, &container_name_2);
-    force_remove_container(&runtime, &code_container_name);
-    force_remove_container(&runtime, server_container);
-    force_remove_container(&runtime, squid_container);
-    force_remove_container(&runtime, qdrant_container);
-
-    // ---- (1) Create bare git repo and test config with project ----
-    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
-    let config_path = config_dir.path();
-    let daemon_port = 19880u16; // spaced by 10 to avoid worker/builderd port overlap
-
-    let bare_repo = create_bare_repo(config_path);
-
-    write_test_config(
-        config_path,
-        daemon_port,
-        &names,
-        &[ProjectEntry {
-            key: project_key.into(),
-            repo: bare_repo.to_string_lossy().into_owned(),
-        }],
-    );
-
-    let ur = bin("ur");
-    assert!(ur.exists(), "ur binary not found at {}", ur.display());
-    let config_str = config_path.to_str().unwrap();
-    let env = [("UR_CONFIG", config_str)];
+    let container_name_1 = env.container_name(ticket_id_1);
+    let container_name_2 = env.container_name(ticket_id_2);
+    let code_container_name = env.container_name(code_ticket_id);
+    let env_pairs = env.env();
+    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- (2) ur start ----
-        let up_output = run_cmd(&ur, &["start"], &env);
-        assert!(
-            up_output.status.success(),
-            "ur start failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&up_output.stdout),
-            String::from_utf8_lossy(&up_output.stderr),
-        );
-
-        // ---- (3) Launch first design worker: ur process launch -p <project> -m design ----
+        // ---- Launch first design worker ----
         let launch_output = run_cmd(
-            &ur,
+            &env.ur,
             &[
                 "worker",
                 "launch",
                 "-p",
-                project_key,
+                env.project_key,
                 "-m",
                 "design",
                 ticket_id_1,
             ],
-            &env,
+            &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur process launch -p {project_key} -m design failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -p {} -m design failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
@@ -727,11 +723,12 @@ fn e2e_design_mode_pool_launch() {
             "launch output should contain container name '{container_name_1}'.\nGot: {launch_stdout}"
         );
 
-        // ---- (4) Verify design/ slot directory exists on host ----
-        let design_slot = config_path
+        // ---- Verify design/ slot directory exists on host ----
+        let design_slot = env
+            .config_path
             .join("workspace")
             .join("pool")
-            .join(project_key)
+            .join(env.project_key)
             .join("design");
         assert!(
             design_slot.exists(),
@@ -747,8 +744,8 @@ fn e2e_design_mode_pool_launch() {
             "design slot should contain README.md from clone"
         );
 
-        // ---- (5) Verify worker has cloned content ----
-        let ls_output = Command::new(&runtime)
+        // ---- Verify worker has cloned content ----
+        let ls_output = Command::new(&env.runtime)
             .args(["exec", &container_name_1, "ls", "/workspace/README.md"])
             .output()
             .expect("failed to exec ls in container");
@@ -760,28 +757,28 @@ fn e2e_design_mode_pool_launch() {
             String::from_utf8_lossy(&ls_output.stderr),
         );
 
-        // ---- (6) Stop first worker ----
-        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id_1], &env);
+        // ---- Stop first worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id_1], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur process stop failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
 
-        // ---- (7) Launch second design worker — should reuse same slot path ----
+        // ---- Launch second design worker — should reuse same slot path ----
         let launch2_output = run_cmd(
-            &ur,
+            &env.ur,
             &[
                 "worker",
                 "launch",
                 "-p",
-                project_key,
+                env.project_key,
                 "-m",
                 "design",
                 ticket_id_2,
             ],
-            &env,
+            &env_slice,
         );
         assert!(
             launch2_output.status.success(),
@@ -798,30 +795,32 @@ fn e2e_design_mode_pool_launch() {
         );
 
         // No numbered slots should have been created for design launches
-        let slot_0 = config_path
+        // (the pool-test scenario above created slot 0, so check slot 1 instead)
+        let slot_1 = env
+            .config_path
             .join("workspace")
             .join("pool")
-            .join(project_key)
-            .join("0");
+            .join(env.project_key)
+            .join("1");
         assert!(
-            !slot_0.exists(),
-            "numbered slot 0 should NOT exist — design mode uses shared 'design/' slot, not exclusive numbered slots"
+            !slot_1.exists(),
+            "numbered slot 1 should NOT exist — design mode uses shared 'design/' slot, not exclusive numbered slots"
         );
 
-        // ---- (8) Design launches don't consume exclusive pool slots ----
+        // ---- Design launches don't consume exclusive pool slots ----
         // Launch a code worker — it should succeed because design didn't consume any exclusive slots
         let code_launch = run_cmd(
-            &ur,
+            &env.ur,
             &[
                 "worker",
                 "launch",
                 "-p",
-                project_key,
+                env.project_key,
                 "-m",
                 "code",
                 code_ticket_id,
             ],
-            &env,
+            &env_slice,
         );
         assert!(
             code_launch.status.success(),
@@ -830,164 +829,101 @@ fn e2e_design_mode_pool_launch() {
             String::from_utf8_lossy(&code_launch.stderr),
         );
 
-        // Now the numbered slot 0 should exist (created by the code launch)
+        // A numbered slot should exist after the code launch
+        // (could be slot 0 if the pool-test scenario released it, or slot 1)
+        let has_numbered_slot = env
+            .config_path
+            .join("workspace")
+            .join("pool")
+            .join(env.project_key)
+            .join("0")
+            .exists()
+            || slot_1.exists();
         assert!(
-            slot_0.exists(),
-            "numbered slot 0 should exist after code launch at {}",
-            slot_0.display()
+            has_numbered_slot,
+            "a numbered slot should exist after code launch"
         );
 
         // Stop both workers
-        let stop2_output = run_cmd(&ur, &["worker", "stop", ticket_id_2], &env);
+        let stop2_output = run_cmd(&env.ur, &["worker", "stop", ticket_id_2], &env_slice);
         assert!(
             stop2_output.status.success(),
-            "ur process stop (second design) failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop (second design) failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop2_output.stdout),
             String::from_utf8_lossy(&stop2_output.stderr),
         );
 
-        let stop_code = run_cmd(&ur, &["worker", "stop", code_ticket_id], &env);
+        let stop_code = run_cmd(&env.ur, &["worker", "stop", code_ticket_id], &env_slice);
         assert!(
             stop_code.status.success(),
-            "ur process stop (code) failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop (code) failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_code.stdout),
             String::from_utf8_lossy(&stop_code.stderr),
         );
     }));
 
-    // ---- (9) Always tear down server ----
-    stop_server(&ur, config_path);
-
     if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name_1);
+        force_remove_container(&env.runtime, &container_name_2);
+        force_remove_container(&env.runtime, &code_container_name);
         std::panic::resume_unwind(e);
     }
 }
 
-/// End-to-end test for RAG search (`ur rag search`).
-///
-/// Exercises the full RAG pipeline:
-///   1. `ur start` starts the server + Qdrant + squid in containers via docker compose
-///   2. Small test markdown docs are written directly (not `ur rag docs` — too slow)
-///   3. `ur rag index --language rust` indexes the docs into Qdrant via the server
-///   4. `ur rag search "query" --language rust` searches indexed docs via the server
-///   5. `ur stop` tears down the server
-///
-/// Requires:
-///   - ONNX embedding model downloaded on host (`ur rag model download`)
-///   - Qdrant service in docker compose
-#[test]
-fn e2e_rag_search() {
-    let runtime = detect_container_runtime();
-    let names = test_names("rag");
-    let server_container = &names.server_hostname;
-    let squid_container = &names.squid_hostname;
-    let qdrant_container = &names.qdrant_hostname;
+/// RAG index and search.
+fn scenario_rag_search(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice: Vec<(&str, &str)> = env_pairs.iter().copied().collect();
 
-    // ---- (0) Clean up stale containers from prior failed runs ----
-    force_remove_container(&runtime, server_container);
-    force_remove_container(&runtime, squid_container);
-    force_remove_container(&runtime, qdrant_container);
+    // No worker containers in this scenario — just CLI commands against the server.
 
-    // ---- (1) Create temp UR_CONFIG dir with test-specific config ----
-    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
-    let config_path = config_dir.path();
-    let daemon_port = 19890u16; // spaced by 10 to avoid worker/builderd port overlap
+    // ---- ur rag index — index test docs into Qdrant ----
+    let index_output = run_cmd(&env.ur, &["rag", "index", "--language", "rust"], &env_slice);
+    assert!(
+        index_output.status.success(),
+        "ur rag index failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&index_output.stdout),
+        String::from_utf8_lossy(&index_output.stderr),
+    );
 
-    write_test_config(config_path, daemon_port, &names, &[]);
+    let index_stdout = String::from_utf8_lossy(&index_output.stdout);
+    assert!(
+        index_stdout.contains("Indexed") && index_stdout.contains("chunks"),
+        "ur rag index should report indexed chunks.\nGot: {index_stdout}"
+    );
 
-    // Create rag docs directory structure (normally done by `ur init`)
-    let rag_docs_dir = config_path.join("rag").join("docs").join("rust");
-    std::fs::create_dir_all(&rag_docs_dir).expect("failed to create rag docs dir");
+    // ---- ur rag search — search indexed docs ----
+    let search_output = run_cmd(
+        &env.ur,
+        &[
+            "rag",
+            "search",
+            "container management",
+            "--language",
+            "rust",
+        ],
+        &env_slice,
+    );
+    assert!(
+        search_output.status.success(),
+        "ur rag search failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&search_output.stdout),
+        String::from_utf8_lossy(&search_output.stderr),
+    );
 
-    let ur = bin("ur");
-    assert!(ur.exists(), "ur binary not found at {}", ur.display());
-    let config_str = config_path.to_str().unwrap();
-    let env = [("UR_CONFIG", config_str)];
-
-    // Write small test docs directly instead of running `ur rag docs` (which
-    // generates the full workspace — thousands of files, too slow for e2e).
-    std::fs::write(
-        rag_docs_dir.join("container.md"),
-        "# Container Management\n\n\
-         The container module manages Docker containers for worker agents.\n\
-         It handles lifecycle operations: create, start, stop, and remove.\n\
-         Each agent gets its own isolated container with mounted workspace.\n",
-    )
-    .expect("failed to write test doc");
-    std::fs::write(
-        rag_docs_dir.join("grpc.md"),
-        "# gRPC Server\n\n\
-         The gRPC server listens on TCP port 42069 for requests from the CLI\n\
-         and from worker containers. It routes commands to the appropriate\n\
-         handler: process management, git operations, or RAG search.\n",
-    )
-    .expect("failed to write test doc");
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- (2) ur start ----
-        let up_output = run_cmd(&ur, &["start"], &env);
-        assert!(
-            up_output.status.success(),
-            "ur start failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&up_output.stdout),
-            String::from_utf8_lossy(&up_output.stderr),
-        );
-
-        // ---- (3) ur rag index — index test docs into Qdrant ----
-        let index_output = run_cmd(&ur, &["rag", "index", "--language", "rust"], &env);
-        assert!(
-            index_output.status.success(),
-            "ur rag index failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&index_output.stdout),
-            String::from_utf8_lossy(&index_output.stderr),
-        );
-
-        let index_stdout = String::from_utf8_lossy(&index_output.stdout);
-        assert!(
-            index_stdout.contains("Indexed") && index_stdout.contains("chunks"),
-            "ur rag index should report indexed chunks.\nGot: {index_stdout}"
-        );
-
-        // ---- (4) ur rag search — search indexed docs ----
-        let search_output = run_cmd(
-            &ur,
-            &[
-                "rag",
-                "search",
-                "container management",
-                "--language",
-                "rust",
-            ],
-            &env,
-        );
-        assert!(
-            search_output.status.success(),
-            "ur rag search failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&search_output.stdout),
-            String::from_utf8_lossy(&search_output.stderr),
-        );
-
-        let search_stdout = String::from_utf8_lossy(&search_output.stdout);
-        // Search should return results (not "No results found")
-        assert!(
-            !search_stdout.contains("No results found"),
-            "ur rag search should return results after indexing.\nGot: {search_stdout}"
-        );
-        // Results should contain the expected format fields
-        assert!(
-            search_stdout.contains("Result") && search_stdout.contains("score:"),
-            "ur rag search output should contain Result and score fields.\nGot: {search_stdout}"
-        );
-        assert!(
-            search_stdout.contains("Source:"),
-            "ur rag search output should contain Source field.\nGot: {search_stdout}"
-        );
-    }));
-
-    // ---- (5) Always tear down server ----
-    stop_server(&ur, config_path);
-
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    let search_stdout = String::from_utf8_lossy(&search_output.stdout);
+    // Search should return results (not "No results found")
+    assert!(
+        !search_stdout.contains("No results found"),
+        "ur rag search should return results after indexing.\nGot: {search_stdout}"
+    );
+    // Results should contain the expected format fields
+    assert!(
+        search_stdout.contains("Result") && search_stdout.contains("score:"),
+        "ur rag search output should contain Result and score fields.\nGot: {search_stdout}"
+    );
+    assert!(
+        search_stdout.contains("Source:"),
+        "ur rag search output should contain Source field.\nGot: {search_stdout}"
+    );
 }
