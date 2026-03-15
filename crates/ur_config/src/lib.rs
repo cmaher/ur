@@ -135,8 +135,8 @@ pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 /// Default TCP port for the host execution daemon (hostd).
 pub const DEFAULT_HOSTD_PORT: u16 = 42070;
 
-/// PID file for the hostd process, stored in the config directory.
-pub const HOSTD_PID_FILE: &str = "hostd.pid";
+/// PID file for the builderd process, stored in the config directory.
+pub const BUILDERD_PID_FILE: &str = "builderd.pid";
 
 /// Environment variable: `host:port` address for worker→hostd gRPC connections.
 pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";

@@ -1,7 +1,7 @@
 mod compose;
 mod credential;
 mod db;
-mod hostd;
+mod builderd;
 mod init;
 mod lifecycle_log;
 mod logging;
@@ -262,10 +262,10 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
     log.info("ur start: beginning");
     info!("starting server");
 
-    match hostd::start_hostd(config) {
-        Ok(()) => log.info("ur start: hostd started"),
+    match builderd::start_builderd(config) {
+        Ok(()) => log.info("ur start: builderd started"),
         Err(e) => {
-            log.error(&format!("ur start: hostd failed: {e}"));
+            log.error(&format!("ur start: builderd failed: {e}"));
             return Err(e);
         }
     }
@@ -314,8 +314,8 @@ fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<(
     println!("server stopped");
     log.info("ur stop: compose down succeeded");
 
-    hostd::stop_hostd(config)?;
-    log.info("ur stop: hostd stopped");
+    builderd::stop_builderd(config)?;
+    log.info("ur stop: builderd stopped");
     log.info("ur stop: complete");
     Ok(())
 }
