@@ -222,6 +222,8 @@ enum ProcessCommands {
     SaveCredentials { process_id: String },
     /// Print the host directory assigned to a running process
     Dir { process_id: String },
+    /// Open the host directory for a running process in VS Code
+    Vscode { process_id: String },
 }
 
 #[derive(Subcommand)]
@@ -612,20 +614,37 @@ async fn handle_process(
             process_stop(&mut client, &process_id).await
         }
         ProcessCommands::Dir { process_id } => {
-            let mut client = connect(port).await?;
-            let resp = client
-                .process_info(ProcessInfoRequest {
-                    process_id: process_id.clone(),
-                })
-                .await?;
-            let workspace_dir = resp.into_inner().workspace_dir;
-            if workspace_dir.is_empty() {
-                bail!("no workspace directory for process {process_id}");
+            let dir = process_workspace_dir(port, &process_id).await?;
+            println!("{dir}");
+            Ok(())
+        }
+        ProcessCommands::Vscode { process_id } => {
+            let dir = process_workspace_dir(port, &process_id).await?;
+            let status = process::Command::new("code")
+                .arg(&dir)
+                .status()
+                .context("failed to launch VS Code — is `code` on your PATH?")?;
+            if !status.success() {
+                bail!("VS Code exited with {status}");
             }
-            println!("{workspace_dir}");
             Ok(())
         }
     }
+}
+
+/// Fetch the host workspace directory for a running process via gRPC.
+async fn process_workspace_dir(port: u16, process_id: &str) -> Result<String> {
+    let mut client = connect(port).await?;
+    let resp = client
+        .process_info(ProcessInfoRequest {
+            process_id: process_id.to_owned(),
+        })
+        .await?;
+    let workspace_dir = resp.into_inner().workspace_dir;
+    if workspace_dir.is_empty() {
+        bail!("no workspace directory for process {process_id}");
+    }
+    Ok(workspace_dir)
 }
 
 /// Extract the subcommand name for span fields.
@@ -639,6 +658,7 @@ fn command_name(cmd: &ProcessCommands) -> &'static str {
         ProcessCommands::Status { .. } => "status",
         ProcessCommands::Stop { .. } => "stop",
         ProcessCommands::Dir { .. } => "dir",
+        ProcessCommands::Vscode { .. } => "vscode",
     }
 }
 
