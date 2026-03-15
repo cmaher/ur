@@ -21,9 +21,12 @@ impl SnapshotManager {
     pub async fn vacuum_into(&self, path: &str) -> Result<(), sqlx::Error> {
         let path = path.to_owned();
         let pool = self.pool.clone();
-        sqlx::query(&format!("VACUUM INTO '{}'", path.replace('\'', "''")))
-            .execute(&pool)
-            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "VACUUM INTO '{}'",
+            path.replace('\'', "''")
+        )))
+        .execute(&pool)
+        .await?;
         Ok(())
     }
 
