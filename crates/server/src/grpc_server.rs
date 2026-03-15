@@ -51,6 +51,7 @@ pub async fn serve_worker_grpc(
     projects: HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
     #[cfg(feature = "hostexec")] builderd_addr: String,
+    #[cfg(feature = "hostexec")] host_workspace: std::path::PathBuf,
     #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
     #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
 ) -> anyhow::Result<()> {
@@ -77,6 +78,7 @@ pub async fn serve_worker_grpc(
             process_manager,
             projects,
             builderd_addr,
+            host_workspace,
         };
 
         routes.add_service(HostExecServiceServer::with_interceptor(

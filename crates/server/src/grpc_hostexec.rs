@@ -27,6 +27,7 @@ pub struct HostExecServiceHandler {
     pub process_manager: ProcessManager,
     pub projects: HashMap<String, ur_config::ProjectConfig>,
     pub builderd_addr: String,
+    pub host_workspace: std::path::PathBuf,
 }
 
 #[tonic::async_trait]
@@ -51,8 +52,10 @@ impl HostExecService for HostExecServiceHandler {
             Status::permission_denied(format!("command not allowed: {}", req.command))
         })?;
 
-        // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution
-        let host_working_dir = Self::map_working_dir(&req.working_dir)?;
+        // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution.
+        // For pool workers, /workspace maps to a specific slot subdirectory, not the root.
+        let slot_path = agent_context.as_ref().map(|ctx| ctx.slot_path.as_path());
+        let host_working_dir = self.map_working_dir(&req.working_dir, slot_path)?;
 
         // 3. Lua transform (if configured)
         let transform_result = if let Some(lua_source) = &cmd_config.lua_source {
@@ -205,51 +208,101 @@ impl HostExecServiceHandler {
         Ok((process_id, agent_context, config))
     }
 
-    /// Replace `/workspace` prefix with `%WORKSPACE%` template.
+    /// Map container CWD to a `%WORKSPACE%` template path for builderd.
     ///
-    /// Builderd resolves `%WORKSPACE%` to its local workspace path at exec time,
-    /// decoupling the server from knowing builder filesystem layout.
+    /// For workspace mounts (`-w`), `/workspace/foo` maps to `%WORKSPACE%/foo`.
+    /// For pool mounts (`-p`), `/workspace/foo` maps to `%WORKSPACE%/<slot_relative>/foo`
+    /// where `slot_relative` is the slot's path relative to `host_workspace`.
     #[allow(clippy::result_large_err)]
-    fn map_working_dir(container_dir: &str) -> Result<String, Status> {
-        let Some(suffix) = container_dir.strip_prefix("/workspace") else {
-            return Err(Status::invalid_argument(format!(
-                "working_dir must start with /workspace: {container_dir}"
-            )));
-        };
-
-        if !suffix.is_empty() && !suffix.starts_with('/') {
-            return Err(Status::invalid_argument(format!(
-                "invalid working_dir: {container_dir}"
-            )));
-        }
-
-        if suffix.is_empty() {
-            Ok("%WORKSPACE%".to_owned())
-        } else {
-            Ok(format!("%WORKSPACE%{suffix}"))
-        }
+    fn map_working_dir(
+        &self,
+        container_dir: &str,
+        slot_path: Option<&std::path::Path>,
+    ) -> Result<String, Status> {
+        map_working_dir_impl(container_dir, slot_path, &self.host_workspace)
     }
+}
+
+/// Map container CWD to a `%WORKSPACE%` template path for builderd (implementation).
+///
+/// Extracted as a free function for testability.
+#[allow(clippy::result_large_err)]
+fn map_working_dir_impl(
+    container_dir: &str,
+    slot_path: Option<&std::path::Path>,
+    host_workspace: &std::path::Path,
+) -> Result<String, Status> {
+    let Some(suffix) = container_dir.strip_prefix("/workspace") else {
+        return Err(Status::invalid_argument(format!(
+            "working_dir must start with /workspace: {container_dir}"
+        )));
+    };
+
+    if !suffix.is_empty() && !suffix.starts_with('/') {
+        return Err(Status::invalid_argument(format!(
+            "invalid working_dir: {container_dir}"
+        )));
+    }
+
+    // Compute the slot-relative prefix (empty for workspace mounts, e.g. "pool/proj/0" for pool).
+    let slot_relative = slot_path
+        .and_then(|sp| {
+            let host_ws = host_workspace.to_string_lossy();
+            let sp_str = sp.to_string_lossy();
+            sp_str
+                .strip_prefix(host_ws.as_ref())
+                .map(|rel| rel.trim_start_matches('/').to_string())
+        })
+        .unwrap_or_default();
+
+    let mut result = "%WORKSPACE%".to_string();
+    if !slot_relative.is_empty() {
+        result.push('/');
+        result.push_str(&slot_relative);
+    }
+    if !suffix.is_empty() {
+        result.push_str(suffix);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    const HOST_WS: &str = "/home/user/.ur/workspace";
 
     #[test]
-    fn test_map_working_dir_root() {
-        let result = HostExecServiceHandler::map_working_dir("/workspace").unwrap();
+    fn test_map_working_dir_workspace_mount() {
+        let result = map_working_dir_impl("/workspace", None, Path::new(HOST_WS)).unwrap();
         assert_eq!(result, "%WORKSPACE%");
     }
 
     #[test]
-    fn test_map_working_dir_subdir() {
-        let result = HostExecServiceHandler::map_working_dir("/workspace/src/main").unwrap();
+    fn test_map_working_dir_workspace_mount_subdir() {
+        let result = map_working_dir_impl("/workspace/src/main", None, Path::new(HOST_WS)).unwrap();
         assert_eq!(result, "%WORKSPACE%/src/main");
     }
 
     #[test]
+    fn test_map_working_dir_pool_mount() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/proj/0");
+    }
+
+    #[test]
+    fn test_map_working_dir_pool_mount_subdir() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        let result =
+            map_working_dir_impl("/workspace/src/main", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/proj/0/src/main");
+    }
+
+    #[test]
     fn test_map_working_dir_rejects_invalid() {
-        assert!(HostExecServiceHandler::map_working_dir("/tmp").is_err());
-        assert!(HostExecServiceHandler::map_working_dir("/workspacefoo").is_err());
+        assert!(map_working_dir_impl("/tmp", None, Path::new(HOST_WS)).is_err());
+        assert!(map_working_dir_impl("/workspacefoo", None, Path::new(HOST_WS)).is_err());
     }
 }

@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
     let repo_pool_manager = RepoPoolManager::new(
         &cfg,
         local_workspace.clone(),
-        host_workspace,
+        host_workspace.clone(),
         builderd_client,
     );
     let process_manager = ProcessManager::new(
@@ -215,6 +215,8 @@ async fn main() -> anyhow::Result<()> {
         hostexec_config,
         #[cfg(feature = "hostexec")]
         builderd_addr,
+        #[cfg(feature = "hostexec")]
+        host_workspace,
         #[cfg(feature = "rag")]
         rag_handler,
         #[cfg(feature = "ticket")]
