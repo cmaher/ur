@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Rebuild the host CLI binaries (ur + ur-hostd) without touching containers.
-# Use this when you've only changed code in crates/ur/ or crates/hostd/.
+# Rebuild the host CLI binaries (ur + builderd) without touching containers.
+# Use this when you've only changed code in crates/ur/ or crates/builderd/.
 
-echo "Building ur and ur-hostd..."
-cargo build -p ur -p ur-hostd
+echo "Building ur and builderd..."
+cargo build -p ur -p builderd
 
 echo "Host binaries rebuilt in target/debug/"
 echo "  ur:       target/debug/ur"
-echo "  ur-hostd: target/debug/ur-hostd"
+echo "  builderd: target/debug/builderd"
