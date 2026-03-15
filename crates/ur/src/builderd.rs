@@ -28,7 +28,7 @@ fn is_pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[instrument(skip(config), fields(hostd_port = config.hostd_port))]
+#[instrument(skip(config), fields(builderd_port = config.builderd_port))]
 pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
     let pid_file = config.config_dir.join(ur_config::BUILDERD_PID_FILE);
 
@@ -64,7 +64,7 @@ pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
     let child = std::process::Command::new(&bin)
         .args([
             "--port",
-            &config.hostd_port.to_string(),
+            &config.builderd_port.to_string(),
             "--workspace",
             &config.workspace.display().to_string(),
         ])

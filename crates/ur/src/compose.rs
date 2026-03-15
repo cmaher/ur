@@ -251,7 +251,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      - FASTEMBED_CACHE_DIR=/fastembed").unwrap();
     writeln!(
         out,
-        "      - UR_HOSTD_ADDR=http://host.docker.internal:${{UR_HOSTD_PORT:-42070}}"
+        "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-42070}}"
     )
     .unwrap();
     writeln!(out, "      - GH_TOKEN=${{GH_TOKEN:-}}").unwrap();
@@ -300,7 +300,7 @@ fn write_networks(out: &mut String, params: &ComposeParams) {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, and `UR_HOSTD_PORT`
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, and `UR_BUILDERD_PORT`
 /// as environment variables so the compose file's variable interpolation picks them up.
 #[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
@@ -314,7 +314,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             config.workspace.to_string_lossy().into_owned(),
         ),
         ("UR_SERVER_PORT".to_string(), config.daemon_port.to_string()),
-        ("UR_HOSTD_PORT".to_string(), config.hostd_port.to_string()),
+        ("UR_BUILDERD_PORT".to_string(), config.builderd_port.to_string()),
     ];
 
     // Forward UR_CONTAINER if set so compose can potentially use it
@@ -360,7 +360,7 @@ mod tests {
                 agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
             },
             worker_port: 10000,
-            hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+            builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
             rag: ur_config::RagConfig {
                 qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),

@@ -103,8 +103,8 @@ async fn main() -> anyhow::Result<()> {
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
 
-    let builderd_addr = std::env::var(ur_config::HOSTD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.hostd_port));
+    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
     let builderd_client = BuilderdClient::new(builderd_addr.clone());
     let repo_pool_manager = RepoPoolManager::new(

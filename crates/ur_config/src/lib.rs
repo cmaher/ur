@@ -133,13 +133,14 @@ pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
 pub const DEFAULT_DAEMON_PORT: u16 = 42069;
 
 /// Default TCP port for the builder daemon (builderd).
-pub const DEFAULT_HOSTD_PORT: u16 = 42070;
+/// Kept for documentation; the actual default is derived as `daemon_port + 2`.
+pub const DEFAULT_BUILDERD_PORT: u16 = 42070;
 
 /// PID file for the builderd process, stored in the config directory.
 pub const BUILDERD_PID_FILE: &str = "builderd.pid";
 
 /// Environment variable: `host:port` address for worker→builderd gRPC connections.
-pub const HOSTD_ADDR_ENV: &str = "UR_HOSTD_ADDR";
+pub const BUILDERD_ADDR_ENV: &str = "UR_BUILDERD_ADDR";
 
 /// Subdirectory under `config_dir` for host execution configuration.
 pub const HOSTEXEC_DIR: &str = "hostexec";
@@ -255,7 +256,7 @@ struct RawConfig {
     workspace: Option<PathBuf>,
     daemon_port: Option<u16>,
     worker_port: Option<u16>,
-    hostd_port: Option<u16>,
+    builderd_port: Option<u16>,
     compose_file: Option<PathBuf>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
@@ -449,8 +450,8 @@ pub struct Config {
     pub daemon_port: u16,
     /// TCP port the shared worker gRPC server listens on (default: `daemon_port + 1`).
     pub worker_port: u16,
-    /// TCP port the host execution daemon listens on (default: 42070).
-    pub hostd_port: u16,
+    /// TCP port the builder daemon listens on (default: `daemon_port + 2`).
+    pub builderd_port: u16,
     /// Path to the Docker Compose file for starting the server (default: `<config_dir>/docker-compose.yml`).
     pub compose_file: PathBuf,
     /// Forward proxy settings (always enabled with defaults).
@@ -510,7 +511,7 @@ impl Config {
             .unwrap_or_else(|| config_dir.join("workspace"));
         let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
         let worker_port = raw.worker_port.unwrap_or(daemon_port + 1);
-        let hostd_port = raw.hostd_port.unwrap_or(DEFAULT_HOSTD_PORT);
+        let builderd_port = raw.builderd_port.unwrap_or(daemon_port + 2);
         let compose_file = raw
             .compose_file
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
@@ -629,7 +630,7 @@ impl Config {
             workspace,
             daemon_port,
             worker_port,
-            hostd_port,
+            builderd_port,
             compose_file,
             proxy,
             network,

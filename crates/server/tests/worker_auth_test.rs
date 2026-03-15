@@ -31,7 +31,7 @@ fn make_test_components(
         config_dir: dir.to_path_buf(),
         workspace: workspace.clone(),
         daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-        hostd_port: ur_config::DEFAULT_HOSTD_PORT,
+        builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
         compose_file: dir.join("docker-compose.yml"),
         proxy: ur_config::ProxyConfig {
             hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
@@ -59,7 +59,7 @@ fn make_test_components(
         workspace.clone(),
         ur_server::BuilderdClient::new(format!(
             "http://127.0.0.1:{}",
-            ur_config::DEFAULT_HOSTD_PORT
+            ur_config::DEFAULT_DAEMON_PORT + 2
         )),
     );
     let process_manager = ur_server::ProcessManager::new(
@@ -85,7 +85,7 @@ fn make_test_components(
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),
         hostexec_config,
-        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_HOSTD_PORT),
+        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
     (process_manager, handler)
 }

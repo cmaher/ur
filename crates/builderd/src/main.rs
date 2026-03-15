@@ -13,7 +13,7 @@ mod logging;
 #[derive(Parser)]
 #[command(name = "builderd", about = "Ur builder execution daemon")]
 struct Cli {
-    #[arg(long, default_value_t = ur_config::DEFAULT_HOSTD_PORT)]
+    #[arg(long, default_value_t = ur_config::DEFAULT_BUILDERD_PORT)]
     port: u16,
 
     /// Workspace root path for resolving %WORKSPACE% templates in working_dir.

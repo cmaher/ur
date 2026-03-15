@@ -689,7 +689,7 @@ async fn main() -> Result<()> {
     info!(
         config_dir = %config.config_dir.display(),
         daemon_port = config.daemon_port,
-        hostd_port = config.hostd_port,
+        builderd_port = config.builderd_port,
         "ur CLI started"
     );
 
