@@ -43,6 +43,7 @@ impl RepoRegistry {
     }
 
     /// Resolve a process_id to its full repo path.
+    #[cfg(test)]
     pub(crate) fn resolve(&self, process_id: &str) -> Result<PathBuf, String> {
         let repos = self.repos.read().expect("repo registry lock poisoned");
         repos
