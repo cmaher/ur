@@ -860,7 +860,12 @@ mod tests {
     fn test_docker_allows_logs() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/docker.lua");
-        let args: Vec<String> = vec!["logs".into(), "--tail".into(), "100".into(), "my-ctr".into()];
+        let args: Vec<String> = vec![
+            "logs".into(),
+            "--tail".into(),
+            "100".into(),
+            "my-ctr".into(),
+        ];
         let result = mgr
             .run_transform(script, "docker", &args, "/workspace", None)
             .unwrap();
