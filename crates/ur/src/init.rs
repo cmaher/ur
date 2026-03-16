@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use tracing::{debug, info, instrument};
 
+use crate::output::OutputManager;
+
 const EXAMPLE_LUA: &str = "\
 -- Example hostexec Lua transform script.
 --
@@ -56,43 +58,43 @@ pub struct InitFlags {
     pub force_squid: bool,
 }
 
-#[instrument(skip(flags), fields(force = flags.force, force_config = flags.force_config, force_squid = flags.force_squid))]
-pub fn run(flags: InitFlags) -> Result<()> {
+#[instrument(skip(flags, output), fields(force = flags.force, force_config = flags.force_config, force_squid = flags.force_squid))]
+pub fn run(flags: InitFlags, output: &OutputManager) -> Result<()> {
     let config_dir = ur_config::resolve_config_dir()?;
     info!(config_dir = %config_dir.display(), "initializing config directory");
-    run_in(config_dir, flags)
+    run_in(config_dir, flags, output)
 }
 
-#[instrument(skip(flags), fields(config_dir = %config_dir.display()))]
-fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
-    init_dir(&config_dir)?;
+#[instrument(skip(flags, output), fields(config_dir = %config_dir.display()))]
+fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Result<()> {
+    init_dir(&config_dir, output)?;
 
     let workspace_dir = config_dir.join("workspace");
-    init_dir(&workspace_dir)?;
+    init_dir(&workspace_dir, output)?;
 
     let squid_dir = config_dir.join("squid");
-    init_dir(&squid_dir)?;
+    init_dir(&squid_dir, output)?;
 
     let claude_dir = config_dir.join(ur_config::CLAUDE_DIR);
-    init_dir(&claude_dir)?;
+    init_dir(&claude_dir, output)?;
 
     let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
-    init_dir(&hostexec_dir)?;
+    init_dir(&hostexec_dir, output)?;
 
     let backup_dir = config_dir.join("backups");
-    init_dir(&backup_dir)?;
+    init_dir(&backup_dir, output)?;
 
     let rag_dir = config_dir.join("rag");
-    init_dir(&rag_dir)?;
+    init_dir(&rag_dir, output)?;
 
     let rag_docs_dir = rag_dir.join("docs");
-    init_dir(&rag_docs_dir)?;
+    init_dir(&rag_docs_dir, output)?;
 
     let rag_docs_rust_dir = rag_docs_dir.join("rust");
-    init_dir(&rag_docs_rust_dir)?;
+    init_dir(&rag_docs_rust_dir, output)?;
 
     let rag_qdrant_dir = rag_dir.join("qdrant");
-    init_dir(&rag_qdrant_dir)?;
+    init_dir(&rag_qdrant_dir, output)?;
 
     let should_force_config = flags.force || flags.force_config;
     let should_force_squid = flags.force || flags.force_squid;
@@ -103,12 +105,14 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         &default_toml,
         should_force_config,
         "--force or --force-config",
+        output,
     )?;
     write_file(
         &squid_dir.join("allowlist.txt"),
         DEFAULT_ALLOWLIST,
         should_force_squid,
         "--force or --force-squid",
+        output,
     )?;
 
     write_file(
@@ -116,6 +120,7 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         EXAMPLE_LUA,
         false,
         "--force",
+        output,
     )?;
 
     // Credentials file must exist on the host for Docker file mounts to work
@@ -125,6 +130,7 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
         "",
         false,
         "--force",
+        output,
     )?;
 
     Ok(())
@@ -139,27 +145,33 @@ fn default_ur_toml(config_dir: &Path) -> String {
     )
 }
 
-fn init_dir(path: &Path) -> Result<()> {
+fn init_dir(path: &Path, output: &OutputManager) -> Result<()> {
     debug!(path = %path.display(), "creating directory");
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create directory {}", path.display()))?;
-    println!("Created {}", path.display());
+    output.print_text(&format!("Created {}", path.display()));
     Ok(())
 }
 
-fn write_file(path: &PathBuf, content: &str, force: bool, force_hint: &str) -> Result<()> {
+fn write_file(
+    path: &PathBuf,
+    content: &str,
+    force: bool,
+    force_hint: &str,
+    output: &OutputManager,
+) -> Result<()> {
     if path.exists() && !force {
         debug!(path = %path.display(), "skipping existing file");
-        println!(
+        output.print_text(&format!(
             "Skipped {} (exists, use {} to overwrite)",
             path.display(),
             force_hint
-        );
+        ));
         return Ok(());
     }
     debug!(path = %path.display(), force, "writing file");
     fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
-    println!("Created {}", path.display());
+    output.print_text(&format!("Created {}", path.display()));
     Ok(())
 }
 
@@ -176,8 +188,12 @@ mod tests {
         }
     }
 
+    fn text_output() -> OutputManager {
+        OutputManager::from_args(Some("text"))
+    }
+
     fn run_with_dir(dir: &Path, f: InitFlags) -> Result<()> {
-        run_in(dir.to_path_buf(), f)
+        run_in(dir.to_path_buf(), f, &text_output())
     }
 
     #[test]

@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use tracing::{debug, info, instrument, warn};
 
+use crate::output::OutputManager;
+
 /// Resolve the builderd binary path. Looks next to the current executable first
 /// (handles target/debug/ during development), then falls back to PATH lookup.
 #[instrument]
@@ -28,8 +30,8 @@ fn is_pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[instrument(skip(config), fields(builderd_port = config.builderd_port))]
-pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
+#[instrument(skip(config, output), fields(builderd_port = config.builderd_port))]
+pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let pid_file = config.config_dir.join(ur_config::BUILDERD_PID_FILE);
 
     // Take an exclusive lock on a lock file to prevent races between concurrent
@@ -51,7 +53,7 @@ pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             if is_pid_alive(pid) {
                 info!(pid, "builderd already running");
-                println!("builderd already running (pid {pid})");
+                output.print_text(&format!("builderd already running (pid {pid})"));
                 return Ok(());
             }
             debug!(pid, "removing stale PID file");
@@ -83,14 +85,14 @@ pub fn start_builderd(config: &ur_config::Config) -> Result<()> {
     let pid = child.id();
     std::fs::write(&pid_file, pid.to_string())?;
     info!(pid, "builderd started");
-    println!("builderd started (pid {pid})");
+    output.print_text(&format!("builderd started (pid {pid})"));
 
     // Lock is released when lock_file is dropped
     Ok(())
 }
 
-#[instrument(skip(config))]
-pub fn stop_builderd(config: &ur_config::Config) -> Result<()> {
+#[instrument(skip(config, output))]
+pub fn stop_builderd(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let pid_file = config.config_dir.join(ur_config::BUILDERD_PID_FILE);
 
     if !pid_file.exists() {
@@ -111,7 +113,7 @@ pub fn stop_builderd(config: &ur_config::Config) -> Result<()> {
 
     std::fs::remove_file(&pid_file)?;
     info!("builderd stopped");
-    println!("builderd stopped");
+    output.print_text("builderd stopped");
 
     Ok(())
 }

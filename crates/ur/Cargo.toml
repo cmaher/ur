@@ -6,6 +6,8 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 chrono = "0.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
 clap = { workspace = true }
 container = { path = "../container" }
 dirs = "6"

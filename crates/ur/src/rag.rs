@@ -7,12 +7,14 @@ use tracing::{debug, info};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagIndexRequest, RagSearchRequest};
 
+use crate::output::{OutputManager, RagIndexComplete, RagIndexProgress};
+
 /// Generate Rust documentation into the RAG docs directory.
 ///
 /// Runs `cargo +nightly doc` to produce rustdoc JSON for the full dependency
 /// tree, filters the JSON to workspace crates and direct dependencies only,
 /// then converts the filtered JSON to markdown via `cargo-docs-md`.
-pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
+pub fn generate_docs(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let output_dir = config.config_dir.join("rag").join("docs").join("rust");
     info!(output_dir = %output_dir.display(), "generating RAG docs");
 
@@ -29,7 +31,9 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
     let workspace_root = find_workspace_root()?;
 
     // Step 1: generate rustdoc JSON for all crates
-    println!("Generating rustdoc JSON...");
+    if !output.is_json() {
+        println!("Generating rustdoc JSON...");
+    }
     let cargo_doc = Command::new("cargo")
         .arg("+nightly")
         .arg("doc")
@@ -69,10 +73,12 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
         allowed = allowed.len(),
         copied, "filtered rustdoc JSON to allowed crates"
     );
-    println!(
-        "Generating docs for {copied} crates to {}...",
-        output_dir.display()
-    );
+    if !output.is_json() {
+        println!(
+            "Generating docs for {copied} crates to {}...",
+            output_dir.display()
+        );
+    }
 
     // Step 3: generate markdown from filtered JSON
     let docs = Command::new("cargo-docs-md")
@@ -90,7 +96,7 @@ pub fn generate_docs(config: &ur_config::Config) -> Result<()> {
     let _ = std::fs::remove_dir_all(&json_filtered);
 
     info!(output_dir = %output_dir.display(), "RAG docs generated");
-    println!("Done. Docs written to {}", output_dir.display());
+    output.print_text(&format!("Done. Docs written to {}", output_dir.display()));
     Ok(())
 }
 
@@ -209,7 +215,7 @@ fn parse_language(s: &str) -> Result<Language> {
 }
 
 /// Send a RagIndex gRPC request to ur-server and stream progress.
-pub async fn index(port: u16, language: &str) -> Result<()> {
+pub async fn index(port: u16, language: &str, output: &OutputManager) -> Result<()> {
     use ur_rpc::proto::rag::rag_index_progress::Update;
 
     let lang = parse_language(language)?;
@@ -220,7 +226,9 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
         .context("failed to connect to ur-server — is it running? Try 'ur start'")?;
 
     info!(language = %language, "sending RagIndex request");
-    println!("Indexing {language} docs...");
+    if !output.is_json() {
+        println!("Indexing {language} docs...");
+    }
 
     let mut stream = client
         .rag_index(RagIndexRequest {
@@ -243,16 +251,31 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
     while let Some(msg) = stream.message().await.context("stream error")? {
         match msg.update {
             Some(Update::DependencyIndexed(dep)) => {
-                println!(
-                    "  {} — {} files, {} chunks",
-                    dep.name, dep.files, dep.chunks
-                );
+                if output.is_json() {
+                    output.print_ndjson(&RagIndexProgress {
+                        name: dep.name,
+                        files: dep.files,
+                        chunks: dep.chunks,
+                    });
+                } else {
+                    println!(
+                        "  {} — {} files, {} chunks",
+                        dep.name, dep.files, dep.chunks
+                    );
+                }
             }
             Some(Update::IndexComplete(complete)) => {
-                println!(
-                    "Done. Indexed {} files, {} chunks total.",
-                    complete.total_files, complete.total_chunks
-                );
+                if output.is_json() {
+                    output.print_ndjson(&RagIndexComplete {
+                        total_files: complete.total_files,
+                        total_chunks: complete.total_chunks,
+                    });
+                } else {
+                    println!(
+                        "Done. Indexed {} files, {} chunks total.",
+                        complete.total_files, complete.total_chunks
+                    );
+                }
             }
             None => {}
         }
@@ -262,7 +285,13 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
 }
 
 /// Send a RagSearch gRPC request to ur-server.
-pub async fn search(port: u16, query: &str, language: &str, top_k: u32) -> Result<()> {
+pub async fn search(
+    port: u16,
+    query: &str,
+    language: &str,
+    top_k: u32,
+    output: &OutputManager,
+) -> Result<()> {
     let lang = parse_language(language)?;
 
     let addr = format!("http://127.0.0.1:{port}");
@@ -283,15 +312,19 @@ pub async fn search(port: u16, query: &str, language: &str, top_k: u32) -> Resul
 
     let results = resp.into_inner().results;
     if results.is_empty() {
-        println!("No results found.");
+        output.print_text("No results found.");
         return Ok(());
     }
 
-    for (i, result) in results.iter().enumerate() {
-        println!("--- Result {} (score: {:.4}) ---", i + 1, result.score);
-        println!("Source: {}", result.source_file);
-        println!("{}", result.text);
-        println!();
+    if output.is_json() {
+        output.print_success(&results);
+    } else {
+        for (i, result) in results.iter().enumerate() {
+            println!("--- Result {} (score: {:.4}) ---", i + 1, result.score);
+            println!("Source: {}", result.source_file);
+            println!("{}", result.text);
+            println!();
+        }
     }
 
     Ok(())
@@ -301,7 +334,7 @@ pub async fn search(port: u16, query: &str, language: &str, top_k: u32) -> Resul
 ///
 /// Uses curl to fetch model files from HuggingFace, matching the hf_hub
 /// cache layout that fastembed expects.
-pub fn download_model(config: &ur_config::Config) -> Result<()> {
+pub fn download_model(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let model_name = &config.rag.embedding_model;
     let info = ur_config::model_download_info(model_name).ok_or_else(|| {
         let supported = ur_config::supported_model_names().join(", ");
@@ -316,18 +349,20 @@ pub fn download_model(config: &ur_config::Config) -> Result<()> {
     if snapshot_dir.exists() {
         let all_present = info.hf_files.iter().all(|f| snapshot_dir.join(f).exists());
         if all_present {
-            println!(
+            output.print_text(&format!(
                 "Model '{model_name}' already downloaded at {}",
                 cache_dir.display()
-            );
+            ));
             return Ok(());
         }
     }
 
-    println!(
-        "Downloading model '{model_name}' to {}...",
-        cache_dir.display()
-    );
+    if !output.is_json() {
+        println!(
+            "Downloading model '{model_name}' to {}...",
+            cache_dir.display()
+        );
+    }
 
     std::fs::create_dir_all(model_dir.join("refs"))
         .context("failed to create model refs directory")?;
@@ -347,7 +382,9 @@ pub fn download_model(config: &ur_config::Config) -> Result<()> {
     for file in info.hf_files {
         let url = format!("{hf_base}/{file}");
         let dest = snapshot_dir.join(file);
-        println!("  Downloading {file}...");
+        if !output.is_json() {
+            println!("  Downloading {file}...");
+        }
 
         let status = Command::new("curl")
             .args(["-fSL", "-o"])
@@ -364,11 +401,11 @@ pub fn download_model(config: &ur_config::Config) -> Result<()> {
         }
     }
 
-    println!(
+    output.print_text(&format!(
         "Done. Model '{}' cached at {}",
         model_name,
         cache_dir.display()
-    );
+    ));
     Ok(())
 }
 

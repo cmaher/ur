@@ -1,22 +1,21 @@
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use anyhow::{Context, Result};
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
+use crate::TicketOutput;
 use crate::args::TicketArgs;
-use crate::format::{format_ticket_detail, format_ticket_list};
 use crate::status::build_status_report;
 
 /// Execute a ticket subcommand against the given gRPC client.
 ///
-/// This is a pure dispatch function with no state. The caller is responsible
-/// for constructing the client (with any auth interceptors, channel config, etc).
+/// Returns a `TicketOutput` variant describing the result. The caller is
+/// responsible for formatting (JSON or text) and printing.
 ///
 /// Generic over the transport type `T` so callers can pass a plain `Channel`
 /// or an `InterceptedService<Channel, F>` with auth headers.
-pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>) -> Result<()>
+pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -47,7 +46,7 @@ where
                 .await
                 .context("failed to create ticket")?;
             let id = resp.into_inner().id;
-            println!("Created {id}");
+            Ok(TicketOutput::Created { id })
         }
 
         TicketArgs::List {
@@ -67,11 +66,7 @@ where
                 .await
                 .context("failed to list tickets")?;
             let tickets = resp.into_inner().tickets;
-            if tickets.is_empty() {
-                println!("No tickets found.");
-            } else {
-                println!("{}", format_ticket_list(&tickets));
-            }
+            Ok(TicketOutput::Listed { tickets })
         }
 
         TicketArgs::Show { id } => {
@@ -82,12 +77,12 @@ where
             let inner = resp.into_inner();
             let t = inner
                 .ticket
-                .as_ref()
                 .context("server returned empty ticket")?;
-            println!(
-                "{}",
-                format_ticket_detail(t, &inner.metadata, &inner.activities)
-            );
+            Ok(TicketOutput::Shown {
+                ticket: Box::new(t),
+                metadata: inner.metadata,
+                activities: inner.activities,
+            })
         }
 
         TicketArgs::Update {
@@ -112,7 +107,7 @@ where
                 })
                 .await
                 .context("failed to update ticket")?;
-            println!("Updated {id}");
+            Ok(TicketOutput::Updated { id })
         }
 
         TicketArgs::SetMeta { id, key, value } => {
@@ -124,7 +119,7 @@ where
                 })
                 .await
                 .context("failed to set metadata")?;
-            println!("Set {key}={value} on {id}");
+            Ok(TicketOutput::MetaSet { id, key, value })
         }
 
         TicketArgs::DeleteMeta { id, key } => {
@@ -135,7 +130,7 @@ where
                 })
                 .await
                 .context("failed to delete metadata")?;
-            println!("Deleted {key} from {id}");
+            Ok(TicketOutput::MetaDeleted { id, key })
         }
 
         TicketArgs::AddActivity { id, message, meta } => {
@@ -151,7 +146,7 @@ where
                 .await
                 .context("failed to add activity")?;
             let activity_id = resp.into_inner().activity_id;
-            println!("Added activity {activity_id} to {id}");
+            Ok(TicketOutput::ActivityAdded { id, activity_id })
         }
 
         TicketArgs::ListActivities { id } => {
@@ -162,11 +157,7 @@ where
                 .await
                 .context("failed to list activities")?;
             let activities = resp.into_inner().activities;
-            if activities.is_empty() {
-                println!("No activities found for {id}.");
-            } else {
-                println!("{}", format_activities(&activities));
-            }
+            Ok(TicketOutput::ActivitiesListed { id, activities })
         }
 
         TicketArgs::AddBlock { id, blocked_by_id } => {
@@ -177,7 +168,7 @@ where
                 })
                 .await
                 .context("failed to add block")?;
-            println!("{blocked_by_id} now blocks {id}");
+            Ok(TicketOutput::BlockAdded { id, blocked_by_id })
         }
 
         TicketArgs::RemoveBlock { id, blocked_by_id } => {
@@ -188,7 +179,7 @@ where
                 })
                 .await
                 .context("failed to remove block")?;
-            println!("{blocked_by_id} no longer blocks {id}");
+            Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
         }
 
         TicketArgs::AddLink { id, linked_id } => {
@@ -199,7 +190,7 @@ where
                 })
                 .await
                 .context("failed to link tickets")?;
-            println!("Linked {id} <-> {linked_id}");
+            Ok(TicketOutput::LinkAdded { id, linked_id })
         }
 
         TicketArgs::RemoveLink { id, linked_id } => {
@@ -210,7 +201,7 @@ where
                 })
                 .await
                 .context("failed to unlink tickets")?;
-            println!("Unlinked {id} <-> {linked_id}");
+            Ok(TicketOutput::LinkRemoved { id, linked_id })
         }
 
         TicketArgs::Dispatchable { epic_id } => {
@@ -221,19 +212,7 @@ where
                 .await
                 .context("failed to get dispatchable tickets")?;
             let tickets = resp.into_inner().tickets;
-            if tickets.is_empty() {
-                println!("No dispatchable tickets for {epic_id}.");
-            } else {
-                let mut out = String::new();
-                writeln!(out, "{:<20} {:<4} TITLE", "ID", "PRI").unwrap();
-                let separator: String = std::iter::repeat_n('-', 48).collect();
-                writeln!(out, "{separator}").unwrap();
-                for t in &tickets {
-                    writeln!(out, "{:<20} {:<4} {}", t.id, t.priority, t.title).unwrap();
-                }
-                write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
-                println!("{out}");
-            }
+            Ok(TicketOutput::Dispatchable { epic_id, tickets })
         }
 
         TicketArgs::Status { project } => {
@@ -250,35 +229,8 @@ where
                 .context("failed to list tickets")?;
             let tickets = resp.into_inner().tickets;
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            println!(
-                "{}",
-                build_status_report(&tickets, &today, project.as_deref())
-            );
+            let report = build_status_report(&tickets, &today, project.as_deref());
+            Ok(TicketOutput::StatusReport { report, tickets })
         }
     }
-
-    Ok(())
-}
-
-fn format_activities(activities: &[ActivityDetail]) -> String {
-    let mut out = String::new();
-    for a in activities {
-        let Some(entry) = &a.entry else {
-            continue;
-        };
-        write!(
-            out,
-            "[{}] {}: {}",
-            entry.timestamp, entry.author, entry.message
-        )
-        .unwrap();
-        for m in &a.metadata {
-            write!(out, "\n  {}: {}", m.key, m.value).unwrap();
-        }
-        writeln!(out).unwrap();
-    }
-    if out.ends_with('\n') {
-        out.pop();
-    }
-    out
 }

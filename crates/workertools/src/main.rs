@@ -13,6 +13,10 @@ use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 #[derive(Parser)]
 #[command(name = "workertools", about = "Ur worker toolkit")]
 struct Cli {
+    /// Output format: text or json
+    #[arg(long, global = true)]
+    output: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -72,7 +76,8 @@ async fn main() {
             }
         },
         Commands::Ticket { command } => {
-            std::process::exit(run_ticket(command).await);
+            let json = cli.output.as_deref() == Some("json");
+            std::process::exit(run_ticket(command, json).await);
         }
     }
 }
@@ -150,7 +155,7 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
     exit_code
 }
 
-async fn run_ticket(args: ticket_client::TicketArgs) -> i32 {
+async fn run_ticket(args: ticket_client::TicketArgs, json: bool) -> i32 {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
     let addr = format!("http://{server_addr}");
@@ -188,9 +193,28 @@ async fn run_ticket(args: ticket_client::TicketArgs) -> i32 {
     let mut client = TicketServiceClient::with_interceptor(channel, interceptor);
 
     match ticket_client::execute(args, &mut client).await {
-        Ok(()) => 0,
+        Ok(output) => {
+            if json {
+                let envelope = serde_json::json!({
+                    "ok": true,
+                    "data": output,
+                });
+                println!("{}", serde_json::to_string(&envelope).unwrap());
+            } else {
+                println!("{}", ticket_client::format_output(&output));
+            }
+            0
+        }
         Err(e) => {
-            eprintln!("ticket: {e:#}");
+            if json {
+                let envelope = serde_json::json!({
+                    "ok": false,
+                    "error": { "message": format!("{e:#}") },
+                });
+                eprintln!("{}", serde_json::to_string(&envelope).unwrap());
+            } else {
+                eprintln!("ticket: {e:#}");
+            }
             1
         }
     }
