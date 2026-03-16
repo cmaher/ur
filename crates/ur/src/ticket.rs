@@ -10,7 +10,7 @@ async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
     let channel = Endpoint::try_from(addr)?
         .connect()
         .await
-        .context("server is not running — run 'ur start' first")?;
+        .context("server is not running — run 'ur server start' first")?;
     Ok(TicketServiceClient::new(channel))
 }
 

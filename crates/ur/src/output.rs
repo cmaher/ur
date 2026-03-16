@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn structured_error_from_anyhow_server_not_running() {
-        let err = anyhow::anyhow!("server is not running — run 'ur start' first");
+        let err = anyhow::anyhow!("server is not running — run 'ur server start' first");
         let se = StructuredError::from_anyhow(&err);
         assert!(matches!(se.code, ErrorCode::ServerNotRunning));
     }

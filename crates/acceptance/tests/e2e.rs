@@ -361,7 +361,7 @@ fn kill_process_on_port(port: u16) {
 fn stop_server(ur: &Path, config_dir: &Path) {
     let _ = run_cmd(
         ur,
-        &["stop"],
+        &["server", "stop"],
         &[("UR_CONFIG", config_dir.to_str().unwrap())],
     );
 }
@@ -463,7 +463,7 @@ fn e2e_all() {
     let scenario_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let env_pairs = env.env();
         let env_slice = env_pairs.to_vec();
-        let up_output = run_cmd(&ur, &["start"], &env_slice);
+        let up_output = run_cmd(&ur, &["server", "start"], &env_slice);
         assert!(
             up_output.status.success(),
             "ur start failed.\nstdout: {}\nstderr: {}",
