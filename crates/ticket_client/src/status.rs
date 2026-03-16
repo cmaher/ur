@@ -92,12 +92,12 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
 
     // Global totals
     let total_open = items.iter().filter(|t| t.status != "closed").count();
-    let total_closed = items.iter().filter(|t| t.status == "closed").count();
+    let total = items.len();
 
     let mut out = String::new();
     writeln!(
         out,
-        "Project Status — {today}  ({total_open} open, {total_closed} closed)"
+        "Project Status — {today}  ({total_open} open / {total} total)"
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -119,12 +119,12 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
 
         for ep in &group {
             let c = descendant_counts(&ep.id);
-            let counts = format!("{}/{}", c.open, c.closed);
+            let counts = format!("{}/{}", c.open, c.open + c.closed);
             writeln!(out, "  {:<12} {:<7} {}", ep.id, counts, ep.title).unwrap();
 
             for sub in sub_epics_of(&ep.id) {
                 let sc = descendant_counts(&sub.id);
-                let sub_counts = format!("{}/{}", sc.open, sc.closed);
+                let sub_counts = format!("{}/{}", sc.open, sc.open + sc.closed);
                 writeln!(out, "    {:<12} {:<7} {}", sub.id, sub_counts, sub.title).unwrap();
             }
         }
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn empty_tickets() {
         let report = build_status_report(&[], "2026-03-15", None);
-        assert_eq!(report, "Project Status — 2026-03-15  (0 open, 0 closed)");
+        assert_eq!(report, "Project Status — 2026-03-15  (0 open / 0 total)");
     }
 
     #[test]
@@ -198,10 +198,10 @@ mod tests {
             ticket("ur-t2", "Task Two", "task", "closed", 0, "ur-e1"),
         ];
         let report = build_status_report(&tickets, "2026-03-15", None);
-        assert!(report.contains("(2 open, 1 closed)"));
+        assert!(report.contains("(2 open / 3 total)"));
         assert!(report.contains("[P1]"));
         assert!(report.contains("ur-e1"));
-        assert!(report.contains("1/1")); // 1 open, 1 closed child
+        assert!(report.contains("1/2")); // 1 open, 2 total children
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
         assert!(report.contains("  ur-e1"));
         assert!(report.contains("    ur-e2"));
         // ur-e1 descendant count includes ur-t1 (through ur-e2)
-        assert!(report.contains("1/0")); // 1 open descendant
+        assert!(report.contains("1/1")); // 1 open descendant, 1 total
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let report = build_status_report(&tickets, "2026-03-15", Some("ur"));
         assert!(report.contains("ur-e1"));
         assert!(!report.contains("foo-e1"));
-        assert!(report.contains("(2 open, 0 closed)"));
+        assert!(report.contains("(2 open / 2 total)"));
     }
 
     #[test]
