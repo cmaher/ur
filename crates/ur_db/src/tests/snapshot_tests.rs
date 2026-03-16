@@ -60,6 +60,7 @@ async fn vacuum_into_data_survives() {
         parent_id: None,
         title: "Snapshot ticket one".into(),
         body: "Body one".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -72,6 +73,7 @@ async fn vacuum_into_data_survives() {
         parent_id: None,
         title: "Snapshot ticket two".into(),
         body: "Body two".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -128,6 +130,7 @@ async fn restore_into_new_file() {
         parent_id: None,
         title: "Restore test ticket".into(),
         body: "Restore body".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -230,6 +233,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: None,
         title: "Integrity epic".into(),
         body: "Epic body".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -242,6 +246,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: Some("int-epic".into()),
         title: "Integrity task one".into(),
         body: "Task one body".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -254,6 +259,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         parent_id: Some("int-epic".into()),
         title: "Integrity task two".into(),
         body: "Task two body".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -297,6 +303,7 @@ async fn snapshot_data_integrity_full_round_trip() {
     // Verify tickets.
     let all_tickets = restored_repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: None,

@@ -34,10 +34,11 @@ impl TicketRepo {
         let status = ticket.status.as_deref().unwrap_or("open");
 
         sqlx::query(
-            "INSERT INTO ticket (id, type, status, priority, parent_id, title, body, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ticket (id, project, type, status, priority, parent_id, title, body, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&ticket.id)
+        .bind(&ticket.project)
         .bind(&ticket.type_)
         .bind(status)
         .bind(ticket.priority)
@@ -51,6 +52,7 @@ impl TicketRepo {
 
         Ok(Ticket {
             id: ticket.id.clone(),
+            project: ticket.project.clone(),
             type_: ticket.type_.clone(),
             status: status.to_owned(),
             priority: ticket.priority,
@@ -69,6 +71,7 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                String,
                 i32,
                 Option<String>,
                 String,
@@ -77,7 +80,7 @@ impl TicketRepo {
                 String,
             ),
         >(
-            "SELECT id, type, status, priority, parent_id, title, body, created_at, updated_at
+            "SELECT id, project, type, status, priority, parent_id, title, body, created_at, updated_at
              FROM ticket WHERE id = ?",
         )
         .bind(id)
@@ -85,9 +88,21 @@ impl TicketRepo {
         .await?;
 
         Ok(row.map(
-            |(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
+            |(
+                id,
+                project,
+                type_,
+                status,
+                priority,
+                parent_id,
+                title,
+                body,
+                created_at,
+                updated_at,
+            )| {
                 Ticket {
                     id,
+                    project,
                     type_,
                     status,
                     priority,
@@ -139,6 +154,7 @@ impl TicketRepo {
 
         Ok(Ticket {
             id: existing.id,
+            project: existing.project,
             type_: type_.to_owned(),
             status: status.to_owned(),
             priority,
@@ -152,10 +168,14 @@ impl TicketRepo {
 
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = String::from(
-            "SELECT id, type, status, priority, parent_id, title, body, created_at, updated_at FROM ticket WHERE 1=1",
+            "SELECT id, project, type, status, priority, parent_id, title, body, created_at, updated_at FROM ticket WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
 
+        if let Some(ref project) = filter.project {
+            query.push_str(" AND project = ?");
+            binds.push(project.clone());
+        }
         if let Some(ref status) = filter.status {
             query.push_str(" AND status = ?");
             binds.push(status.clone());
@@ -177,6 +197,7 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                String,
                 i32,
                 Option<String>,
                 String,
@@ -194,9 +215,21 @@ impl TicketRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(id, type_, status, priority, parent_id, title, body, created_at, updated_at)| {
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    created_at,
+                    updated_at,
+                )| {
                     Ticket {
                         id,
+                        project,
                         type_,
                         status,
                         priority,
@@ -453,18 +486,35 @@ impl TicketRepo {
     /// Returns open children of the given epic that have no open blockers.
     /// Uses GraphManager to compute transitive blockers, then filters out
     /// any ticket that has at least one open blocker.
+    ///
+    /// If `project` is provided, only tickets belonging to that project are returned.
     pub async fn dispatchable_tickets(
         &self,
         epic_id: &str,
+        project: Option<&str>,
     ) -> Result<Vec<DispatchableTicket>, sqlx::Error> {
-        let children = sqlx::query_as::<_, (String, String, i32, String)>(
-            "SELECT id, title, priority, type FROM ticket
-             WHERE parent_id = ? AND status = 'open'
-             ORDER BY priority ASC",
-        )
-        .bind(epic_id)
-        .fetch_all(&self.pool)
-        .await?;
+        let (query, binds): (String, Vec<String>) = match project {
+            Some(p) => (
+                "SELECT id, title, priority, type FROM ticket
+                 WHERE parent_id = ? AND status = 'open' AND project = ?
+                 ORDER BY priority ASC"
+                    .to_owned(),
+                vec![epic_id.to_owned(), p.to_owned()],
+            ),
+            None => (
+                "SELECT id, title, priority, type FROM ticket
+                 WHERE parent_id = ? AND status = 'open'
+                 ORDER BY priority ASC"
+                    .to_owned(),
+                vec![epic_id.to_owned()],
+            ),
+        };
+
+        let mut q = sqlx::query_as::<_, (String, String, i32, String)>(sqlx::AssertSqlSafe(query));
+        for bind in &binds {
+            q = q.bind(bind);
+        }
+        let children = q.fetch_all(&self.pool).await?;
 
         let mut result = Vec::new();
 

@@ -1,5 +1,6 @@
 CREATE TABLE ticket (
     id TEXT PRIMARY KEY NOT NULL,
+    project TEXT NOT NULL,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
     priority INTEGER NOT NULL,

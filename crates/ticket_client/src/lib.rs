@@ -141,12 +141,14 @@ mod tests {
         match cmd.command {
             super::TicketArgs::Create {
                 title,
+                project,
                 ticket_type,
                 parent,
                 priority,
                 body,
             } => {
                 assert_eq!(title, "My new ticket");
+                assert!(project.is_none());
                 assert_eq!(ticket_type, "task");
                 assert!(parent.is_none());
                 assert_eq!(priority, 0);
@@ -162,6 +164,8 @@ mod tests {
             "ticket",
             "create",
             "Epic title",
+            "-p",
+            "myproj",
             "--type",
             "epic",
             "--parent",
@@ -174,12 +178,14 @@ mod tests {
         match cmd.command {
             super::TicketArgs::Create {
                 title,
+                project,
                 ticket_type,
                 parent,
                 priority,
                 body,
             } => {
                 assert_eq!(title, "Epic title");
+                assert_eq!(project.as_deref(), Some("myproj"));
                 assert_eq!(ticket_type, "epic");
                 assert_eq!(parent.as_deref(), Some("ur-abc12"));
                 assert_eq!(priority, 3);
@@ -194,10 +200,14 @@ mod tests {
         let cmd = parse(&["ticket", "list"]);
         match cmd.command {
             super::TicketArgs::List {
+                project,
+                all,
                 epic,
                 ticket_type,
                 status,
             } => {
+                assert!(project.is_none());
+                assert!(!all);
                 assert!(epic.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
@@ -209,17 +219,33 @@ mod tests {
     #[test]
     fn test_list_with_filters() {
         let cmd = parse(&[
-            "ticket", "list", "--epic", "ur-e1", "--type", "task", "--status", "open",
+            "ticket", "list", "-p", "myproj", "--epic", "ur-e1", "--type", "task", "--status",
+            "open",
         ]);
         match cmd.command {
             super::TicketArgs::List {
+                project,
+                all,
                 epic,
                 ticket_type,
                 status,
             } => {
+                assert_eq!(project.as_deref(), Some("myproj"));
+                assert!(!all);
                 assert_eq!(epic.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_all() {
+        let cmd = parse(&["ticket", "list", "--all"]);
+        match cmd.command {
+            super::TicketArgs::List { all, .. } => {
+                assert!(all);
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -386,7 +412,22 @@ mod tests {
     fn test_dispatchable() {
         let cmd = parse(&["ticket", "dispatchable", "ur-epic1"]);
         match cmd.command {
-            super::TicketArgs::Dispatchable { epic_id } => assert_eq!(epic_id, "ur-epic1"),
+            super::TicketArgs::Dispatchable { epic_id, project } => {
+                assert_eq!(epic_id, "ur-epic1");
+                assert!(project.is_none());
+            }
+            other => panic!("expected Dispatchable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dispatchable_with_project() {
+        let cmd = parse(&["ticket", "dispatchable", "ur-epic1", "-p", "myproj"]);
+        match cmd.command {
+            super::TicketArgs::Dispatchable { epic_id, project } => {
+                assert_eq!(epic_id, "ur-epic1");
+                assert_eq!(project.as_deref(), Some("myproj"));
+            }
             other => panic!("expected Dispatchable, got {other:?}"),
         }
     }
