@@ -172,7 +172,11 @@ pub fn generate_compose(
         qdrant_container_name: rag.qdrant_hostname.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
-        backup_path: if backup.enabled { backup.path.clone() } else { None },
+        backup_path: if backup.enabled {
+            backup.path.clone()
+        } else {
+            None
+        },
     };
 
     let mut out = String::with_capacity(2048);
