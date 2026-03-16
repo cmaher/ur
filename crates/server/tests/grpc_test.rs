@@ -84,14 +84,14 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         )),
         worker_repo.clone(),
     );
-    let process_manager = ur_server::ProcessManager::new(
+    let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
-        ur_server::process::PromptModesConfig::default(),
+        ur_server::worker::PromptModesConfig::default(),
         worker_repo,
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
@@ -100,7 +100,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
     )
     .unwrap();
     ur_server::grpc::CoreServiceHandler {
-        process_manager,
+        worker_manager,
         repo_pool_manager,
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),

@@ -93,10 +93,10 @@ ur.toml
 CLI launch request
   → grpc.rs: CoreServiceHandler::worker_launch()
     → reads ProjectConfig fields (git_hooks_dir, mounts, hostexec, etc.)
-    → builds ProcessConfig struct (crates/server/src/process.rs)
+    → builds WorkerConfig struct (crates/server/src/worker.rs)
 
-ProcessConfig
-  → ProcessManager::run_and_record()
+WorkerConfig
+  → WorkerManager::run_and_record()
     → RunOptsBuilder (crates/server/src/run_opts_builder.rs)
       .add_workspace()     — mounts workspace_dir → /workspace
       .add_credentials()   — mounts credentials file
@@ -108,10 +108,10 @@ ProcessConfig
 
 ### Fields Currently Wired
 
-| ProjectConfig field | Passed to ProcessConfig | Consumed by RunOptsBuilder | Notes |
+| ProjectConfig field | Passed to WorkerConfig | Consumed by RunOptsBuilder | Notes |
 |--------------------|-----------------------|---------------------------|-------|
-| `git_hooks_dir` | yes | `add_git_hooks()` | Full pipeline: config → gRPC → ProcessConfig → RunOptsBuilder |
-| `mounts` | yes | `add_mounts()` | Full pipeline: config → gRPC → ProcessConfig → RunOptsBuilder |
+| `git_hooks_dir` | yes | `add_git_hooks()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
+| `mounts` | yes | `add_mounts()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
 | `hostexec` | no (handled separately) | — | Used by HostExecServiceHandler for allowlist |
 
 ## Example Config

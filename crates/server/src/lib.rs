@@ -12,18 +12,18 @@ pub mod grpc_ticket;
 pub mod hostexec;
 pub mod logging;
 pub mod pool;
-pub mod process;
 pub mod proxy;
 #[cfg(feature = "rag")]
 pub mod rag;
 pub mod run_opts_builder;
 pub mod strategy;
 pub mod stream;
+pub mod worker;
 
 pub use backup::BackupTaskManager;
 pub use builderd_client::BuilderdClient;
 pub use config::Config;
 pub use pool::RepoPoolManager;
-pub use process::{ProcessConfig, ProcessManager, WorkerContext, WorkerId};
 pub use proxy::SquidManager;
 pub use strategy::WorkerStrategy;
+pub use worker::{WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary};

@@ -20,7 +20,7 @@ ur CLI: process_launch()                              [crates/ur/src/main.rs]
     │
     ▼  gRPC (TCP → 127.0.0.1:42069 → ur-server container)
     │
-ur-server: ProcessManager.run_and_record()            [crates/server/src/process.rs]
+ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.rs]
     │   bind-mounts ~/.ur/claude/.credentials.json
     │   → /home/worker/.claude/.credentials.json
     │
@@ -49,7 +49,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    └── client.worker_launch(WorkerLaunchRequest { ... })
 
 2. Server (ur-server container)
-   ├── Phase 1: ProcessManager.prepare()
+   ├── Phase 1: WorkerManager.prepare()
    │   ├── Check for duplicate worker_id
    │   ├── workspace_dir provided? → register_absolute (no git init)
    │   └── no workspace? → create dir, git init, register
@@ -57,7 +57,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    ├── Spawn per-worker gRPC server
    │   └── TCP on 0.0.0.0:<random_port> (reachable via Docker network)
    │
-   └── Phase 2: ProcessManager.run_and_record()
+   └── Phase 2: WorkerManager.run_and_record()
        ├── NetworkManager.ensure() (create Docker network if needed)
        ├── Build env vars:
        │   ├── UR_SERVER_ADDR = <server_hostname>:<grpc_port>
@@ -100,8 +100,8 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 
 | Variable | Set by | Consumed by | Purpose |
 |---|---|---|---|
-| `UR_SERVER_ADDR` | ProcessManager (server) | worker binaries (git, gh, ur-ping) | gRPC endpoint for proxied commands |
-| `HTTP_PROXY` / `HTTPS_PROXY` | ProcessManager (server) | Claude Code, curl, etc. | Squid forward proxy |
+| `UR_SERVER_ADDR` | WorkerManager (server) | worker binaries (git, gh, ur-ping) | gRPC endpoint for proxied commands |
+| `HTTP_PROXY` / `HTTPS_PROXY` | WorkerManager (server) | Claude Code, curl, etc. | Squid forward proxy |
 | `GH_TOKEN` / `GITHUB_TOKEN` | docker-compose.yml | gh CLI (on server) | GitHub auth for server-side git/gh |
 
 ## Key Files
@@ -110,8 +110,8 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 |---|---|
 | `crates/ur/src/credential.rs` | CredentialManager: Keychain seeding, save-from-container |
 | `crates/ur/src/main.rs` | CLI entry, `process_launch()` calls `ensure_credentials()` |
-| `crates/server/src/process.rs` | ProcessManager: bind-mounts credentials, launches containers |
-| `crates/server/src/grpc.rs` | Server RPC handler, maps request to ProcessConfig |
+| `crates/server/src/worker.rs` | WorkerManager: bind-mounts credentials, launches containers |
+| `crates/server/src/grpc.rs` | Server RPC handler, maps request to WorkerConfig |
 | `containers/claude-worker/claude.json` | Baked-in `.claude.json` (onboarding + project trust) |
 | `containers/claude-worker/entrypoint.sh` | Starts tmux, keeps container alive |
 | `containers/claude-worker/claude-settings.json` | Baked-in settings (bypassPermissions mode) |

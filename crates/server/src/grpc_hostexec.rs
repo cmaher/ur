@@ -18,7 +18,7 @@ use ur_rpc::proto::hostexec::{
     HostExecRequest, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
 };
 
-use crate::ProcessManager;
+use crate::WorkerManager;
 use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
 
 #[derive(Debug, thiserror::Error)]
@@ -38,8 +38,8 @@ pub enum HostExecError {
     #[error("invalid worker ID: {reason}")]
     InvalidWorkerId { reason: String },
 
-    #[error("process not found for worker: {worker_id}")]
-    ProcessNotFound { worker_id: String },
+    #[error("worker not found: {worker_id}")]
+    WorkerNotFound { worker_id: String },
 
     #[error("invalid working directory {path}: {reason}")]
     InvalidWorkingDir { path: String, reason: String },
@@ -87,7 +87,7 @@ impl From<HostExecError> for Status {
                 INVALID_ARGUMENT,
                 HashMap::new(),
             ),
-            HostExecError::ProcessNotFound { worker_id } => {
+            HostExecError::WorkerNotFound { worker_id } => {
                 let mut meta = HashMap::new();
                 meta.insert("worker_id".into(), worker_id.clone());
                 error::status_with_info(
@@ -120,7 +120,7 @@ type CommandOutputStream =
 pub struct HostExecServiceHandler {
     pub config: HostExecConfigManager,
     pub lua: LuaTransformManager,
-    pub process_manager: ProcessManager,
+    pub worker_manager: WorkerManager,
     pub projects: HashMap<String, ur_config::ProjectConfig>,
     pub builderd_addr: String,
     pub host_workspace: std::path::PathBuf,
@@ -270,15 +270,15 @@ impl HostExecServiceHandler {
         let worker_id = crate::WorkerId::parse(worker_id_str)
             .map_err(|e| HostExecError::InvalidWorkerId { reason: e })?;
 
-        // Look up process_id from ProcessManager
+        // Look up process_id from worker_manager
         let process_id = self
-            .process_manager
+            .worker_manager
             .resolve_process_id(&worker_id)
             .await
-            .map_err(|e| HostExecError::ProcessNotFound { worker_id: e })?;
+            .map_err(|e| HostExecError::WorkerNotFound { worker_id: e })?;
 
-        // Look up worker context (project_key, slot_path) from ProcessManager
-        let proc_context = self.process_manager.get_worker_context(&worker_id).await;
+        // Look up worker context (project_key, slot_path) from worker_manager
+        let proc_context = self.worker_manager.get_worker_context(&worker_id).await;
 
         // Build Lua-facing WorkerContext and merge per-project passthrough commands
         let (worker_context, config) = match proc_context {

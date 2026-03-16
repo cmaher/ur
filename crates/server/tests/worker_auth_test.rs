@@ -7,11 +7,11 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build a ProcessManager, WorkerRepo, and CoreServiceHandler for testing.
+/// Build a WorkerManager, WorkerRepo, and CoreServiceHandler for testing.
 async fn make_test_components(
     dir: &Path,
 ) -> (
-    ur_server::ProcessManager,
+    ur_server::WorkerManager,
     ur_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
@@ -66,14 +66,14 @@ async fn make_test_components(
         )),
         worker_repo.clone(),
     );
-    let process_manager = ur_server::ProcessManager::new(
+    let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
-        ur_server::process::PromptModesConfig::default(),
+        ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
@@ -82,7 +82,7 @@ async fn make_test_components(
     )
     .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
-        process_manager: process_manager.clone(),
+        worker_manager: worker_manager.clone(),
         repo_pool_manager,
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
@@ -90,12 +90,12 @@ async fn make_test_components(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (process_manager, worker_repo, handler)
+    (worker_manager, worker_repo, handler)
 }
 
 /// Spawn a gRPC server with CoreService wrapped in the worker auth interceptor.
 async fn spawn_authed_server(
-    _process_manager: ur_server::ProcessManager,
+    _worker_manager: ur_server::WorkerManager,
     worker_repo: ur_db::WorkerRepo,
     handler: ur_server::grpc::CoreServiceHandler,
 ) -> tonic::transport::Channel {
@@ -123,8 +123,8 @@ async fn spawn_authed_server(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_without_worker_headers() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
-    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
+    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let channel = spawn_authed_server(worker_manager, worker_repo, handler).await;
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(PingRequest {}).await;
@@ -138,12 +138,12 @@ async fn worker_server_rejects_requests_without_worker_headers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
 
     // Register a real worker so the ID exists but use a different secret in the request
-    let worker_id = process_manager.generate_worker_id("authtest");
+    let worker_id = worker_manager.generate_worker_id("authtest");
     let real_secret = "real-secret-value";
-    process_manager
+    worker_manager
         .register_worker(
             worker_id.clone(),
             "authtest".into(),
@@ -155,7 +155,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
+    let channel = spawn_authed_server(worker_manager, worker_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request
@@ -177,11 +177,11 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
 
-    let worker_id = process_manager.generate_worker_id("validtest");
+    let worker_id = worker_manager.generate_worker_id("validtest");
     let secret = "correct-secret-value";
-    process_manager
+    worker_manager
         .register_worker(
             worker_id.clone(),
             "validtest".into(),
@@ -193,7 +193,7 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
+    let channel = spawn_authed_server(worker_manager, worker_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request

@@ -190,7 +190,7 @@ impl PromptModesConfig {
     }
 }
 
-/// Context for a running worker, returned by `ProcessManager::get_worker_context`.
+/// Context for a running worker, returned by `WorkerManager::get_worker_context`.
 #[derive(Debug, Clone)]
 pub struct WorkerContext {
     /// Project key if launched with `--project`, or `None` for raw workspace launches.
@@ -199,8 +199,8 @@ pub struct WorkerContext {
     pub slot_path: PathBuf,
 }
 
-/// Summary of a running process, returned by `ProcessManager::list()`.
-pub struct ProcessSummary {
+/// Summary of a running process, returned by `WorkerManager::list()`.
+pub struct WorkerSummary {
     pub process_id: String,
     pub worker_id: String,
     pub container_id: String,
@@ -209,7 +209,7 @@ pub struct ProcessSummary {
 }
 
 /// Configuration for launching a container process.
-pub struct ProcessConfig {
+pub struct WorkerConfig {
     pub process_id: String,
     pub worker_id: WorkerId,
     pub image_id: String,
@@ -232,7 +232,7 @@ pub struct ProcessConfig {
 /// Orchestrates the full lifecycle of worker processes:
 /// repo registration, git init, container run/stop.
 #[derive(Clone)]
-pub struct ProcessManager {
+pub struct WorkerManager {
     workspace: PathBuf,
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
@@ -247,7 +247,7 @@ pub struct ProcessManager {
     worker_repo: WorkerRepo,
 }
 
-impl ProcessManager {
+impl WorkerManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: PathBuf,
@@ -328,7 +328,7 @@ impl ProcessManager {
     /// Register a worker in the database without running a container.
     ///
     /// Used by tests that need a registered worker but cannot (or should not) spawn
-    /// a real container. The caller supplies the agent_secret and container_id
+    /// a real container. The caller supplies the worker_secret and container_id
     /// directly.
     #[allow(clippy::too_many_arguments)]
     pub async fn register_worker(
@@ -420,7 +420,7 @@ impl ProcessManager {
     /// Phase 2 of launch: run the container and record the worker in the database.
     /// Generates and stores a worker secret (UUID v4) for auth.
     /// Returns `(container_id, worker_secret)`.
-    pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
+    pub async fn run_and_record(&self, config: WorkerConfig) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
@@ -566,15 +566,15 @@ impl ProcessManager {
     }
 
     /// List all running processes with their metadata.
-    pub async fn list(&self) -> Vec<ProcessSummary> {
+    pub async fn list(&self) -> Vec<WorkerSummary> {
         let workers = self
             .worker_repo
             .list_workers_by_status("running")
             .await
             .unwrap_or_default();
-        let mut result: Vec<ProcessSummary> = workers
+        let mut result: Vec<WorkerSummary> = workers
             .into_iter()
-            .map(|worker| ProcessSummary {
+            .map(|worker| WorkerSummary {
                 process_id: worker.process_id,
                 worker_id: worker.worker_id,
                 container_id: worker.container_id,
@@ -689,16 +689,16 @@ mod tests {
         WorkerRepo::new(db.pool().clone())
     }
 
-    async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
+    async fn test_manager() -> (WorkerManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
-        let agent_repo = test_worker_repo().await;
+        let worker_repo = test_worker_repo().await;
         let repo_pool_manager = RepoPoolManager::new(
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
             crate::BuilderdClient::new("http://localhost:42070".into()),
-            agent_repo.clone(),
+            worker_repo.clone(),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),
@@ -710,7 +710,7 @@ mod tests {
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
             worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         };
-        let mgr = ProcessManager::new(
+        let mgr = WorkerManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
             repo_pool_manager,
@@ -718,7 +718,7 @@ mod tests {
             network_config,
             ur_config::DEFAULT_DAEMON_PORT + 1,
             PromptModesConfig::default(),
-            agent_repo,
+            worker_repo,
         );
         (mgr, workspace)
     }
@@ -727,9 +727,9 @@ mod tests {
     async fn prepare_creates_repo_and_registers() {
         let (mgr, workspace) = test_manager().await;
         let process_id = "test-proc";
-        let agent_id = mgr.generate_worker_id(process_id);
+        let wid = mgr.generate_worker_id(process_id);
 
-        mgr.prepare(process_id, &agent_id, None).await.unwrap();
+        mgr.prepare(process_id, &wid, None).await.unwrap();
 
         // Verify repo dir exists and has .git
         let repo_dir = workspace.path().join(process_id);
@@ -740,13 +740,13 @@ mod tests {
     async fn prepare_with_workspace_skips_git_init() {
         let (mgr, _workspace) = test_manager().await;
         let process_id = "ws-proc";
-        let agent_id = mgr.generate_worker_id(process_id);
+        let wid = mgr.generate_worker_id(process_id);
 
         // Create a temp dir to act as the external workspace
         let ext_workspace = tempfile::tempdir().unwrap();
         let ext_path = ext_workspace.path().to_path_buf();
 
-        mgr.prepare(process_id, &agent_id, Some(ext_path.clone()))
+        mgr.prepare(process_id, &wid, Some(ext_path.clone()))
             .await
             .unwrap();
 
@@ -758,10 +758,10 @@ mod tests {
     async fn prepare_duplicate_process_id_returns_error() {
         let (mgr, _workspace) = test_manager().await;
 
-        let existing_agent_id = WorkerId("dup-proc-ab12".into());
+        let existing_wid = WorkerId("dup-proc-ab12".into());
         // Insert a running worker into the database
         mgr.register_worker(
-            existing_agent_id,
+            existing_wid,
             "dup-proc".into(),
             String::new(),
             None,
@@ -773,8 +773,8 @@ mod tests {
 
         // A new worker_id with a different suffix should still be rejected
         // because the process_id matches.
-        let new_agent_id = WorkerId("dup-proc-zz99".into());
-        let result = mgr.prepare("dup-proc", &new_agent_id, None).await;
+        let new_wid = WorkerId("dup-proc-zz99".into());
+        let result = mgr.prepare("dup-proc", &new_wid, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("process already running"));
     }
@@ -830,9 +830,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_process_id_works() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("test-ab12".into());
+        let wid = WorkerId("test-ab12".into());
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "test".into(),
             "myproject".into(),
             None,
@@ -841,7 +841,7 @@ mod tests {
             Uuid::new_v4().to_string(),
         )
         .await;
-        assert_eq!(mgr.resolve_process_id(&agent_id).await.unwrap(), "test");
+        assert_eq!(mgr.resolve_process_id(&wid).await.unwrap(), "test");
         assert!(
             mgr.resolve_process_id(&WorkerId("unknown-ab12".into()))
                 .await
@@ -993,10 +993,10 @@ skills = ["only-one"]
     #[tokio::test]
     async fn verify_worker_valid_pair_returns_true() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("test-ab12".into());
+        let wid = WorkerId("test-ab12".into());
         let secret = "my-secret-token";
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "test".into(),
             "proj".into(),
             Some(PathBuf::from("/tmp/slot")),
@@ -1011,9 +1011,9 @@ skills = ["only-one"]
     #[tokio::test]
     async fn verify_worker_wrong_secret_returns_false() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("test-ab12".into());
+        let wid = WorkerId("test-ab12".into());
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "test".into(),
             String::new(),
             None,
@@ -1040,10 +1040,10 @@ skills = ["only-one"]
     #[tokio::test]
     async fn get_worker_context_returns_context_for_registered_agent() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("ctx-ab12".into());
+        let wid = WorkerId("ctx-ab12".into());
         let slot = PathBuf::from("/tmp/slot");
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "ctx".into(),
             "myproject".into(),
             Some(slot.clone()),
@@ -1052,7 +1052,7 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        let ctx = mgr.get_worker_context(&agent_id).await.unwrap();
+        let ctx = mgr.get_worker_context(&wid).await.unwrap();
         assert_eq!(ctx.project_key, Some("myproject".to_string()));
         assert_eq!(ctx.slot_path, slot);
     }
@@ -1060,9 +1060,9 @@ skills = ["only-one"]
     #[tokio::test]
     async fn get_worker_context_empty_project_key_maps_to_none() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("ws-ab12".into());
+        let wid = WorkerId("ws-ab12".into());
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "ws".into(),
             String::new(),
             Some(PathBuf::from("/tmp/ws")),
@@ -1071,23 +1071,23 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        let ctx = mgr.get_worker_context(&agent_id).await.unwrap();
+        let ctx = mgr.get_worker_context(&wid).await.unwrap();
         assert_eq!(ctx.project_key, None);
     }
 
     #[tokio::test]
     async fn get_worker_context_returns_none_for_unknown_agent() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("missing-ab12".into());
-        assert!(mgr.get_worker_context(&agent_id).await.is_none());
+        let wid = WorkerId("missing-ab12".into());
+        assert!(mgr.get_worker_context(&wid).await.is_none());
     }
 
     #[tokio::test]
     async fn get_worker_context_returns_none_when_no_slot_path() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = WorkerId("nosl-ab12".into());
+        let wid = WorkerId("nosl-ab12".into());
         mgr.register_worker(
-            agent_id.clone(),
+            wid.clone(),
             "nosl".into(),
             "proj".into(),
             None,
@@ -1096,6 +1096,6 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        assert!(mgr.get_worker_context(&agent_id).await.is_none());
+        assert!(mgr.get_worker_context(&wid).await.is_none());
     }
 }

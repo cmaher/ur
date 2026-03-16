@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use container::RunOpts;
 use ur_config::{MountConfig, ResolvedTemplatePath, resolve_template_path};
 
-use crate::process::ensure_file_exists;
+use crate::worker::ensure_file_exists;
 
 /// Builder that accumulates volumes, env vars, and config to produce a [`container::RunOpts`].
 ///

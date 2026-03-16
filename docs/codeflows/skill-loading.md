@@ -29,7 +29,7 @@ When a process launches, the server resolves which skills to activate.
 WorkerLaunchRequest { mode, skills }
     │
     ▼
-ProcessManager::resolve_skills()                [crates/server/src/process.rs]
+WorkerManager::resolve_skills()                [crates/server/src/worker.rs]
     │   Priority:
     │     1. If `skills` is non-empty → use directly
     │     2. If `mode` is non-empty → look up prompt_modes.<mode>.skills
@@ -88,4 +88,4 @@ Claude Code reads ~/.claude/skills/ at session start
 | `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
 | `crates/workerd/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
 | `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`) |
-| `crates/server/src/process.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |
+| `crates/server/src/worker.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |

@@ -3,7 +3,7 @@
 // These tests exercise the full reconciliation path that runs on server startup:
 // WorkerRepo reconciliation + gRPC auth verification after reclamation.
 // They simulate a server restart by:
-// 1. Setting up workers via ProcessManager (as a running server would)
+// 1. Setting up workers via WorkerManager (as a running server would)
 // 2. Creating a "fresh" gRPC server with the same DB (simulating restart)
 // 3. Running reconcile_workers (as main.rs does on startup)
 // 4. Verifying that reclaimed workers can still authenticate to the gRPC server
@@ -18,12 +18,12 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 /// Build test components backed by the given database pool.
-/// Returns (ProcessManager, WorkerRepo, CoreServiceHandler).
+/// Returns (WorkerManager, WorkerRepo, CoreServiceHandler).
 async fn make_components_with_db(
     dir: &Path,
     db: &ur_db::DatabaseManager,
 ) -> (
-    ur_server::ProcessManager,
+    ur_server::WorkerManager,
     ur_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
@@ -75,14 +75,14 @@ async fn make_components_with_db(
         )),
         worker_repo.clone(),
     );
-    let process_manager = ur_server::ProcessManager::new(
+    let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
-        ur_server::process::PromptModesConfig::default(),
+        ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
@@ -91,7 +91,7 @@ async fn make_components_with_db(
     )
     .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
-        process_manager: process_manager.clone(),
+        worker_manager: worker_manager.clone(),
         repo_pool_manager,
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
@@ -99,7 +99,7 @@ async fn make_components_with_db(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (process_manager, worker_repo, handler)
+    (worker_manager, worker_repo, handler)
 }
 
 /// Spawn a gRPC server with worker auth interceptor, return channel.
