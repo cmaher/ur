@@ -177,7 +177,7 @@ async fn restart_reclaims_worker_with_live_container() {
     worker_repo1.insert_slot(&slot).await.unwrap();
 
     // Register the worker (simulates a launched worker).
-    let agent = ur_db::model::Worker {
+    let worker = ur_db::model::Worker {
         worker_id: worker_id_str.to_owned(),
         process_id: "restart-test".to_owned(),
         project_key: "test-proj".to_owned(),
@@ -190,7 +190,7 @@ async fn restart_reclaims_worker_with_live_container() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    worker_repo1.insert_worker(&agent).await.unwrap();
+    worker_repo1.insert_worker(&worker).await.unwrap();
 
     // Verify worker is running before "restart".
     let pre = worker_repo1
@@ -294,7 +294,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     };
     worker_repo1.insert_slot(&slot).await.unwrap();
 
-    let agent = ur_db::model::Worker {
+    let worker = ur_db::model::Worker {
         worker_id: "worker-deleted-slot".to_owned(),
         process_id: "proc-deleted".to_owned(),
         project_key: "test-proj".to_owned(),
@@ -307,7 +307,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    worker_repo1.insert_worker(&agent).await.unwrap();
+    worker_repo1.insert_worker(&worker).await.unwrap();
 
     // Verify both exist.
     assert!(

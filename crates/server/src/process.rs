@@ -390,7 +390,7 @@ impl ProcessManager {
         }
 
         if let Some(ws_dir) = workspace_dir {
-            // External workspace: skip git init (agent.workspace_path in DB handles CWD resolution)
+            // External workspace: skip git init (worker.workspace_path in DB handles CWD resolution)
             info!(process_id, %worker_id, workspace_dir = %ws_dir.display(), "registering external workspace");
         } else {
             // Default: create repo dir and git init

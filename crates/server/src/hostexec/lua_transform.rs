@@ -424,7 +424,7 @@ mod tests {
             slot_path: PathBuf::from("/pool/ur/0"),
         };
 
-        // git.lua with agent context
+        // git.lua with worker context
         let git_script = include_str!("default_scripts/git.lua");
         let args: Vec<String> = vec!["status".into()];
         let result = mgr
@@ -432,7 +432,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, vec!["status"]);
 
-        // gh.lua with agent context
+        // gh.lua with worker context
         let gh_script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec!["pr".into(), "list".into()];
         let result = mgr

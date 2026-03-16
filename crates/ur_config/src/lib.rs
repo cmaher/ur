@@ -99,7 +99,7 @@ pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 /// Environment variable: host-side config directory path.
 ///
 /// The server container sees its config at `/config` (bind mount), but needs the
-/// original host path when constructing volume mounts for agent containers
+/// original host path when constructing volume mounts for worker containers
 /// (which go through the Docker socket and use host paths).
 pub const UR_HOST_CONFIG_ENV: &str = "UR_HOST_CONFIG";
 
@@ -114,7 +114,7 @@ pub const CLAUDE_CREDENTIALS_FILENAME: &str = ".credentials.json";
 /// Without this file, Claude Code prompts for login even when credentials exist.
 pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
 
-/// Home directory of the worker user inside agent containers.
+/// Home directory of the worker user inside worker containers.
 pub const WORKER_HOME: &str = "/home/worker";
 
 /// Container-internal mount point for the workspace volume.
@@ -450,7 +450,7 @@ pub struct ProjectConfig {
 pub struct Config {
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
-    /// Agent workspace directory.
+    /// Worker workspace directory.
     pub workspace: PathBuf,
     /// TCP port the server listens on (default: 42069).
     pub daemon_port: u16,
