@@ -3,9 +3,13 @@ use std::pin::Pin;
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 use tracing::{info, warn};
 
+use ur_rpc::error::{
+    self, BUILDERD_UNAVAILABLE, COMMAND_NOT_ALLOWED, DOMAIN_HOSTEXEC, INTERNAL, INVALID_ARGUMENT,
+    NOT_FOUND, TRANSFORM_REJECTED,
+};
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::core::CommandOutput;
@@ -16,6 +20,98 @@ use ur_rpc::proto::hostexec::{
 
 use crate::ProcessManager;
 use crate::hostexec::{HostExecConfigManager, LuaTransformManager};
+
+#[derive(Debug, thiserror::Error)]
+pub enum HostExecError {
+    #[error("command not allowed: {command}")]
+    CommandNotAllowed { command: String },
+
+    #[error("transform rejected: {reason}")]
+    TransformRejected { reason: String },
+
+    #[error("builderd unavailable")]
+    BuilderdUnavailable,
+
+    #[error("builderd exec failed: {message}")]
+    BuilderdExecFailed { message: String },
+
+    #[error("invalid agent ID: {reason}")]
+    InvalidAgentId { reason: String },
+
+    #[error("process not found for agent: {agent_id}")]
+    ProcessNotFound { agent_id: String },
+
+    #[error("invalid working directory {path}: {reason}")]
+    InvalidWorkingDir { path: String, reason: String },
+}
+
+impl From<HostExecError> for Status {
+    fn from(err: HostExecError) -> Self {
+        match &err {
+            HostExecError::CommandNotAllowed { command } => {
+                let mut meta = HashMap::new();
+                meta.insert("command".into(), command.clone());
+                error::status_with_info(
+                    Code::PermissionDenied,
+                    err.to_string(),
+                    DOMAIN_HOSTEXEC,
+                    COMMAND_NOT_ALLOWED,
+                    meta,
+                )
+            }
+            HostExecError::TransformRejected { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_HOSTEXEC,
+                TRANSFORM_REJECTED,
+                HashMap::new(),
+            ),
+            HostExecError::BuilderdUnavailable => error::status_with_info(
+                Code::Unavailable,
+                err.to_string(),
+                DOMAIN_HOSTEXEC,
+                BUILDERD_UNAVAILABLE,
+                HashMap::new(),
+            ),
+            HostExecError::BuilderdExecFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_HOSTEXEC,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            HostExecError::InvalidAgentId { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_HOSTEXEC,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+            HostExecError::ProcessNotFound { agent_id } => {
+                let mut meta = HashMap::new();
+                meta.insert("agent_id".into(), agent_id.clone());
+                error::status_with_info(
+                    Code::NotFound,
+                    err.to_string(),
+                    DOMAIN_HOSTEXEC,
+                    NOT_FOUND,
+                    meta,
+                )
+            }
+            HostExecError::InvalidWorkingDir { path, .. } => {
+                let mut meta = HashMap::new();
+                meta.insert("path".into(), path.clone());
+                error::status_with_info(
+                    Code::InvalidArgument,
+                    err.to_string(),
+                    DOMAIN_HOSTEXEC,
+                    INVALID_ARGUMENT,
+                    meta,
+                )
+            }
+        }
+    }
+}
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -49,7 +145,9 @@ impl HostExecService for HostExecServiceHandler {
                 command = req.command,
                 process_id, "host exec command denied: not in allowlist"
             );
-            Status::permission_denied(format!("command not allowed: {}", req.command))
+            HostExecError::CommandNotAllowed {
+                command: req.command.clone(),
+            }
         })?;
 
         // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution.
@@ -67,7 +165,9 @@ impl HostExecService for HostExecServiceHandler {
                     &host_working_dir,
                     agent_context.as_ref(),
                 )
-                .map_err(|e| Status::invalid_argument(format!("transform rejected: {e}")))?
+                .map_err(|e| HostExecError::TransformRejected {
+                    reason: e.to_string(),
+                })?
         } else {
             crate::hostexec::lua_transform::TransformResult {
                 command: req.command.clone(),
@@ -88,7 +188,7 @@ impl HostExecService for HostExecServiceHandler {
         // 4. Forward to builderd
         let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
             .await
-            .map_err(|e| Status::unavailable(format!("builderd unavailable: {e}")))?;
+            .map_err(|_| HostExecError::BuilderdUnavailable)?;
 
         let builder_req = BuilderExecRequest {
             command: transform_result.command,
@@ -97,10 +197,13 @@ impl HostExecService for HostExecServiceHandler {
             env: transform_result.env,
         };
 
-        let response = client
-            .exec(builder_req)
-            .await
-            .map_err(|e| Status::internal(format!("builderd exec failed: {e}")))?;
+        let response =
+            client
+                .exec(builder_req)
+                .await
+                .map_err(|e| HostExecError::BuilderdExecFailed {
+                    message: e.to_string(),
+                })?;
 
         // Stream builderd response back to worker
         let mut inbound = response.into_inner();
@@ -152,7 +255,7 @@ impl HostExecServiceHandler {
             Option<crate::hostexec::AgentContext>,
             HostExecConfigManager,
         ),
-        Status,
+        HostExecError,
     > {
         let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) else {
             // No agent ID header — host-server request (e.g., from `ur` CLI).
@@ -161,14 +264,17 @@ impl HostExecServiceHandler {
 
         let agent_id_str = agent_id_val
             .to_str()
-            .map_err(|_| Status::invalid_argument("invalid ur-agent-id header encoding"))?;
-        let agent_id = crate::AgentId::parse(agent_id_str).map_err(Status::invalid_argument)?;
+            .map_err(|_| HostExecError::InvalidAgentId {
+                reason: "invalid ur-agent-id header encoding".into(),
+            })?;
+        let agent_id = crate::AgentId::parse(agent_id_str)
+            .map_err(|e| HostExecError::InvalidAgentId { reason: e })?;
 
         // Look up process_id from ProcessManager
         let process_id = self
             .process_manager
             .resolve_process_id(&agent_id)
-            .map_err(Status::not_found)?;
+            .map_err(|e| HostExecError::ProcessNotFound { agent_id: e })?;
 
         // Look up agent context (project_key, slot_path) from ProcessManager
         let proc_context = self.process_manager.get_agent_context(&agent_id);
@@ -218,7 +324,7 @@ impl HostExecServiceHandler {
         &self,
         container_dir: &str,
         slot_path: Option<&std::path::Path>,
-    ) -> Result<String, Status> {
+    ) -> Result<String, HostExecError> {
         map_working_dir_impl(container_dir, slot_path, &self.host_workspace)
     }
 }
@@ -231,17 +337,19 @@ fn map_working_dir_impl(
     container_dir: &str,
     slot_path: Option<&std::path::Path>,
     host_workspace: &std::path::Path,
-) -> Result<String, Status> {
+) -> Result<String, HostExecError> {
     let Some(suffix) = container_dir.strip_prefix("/workspace") else {
-        return Err(Status::invalid_argument(format!(
-            "working_dir must start with /workspace: {container_dir}"
-        )));
+        return Err(HostExecError::InvalidWorkingDir {
+            path: container_dir.to_string(),
+            reason: "working_dir must start with /workspace".into(),
+        });
     };
 
     if !suffix.is_empty() && !suffix.starts_with('/') {
-        return Err(Status::invalid_argument(format!(
-            "invalid working_dir: {container_dir}"
-        )));
+        return Err(HostExecError::InvalidWorkingDir {
+            path: container_dir.to_string(),
+            reason: "invalid working_dir".into(),
+        });
     }
 
     // Compute the slot-relative prefix (empty for workspace mounts, e.g. "pool/proj/0" for pool).
@@ -294,9 +402,14 @@ mod tests {
 
     #[test]
     fn test_map_working_dir_pool_mount_subdir() {
-        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
-        let result =
-            map_working_dir_impl("/workspace/src/main", Some(&slot), Path::new(HOST_WS)).unwrap();
+        let result = map_working_dir_impl(
+            "/workspace/src/main",
+            Some(&std::path::PathBuf::from(
+                "/home/user/.ur/workspace/pool/proj/0",
+            )),
+            Path::new(HOST_WS),
+        )
+        .unwrap();
         assert_eq!(result, "%WORKSPACE%/pool/proj/0/src/main");
     }
 

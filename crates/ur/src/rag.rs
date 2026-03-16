@@ -3,7 +3,9 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use tonic_types::StatusExt;
 use tracing::{debug, info};
+use ur_rpc::error::{DOCS_NOT_INDEXED, StatusResultExt};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagIndexRequest, RagSearchRequest};
 
@@ -228,14 +230,15 @@ pub async fn index(port: u16, language: &str) -> Result<()> {
         })
         .await
         .map_err(|status| {
-            if status.message().to_lowercase().contains("no docs found")
-                || status.message().to_lowercase().contains("empty")
-            {
+            let is_docs_not_indexed = status
+                .get_details_error_info()
+                .is_some_and(|info| info.reason == DOCS_NOT_INDEXED);
+            if is_docs_not_indexed {
                 anyhow::anyhow!(
                     "No docs found for language '{language}'. Run `ur rag docs` first to generate documentation."
                 )
             } else {
-                anyhow::anyhow!("RagIndex failed: {status}")
+                anyhow::anyhow!("RagIndex failed: {}", ur_rpc::error::format_status(&status))
             }
         })?
         .into_inner();
@@ -279,7 +282,7 @@ pub async fn search(port: u16, query: &str, language: &str, top_k: u32) -> Resul
             top_k: Some(top_k),
         })
         .await
-        .context("RagSearch failed")?;
+        .with_status_context("RagSearch")?;
 
     let results = resp.into_inner().results;
     if results.is_empty() {

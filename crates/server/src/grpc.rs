@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
+use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     PingRequest, PingResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
@@ -12,6 +14,84 @@ use ur_rpc::proto::core::{
 };
 
 use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CoreError {
+    #[error("invalid mode: {reason}")]
+    InvalidMode { reason: String },
+
+    #[error("pool slot acquisition failed: {reason}")]
+    PoolSlotFailed { reason: String },
+
+    #[error("prepare failed: {reason}")]
+    PrepareFailed { reason: String },
+
+    #[error("run failed: {reason}")]
+    RunFailed { reason: String },
+
+    #[error("stop failed: {reason}")]
+    StopFailed { reason: String },
+
+    #[error("workspace not found for process: {process_id}")]
+    WorkspaceNotFound { process_id: String },
+
+    #[error("operation not implemented on worker server")]
+    Unimplemented,
+}
+
+impl From<CoreError> for Status {
+    fn from(err: CoreError) -> Self {
+        match &err {
+            CoreError::InvalidMode { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+            CoreError::PoolSlotFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::PrepareFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::RunFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::StopFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::WorkspaceNotFound { process_id } => {
+                let mut meta = HashMap::new();
+                meta.insert("process_id".into(), process_id.clone());
+                error::status_with_info(
+                    Code::NotFound,
+                    err.to_string(),
+                    DOMAIN_CORE,
+                    NOT_FOUND,
+                    meta,
+                )
+            }
+            CoreError::Unimplemented => Status::unimplemented(err.to_string()),
+        }
+    }
+}
 
 /// gRPC implementation of the CoreService.
 #[derive(Clone)]
@@ -54,7 +134,7 @@ impl CoreService for CoreServiceHandler {
         let (strategy, resolved_skills) = self
             .process_manager
             .resolve_mode(&req.mode)
-            .map_err(Status::invalid_argument)?;
+            .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
         // Resolve workspace: project_key triggers pool acquire via the strategy,
         // otherwise use the explicit workspace_dir from the request.
@@ -62,7 +142,9 @@ impl CoreService for CoreServiceHandler {
             let slot_path = strategy
                 .acquire_slot(&self.repo_pool_manager, &req.project_key)
                 .await
-                .map_err(Status::internal)?;
+                .map_err(|e| CoreError::PoolSlotFailed {
+                    reason: e.to_string(),
+                })?;
             info!(
                 worker_id = req.worker_id,
                 project_key = req.project_key,
@@ -89,7 +171,9 @@ impl CoreService for CoreServiceHandler {
         self.process_manager
             .prepare(&req.worker_id, &agent_id, workspace_dir.clone())
             .await
-            .map_err(Status::internal)?;
+            .map_err(|e| CoreError::PrepareFailed {
+                reason: e.to_string(),
+            })?;
 
         // Use explicit skills from the request if provided, otherwise use
         // the skills resolved from the strategy/mode.
@@ -128,7 +212,9 @@ impl CoreService for CoreServiceHandler {
             .process_manager
             .run_and_record(config)
             .await
-            .map_err(Status::internal)?;
+            .map_err(|e| CoreError::RunFailed {
+                reason: e.to_string(),
+            })?;
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
@@ -142,7 +228,9 @@ impl CoreService for CoreServiceHandler {
         self.process_manager
             .stop(&req.worker_id)
             .await
-            .map_err(Status::internal)?;
+            .map_err(|e| CoreError::StopFailed {
+                reason: e.to_string(),
+            })?;
         Ok(Response::new(WorkerStopResponse {}))
     }
 
@@ -155,7 +243,9 @@ impl CoreService for CoreServiceHandler {
         let workspace_dir = self
             .process_manager
             .get_workspace_dir(&req.worker_id)
-            .map_err(Status::not_found)?;
+            .map_err(|_| CoreError::WorkspaceNotFound {
+                process_id: req.worker_id.clone(),
+            })?;
         let workspace_dir = workspace_dir
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -202,35 +292,27 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         _req: Request<WorkerLaunchRequest>,
     ) -> Result<Response<WorkerLaunchResponse>, Status> {
-        Err(Status::unimplemented(
-            "worker_launch is only available on the host server",
-        ))
+        Err(CoreError::Unimplemented.into())
     }
 
     async fn worker_stop(
         &self,
         _req: Request<WorkerStopRequest>,
     ) -> Result<Response<WorkerStopResponse>, Status> {
-        Err(Status::unimplemented(
-            "worker_stop is only available on the host server",
-        ))
+        Err(CoreError::Unimplemented.into())
     }
 
     async fn worker_info(
         &self,
         _req: Request<WorkerInfoRequest>,
     ) -> Result<Response<WorkerInfoResponse>, Status> {
-        Err(Status::unimplemented(
-            "worker_info is only available on the host server",
-        ))
+        Err(CoreError::Unimplemented.into())
     }
 
     async fn worker_list(
         &self,
         _req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
-        Err(Status::unimplemented(
-            "worker_list is only available on the host server",
-        ))
+        Err(CoreError::Unimplemented.into())
     }
 }

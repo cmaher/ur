@@ -46,4 +46,6 @@ serde = { version = "1", features = ["derive"] }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 tracing = "0.1"
 tracing-appender = "0.2"
+thiserror = "2"
+tonic-types = "0.13"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
