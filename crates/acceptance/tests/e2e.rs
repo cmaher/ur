@@ -686,16 +686,21 @@ fn scenario_project_pool_launch(env: &TestEnv) {
         );
 
         // ---- Verify git commands work via hostexec ----
-        let git_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
-            .output()
-            .expect("failed to exec git log in container");
-        assert_eq!(
-            git_output.status.code(),
-            Some(0),
-            "git log should work in pool slot.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&git_output.stdout),
-            String::from_utf8_lossy(&git_output.stderr),
+        // Wait for workerd init to create the git shim (entrypoint runs async)
+        let mut git_output = None;
+        for _ in 0..10 {
+            let out = Command::new(&env.runtime)
+                .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
+                .output()
+                .expect("failed to exec git log in container");
+            if out.status.code() == Some(0) {
+                git_output = Some(out);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let git_output = git_output.expect(
+            "git log never succeeded in pool slot — workerd may not have created shims in time",
         );
 
         let git_stdout = String::from_utf8_lossy(&git_output.stdout);
