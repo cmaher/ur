@@ -344,6 +344,40 @@ impl WorkerRepo {
             .collect())
     }
 
+    /// Find the first available exclusive slot for a project (not linked to an active worker).
+    pub async fn find_available_exclusive_slot(
+        &self,
+        project_key: &str,
+    ) -> Result<Option<Slot>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
+            "SELECT s.id, s.project_key, s.slot_name, s.slot_type, s.host_path, s.created_at, s.updated_at
+             FROM slot s
+             WHERE s.project_key = ? AND s.slot_type = 'exclusive'
+               AND s.id NOT IN (
+                 SELECT ws.slot_id FROM worker_slot ws
+                 INNER JOIN worker w ON w.worker_id = ws.worker_id
+                 WHERE w.status IN ('provisioning', 'running', 'stopping')
+               )
+             ORDER BY s.created_at ASC
+             LIMIT 1",
+        )
+        .bind(project_key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+                id,
+                project_key,
+                slot_name,
+                slot_type,
+                host_path,
+                created_at,
+                updated_at,
+            },
+        ))
+    }
+
     /// Count exclusive slots that have a running worker linked via worker_slot.
     pub async fn exclusive_slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(

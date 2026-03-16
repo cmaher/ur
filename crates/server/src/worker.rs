@@ -227,6 +227,8 @@ pub struct WorkerConfig {
     pub git_hooks_dir: Option<String>,
     /// Additional volume mounts from project config (source:destination pairs).
     pub mounts: Vec<ur_config::MountConfig>,
+    /// Slot ID if launched from a pool slot (for worker_slot linking).
+    pub slot_id: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -346,7 +348,6 @@ impl WorkerManager {
             worker_id: worker_id.0,
             process_id,
             project_key,
-            slot_id: None,
             container_id,
             worker_secret,
             strategy: strategy.name().to_owned(),
@@ -497,7 +498,6 @@ impl WorkerManager {
             worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
-            slot_id: None,
             container_id: cid.0.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
@@ -510,6 +510,14 @@ impl WorkerManager {
             .insert_worker(&worker)
             .await
             .map_err(|e| format!("failed to record worker: {e}"))?;
+
+        // Link worker to slot if launched from a pool slot
+        if let Some(ref slot_id) = config.slot_id {
+            self.worker_repo
+                .link_worker_slot(&worker.worker_id, slot_id)
+                .await
+                .map_err(|e| format!("failed to link worker to slot: {e}"))?;
+        }
 
         Ok((cid.0, worker_secret))
     }
@@ -553,7 +561,7 @@ impl WorkerManager {
                 "releasing pool slot"
             );
             strategy
-                .release_slot(&self.repo_pool_manager, &slot_path)
+                .release_slot(&self.repo_pool_manager, &worker_id.0, &slot_path)
                 .await?;
         }
 

@@ -163,14 +163,13 @@ async fn restart_reclaims_worker_with_live_container() {
     let slot_path = dir.path().join("workspace").join("slot0");
     std::fs::create_dir_all(&slot_path).unwrap();
 
-    // Insert a slot so we can verify it stays in_use after reclamation.
+    // Insert a slot so we can verify the worker_slot link stays after reclamation.
     let slot = ur_db::model::Slot {
         id: "slot-restart-1".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: slot_path.display().to_string(),
-        status: "in_use".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -181,7 +180,6 @@ async fn restart_reclaims_worker_with_live_container() {
         worker_id: worker_id_str.to_owned(),
         process_id: "restart-test".to_owned(),
         project_key: "test-proj".to_owned(),
-        slot_id: Some("slot-restart-1".to_owned()),
         container_id: "live-container-abc".to_owned(),
         worker_secret: secret.to_owned(),
         strategy: "code".to_owned(),
@@ -191,6 +189,10 @@ async fn restart_reclaims_worker_with_live_container() {
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
+    worker_repo1
+        .link_worker_slot(worker_id_str, "slot-restart-1")
+        .await
+        .unwrap();
 
     // Verify worker is running before "restart".
     let pre = worker_repo1
@@ -220,13 +222,12 @@ async fn restart_reclaims_worker_with_live_container() {
         .unwrap();
     assert_eq!(post.status, "running");
 
-    // Verify slot stays in_use.
-    let slot_post = worker_repo2
-        .get_slot("slot-restart-1")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(slot_post.status, "in_use");
+    // Verify worker_slot link stays (slot is still in use by the reclaimed worker).
+    let ws_post = worker_repo2.get_worker_slot(worker_id_str).await.unwrap();
+    assert!(
+        ws_post.is_some(),
+        "worker_slot link should survive reclamation"
+    );
 
     // --- Phase 3: Verify auth still works on the new gRPC server ---
     let channel = spawn_authed_server(worker_repo2.clone(), handler2).await;
@@ -242,7 +243,7 @@ async fn restart_reclaims_worker_with_live_container() {
         .await
         .unwrap();
     worker_repo2
-        .update_slot_status("slot-restart-1", "available")
+        .unlink_worker_slot(worker_id_str)
         .await
         .unwrap();
 
@@ -253,12 +254,9 @@ async fn restart_reclaims_worker_with_live_container() {
         .unwrap();
     assert_eq!(stopped.status, "stopped");
 
-    let slot_released = worker_repo2
-        .get_slot("slot-restart-1")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(slot_released.status, "available");
+    // Verify the worker_slot link is gone (slot is now available).
+    let ws_released = worker_repo2.get_worker_slot(worker_id_str).await.unwrap();
+    assert!(ws_released.is_none(), "worker_slot link should be removed");
 }
 
 /// Scenario 2: Launch worker, kill server, delete slot directory from disk,
@@ -288,7 +286,6 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: slot_dir.display().to_string(),
-        status: "in_use".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -298,7 +295,6 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         worker_id: "worker-deleted-slot".to_owned(),
         process_id: "proc-deleted".to_owned(),
         project_key: "test-proj".to_owned(),
-        slot_id: Some("slot-deleted-1".to_owned()),
         container_id: "dead-container-xyz".to_owned(),
         worker_secret: "secret-deleted".to_owned(),
         strategy: "code".to_owned(),
@@ -308,6 +304,10 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
+    worker_repo1
+        .link_worker_slot("worker-deleted-slot", "slot-deleted-1")
+        .await
+        .unwrap();
 
     // Verify both exist.
     assert!(
@@ -384,7 +384,6 @@ async fn restart_mixed_live_and_dead_workers() {
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: "/tmp/mix/0".to_owned(),
-        status: "in_use".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -394,7 +393,6 @@ async fn restart_mixed_live_and_dead_workers() {
         slot_name: "1".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: "/tmp/mix/1".to_owned(),
-        status: "in_use".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -408,7 +406,6 @@ async fn restart_mixed_live_and_dead_workers() {
         worker_id: live_worker_id.to_owned(),
         process_id: "proc-live".to_owned(),
         project_key: "proj-mix".to_owned(),
-        slot_id: Some("slot-mix-1".to_owned()),
         container_id: "container-alive".to_owned(),
         worker_secret: live_secret.to_owned(),
         strategy: "code".to_owned(),
@@ -418,6 +415,10 @@ async fn restart_mixed_live_and_dead_workers() {
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     worker_repo1.insert_worker(&worker_live).await.unwrap();
+    worker_repo1
+        .link_worker_slot(live_worker_id, "slot-mix-1")
+        .await
+        .unwrap();
 
     // Worker with dead container.
     let dead_worker_id = "worker-mix-dead";
@@ -426,7 +427,6 @@ async fn restart_mixed_live_and_dead_workers() {
         worker_id: dead_worker_id.to_owned(),
         process_id: "proc-dead".to_owned(),
         project_key: "proj-mix".to_owned(),
-        slot_id: Some("slot-mix-2".to_owned()),
         container_id: "container-dead".to_owned(),
         worker_secret: dead_secret.to_owned(),
         strategy: "code".to_owned(),
@@ -436,6 +436,10 @@ async fn restart_mixed_live_and_dead_workers() {
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     worker_repo1.insert_worker(&worker_dead).await.unwrap();
+    worker_repo1
+        .link_worker_slot(dead_worker_id, "slot-mix-2")
+        .await
+        .unwrap();
 
     // --- Phase 2: "Restart" with reconciliation ---
     let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
@@ -448,25 +452,28 @@ async fn restart_mixed_live_and_dead_workers() {
     assert_eq!(reconcile_result.reclaimed, vec![live_worker_id]);
     assert_eq!(reconcile_result.marked_stopped, vec![dead_worker_id]);
 
-    // Live worker: running, slot stays in_use.
+    // Live worker: running, worker_slot link stays.
     let live = worker_repo2
         .get_worker(live_worker_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(live.status, "running");
-    let s1 = worker_repo2.get_slot("slot-mix-1").await.unwrap().unwrap();
-    assert_eq!(s1.status, "in_use");
+    let ws1 = worker_repo2.get_worker_slot(live_worker_id).await.unwrap();
+    assert!(ws1.is_some(), "live worker should keep worker_slot link");
 
-    // Dead worker: stopped, slot released.
+    // Dead worker: stopped, worker_slot link removed.
     let dead = worker_repo2
         .get_worker(dead_worker_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(dead.status, "stopped");
-    let s2 = worker_repo2.get_slot("slot-mix-2").await.unwrap().unwrap();
-    assert_eq!(s2.status, "available");
+    let ws2 = worker_repo2.get_worker_slot(dead_worker_id).await.unwrap();
+    assert!(
+        ws2.is_none(),
+        "dead worker should have worker_slot link removed"
+    );
 
     // --- Phase 3: Auth checks on new gRPC server ---
     let channel = spawn_authed_server(worker_repo2.clone(), handler2).await;
