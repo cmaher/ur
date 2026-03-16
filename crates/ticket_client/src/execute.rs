@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use anyhow::{Context, Result};
+use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
@@ -45,7 +46,7 @@ where
                     created_at: None,
                 })
                 .await
-                .context("failed to create ticket")?;
+                .with_status_context("create ticket")?;
             let id = resp.into_inner().id;
             println!("Created {id}");
         }
@@ -65,7 +66,7 @@ where
                     meta_value: None,
                 })
                 .await
-                .context("failed to list tickets")?;
+                .with_status_context("list tickets")?;
             let tickets = resp.into_inner().tickets;
             if tickets.is_empty() {
                 println!("No tickets found.");
@@ -78,7 +79,7 @@ where
             let resp = client
                 .get_ticket(GetTicketRequest { id: id.clone() })
                 .await
-                .context("failed to get ticket")?;
+                .with_status_context("get ticket")?;
             let inner = resp.into_inner();
             let t = inner
                 .ticket
@@ -111,7 +112,7 @@ where
                     ticket_type,
                 })
                 .await
-                .context("failed to update ticket")?;
+                .with_status_context("update ticket")?;
             println!("Updated {id}");
         }
 
@@ -123,7 +124,7 @@ where
                     value: value.clone(),
                 })
                 .await
-                .context("failed to set metadata")?;
+                .with_status_context("set metadata")?;
             println!("Set {key}={value} on {id}");
         }
 
@@ -134,7 +135,7 @@ where
                     key: key.clone(),
                 })
                 .await
-                .context("failed to delete metadata")?;
+                .with_status_context("delete metadata")?;
             println!("Deleted {key} from {id}");
         }
 
@@ -149,7 +150,7 @@ where
                     metadata,
                 })
                 .await
-                .context("failed to add activity")?;
+                .with_status_context("add activity")?;
             let activity_id = resp.into_inner().activity_id;
             println!("Added activity {activity_id} to {id}");
         }
@@ -160,7 +161,7 @@ where
                     ticket_id: id.clone(),
                 })
                 .await
-                .context("failed to list activities")?;
+                .with_status_context("list activities")?;
             let activities = resp.into_inner().activities;
             if activities.is_empty() {
                 println!("No activities found for {id}.");
@@ -176,7 +177,7 @@ where
                     blocked_id: id.clone(),
                 })
                 .await
-                .context("failed to add block")?;
+                .with_status_context("add block")?;
             println!("{blocked_by_id} now blocks {id}");
         }
 
@@ -187,7 +188,7 @@ where
                     blocked_id: id.clone(),
                 })
                 .await
-                .context("failed to remove block")?;
+                .with_status_context("remove block")?;
             println!("{blocked_by_id} no longer blocks {id}");
         }
 
@@ -198,7 +199,7 @@ where
                     right_id: linked_id.clone(),
                 })
                 .await
-                .context("failed to link tickets")?;
+                .with_status_context("link tickets")?;
             println!("Linked {id} <-> {linked_id}");
         }
 
@@ -209,7 +210,7 @@ where
                     right_id: linked_id.clone(),
                 })
                 .await
-                .context("failed to unlink tickets")?;
+                .with_status_context("unlink tickets")?;
             println!("Unlinked {id} <-> {linked_id}");
         }
 
@@ -219,7 +220,7 @@ where
                     epic_id: epic_id.clone(),
                 })
                 .await
-                .context("failed to get dispatchable tickets")?;
+                .with_status_context("get dispatchable tickets")?;
             let tickets = resp.into_inner().tickets;
             if tickets.is_empty() {
                 println!("No dispatchable tickets for {epic_id}.");
@@ -247,7 +248,7 @@ where
                     meta_value: None,
                 })
                 .await
-                .context("failed to list tickets")?;
+                .with_status_context("list tickets")?;
             let tickets = resp.into_inner().tickets;
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             println!(

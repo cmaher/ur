@@ -17,4 +17,4 @@ clap = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-ur_rpc = { path = "../ur_rpc", features = ["ticket"] }
+ur_rpc = { path = "../ur_rpc", features = ["ticket", "error"] }
