@@ -2,6 +2,7 @@
 CREATE TABLE worker_slot (
     worker_id TEXT NOT NULL,
     slot_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (worker_id, slot_id),
     FOREIGN KEY (worker_id) REFERENCES worker(worker_id) ON DELETE CASCADE,
     FOREIGN KEY (slot_id) REFERENCES slot(id) ON DELETE CASCADE

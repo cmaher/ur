@@ -85,7 +85,6 @@ pub struct Slot {
     pub slot_name: String,
     pub slot_type: String,
     pub host_path: String,
-    pub status: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -94,7 +93,6 @@ pub struct Worker {
     pub worker_id: String,
     pub process_id: String,
     pub project_key: String,
-    pub slot_id: Option<String>,
     pub container_id: String,
     pub worker_secret: String,
     pub strategy: String,
@@ -102,4 +100,10 @@ pub struct Worker {
     pub workspace_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+pub struct WorkerSlot {
+    pub worker_id: String,
+    pub slot_id: String,
+    pub created_at: String,
 }

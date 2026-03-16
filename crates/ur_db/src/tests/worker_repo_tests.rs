@@ -18,18 +18,16 @@ fn test_slot(id: &str, project_key: &str) -> Slot {
         slot_name: format!("slot-{id}"),
         slot_type: "exclusive".to_owned(),
         host_path: format!("/tmp/{id}"),
-        status: "available".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     }
 }
 
-fn test_worker(worker_id: &str, project_key: &str, slot_id: Option<&str>) -> Worker {
+fn test_worker(worker_id: &str, project_key: &str) -> Worker {
     Worker {
         worker_id: worker_id.to_owned(),
         process_id: format!("proc-{worker_id}"),
         project_key: project_key.to_owned(),
-        slot_id: slot_id.map(|s| s.to_owned()),
         container_id: format!("container-{worker_id}"),
         worker_secret: format!("secret-{worker_id}"),
         strategy: "default".to_owned(),
@@ -53,7 +51,6 @@ async fn insert_and_get_slot() {
     assert_eq!(fetched.project_key, "proj-a");
     assert_eq!(fetched.slot_name, "slot-s1");
     assert_eq!(fetched.slot_type, "exclusive");
-    assert_eq!(fetched.status, "available");
 
     db.cleanup().await;
 }
@@ -65,21 +62,6 @@ async fn get_nonexistent_slot_returns_none() {
 
     let fetched = r.get_slot("nonexistent").await.unwrap();
     assert!(fetched.is_none());
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn update_slot_status() {
-    let db = TestDb::new().await;
-    let r = repo(&db);
-    let slot = test_slot("s1", "proj-a");
-
-    r.insert_slot(&slot).await.unwrap();
-    r.update_slot_status("s1", "in_use").await.unwrap();
-
-    let fetched = r.get_slot("s1").await.unwrap().unwrap();
-    assert_eq!(fetched.status, "in_use");
 
     db.cleanup().await;
 }
@@ -112,10 +94,18 @@ async fn exclusive_slots_in_use_count() {
 
     assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 0);
 
-    r.update_slot_status("s1", "in_use").await.unwrap();
+    // Link a running worker to s1.
+    let mut w1 = test_worker("w1", "proj-a");
+    w1.status = "running".to_owned();
+    r.insert_worker(&w1).await.unwrap();
+    r.link_worker_slot("w1", "s1").await.unwrap();
     assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 1);
 
-    r.update_slot_status("s2", "in_use").await.unwrap();
+    // Link a running worker to s2.
+    let mut w2 = test_worker("w2", "proj-a");
+    w2.status = "running".to_owned();
+    r.insert_worker(&w2).await.unwrap();
+    r.link_worker_slot("w2", "s2").await.unwrap();
     assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 2);
 
     db.cleanup().await;
@@ -141,19 +131,23 @@ async fn insert_and_get_worker() {
     let r = repo(&db);
 
     r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
-    let worker = test_worker("a1", "proj-a", Some("s1"));
+    let worker = test_worker("a1", "proj-a");
 
     r.insert_worker(&worker).await.unwrap();
+    r.link_worker_slot("a1", "s1").await.unwrap();
     let fetched = r.get_worker("a1").await.unwrap().unwrap();
 
     assert_eq!(fetched.worker_id, "a1");
     assert_eq!(fetched.process_id, "proc-a1");
     assert_eq!(fetched.project_key, "proj-a");
-    assert_eq!(fetched.slot_id.as_deref(), Some("s1"));
     assert_eq!(fetched.container_id, "container-a1");
     assert_eq!(fetched.strategy, "default");
     assert_eq!(fetched.status, "provisioning");
     assert_eq!(fetched.workspace_path.as_deref(), Some("/workspace/a1"));
+
+    // Verify link exists.
+    let link = r.get_worker_slot("a1").await.unwrap().unwrap();
+    assert_eq!(link.slot_id, "s1");
 
     db.cleanup().await;
 }
@@ -174,7 +168,7 @@ async fn update_worker_status() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    let worker = test_worker("a1", "proj-a", None);
+    let worker = test_worker("a1", "proj-a");
     r.insert_worker(&worker).await.unwrap();
     r.update_worker_status("a1", "running").await.unwrap();
 
@@ -189,15 +183,9 @@ async fn list_workers_by_status() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    r.insert_worker(&test_worker("a1", "proj-a", None))
-        .await
-        .unwrap();
-    r.insert_worker(&test_worker("a2", "proj-a", None))
-        .await
-        .unwrap();
-    r.insert_worker(&test_worker("a3", "proj-b", None))
-        .await
-        .unwrap();
+    r.insert_worker(&test_worker("a1", "proj-a")).await.unwrap();
+    r.insert_worker(&test_worker("a2", "proj-a")).await.unwrap();
+    r.insert_worker(&test_worker("a3", "proj-b")).await.unwrap();
 
     r.update_worker_status("a2", "running").await.unwrap();
 
@@ -216,9 +204,7 @@ async fn verify_worker_correct_secret() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    r.insert_worker(&test_worker("a1", "proj-a", None))
-        .await
-        .unwrap();
+    r.insert_worker(&test_worker("a1", "proj-a")).await.unwrap();
 
     assert!(r.verify_worker("a1", "secret-a1").await.unwrap());
     assert!(!r.verify_worker("a1", "wrong-secret").await.unwrap());
@@ -232,12 +218,8 @@ async fn get_worker_context() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    r.insert_worker(&test_worker("a1", "proj-a", None))
-        .await
-        .unwrap();
-    r.insert_worker(&test_worker("a2", "proj-b", None))
-        .await
-        .unwrap();
+    r.insert_worker(&test_worker("a1", "proj-a")).await.unwrap();
+    r.insert_worker(&test_worker("a2", "proj-b")).await.unwrap();
 
     let found = r
         .get_worker_context("proj-a", "/workspace/a1")
@@ -261,7 +243,7 @@ async fn verify_worker_stopped_still_verifies() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    let mut worker = test_worker("a1", "proj-a", None);
+    let mut worker = test_worker("a1", "proj-a");
     worker.status = "stopped".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
@@ -309,19 +291,19 @@ async fn list_active_workers_filters_by_status() {
     let r = repo(&db);
 
     // Insert workers in various statuses.
-    let mut a1 = test_worker("a1", "proj-a", None);
+    let mut a1 = test_worker("a1", "proj-a");
     a1.status = "running".to_owned();
     r.insert_worker(&a1).await.unwrap();
 
-    let mut a2 = test_worker("a2", "proj-a", None);
+    let mut a2 = test_worker("a2", "proj-a");
     a2.status = "provisioning".to_owned();
     r.insert_worker(&a2).await.unwrap();
 
-    let mut a3 = test_worker("a3", "proj-a", None);
+    let mut a3 = test_worker("a3", "proj-a");
     a3.status = "stopped".to_owned();
     r.insert_worker(&a3).await.unwrap();
 
-    let mut a4 = test_worker("a4", "proj-a", None);
+    let mut a4 = test_worker("a4", "proj-a");
     a4.status = "stopping".to_owned();
     r.insert_worker(&a4).await.unwrap();
 
@@ -344,12 +326,16 @@ async fn delete_workers_by_slot_id() {
 
     r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
 
-    let a1 = test_worker("a1", "proj-a", Some("s1"));
-    let a2 = test_worker("a2", "proj-a", Some("s1"));
-    let a3 = test_worker("a3", "proj-a", None);
+    let a1 = test_worker("a1", "proj-a");
+    let a2 = test_worker("a2", "proj-a");
+    let a3 = test_worker("a3", "proj-a");
     r.insert_worker(&a1).await.unwrap();
     r.insert_worker(&a2).await.unwrap();
     r.insert_worker(&a3).await.unwrap();
+
+    // Link a1 and a2 to s1, but not a3.
+    r.link_worker_slot("a1", "s1").await.unwrap();
+    r.link_worker_slot("a2", "s1").await.unwrap();
 
     let deleted = r.delete_workers_by_slot_id("s1").await.unwrap();
     assert_eq!(deleted, 2);
@@ -367,19 +353,68 @@ async fn exclusive_slots_in_use_ignores_shared_slots() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    // Insert an exclusive slot and a shared slot, both in_use.
+    // Insert an exclusive slot and a shared slot.
     let mut exclusive = test_slot("s1", "proj-a");
     exclusive.slot_type = "exclusive".to_owned();
     r.insert_slot(&exclusive).await.unwrap();
-    r.update_slot_status("s1", "in_use").await.unwrap();
 
     let mut shared = test_slot("s2", "proj-a");
     shared.slot_type = "shared".to_owned();
     r.insert_slot(&shared).await.unwrap();
-    r.update_slot_status("s2", "in_use").await.unwrap();
+
+    // Link running workers to both slots.
+    let mut w1 = test_worker("w1", "proj-a");
+    w1.status = "running".to_owned();
+    r.insert_worker(&w1).await.unwrap();
+    r.link_worker_slot("w1", "s1").await.unwrap();
+
+    let mut w2 = test_worker("w2", "proj-a");
+    w2.status = "running".to_owned();
+    r.insert_worker(&w2).await.unwrap();
+    r.link_worker_slot("w2", "s2").await.unwrap();
 
     // Only the exclusive slot should be counted.
     assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 1);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn exclusive_slots_in_use_ignores_stopped_workers() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+
+    // Link a stopped worker to s1 — should not count.
+    let mut w1 = test_worker("w1", "proj-a");
+    w1.status = "stopped".to_owned();
+    r.insert_worker(&w1).await.unwrap();
+    r.link_worker_slot("w1", "s1").await.unwrap();
+
+    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 0);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn link_and_unlink_worker_slot() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+    r.insert_worker(&test_worker("a1", "proj-a")).await.unwrap();
+
+    // Link.
+    r.link_worker_slot("a1", "s1").await.unwrap();
+    let link = r.get_worker_slot("a1").await.unwrap();
+    assert!(link.is_some());
+    assert_eq!(link.unwrap().slot_id, "s1");
+
+    // Unlink.
+    r.unlink_worker_slot("a1").await.unwrap();
+    let link = r.get_worker_slot("a1").await.unwrap();
+    assert!(link.is_none());
 
     db.cleanup().await;
 }
@@ -403,18 +438,16 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: pool_dir.join("0").display().to_string(),
-        status: "available".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
     r.insert_slot(&slot).await.unwrap();
 
-    // Also insert a worker referencing this slot.
+    // Also insert a worker linked to this slot.
     let worker = Worker {
         worker_id: "dead-worker".to_owned(),
         process_id: "proc-dead".to_owned(),
         project_key: "proj-a".to_owned(),
-        slot_id: Some("stale-slot".to_owned()),
         container_id: "ctr-dead".to_owned(),
         worker_secret: "secret".to_owned(),
         strategy: "default".to_owned(),
@@ -424,6 +457,9 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
     r.insert_worker(&worker).await.unwrap();
+    r.link_worker_slot("dead-worker", "stale-slot")
+        .await
+        .unwrap();
 
     let mut configs = HashMap::new();
     configs.insert("proj-a".to_owned(), pool_dir.clone());
@@ -474,11 +510,9 @@ async fn reconcile_slots_inserts_orphaned_directories() {
     // Check slot types: "0" should be exclusive, "design" should be shared.
     let exclusive = slots.iter().find(|s| s.slot_name == "0").unwrap();
     assert_eq!(exclusive.slot_type, "exclusive");
-    assert_eq!(exclusive.status, "available");
 
     let shared = slots.iter().find(|s| s.slot_name == "design").unwrap();
     assert_eq!(shared.slot_type, "shared");
-    assert_eq!(shared.status, "available");
 
     db.cleanup().await;
 }
@@ -500,7 +534,6 @@ async fn reconcile_slots_mixed_stale_and_orphaned() {
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: pool_dir.join("0").display().to_string(),
-        status: "in_use".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -533,11 +566,11 @@ async fn reconcile_workers_reclaims_live_containers() {
 
     let slot = test_slot("s1", "proj-a");
     r.insert_slot(&slot).await.unwrap();
-    r.update_slot_status("s1", "in_use").await.unwrap();
 
-    let mut worker = test_worker("a1", "proj-a", Some("s1"));
+    let mut worker = test_worker("a1", "proj-a");
     worker.status = "running".to_owned();
     r.insert_worker(&worker).await.unwrap();
+    r.link_worker_slot("a1", "s1").await.unwrap();
 
     // Container is alive.
     let result = r
@@ -561,11 +594,11 @@ async fn reconcile_workers_marks_dead_containers_stopped() {
 
     let slot = test_slot("s1", "proj-a");
     r.insert_slot(&slot).await.unwrap();
-    r.update_slot_status("s1", "in_use").await.unwrap();
 
-    let mut worker = test_worker("a1", "proj-a", Some("s1"));
+    let mut worker = test_worker("a1", "proj-a");
     worker.status = "running".to_owned();
     r.insert_worker(&worker).await.unwrap();
+    r.link_worker_slot("a1", "s1").await.unwrap();
 
     // Container is dead.
     let result = r
@@ -579,9 +612,9 @@ async fn reconcile_workers_marks_dead_containers_stopped() {
     let fetched = r.get_worker("a1").await.unwrap().unwrap();
     assert_eq!(fetched.status, "stopped");
 
-    // Slot should be released back to available.
-    let slot = r.get_slot("s1").await.unwrap().unwrap();
-    assert_eq!(slot.status, "available");
+    // Worker-slot link should be removed.
+    let link = r.get_worker_slot("a1").await.unwrap();
+    assert!(link.is_none());
 
     db.cleanup().await;
 }
@@ -595,18 +628,18 @@ async fn reconcile_workers_mixed_live_and_dead() {
     let s2 = test_slot("s2", "proj-a");
     r.insert_slot(&s1).await.unwrap();
     r.insert_slot(&s2).await.unwrap();
-    r.update_slot_status("s1", "in_use").await.unwrap();
-    r.update_slot_status("s2", "in_use").await.unwrap();
 
-    let mut a1 = test_worker("a1", "proj-a", Some("s1"));
+    let mut a1 = test_worker("a1", "proj-a");
     a1.status = "running".to_owned();
     a1.container_id = "live-container".to_owned();
     r.insert_worker(&a1).await.unwrap();
+    r.link_worker_slot("a1", "s1").await.unwrap();
 
-    let mut a2 = test_worker("a2", "proj-a", Some("s2"));
+    let mut a2 = test_worker("a2", "proj-a");
     a2.status = "provisioning".to_owned();
     a2.container_id = "dead-container".to_owned();
     r.insert_worker(&a2).await.unwrap();
+    r.link_worker_slot("a2", "s2").await.unwrap();
 
     // Only "live-container" is alive.
     let result = r
@@ -617,12 +650,12 @@ async fn reconcile_workers_mixed_live_and_dead() {
     assert_eq!(result.reclaimed, vec!["a1"]);
     assert_eq!(result.marked_stopped, vec!["a2"]);
 
-    // s1 stays in_use (worker reclaimed, not released), s2 released.
-    let s1_fetched = r.get_slot("s1").await.unwrap().unwrap();
-    assert_eq!(s1_fetched.status, "in_use");
+    // a1 still linked, a2 unlinked.
+    let link_a1 = r.get_worker_slot("a1").await.unwrap();
+    assert!(link_a1.is_some());
 
-    let s2_fetched = r.get_slot("s2").await.unwrap().unwrap();
-    assert_eq!(s2_fetched.status, "available");
+    let link_a2 = r.get_worker_slot("a2").await.unwrap();
+    assert!(link_a2.is_none());
 
     db.cleanup().await;
 }
@@ -632,7 +665,7 @@ async fn reconcile_workers_skips_already_stopped() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
-    let mut worker = test_worker("a1", "proj-a", None);
+    let mut worker = test_worker("a1", "proj-a");
     worker.status = "stopped".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
@@ -660,7 +693,6 @@ async fn reconcile_slots_cleans_stale_project_slots() {
         slot_name: "0".to_owned(),
         slot_type: "exclusive".to_owned(),
         host_path: "/tmp/deleted-proj/0".to_owned(),
-        status: "available".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
