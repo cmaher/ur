@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 use tracing::info;
 use uuid::Uuid;
 
 use ur_db::{EdgeKind, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
+use ur_rpc::error::{
+    self, DOMAIN_TICKET, INTERNAL, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN,
+};
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
@@ -15,15 +18,62 @@ use ur_rpc::proto::ticket::{
     RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
 };
 
+#[derive(Debug, thiserror::Error)]
+pub enum TicketError {
+    #[error("ticket not found: {id}")]
+    NotFound { id: String },
+
+    #[error("ticket {id} has open children; close them first or use --force")]
+    HasOpenChildren { id: String, children: Vec<String> },
+
+    #[error("database error: {0}")]
+    Db(String),
+}
+
+impl From<TicketError> for Status {
+    fn from(err: TicketError) -> Self {
+        match err {
+            TicketError::NotFound { ref id } => {
+                let mut meta = HashMap::new();
+                meta.insert("ticket_id".into(), id.clone());
+                error::status_with_info(
+                    Code::NotFound,
+                    err.to_string(),
+                    DOMAIN_TICKET,
+                    NOT_FOUND,
+                    meta,
+                )
+            }
+            TicketError::HasOpenChildren {
+                ref id,
+                ref children,
+            } => {
+                let mut meta = HashMap::new();
+                meta.insert("ticket_id".into(), id.clone());
+                meta.insert("children".into(), children.join(","));
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_TICKET,
+                    TICKET_HAS_OPEN_CHILDREN,
+                    meta,
+                )
+            }
+            TicketError::Db(_) => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_TICKET,
+                INTERNAL,
+                HashMap::new(),
+            ),
+        }
+    }
+}
+
 /// gRPC implementation of the TicketService, delegating to `TicketRepo`.
 #[derive(Clone)]
 pub struct TicketServiceHandler {
     pub ticket_repo: TicketRepo,
-}
-
-/// Convert a database error into a gRPC `Status::internal`.
-fn db_err(e: impl std::fmt::Display) -> Status {
-    Status::internal(e.to_string())
 }
 
 #[tonic::async_trait]
@@ -63,7 +113,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .create_ticket(&new_ticket)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(CreateTicketResponse { id }))
     }
@@ -85,7 +135,7 @@ impl TicketService for TicketServiceHandler {
                     .ticket_repo
                     .tickets_by_metadata(key, value)
                     .await
-                    .map_err(db_err)?;
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
                 matches
                     .into_iter()
                     .map(|t| ur_rpc::proto::ticket::Ticket {
@@ -106,7 +156,7 @@ impl TicketService for TicketServiceHandler {
                     .ticket_repo
                     .tickets_with_metadata_key(key)
                     .await
-                    .map_err(db_err)?;
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
                 matches
                     .into_iter()
                     .map(|t| ur_rpc::proto::ticket::Ticket {
@@ -133,7 +183,7 @@ impl TicketService for TicketServiceHandler {
                     .ticket_repo
                     .list_tickets(&filter)
                     .await
-                    .map_err(db_err)?;
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
 
                 db_tickets
                     .into_iter()
@@ -166,20 +216,22 @@ impl TicketService for TicketServiceHandler {
             .ticket_repo
             .get_ticket(&req.id)
             .await
-            .map_err(db_err)?
-            .ok_or_else(|| Status::not_found(format!("ticket not found: {}", req.id)))?;
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .ok_or_else(|| TicketError::NotFound {
+                id: req.id.clone(),
+            })?;
 
         let meta = self
             .ticket_repo
             .get_meta(&req.id, "ticket")
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         let activities_list = self
             .ticket_repo
             .get_activities(&req.id)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         let ticket = ur_rpc::proto::ticket::Ticket {
             id: t.id,
@@ -236,19 +288,20 @@ impl TicketService for TicketServiceHandler {
                 .ticket_repo
                 .epic_all_children_closed(&req.id)
                 .await
-                .map_err(db_err)?;
+                .map_err(|e| TicketError::Db(e.to_string()))?;
             if !all_closed {
-                return Err(Status::failed_precondition(format!(
-                    "ticket {} has open children; close them first or use --force",
-                    req.id
-                )));
+                return Err(TicketError::HasOpenChildren {
+                    id: req.id.clone(),
+                    children: Vec::new(),
+                }
+                .into());
             }
         }
 
         self.ticket_repo
             .update_ticket(&req.id, &update)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(UpdateTicketResponse {}))
     }
@@ -263,7 +316,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .set_meta(&req.ticket_id, "ticket", &req.key, &req.value)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(SetMetaResponse {}))
     }
@@ -278,7 +331,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .delete_meta(&req.ticket_id, "ticket", &req.key)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(DeleteMetaResponse {}))
     }
@@ -293,7 +346,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .add_edge(&req.blocker_id, &req.blocked_id, EdgeKind::Blocks)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(AddBlockResponse {}))
     }
@@ -308,7 +361,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .remove_edge(&req.blocker_id, &req.blocked_id, EdgeKind::Blocks)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(RemoveBlockResponse {}))
     }
@@ -323,7 +376,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .add_edge(&req.left_id, &req.right_id, EdgeKind::RelatesTo)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(AddLinkResponse {}))
     }
@@ -338,7 +391,7 @@ impl TicketService for TicketServiceHandler {
         self.ticket_repo
             .remove_edge(&req.left_id, &req.right_id, EdgeKind::RelatesTo)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(Response::new(RemoveLinkResponse {}))
     }
@@ -356,13 +409,13 @@ impl TicketService for TicketServiceHandler {
             .ticket_repo
             .add_activity(&req.ticket_id, &req.author, &req.message)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         for (key, value) in &meta {
             self.ticket_repo
                 .set_meta(&activity.id, "activity", key, value)
                 .await
-                .map_err(db_err)?;
+                .map_err(|e| TicketError::Db(e.to_string()))?;
         }
 
         Ok(Response::new(AddActivityResponse {
@@ -381,7 +434,7 @@ impl TicketService for TicketServiceHandler {
             .ticket_repo
             .get_activities(&req.ticket_id)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         let mut activities = Vec::new();
         for a in activities_list {
@@ -389,7 +442,7 @@ impl TicketService for TicketServiceHandler {
                 .ticket_repo
                 .get_meta(&a.id, "activity")
                 .await
-                .map_err(db_err)?;
+                .map_err(|e| TicketError::Db(e.to_string()))?;
 
             activities.push(ur_rpc::proto::ticket::ActivityDetail {
                 entry: Some(ur_rpc::proto::ticket::ActivityEntry {
@@ -419,7 +472,7 @@ impl TicketService for TicketServiceHandler {
             .ticket_repo
             .dispatchable_tickets(&req.epic_id)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| TicketError::Db(e.to_string()))?;
 
         let proto_tickets = tickets
             .into_iter()
