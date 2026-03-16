@@ -17,7 +17,11 @@ use crate::status::build_status_report;
 ///
 /// Generic over the transport type `T` so callers can pass a plain `Channel`
 /// or an `InterceptedService<Channel, F>` with auth headers.
-pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>, json: bool) -> Result<()>
+pub async fn execute<T>(
+    args: TicketArgs,
+    client: &mut TicketServiceClient<T>,
+    json: bool,
+) -> Result<()>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,

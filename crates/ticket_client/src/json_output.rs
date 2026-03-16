@@ -1,7 +1,5 @@
 use serde::Serialize;
-use ur_rpc::proto::ticket::{
-    ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
-};
+use ur_rpc::proto::ticket::{ActivityEntry, DispatchableTicket, MetadataEntry, Ticket};
 
 #[derive(Serialize)]
 pub struct TicketJson {
