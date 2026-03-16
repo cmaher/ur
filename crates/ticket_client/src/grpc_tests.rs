@@ -3,8 +3,11 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use tonic::transport::{Channel, Endpoint, Server};
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 
+use ur_rpc::error::{
+    self, DOMAIN_CORE, DOMAIN_TICKET, NOT_FOUND, StatusResultExt, UNAUTHENTICATED,
+};
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::ticket_service_server::{TicketService, TicketServiceServer};
 use ur_rpc::proto::ticket::*;
@@ -104,11 +107,15 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<GetTicketResponse>, Status> {
         let id = req.into_inner().id;
         let state = self.inner.lock().unwrap();
-        let ticket = state
-            .tickets
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| Status::not_found(format!("ticket not found: {id}")))?;
+        let ticket = state.tickets.get(&id).cloned().ok_or_else(|| {
+            error::status_with_info(
+                Code::NotFound,
+                format!("ticket not found: {id}"),
+                DOMAIN_TICKET,
+                NOT_FOUND,
+                [("ticket_id".into(), id.clone())].into(),
+            )
+        })?;
         let metadata: Vec<MetadataEntry> = state
             .metadata
             .get(&id)
@@ -135,10 +142,15 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<UpdateTicketResponse>, Status> {
         let req = req.into_inner();
         let mut state = self.inner.lock().unwrap();
-        let ticket = state
-            .tickets
-            .get_mut(&req.id)
-            .ok_or_else(|| Status::not_found(format!("ticket not found: {}", req.id)))?;
+        let ticket = state.tickets.get_mut(&req.id).ok_or_else(|| {
+            error::status_with_info(
+                Code::NotFound,
+                format!("ticket not found: {}", req.id),
+                DOMAIN_TICKET,
+                NOT_FOUND,
+                [("ticket_id".into(), req.id.clone())].into(),
+            )
+        })?;
         if let Some(status) = req.status
             && !status.is_empty()
         {
@@ -436,8 +448,13 @@ async fn execute_show_nonexistent_returns_error() {
     );
     let err_msg = format!("{:#}", result.unwrap_err());
     assert!(
-        err_msg.contains("not found") || err_msg.contains("failed to get ticket"),
+        err_msg.contains("not found") || err_msg.contains("get ticket"),
         "error should indicate ticket not found, got: {err_msg}"
+    );
+    // format_status includes domain/reason when ErrorInfo is packed
+    assert!(
+        err_msg.contains("NotFound") || err_msg.contains("NOT_FOUND"),
+        "error should include structured reason, got: {err_msg}"
     );
 }
 
@@ -899,7 +916,13 @@ async fn auth_rejection_propagates_error() {
         #[allow(clippy::result_large_err)]
         let interceptor = move |req: Request<()>| -> Result<Request<()>, Status> {
             let _ = req;
-            Err(Status::unauthenticated("missing ur-agent-id header"))
+            Err(error::status_with_info(
+                Code::Unauthenticated,
+                "missing ur-agent-id header",
+                DOMAIN_CORE,
+                UNAUTHENTICATED,
+                HashMap::new(),
+            ))
         };
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
@@ -932,9 +955,59 @@ async fn auth_rejection_propagates_error() {
     );
     let err_msg = format!("{:#}", result.unwrap_err());
     assert!(
-        err_msg.contains("unauthenticated")
-            || err_msg.contains("Unauthenticated")
-            || err_msg.contains("missing"),
+        err_msg.contains("Unauthenticated") || err_msg.contains("missing"),
         "error should indicate auth failure, got: {err_msg}"
     );
+    // format_status includes domain/reason from ErrorInfo
+    assert!(
+        err_msg.contains("ur.core") || err_msg.contains("UNAUTHENTICATED"),
+        "error should include structured error info, got: {err_msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// StatusResultExt tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_result_ext_extracts_error_info_reason_and_metadata() {
+    let status = error::status_with_info(
+        Code::NotFound,
+        "ticket not found: ur-abc",
+        DOMAIN_TICKET,
+        NOT_FOUND,
+        [("ticket_id".into(), "ur-abc".into())].into(),
+    );
+    let result: Result<(), Status> = Err(status);
+    let err = result.with_status_context("get ticket").unwrap_err();
+    let msg = err.to_string();
+
+    // Context prefix is present
+    assert!(msg.contains("get ticket"), "msg: {msg}");
+    // Domain and reason from ErrorInfo
+    assert!(msg.contains("ur.ticket"), "msg: {msg}");
+    assert!(msg.contains("NOT_FOUND"), "msg: {msg}");
+    // Metadata key/value
+    assert!(msg.contains("ticket_id"), "msg: {msg}");
+    assert!(msg.contains("ur-abc"), "msg: {msg}");
+}
+
+#[test]
+fn status_result_ext_falls_back_without_error_info() {
+    let status = Status::internal("something broke");
+    let result: Result<(), Status> = Err(status);
+    let err = result.with_status_context("my_rpc").unwrap_err();
+    let msg = err.to_string();
+
+    assert!(msg.contains("my_rpc"), "msg: {msg}");
+    assert!(msg.contains("something broke"), "msg: {msg}");
+    // No domain/reason bracket should appear
+    assert!(!msg.contains('['), "msg should not contain brackets: {msg}");
+}
+
+#[test]
+fn status_result_ext_ok_passes_through() {
+    let result: Result<u32, Status> = Ok(42);
+    let val = result.with_status_context("irrelevant").unwrap();
+    assert_eq!(val, 42);
 }

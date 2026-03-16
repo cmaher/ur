@@ -14,6 +14,7 @@ prost = { workspace = true }
 rand = "0.9"
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+thiserror = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -24,7 +25,7 @@ mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
 rag = { path = "../rag" }
-ur_rpc = { path = "../ur_rpc", features = ["stream"] }
+ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 ur_utils = { path = "../ur_utils" }
 
 [features]

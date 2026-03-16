@@ -919,7 +919,7 @@ skills = ["a", "b"]
         let cfg = PromptModesConfig::default();
         let (strategy, skills) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
-        assert!(skills.contains(&"tickets".to_string()));
+        assert!(skills.contains(&"implement".to_string()));
     }
 
     #[test]

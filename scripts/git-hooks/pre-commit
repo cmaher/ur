@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook: auto-fix formatting and re-stage changed files.
+# Install with: cargo make install-hooks
+
+# Capture files staged for commit before formatting
+staged_files=$(git diff --cached --name-only --diff-filter=d)
+
+cargo make fmt-fix > /dev/null 2>&1
+
+# Re-stage only files that were staged for commit AND modified by fmt-fix
+git diff --name-only | while IFS= read -r file; do
+    if echo "$staged_files" | grep -qxF "$file"; then
+        git add "$file"
+    fi
+done

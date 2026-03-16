@@ -1,18 +1,74 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
 
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
 use rag::RagManager;
+use ur_rpc::error::{self, DOCS_NOT_INDEXED, DOMAIN_RAG, INTERNAL, INVALID_ARGUMENT};
 use ur_rpc::proto::rag::rag_index_progress::Update;
 use ur_rpc::proto::rag::rag_service_server::RagService;
 use ur_rpc::proto::rag::{
     DependencyIndexed, IndexComplete, Language, RagIndexProgress, RagIndexRequest,
     RagSearchRequest, RagSearchResponse, RagSearchResult,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum RagError {
+    #[error("docs not indexed for language: {language}. Run `ur rag docs` first.")]
+    DocsNotIndexed { language: String },
+
+    #[error("indexing failed: {reason}")]
+    IndexFailed { reason: String },
+
+    #[error("search failed: {reason}")]
+    SearchFailed { reason: String },
+
+    #[error("language is required — specify a language (e.g. --language rust)")]
+    InvalidLanguage,
+}
+
+impl From<RagError> for Status {
+    fn from(err: RagError) -> Self {
+        match &err {
+            RagError::DocsNotIndexed { language } => {
+                let mut meta = HashMap::new();
+                meta.insert("language".into(), language.clone());
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_RAG,
+                    DOCS_NOT_INDEXED,
+                    meta,
+                )
+            }
+            RagError::IndexFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_RAG,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            RagError::SearchFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_RAG,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            RagError::InvalidLanguage => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_RAG,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+        }
+    }
+}
 
 /// gRPC implementation of the RagService, delegating to `RagManager`.
 #[derive(Clone)]
@@ -40,10 +96,10 @@ impl RagService for RagServiceHandler {
         let docs_dir = self.config_dir.join("rag/docs").join(language);
 
         if !docs_dir.exists() {
-            return Err(Status::failed_precondition(format!(
-                "docs directory does not exist: {}. Run `ur rag docs` first.",
-                docs_dir.display()
-            )));
+            return Err(RagError::DocsNotIndexed {
+                language: language.to_string(),
+            }
+            .into());
         }
 
         let (progress_tx, mut progress_rx) = mpsc::channel::<rag::DependencyProgress>(32);
@@ -91,9 +147,11 @@ impl RagService for RagServiceHandler {
                         .await;
                 }
                 Err(e) => {
-                    let _ = stream_tx
-                        .send(Err(Status::internal(format!("indexing failed: {e}"))))
-                        .await;
+                    let status: Status = RagError::IndexFailed {
+                        reason: e.to_string(),
+                    }
+                    .into();
+                    let _ = stream_tx.send(Err(status)).await;
                 }
             }
         });
@@ -121,7 +179,9 @@ impl RagService for RagServiceHandler {
             .rag_manager
             .search(&req.query, language, top_k)
             .await
-            .map_err(|e| Status::internal(format!("search failed: {e}")))?;
+            .map_err(|e| RagError::SearchFailed {
+                reason: e.to_string(),
+            })?;
 
         let results = results
             .into_iter()
@@ -138,13 +198,11 @@ impl RagService for RagServiceHandler {
 
 /// Convert the proto `Language` enum to a string used by `RagManager`.
 ///
-/// Returns `InvalidArgument` for `Unspecified` — callers must provide an explicit language.
+/// Returns `InvalidLanguage` for `Unspecified` — callers must provide an explicit language.
 #[allow(clippy::result_large_err)]
-fn language_str(lang: Language) -> Result<&'static str, Status> {
+fn language_str(lang: Language) -> Result<&'static str, RagError> {
     match lang {
-        Language::Unspecified => Err(Status::invalid_argument(
-            "language is required — specify a language (e.g. --language rust)",
-        )),
+        Language::Unspecified => Err(RagError::InvalidLanguage),
         Language::Rust => Ok("rust"),
     }
 }
@@ -157,7 +215,7 @@ mod tests {
     fn language_str_rejects_unspecified() {
         let result = language_str(Language::Unspecified);
         assert!(result.is_err());
-        let status = result.unwrap_err();
+        let status: Status = result.unwrap_err().into();
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 

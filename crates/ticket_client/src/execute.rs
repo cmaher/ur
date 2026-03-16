@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
@@ -47,7 +48,7 @@ where
                     created_at: None,
                 })
                 .await
-                .context("failed to create ticket")?;
+                .with_status_context("create ticket")?;
             let id = resp.into_inner().id;
             Ok(TicketOutput::Created { id })
         }
@@ -67,7 +68,7 @@ where
                     meta_value: None,
                 })
                 .await
-                .context("failed to list tickets")?;
+                .with_status_context("list tickets")?;
             let tickets = resp.into_inner().tickets;
             Ok(TicketOutput::Listed { tickets })
         }
@@ -76,7 +77,7 @@ where
             let resp = client
                 .get_ticket(GetTicketRequest { id: id.clone() })
                 .await
-                .context("failed to get ticket")?;
+                .with_status_context("get ticket")?;
             let inner = resp.into_inner();
             let t = inner.ticket.context("server returned empty ticket")?;
             Ok(TicketOutput::Shown {
@@ -107,7 +108,7 @@ where
                     ticket_type,
                 })
                 .await
-                .context("failed to update ticket")?;
+                .with_status_context("update ticket")?;
             Ok(TicketOutput::Updated { id })
         }
 
@@ -119,7 +120,7 @@ where
                     value: value.clone(),
                 })
                 .await
-                .context("failed to set metadata")?;
+                .with_status_context("set metadata")?;
             Ok(TicketOutput::MetaSet { id, key, value })
         }
 
@@ -130,7 +131,7 @@ where
                     key: key.clone(),
                 })
                 .await
-                .context("failed to delete metadata")?;
+                .with_status_context("delete metadata")?;
             Ok(TicketOutput::MetaDeleted { id, key })
         }
 
@@ -145,7 +146,7 @@ where
                     metadata,
                 })
                 .await
-                .context("failed to add activity")?;
+                .with_status_context("add activity")?;
             let activity_id = resp.into_inner().activity_id;
             Ok(TicketOutput::ActivityAdded { id, activity_id })
         }
@@ -156,7 +157,7 @@ where
                     ticket_id: id.clone(),
                 })
                 .await
-                .context("failed to list activities")?;
+                .with_status_context("list activities")?;
             let activities = resp.into_inner().activities;
             Ok(TicketOutput::ActivitiesListed { id, activities })
         }
@@ -168,7 +169,7 @@ where
                     blocked_id: id.clone(),
                 })
                 .await
-                .context("failed to add block")?;
+                .with_status_context("add block")?;
             Ok(TicketOutput::BlockAdded { id, blocked_by_id })
         }
 
@@ -179,7 +180,7 @@ where
                     blocked_id: id.clone(),
                 })
                 .await
-                .context("failed to remove block")?;
+                .with_status_context("remove block")?;
             Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
         }
 
@@ -190,7 +191,7 @@ where
                     right_id: linked_id.clone(),
                 })
                 .await
-                .context("failed to link tickets")?;
+                .with_status_context("link tickets")?;
             Ok(TicketOutput::LinkAdded { id, linked_id })
         }
 
@@ -201,7 +202,7 @@ where
                     right_id: linked_id.clone(),
                 })
                 .await
-                .context("failed to unlink tickets")?;
+                .with_status_context("unlink tickets")?;
             Ok(TicketOutput::LinkRemoved { id, linked_id })
         }
 
@@ -211,7 +212,7 @@ where
                     epic_id: epic_id.clone(),
                 })
                 .await
-                .context("failed to get dispatchable tickets")?;
+                .with_status_context("get dispatchable tickets")?;
             let tickets = resp.into_inner().tickets;
             Ok(TicketOutput::Dispatchable { epic_id, tickets })
         }
@@ -227,7 +228,7 @@ where
                     meta_value: None,
                 })
                 .await
-                .context("failed to list tickets")?;
+                .with_status_context("list tickets")?;
             let tickets = resp.into_inner().tickets;
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             let report = build_status_report(&tickets, &today, project.as_deref());

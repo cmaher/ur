@@ -1,3 +1,6 @@
+#[cfg(feature = "error")]
+pub mod error;
+
 #[cfg(feature = "stream")]
 pub mod stream;
 

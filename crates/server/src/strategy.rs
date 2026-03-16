@@ -66,6 +66,7 @@ impl WorkerStrategy {
         match self {
             Self::Code => {
                 skills.extend([
+                    "implement".into(),
                     "bacon".into(),
                     "systematic-debugging".into(),
                     "test-driven-development".into(),
@@ -83,7 +84,6 @@ impl WorkerStrategy {
 fn common_skills() -> Vec<String> {
     vec![
         "tickets".into(),
-        "implement".into(),
         "ship".into(),
         "green".into(),
         "cli-design".into(),
@@ -100,6 +100,7 @@ mod tests {
     #[test]
     fn code_skills_include_code_specific() {
         let skills = WorkerStrategy::Code.skills();
+        assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
@@ -110,6 +111,7 @@ mod tests {
         let skills = WorkerStrategy::Design.skills();
         assert!(skills.contains(&"design".to_string()));
         // Design should NOT have code-specific skills
+        assert!(!skills.contains(&"implement".to_string()));
         assert!(!skills.contains(&"bacon".to_string()));
     }
 
@@ -118,7 +120,6 @@ mod tests {
         for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
             let skills = strategy.skills();
             assert!(skills.contains(&"tickets".to_string()));
-            assert!(skills.contains(&"implement".to_string()));
             assert!(skills.contains(&"ship".to_string()));
             assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));

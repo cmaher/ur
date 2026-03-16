@@ -1,67 +1,122 @@
 ---
 name: implement
-description: Use when starting work on a ticket — claims the ticket and sets up context for work
+description: Use when implementing a ticket, epic, or set of tickets — dispatches regularly for a single ticket, uses subagents for epics or multiple tickets
 ---
 
-# Start Working on a Ticket
+# Implement Tickets
 
-Claim a ticket and begin working on it. This is the entry point for any agent picking up a task.
+Implement one or more tickets. For a **single ticket**, work on it directly. For an **epic or multiple tickets**, dispatch subagents — one per ticket, sequential by default.
 
-**Always use `--output json`** with `workertools ticket` for structured output.
+## Single Ticket
 
-## Inputs
+When given a single non-epic ticket:
 
-`$ARGUMENTS` should be a ticket ID (full or partial). If empty, pick the highest-priority ticket from `workertools ticket dispatchable <epic-id> --output json`.
+1. `ur ticket show <id>` — read the ticket
+2. `ur ticket update <id> --status in_progress` — claim it
+3. Implement the work directly in this context
+4. Commit, close: `ur ticket update <id> --status closed`
 
-## Workflow
+No subagents needed. Just do the work.
 
-### 1. Select a Ticket
+## Epic or Multiple Tickets — Subagent Dispatch
 
-If a ticket ID was provided:
+**Core principle:** The parent orchestrates via `ur ticket`; subagents do the work. Only essential outcomes flow back.
 
-```bash
-workertools ticket show <id> --output json
+### Before Starting — Branch Setup
+
+1. `git fetch origin` — pull latest from remote
+2. `git checkout -B <branch-name> origin/master`
+3. Record the branch on the epic: `ur ticket add-activity <epic-id> "branch: <branch-name>"`
+
+### VCS: Sequential Stacking (Critical)
+
+Agents stack commits sequentially on the working branch. Each agent commits, and the next agent inherits all previous work.
+
+```
+origin/master -> agent1 commits -> agent2 commits -> ...
 ```
 
-If no ID was provided, ask the user which epic to check, then:
+### The Loop
 
-```bash
-workertools ticket dispatchable <epic-id> --output json
+```dot
+digraph implement {
+    "Fresh from master" [shape=doublecircle];
+    "Query dispatchable" [shape=box];
+    "Pick next ticket" [shape=box];
+    "Show ticket for context" [shape=box];
+    "Dispatch subagent" [shape=box];
+    "Record 1-2 line summary" [shape=box];
+    "More dispatchable tickets?" [shape=diamond];
+    "Report final summary" [shape=doublecircle];
+
+    "Fresh from master" -> "Query dispatchable";
+    "Query dispatchable" -> "Pick next ticket";
+    "Pick next ticket" -> "Show ticket for context";
+    "Show ticket for context" -> "Dispatch subagent";
+    "Dispatch subagent" -> "Record 1-2 line summary";
+    "Record 1-2 line summary" -> "More dispatchable tickets?";
+    "More dispatchable tickets?" -> "Query dispatchable" [label="yes — re-query\nfor newly unblocked"];
+    "More dispatchable tickets?" -> "Run full CI" [label="no"];
+    "Run full CI" -> "Report final summary";
+}
 ```
 
-Pick the highest-priority unblocked ticket and confirm with the user before proceeding.
+### Sequential (Default)
 
-### 2. Claim the Ticket
+- Re-query `ur ticket dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
+- Pass only 1-2 sentence summaries between tasks
+- Parent never reads files or explores code inline — if it takes more than a glance, delegate
 
-```bash
-workertools ticket update <full-id> --status in_progress --output json
+### Parallel Mode
+
+Use only when explicitly requested or when tickets are clearly independent:
+
+1. Each subagent claims its ticket: `ur ticket update <id> --status in_progress`
+2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
+3. Each subagent closes its ticket when done
+
+### Testing Strategy
+
+- **Subagents**: Run only the minimum tests needed to validate their change (check CLAUDE.md for project-specific commands)
+- **Parent (after all issues done)**: Run full CI and fix any integration issues
+
+### Subagent Prompt Template
+
+```
+Implement ticket <id>.
+
+`ur ticket show <id>` to read the full ticket.
+
+Claim: `ur ticket update <id> --status in_progress`
+
+[If relevant: "Previous ticket accomplished: <1-2 sentences>"]
+
+Constraints:
+- [Scope boundaries]
+- [What NOT to change]
+
+VCS:
+- Use `git add <files> && git commit -m "message"` when done — do NOT switch branches
+- The parent agent manages branching and pushing
+
+Testing:
+- Run only the minimum tests needed to validate YOUR change — not the full CI suite
+- The parent agent will run full CI after all issues are done
+
+When done:
+1. Close the ticket: `ur ticket update <id> --status closed`
+2. Do NOT add ticket IDs to commit messages
+3. Return ONLY a 1-2 sentence summary of what you did and any key values/paths the next task might need
 ```
 
-Use the **full prefixed ID** (e.g., `ur-038cd`, not `038cd`).
+### Common Mistakes
 
-### 3. Check the Epic for Worktree
-
-Parse the JSON from `workertools ticket show <id> --output json`. If the ticket has a parent (epic):
-
-```bash
-workertools ticket show <parent-id> --output json
-```
-
-Scan the epic's activities for a line matching `worktree: <path>, branch: <branch>`. If found, `cd` to that worktree path before doing any work.
-
-If the ticket has no parent, skip this step.
-
-### 4. Report Ready
-
-Tell the user:
-- Which ticket you claimed (ID + title)
-- Which worktree you're working in (if applicable)
-
-Then begin working on the ticket.
-
-## After Work is Done
-
-1. Commit and push
-2. Close the ticket: `workertools ticket update <full-id> --status closed --output json`
+| Mistake | Fix |
+|---------|-----|
+| Switching branches mid-work | **Never.** Stack via `git commit` on the working branch — next agent inherits automatically |
+| Parent reads full subagent output | Ask for "1-2 sentence summary" in every prompt |
+| Parent explores code inline | Delegate to subagent |
+| Re-query skipped after completion | Always `ur ticket dispatchable <epic>` again — deps may have unblocked |
+| Parallel without claiming | Two agents grab same ticket — always claim first |
 
 $ARGUMENTS

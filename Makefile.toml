@@ -101,7 +101,7 @@ command = "cargo"
 args = ["test", "-p", "acceptance", "--features", "acceptance"]
 
 [tasks.install-hooks]
-description = "Install git hooks (pre-push runs acceptance tests)"
+description = "Install git hooks (pre-commit formats, pre-push runs CI + acceptance)"
 script_runner = "@shell"
 script = ["cp scripts/git-hooks/* .git/hooks/"]
 
