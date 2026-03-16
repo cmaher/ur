@@ -270,13 +270,19 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(id = %req.id, "update_ticket request");
 
+        let parent_id = match req.parent_id {
+            None => None,
+            Some(ref s) if s == "NONE" => Some(None),
+            Some(s) => Some(Some(s)),
+        };
+
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
             type_: req.ticket_type.filter(|s| !s.is_empty()),
             priority: req.priority.map(|p| p as i32),
             title: req.title.filter(|s| !s.is_empty()),
             body: req.body.filter(|s| !s.is_empty()),
-            parent_id: None,
+            parent_id,
         };
 
         if update.status.as_deref() == Some("closed") && !req.force {

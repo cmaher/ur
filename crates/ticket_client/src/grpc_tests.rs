@@ -174,6 +174,11 @@ impl TicketService for MockTicketStore {
         {
             ticket.ticket_type = ticket_type;
         }
+        match req.parent_id {
+            Some(ref s) if s == "NONE" => ticket.parent_id = String::new(),
+            Some(pid) => ticket.parent_id = pid,
+            None => {}
+        }
         Ok(Response::new(UpdateTicketResponse {}))
     }
 
@@ -472,6 +477,7 @@ async fn execute_update_nonexistent_returns_error() {
             priority: None,
             ticket_type: None,
             parent: None,
+            no_parent: false,
             force: false,
         },
         &mut client,
@@ -777,6 +783,7 @@ async fn execute_update_existing_ticket() {
             priority: Some(5),
             ticket_type: None,
             parent: None,
+            no_parent: false,
             force: false,
         },
         &mut client,

@@ -94,9 +94,15 @@ where
             status,
             priority,
             ticket_type,
-            parent: _,
+            parent,
+            no_parent,
             force,
         } => {
+            let parent_id = if no_parent {
+                Some("NONE".to_owned())
+            } else {
+                parent
+            };
             client
                 .update_ticket(UpdateTicketRequest {
                     id: id.clone(),
@@ -106,6 +112,7 @@ where
                     body,
                     force,
                     ticket_type,
+                    parent_id,
                 })
                 .await
                 .with_status_context("update ticket")?;
