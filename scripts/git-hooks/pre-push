@@ -3,17 +3,26 @@ set -euo pipefail
 
 # Pre-push hook: run CI checks, build images, and run acceptance tests.
 # Install with: cargo make install-hooks
+#
+# All command output is suppressed; only the failing step is reported.
+# To see full output, run the failing command manually.
 
-echo "==> Checking Cargo.lock is up to date..."
-if ! cargo check --locked --quiet 2>/dev/null; then
-    echo "Cargo.lock is out of date. Updating dependencies..."
-    cargo update
-    echo "ERROR: Cargo.lock was out of date and has been updated. Please review, commit the changes, and push again."
-    exit 1
-fi
+LOGFILE=$(mktemp /tmp/ur-pre-push.XXXXXX)
+trap 'rm -f "$LOGFILE"' EXIT
 
-echo "==> Running CI checks..."
-cargo make ci
+run_step() {
+    local label="$1"
+    shift
+    if ! "$@" >"$LOGFILE" 2>&1; then
+        echo "pre-push FAILED: $label"
+        echo "--- last 30 lines ---"
+        tail -30 "$LOGFILE"
+        exit 1
+    fi
+}
+
+run_step "Cargo.lock check" cargo check --locked --quiet
+run_step "CI (fmt + clippy + build + test)" cargo make ci
 
 # --- Mutex: only one pre-push hook runs image builds/acceptance at a time ---
 LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
@@ -27,22 +36,20 @@ acquire_lock() {
     while true; do
         if mkdir "$LOCK_DIR" 2>/dev/null; then
             echo $$ > "$PID_FILE"
-            trap release_lock EXIT
+            trap 'release_lock; rm -f "$LOGFILE"' EXIT
             return
         fi
 
-        # Check for stale lock
         if [ -f "$PID_FILE" ]; then
             local stale_pid
             stale_pid=$(cat "$PID_FILE" 2>/dev/null || true)
             if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
-                echo "==> Stale pre-push lock (PID $stale_pid dead), reclaiming..."
                 rm -rf "$LOCK_DIR"
                 continue
             fi
         fi
 
-        echo "==> Pre-push lock held (PID $(cat "$PID_FILE" 2>/dev/null || echo '?')), waiting..."
+        echo "pre-push: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'))..."
         sleep 10
     done
 }
@@ -50,8 +57,5 @@ acquire_lock() {
 mkdir -p "$(dirname "$LOCK_DIR")"
 acquire_lock
 
-echo "==> Building container images..."
-cargo make image
-
-echo "==> Running acceptance tests..."
-cargo test -p acceptance --features acceptance
+run_step "image build" cargo make image
+run_step "acceptance tests" cargo test -p acceptance --features acceptance

@@ -4985,7 +4985,6 @@ name = "workertools"
 version = "0.1.0"
 dependencies = [
  "clap",
- "ticket_client",
  "tokio",
  "tonic 0.13.1",
  "ur_config",

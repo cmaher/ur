@@ -1,30 +1,34 @@
 ---
-name: tk:agents
-description: Use when executing multiple ticket issues with subagents, dispatching one agent per issue with minimal context return, or when asked to work through a ticket backlog
+name: implement
+description: Use when implementing a ticket, epic, or set of tickets — dispatches regularly for a single ticket, uses subagents for epics or multiple tickets
 ---
 
-# Ticket Agent Dispatch
+# Implement Tickets
 
-Execute tickets with subagents. Sequential by default — one ticket per agent, minimal reporting back. Keeps the parent context window small.
+Implement one or more tickets. For a **single ticket**, work on it directly. For an **epic or multiple tickets**, dispatch subagents — one per ticket, sequential by default.
 
-**Core principle:** The parent orchestrates via `workertools ticket`; subagents do the work. Only essential outcomes flow back.
+## Single Ticket
 
-## Before Starting — Branch Setup
+When given a single non-epic ticket:
 
-Ensure you have the latest remote code and a working branch for the epic:
+1. `ur ticket show <id>` — read the ticket
+2. `ur ticket update <id> --status in_progress` — claim it
+3. Implement the work directly in this context
+4. Commit, close: `ur ticket update <id> --status closed`
+
+No subagents needed. Just do the work.
+
+## Epic or Multiple Tickets — Subagent Dispatch
+
+**Core principle:** The parent orchestrates via `ur ticket`; subagents do the work. Only essential outcomes flow back.
+
+### Before Starting — Branch Setup
 
 1. `git fetch origin` — pull latest from remote
-2. Verify with `git log --oneline origin/master -5` — confirm master is up to date
-3. **Create the working branch:**
-   ```bash
-   git checkout -B <branch-name> origin/master
-   ```
-4. **Record the branch on the epic ticket:**
-   ```bash
-   workertools ticket add-activity <epic-id> "branch: <branch-name>"
-   ```
+2. `git checkout -B <branch-name> origin/master`
+3. Record the branch on the epic: `ur ticket add-activity <epic-id> "branch: <branch-name>"`
 
-## VCS: Sequential Stacking (Critical)
+### VCS: Sequential Stacking (Critical)
 
 Agents stack commits sequentially on the working branch. Each agent commits, and the next agent inherits all previous work.
 
@@ -32,13 +36,10 @@ Agents stack commits sequentially on the working branch. Each agent commits, and
 origin/master -> agent1 commits -> agent2 commits -> ...
 ```
 
-- **Sequential**: Agents stack automatically via `git commit`. No extra VCS commands needed between agents.
-- **Parallel**: Agents work in the same worktree. Coordinate to avoid editing the same files.
-
-## The Loop
+### The Loop
 
 ```dot
-digraph tickets_agents {
+digraph implement {
     "Fresh from master" [shape=doublecircle];
     "Query dispatchable" [shape=box];
     "Pick next ticket" [shape=box];
@@ -60,31 +61,33 @@ digraph tickets_agents {
 }
 ```
 
-## Testing Strategy
+### Sequential (Default)
+
+- Re-query `ur ticket dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
+- Pass only 1-2 sentence summaries between tasks
+- Parent never reads files or explores code inline — if it takes more than a glance, delegate
+
+### Parallel Mode
+
+Use only when explicitly requested or when tickets are clearly independent:
+
+1. Each subagent claims its ticket: `ur ticket update <id> --status in_progress`
+2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
+3. Each subagent closes its ticket when done
+
+### Testing Strategy
 
 - **Subagents**: Run only the minimum tests needed to validate their change (check CLAUDE.md for project-specific commands)
 - **Parent (after all issues done)**: Run full CI and fix any integration issues
 
-## Sequential (Default)
-
-- Re-query `workertools ticket dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
-- Pass only 1-2 sentence summaries between tasks
-- Parent never reads files or explores code inline — if it takes more than a glance, delegate
-
-## Parallel Mode
-
-Use only when explicitly requested or when tickets are clearly independent:
-
-1. Each agent runs `/tk:start <id>` — claims ticket
-2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
-3. Each agent follows `/tk:start` teardown when done (close ticket)
-
-## Subagent Prompt Template
+### Subagent Prompt Template
 
 ```
-Start by running /tk:start <id>
+Implement ticket <id>.
 
-This claims the ticket, looks up the parent epic's notes for worktree info, and cds to the worktree.
+`ur ticket show <id>` to read the full ticket.
+
+Claim: `ur ticket update <id> --status in_progress`
 
 [If relevant: "Previous ticket accomplished: <1-2 sentences>"]
 
@@ -101,18 +104,19 @@ Testing:
 - The parent agent will run full CI after all issues are done
 
 When done:
-1. Follow the "After Work is Done" section from /tk:start (close ticket)
+1. Close the ticket: `ur ticket update <id> --status closed`
 2. Do NOT add ticket IDs to commit messages
 3. Return ONLY a 1-2 sentence summary of what you did and any key values/paths the next task might need
 ```
 
-## Common Mistakes
+### Common Mistakes
 
 | Mistake | Fix |
 |---------|-----|
 | Switching branches mid-work | **Never.** Stack via `git commit` on the working branch — next agent inherits automatically |
 | Parent reads full subagent output | Ask for "1-2 sentence summary" in every prompt |
 | Parent explores code inline | Delegate to subagent |
-| Subagent skips teardown | Prompt must say "follow /tk:start teardown" — covers close |
-| Re-query skipped after completion | Always `workertools ticket dispatchable <epic>` again — deps may have unblocked |
-| Parallel without `/tk:start` | Two agents grab same ticket — `/tk:start` claims it |
+| Re-query skipped after completion | Always `ur ticket dispatchable <epic>` again — deps may have unblocked |
+| Parallel without claiming | Two agents grab same ticket — always claim first |
+
+$ARGUMENTS
