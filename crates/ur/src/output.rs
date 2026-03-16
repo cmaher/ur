@@ -1,5 +1,3 @@
-use std::io::IsTerminal;
-
 use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,8 +23,6 @@ impl OutputManager {
                 "json" => OutputFormat::Json,
                 _ => OutputFormat::Text,
             }
-        } else if !std::io::stdout().is_terminal() {
-            OutputFormat::Json
         } else {
             OutputFormat::Text
         };
@@ -301,9 +297,6 @@ pub fn resolve_output_format_early() -> OutputFormat {
     if let Ok(val) = std::env::var("OUTPUT_FORMAT")
         && val == "json"
     {
-        return OutputFormat::Json;
-    }
-    if !std::io::stdout().is_terminal() {
         return OutputFormat::Json;
     }
     OutputFormat::Text
