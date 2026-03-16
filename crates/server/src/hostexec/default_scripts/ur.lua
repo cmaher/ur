@@ -21,7 +21,6 @@ function transform(command, args, working_dir, agent_context)
         ["project"] = { ["list"] = true },
         ["proxy"] = { ["list"] = true },
         ["db"] = { ["list"] = true },
-        ["agent"] = { ["dir"] = true },
     }
 
     local allowed_subs = readonly_subcommands[subcmd]

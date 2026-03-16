@@ -33,7 +33,7 @@ cp "$TARGET_DIR/builderd" "$INSTALL_DIR/builderd"
 cp "$TARGET_DIR/tk-import" "$INSTALL_DIR/tk-import"
 cp "$TARGET_DIR/tk-verify" "$INSTALL_DIR/tk-verify"
 echo "Installed ur, builderd, tk-import, tk-verify to $INSTALL_DIR/"
-echo "Run 'ur start' to launch the server"
+echo "Run 'ur server start' to launch the server"
 
 # Download the default embedding model for RAG if not already cached.
 # This matches the hf_hub cache layout fastembed expects.

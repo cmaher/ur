@@ -225,7 +225,7 @@ pub async fn index(port: u16, language: &str, output: &OutputManager) -> Result<
     let addr = format!("http://127.0.0.1:{port}");
     let mut client = RagServiceClient::connect(addr)
         .await
-        .context("failed to connect to ur-server — is it running? Try 'ur start'")?;
+        .context("failed to connect to ur-server — is it running? Try 'ur server start'")?;
 
     info!(language = %language, "sending RagIndex request");
     if !output.is_json() {
@@ -300,7 +300,7 @@ pub async fn search(
     let addr = format!("http://127.0.0.1:{port}");
     let mut client = RagServiceClient::connect(addr)
         .await
-        .context("failed to connect to ur-server — is it running? Try 'ur start'")?;
+        .context("failed to connect to ur-server — is it running? Try 'ur server start'")?;
 
     info!(query = %query, language = %language, top_k, "sending RagSearch request");
 

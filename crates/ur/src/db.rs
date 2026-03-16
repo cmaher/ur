@@ -105,13 +105,13 @@ pub async fn restore(
         println!("Restored database verified: {}", restore_target.display());
         println!();
         println!("To complete the restore:");
-        println!("  1. Stop the server: ur stop");
+        println!("  1. Stop the server: ur server stop");
         println!(
             "  2. Replace the database: mv {} {}",
             restore_target.display(),
             db_path.display()
         );
-        println!("  3. Start the server: ur start");
+        println!("  3. Start the server: ur server start");
     }
 
     Ok(())

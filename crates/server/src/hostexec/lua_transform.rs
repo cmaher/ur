@@ -1410,7 +1410,7 @@ mod tests {
     fn test_ur_blocks_start_stop() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/ur.lua");
-        for sub in &["start", "stop", "init", "tui"] {
+        for sub in &["server", "init"] {
             let args: Vec<String> = vec![(*sub).into()];
             let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
             assert!(result.is_err(), "ur {sub} should be blocked");

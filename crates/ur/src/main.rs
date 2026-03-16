@@ -51,6 +51,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Database backup and restore
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
     /// Bootstrap the ~/.ur/ config directory
     Init {
         /// Overwrite all files
@@ -63,46 +68,35 @@ enum Commands {
         #[arg(long)]
         force_squid: bool,
     },
-    /// Launch the TUI dashboard
-    Tui,
-    /// Manage workers
-    Worker {
-        #[command(subcommand)]
-        command: WorkerCommands,
-    },
-    /// Manage tickets
-    Ticket {
-        #[command(subcommand)]
-        command: ticket_client::TicketArgs,
-    },
-    /// Start the server
-    Start,
-    /// Kill all containers and stop the server
-    Stop,
-    /// Manage the forward proxy domain allowlist
-    Proxy {
-        #[command(subcommand)]
-        command: ProxyCommands,
-    },
     /// Manage projects
     Project {
         #[command(subcommand)]
         command: ProjectCommands,
+    },
+    /// Manage the forward proxy domain allowlist
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCommands,
     },
     /// RAG documentation and search
     Rag {
         #[command(subcommand)]
         command: RagCommands,
     },
-    /// Query agent information
-    Agent {
+    /// Manage the ur-server lifecycle
+    Server {
         #[command(subcommand)]
-        command: AgentCommands,
+        command: ServerCommands,
     },
-    /// Database backup and restore
-    Db {
+    /// Manage tickets
+    Ticket {
         #[command(subcommand)]
-        command: DbCommands,
+        command: ticket_client::TicketArgs,
+    },
+    /// Manage workers
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommands,
     },
 }
 
@@ -118,8 +112,6 @@ enum ProxyCommands {
 
 #[derive(Subcommand)]
 enum ProjectCommands {
-    /// List all configured projects with pool usage
-    List,
     /// Add a new project from a local git directory
     Add {
         /// Path to a git repository directory (e.g. "." for current directory)
@@ -134,6 +126,8 @@ enum ProjectCommands {
         #[arg(long)]
         pool_limit: Option<u32>,
     },
+    /// List all configured projects with pool usage
+    List,
     /// Remove a project and delete all pool clones
     Remove {
         /// Project key to remove
@@ -154,6 +148,11 @@ enum RagCommands {
         #[arg(long, default_value = "rust")]
         language: String,
     },
+    /// Manage embedding models
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
     /// Search indexed documentation
     Search {
         /// Search query
@@ -165,11 +164,6 @@ enum RagCommands {
         #[arg(long, default_value = "5")]
         top_k: u32,
     },
-    /// Manage embedding models
-    Model {
-        #[command(subcommand)]
-        command: ModelCommands,
-    },
 }
 
 #[derive(Subcommand)]
@@ -179,20 +173,41 @@ enum ModelCommands {
 }
 
 #[derive(Subcommand)]
+enum ServerCommands {
+    /// Restart the server (stop then start)
+    Restart,
+    /// Start the server
+    Start,
+    /// Kill all containers and stop the server
+    Stop,
+}
+
+#[derive(Subcommand)]
 enum DbCommands {
     /// Create an on-demand database backup
     Backup,
+    /// List available backup files
+    List,
     /// Restore a database from a backup file
     Restore {
         /// Path to the backup file to restore
         path: PathBuf,
     },
-    /// List available backup files
-    List,
 }
 
 #[derive(Subcommand)]
 enum WorkerCommands {
+    /// Attach to a running process
+    Attach {
+        worker_id: String,
+        /// Stop the process when the attach session exits
+        #[arg(long)]
+        rm: bool,
+    },
+    /// Print the host directory assigned to a running process
+    Dir { worker_id: String },
+    /// Force-stop a running agent process (via server)
+    Kill { worker_id: String },
     /// Launch a new agent process
     Launch {
         ticket_id: String,
@@ -220,31 +235,14 @@ enum WorkerCommands {
     },
     /// List all running processes
     List,
-    /// Show process status
-    Status { worker_id: Option<String> },
-    /// Attach to a running process
-    Attach {
-        worker_id: String,
-        /// Stop the process when the attach session exits
-        #[arg(long)]
-        rm: bool,
-    },
-    /// Stop a running agent process
-    Stop { worker_id: String },
-    /// Force-stop a running agent process (via server)
-    Kill { worker_id: String },
     /// Save credentials from a running container for reuse
     SaveCredentials { worker_id: String },
-    /// Print the host directory assigned to a running process
-    Dir { worker_id: String },
+    /// Show process status
+    Status { worker_id: Option<String> },
+    /// Stop a running agent process
+    Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
     Vscode { worker_id: String },
-}
-
-#[derive(Subcommand)]
-enum AgentCommands {
-    /// Print the host workspace directory for a running agent
-    Dir { worker_id: String },
 }
 
 #[instrument]
@@ -353,7 +351,7 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
         Some(client) => Ok(client),
         None => {
             error!(port, "server is not running");
-            bail!("server is not running — run 'ur start' first")
+            bail!("server is not running — run 'ur server start' first")
         }
     }
 }
@@ -831,24 +829,44 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
+        Commands::Db { command } => match command {
+            DbCommands::Backup => db::backup(&config, output).await?,
+            DbCommands::List => db::list(&config, output)?,
+            DbCommands::Restore { path } => {
+                input::reject_path_traversal(&path, "path")?;
+                db::restore(&config, &path, output).await?
+            }
+        },
         Commands::Init { .. } => unreachable!(),
-        Commands::Start => start_server(&config, &compose, output)?,
-        Commands::Stop => stop_server(&config, &compose, output)?,
-        Commands::Tui => {
-            info!("launching TUI");
-            output.print_text("Launching TUI...");
-        }
-        Commands::Worker { command } => {
-            let project_keys: Vec<String> = config.projects.keys().cloned().collect();
-            handle_worker(
-                command,
-                port,
-                &config.network.agent_prefix,
-                &project_keys,
-                output,
-            )
-            .await?
-        }
+        Commands::Project { command } => match command {
+            ProjectCommands::Add {
+                path,
+                key,
+                name,
+                pool_limit,
+            } => {
+                if let Some(ref k) = key {
+                    input::validate_id(k, "key")?;
+                }
+                if let Some(ref n) = name {
+                    input::reject_control_chars(n, "name")?;
+                }
+                input::reject_path_traversal(&path, "path")?;
+                project::add(
+                    &config,
+                    &path,
+                    key.as_deref(),
+                    name.as_deref(),
+                    pool_limit,
+                    output,
+                )?
+            }
+            ProjectCommands::List => project::list(&config, output)?,
+            ProjectCommands::Remove { key, force } => {
+                input::validate_id(&key, "key")?;
+                project::remove(&config, &key, force, output)?
+            }
+        },
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
             let allowlist_path = squid_dir.join("allowlist.txt");
@@ -874,38 +892,12 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 }
             }
         }
-        Commands::Project { command } => match command {
-            ProjectCommands::List => project::list(&config, output)?,
-            ProjectCommands::Add {
-                path,
-                key,
-                name,
-                pool_limit,
-            } => {
-                if let Some(ref k) = key {
-                    input::validate_id(k, "key")?;
-                }
-                if let Some(ref n) = name {
-                    input::reject_control_chars(n, "name")?;
-                }
-                input::reject_path_traversal(&path, "path")?;
-                project::add(
-                    &config,
-                    &path,
-                    key.as_deref(),
-                    name.as_deref(),
-                    pool_limit,
-                    output,
-                )?
-            }
-            ProjectCommands::Remove { key, force } => {
-                input::validate_id(&key, "key")?;
-                project::remove(&config, &key, force, output)?
-            }
-        },
         Commands::Rag { command } => match command {
             RagCommands::Docs => rag::generate_docs(&config, output)?,
             RagCommands::Index { language } => rag::index(port, &language, output).await?,
+            RagCommands::Model { command } => match command {
+                ModelCommands::Download => rag::download_model(&config, output)?,
+            },
             RagCommands::Search {
                 query,
                 language,
@@ -914,41 +906,27 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 input::reject_control_chars(&query, "query")?;
                 rag::search(port, &query, &language, top_k, output).await?
             }
-            RagCommands::Model { command } => match command {
-                ModelCommands::Download => rag::download_model(&config, output)?,
-            },
         },
-        Commands::Db { command } => match command {
-            DbCommands::Backup => db::backup(&config, output).await?,
-            DbCommands::Restore { path } => {
-                input::reject_path_traversal(&path, "path")?;
-                db::restore(&config, &path, output).await?
+        Commands::Server { command } => match command {
+            ServerCommands::Restart => {
+                stop_server(&config, &compose, output)?;
+                start_server(&config, &compose, output)?;
             }
-            DbCommands::List => db::list(&config, output)?,
+            ServerCommands::Start => start_server(&config, &compose, output)?,
+            ServerCommands::Stop => stop_server(&config, &compose, output)?,
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
-        Commands::Agent { command } => match command {
-            AgentCommands::Dir { worker_id } => {
-                input::validate_id(&worker_id, "worker_id")?;
-                let mut client = connect(port).await?;
-                let resp = client
-                    .worker_info(WorkerInfoRequest {
-                        worker_id: worker_id.clone(),
-                    })
-                    .await?;
-                let workspace_dir = resp.into_inner().workspace_dir;
-                if workspace_dir.is_empty() {
-                    bail!("no workspace directory for agent {worker_id}");
-                }
-                if output.is_json() {
-                    output.print_success(&WorkerDir {
-                        path: workspace_dir,
-                    });
-                } else {
-                    println!("{workspace_dir}");
-                }
-            }
-        },
+        Commands::Worker { command } => {
+            let project_keys: Vec<String> = config.projects.keys().cloned().collect();
+            handle_worker(
+                command,
+                port,
+                &config.network.agent_prefix,
+                &project_keys,
+                output,
+            )
+            .await?
+        }
     }
     Ok(())
 }

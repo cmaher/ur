@@ -352,7 +352,7 @@ async fn main() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to connect to server: {e}");
-            eprintln!("Is ur-server running? Start it with: ur start");
+            eprintln!("Is ur-server running? Start it with: ur server start");
             std::process::exit(1);
         }
     };
