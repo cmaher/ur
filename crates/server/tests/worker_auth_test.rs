@@ -7,11 +7,12 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build a ProcessManager and CoreServiceHandler for testing.
+/// Build a ProcessManager, AgentRepo, and CoreServiceHandler for testing.
 async fn make_test_components(
     dir: &Path,
 ) -> (
     ur_server::ProcessManager,
+    ur_db::AgentRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
     let workspace = dir.join("workspace");
@@ -73,7 +74,7 @@ async fn make_test_components(
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
-        agent_repo,
+        agent_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -89,15 +90,16 @@ async fn make_test_components(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (process_manager, handler)
+    (process_manager, agent_repo, handler)
 }
 
 /// Spawn a gRPC server with CoreService wrapped in the worker auth interceptor.
 async fn spawn_authed_server(
-    process_manager: ur_server::ProcessManager,
+    _process_manager: ur_server::ProcessManager,
+    agent_repo: ur_db::AgentRepo,
     handler: ur_server::grpc::CoreServiceHandler,
 ) -> tonic::transport::Channel {
-    let interceptor = ur_server::auth::worker_auth_interceptor(process_manager);
+    let interceptor = ur_server::auth::worker_auth_interceptor(agent_repo);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -121,8 +123,8 @@ async fn spawn_authed_server(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_without_agent_headers() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path()).await;
-    let channel = spawn_authed_server(process_manager, handler).await;
+    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
+    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(PingRequest {}).await;
@@ -136,7 +138,7 @@ async fn worker_server_rejects_requests_without_agent_headers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path()).await;
+    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
 
     // Register a real agent so the ID exists but use a different secret in the request
     let agent_id = process_manager.generate_agent_id("authtest");
@@ -153,7 +155,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, handler).await;
+    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request
@@ -175,7 +177,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path()).await;
+    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
 
     let agent_id = process_manager.generate_agent_id("validtest");
     let secret = "correct-secret-value";
@@ -191,7 +193,7 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, handler).await;
+    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request
