@@ -213,6 +213,40 @@ where
             Ok(TicketOutput::LinkRemoved { id, linked_id })
         }
 
+        TicketArgs::Close { id, force } => {
+            client
+                .update_ticket(UpdateTicketRequest {
+                    id: id.clone(),
+                    status: Some("closed".to_owned()),
+                    priority: None,
+                    title: None,
+                    body: None,
+                    force,
+                    ticket_type: None,
+                    parent_id: None,
+                })
+                .await
+                .with_status_context("close ticket")?;
+            Ok(TicketOutput::Updated { id })
+        }
+
+        TicketArgs::Open { id } => {
+            client
+                .update_ticket(UpdateTicketRequest {
+                    id: id.clone(),
+                    status: Some("open".to_owned()),
+                    priority: None,
+                    title: None,
+                    body: None,
+                    force: false,
+                    ticket_type: None,
+                    parent_id: None,
+                })
+                .await
+                .with_status_context("open ticket")?;
+            Ok(TicketOutput::Updated { id })
+        }
+
         TicketArgs::Dispatchable { epic_id } => {
             let resp = client
                 .dispatchable_tickets(DispatchableTicketsRequest {
