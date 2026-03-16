@@ -21,6 +21,8 @@ Migrations (`migrations/`):
 - `002_agent_slot.sql` — creates `slot` and `worker` tables
 - `003_ticket_project.sql` — adds `project` column to `ticket`, backfills from ID prefix
 
+**NEVER modify existing migration files.** The database is live — `sqlx::migrate!()` checksums applied migrations and will fail if they change. Always add new migrations for schema changes.
+
 ## Testing
 
 ```bash
