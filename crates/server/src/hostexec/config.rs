@@ -91,6 +91,12 @@ impl HostExecConfigManager {
                 lua_source: Some(include_str!("default_scripts/docker.lua").into()),
             },
         );
+        commands.insert(
+            "ur".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/ur.lua").into()),
+            },
+        );
         commands
     }
 
@@ -100,6 +106,7 @@ impl HostExecConfigManager {
             "gh" => Some(include_str!("default_scripts/gh.lua").into()),
             "cargo" => Some(include_str!("default_scripts/cargo.lua").into()),
             "docker" => Some(include_str!("default_scripts/docker.lua").into()),
+            "ur" => Some(include_str!("default_scripts/ur.lua").into()),
             _ => None,
         }
     }
@@ -138,7 +145,7 @@ mod tests {
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
         assert!(!mgr.is_allowed("tk"));
-        assert_eq!(mgr.command_names(), vec!["cargo", "docker", "gh", "git"]);
+        assert_eq!(mgr.command_names(), vec!["cargo", "docker", "gh", "git", "ur"]);
     }
 
     #[test]

@@ -41,15 +41,15 @@ UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 
-**code** (default): tk, ship, tk:agents, tk:start, bacon, green, cli-design, reclaude, systematic-debugging, test-driven-development, writing-skills
+**code** (default): tickets, ship, implement, bacon, green, cli-design, reclaude, systematic-debugging, test-driven-development, writing-skills
 
-**design**: tk, ship, green, brainstorming, cli-design, reclaude, writing-skills
+**design**: tickets, ship, green, brainstorming, cli-design, reclaude, writing-skills
 
 ### ur.toml Override
 
 ```toml
 [prompt_modes.code]
-skills = ["tk", "custom-skill"]
+skills = ["tickets", "custom-skill"]
 
 [prompt_modes.my-mode]
 skills = ["a", "b", "c"]

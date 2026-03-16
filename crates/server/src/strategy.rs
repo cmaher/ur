@@ -66,8 +66,7 @@ impl WorkerStrategy {
         match self {
             Self::Code => {
                 skills.extend([
-                    "tk:agents".into(),
-                    "tk:start".into(),
+                    "implement".into(),
                     "bacon".into(),
                     "systematic-debugging".into(),
                     "test-driven-development".into(),
@@ -84,7 +83,7 @@ impl WorkerStrategy {
 /// Skills shared by all worker strategies.
 fn common_skills() -> Vec<String> {
     vec![
-        "tk".into(),
+        "tickets".into(),
         "ship".into(),
         "green".into(),
         "cli-design".into(),
@@ -101,8 +100,7 @@ mod tests {
     #[test]
     fn code_skills_include_code_specific() {
         let skills = WorkerStrategy::Code.skills();
-        assert!(skills.contains(&"tk:agents".to_string()));
-        assert!(skills.contains(&"tk:start".to_string()));
+        assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
@@ -113,7 +111,7 @@ mod tests {
         let skills = WorkerStrategy::Design.skills();
         assert!(skills.contains(&"brainstorming".to_string()));
         // Design should NOT have code-specific skills
-        assert!(!skills.contains(&"tk:agents".to_string()));
+        assert!(!skills.contains(&"implement".to_string()));
         assert!(!skills.contains(&"bacon".to_string()));
     }
 
@@ -121,7 +119,7 @@ mod tests {
     fn both_strategies_include_common_skills() {
         for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
             let skills = strategy.skills();
-            assert!(skills.contains(&"tk".to_string()));
+            assert!(skills.contains(&"tickets".to_string()));
             assert!(skills.contains(&"ship".to_string()));
             assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));

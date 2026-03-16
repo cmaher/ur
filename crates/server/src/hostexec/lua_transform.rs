@@ -1349,4 +1349,100 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, args);
     }
+
+    // ── ur.lua tests ──
+
+    #[test]
+    fn test_ur_allows_all_ticket_subcommands() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        for sub in &[
+            "create", "list", "show", "update", "set-meta", "delete-meta", "add-activity",
+            "list-activities", "add-block", "remove-block", "add-link", "remove-link",
+            "dispatchable", "status",
+        ] {
+            let args: Vec<String> = vec!["ticket".into(), (*sub).into(), "ur-abc12".into()];
+            let result = mgr
+                .run_transform(script, "ur", &args, "/workspace", None)
+                .unwrap();
+            assert_eq!(result.args, args, "ticket subcommand '{sub}' should be allowed");
+        }
+    }
+
+    #[test]
+    fn test_ur_allows_readonly_worker_commands() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        for sub in &["list", "status", "dir"] {
+            let args: Vec<String> = vec!["worker".into(), (*sub).into()];
+            let result = mgr
+                .run_transform(script, "ur", &args, "/workspace", None)
+                .unwrap();
+            assert_eq!(result.args, args, "worker {sub} should be allowed");
+        }
+    }
+
+    #[test]
+    fn test_ur_blocks_worker_launch() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let args: Vec<String> = vec!["worker".into(), "launch".into(), "test-1".into()];
+        let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn test_ur_blocks_start_stop() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        for sub in &["start", "stop", "init", "tui"] {
+            let args: Vec<String> = vec![(*sub).into()];
+            let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
+            assert!(result.is_err(), "ur {sub} should be blocked");
+        }
+    }
+
+    #[test]
+    fn test_ur_blocks_no_subcommand() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let args: Vec<String> = vec![];
+        let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("subcommand required"));
+    }
+
+    #[test]
+    fn test_ur_allows_readonly_project_list() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let args: Vec<String> = vec!["project".into(), "list".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_ur_blocks_project_add() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let args: Vec<String> = vec!["project".into(), "add".into(), ".".into()];
+        let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not allowed"));
+    }
+
+    #[test]
+    fn test_ur_allows_bare_management_command() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        // `ur worker` with no subcommand prints help
+        let args: Vec<String> = vec!["worker".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
 }
