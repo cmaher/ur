@@ -317,6 +317,25 @@ fn create_bare_repo(parent_dir: &Path) -> PathBuf {
     bare_repo
 }
 
+/// Kill any process listening on the given TCP port. Used to clean up orphaned
+/// builderd processes from prior failed test runs.
+fn kill_process_on_port(port: u16) {
+    // lsof -ti tcp:<port> prints PIDs of processes listening on the port
+    let output = Command::new("lsof")
+        .args(["-ti", &format!("tcp:{port}")])
+        .output();
+    if let Ok(output) = output {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid in pids.lines().filter(|l| !l.is_empty()) {
+            let _ = Command::new("kill")
+                .arg(pid)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
 /// Run `ur stop` for cleanup, ignoring errors.
 fn stop_server(ur: &Path, config_dir: &Path) {
     let _ = run_cmd(
@@ -358,10 +377,14 @@ fn e2e_all() {
     let daemon_port = 19870u16;
     let project_key = "poolproj";
 
-    // ---- (0) Clean up stale containers/networks from ANY prior e2e run ----
+    // ---- (0) Clean up stale resources from ANY prior e2e run ----
     // Docker's name filter does substring matching, so "-e2e-" catches all
     // ur-{id}-e2e-{role} containers regardless of which random run ID created them.
     force_remove_by_prefix(&runtime, "-e2e-");
+    // Kill any orphaned builderd processes from prior failed runs. Builderd runs
+    // in its own process group (detached from the test), so it survives test crashes.
+    // We identify stale test builderds by their port (builderd_port = daemon_port + 2).
+    kill_process_on_port(daemon_port + 2);
 
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
