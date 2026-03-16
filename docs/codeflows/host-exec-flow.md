@@ -27,7 +27,7 @@ creates bash shims in `/home/worker/.local/bin/` (on PATH, writable by worker us
 
 - Built-in defaults: git (with git.lua), gh (with gh.lua), cargo (with cargo.lua)
 - Global hostexec commands: `[hostexec.commands]` section in `ur.toml` (commands with optional Lua transforms)
-- Per-project passthrough commands: `hostexec = ["tk", "make"]` in `ur.toml` `[projects.<key>]`
+- Per-project passthrough commands: `hostexec = ["jq"]` in `ur.toml` `[projects.<key>]`
 - Custom Lua scripts: ~/.ur/hostexec/<name>.lua (referenced from `[hostexec.commands]`)
 - Passthrough commands: `command = {}` in `[hostexec.commands]` (no Lua transform)
 - Merge order: built-in defaults -> global `[hostexec.commands]` -> per-project hostexec list (passthrough only, does not override existing commands)

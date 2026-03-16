@@ -112,6 +112,7 @@ impl TicketRepo {
             .ok_or_else(|| sqlx::Error::RowNotFound)?;
 
         let status = update.status.as_deref().unwrap_or(&existing.status);
+        let type_ = update.type_.as_deref().unwrap_or(&existing.type_);
         let priority = update.priority.unwrap_or(existing.priority);
         let title = update.title.as_deref().unwrap_or(&existing.title);
         let body = update.body.as_deref().unwrap_or(&existing.body);
@@ -122,9 +123,10 @@ impl TicketRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE ticket SET status = ?, priority = ?, title = ?, body = ?, parent_id = ?, updated_at = ?
+            "UPDATE ticket SET type = ?, status = ?, priority = ?, title = ?, body = ?, parent_id = ?, updated_at = ?
              WHERE id = ?",
         )
+        .bind(type_)
         .bind(status)
         .bind(priority)
         .bind(title)
@@ -137,7 +139,7 @@ impl TicketRepo {
 
         Ok(Ticket {
             id: existing.id,
-            type_: existing.type_,
+            type_: type_.to_owned(),
             status: status.to_owned(),
             priority,
             parent_id: parent_id.map(|s| s.to_owned()),

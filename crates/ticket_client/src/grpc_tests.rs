@@ -157,6 +157,11 @@ impl TicketService for MockTicketStore {
         {
             ticket.body = body;
         }
+        if let Some(ticket_type) = req.ticket_type
+            && !ticket_type.is_empty()
+        {
+            ticket.ticket_type = ticket_type;
+        }
         Ok(Response::new(UpdateTicketResponse {}))
     }
 

@@ -911,13 +911,13 @@ pool_limit = 5
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
-hostexec = ["tk", "make", "cargo"]
+hostexec = ["jq", "rg", "cargo"]
 "#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["ur"];
-        assert_eq!(proj.hostexec, vec!["tk", "make", "cargo"]);
+        assert_eq!(proj.hostexec, vec!["jq", "rg", "cargo"]);
     }
 
     #[test]
@@ -1289,16 +1289,16 @@ git = { default_script = true }
             r#"
 [hostexec.commands]
 cargo = {}
-tk = {}
-make = { lua = "make-safe.lua" }
+jq = {}
+rg = { lua = "rg-safe.lua" }
 "#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.hostexec.commands.len(), 3);
         assert!(cfg.hostexec.commands.contains_key("cargo"));
-        assert!(cfg.hostexec.commands.contains_key("tk"));
-        assert!(cfg.hostexec.commands.contains_key("make"));
+        assert!(cfg.hostexec.commands.contains_key("jq"));
+        assert!(cfg.hostexec.commands.contains_key("rg"));
     }
 
     #[test]

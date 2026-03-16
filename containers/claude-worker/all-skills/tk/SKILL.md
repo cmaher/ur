@@ -1,21 +1,11 @@
 ---
 name: tk
-description: Use when creating, listing, updating, closing, or searching tickets/tasks/bugs/TODOs, managing dependencies between tickets, or when the user mentions tracking work items — uses the tk CLI ticket tracker
+description: Use when creating, listing, updating, closing, or searching tickets/tasks/bugs/TODOs, managing dependencies between tickets, or when the user mentions tracking work items — uses workertools ticket (gRPC)
 ---
 
 # Ticket Tracker
 
-Tickets (`tk`) is a file-based ticket tracker that lives in `.tickets/` inside a repository. Tickets are markdown files with YAML frontmatter. Use it for lightweight issue management without leaving the terminal.
-
-## Pre-check
-
-Before using any `tk` command, verify the project has tickets initialized:
-
-```bash
-ls .tickets/
-```
-
-If not present, `tk create` will initialize it automatically.
+Tickets are managed via `workertools ticket`, which communicates with the ur-server over gRPC. All ticket data lives in the server's SQLite database.
 
 ## Quick Reference
 
@@ -23,52 +13,57 @@ If not present, `tk create` will initialize it automatically.
 
 | Command | Purpose |
 |---|---|
-| `tk create "title"` | Create a ticket |
-| `tk create "title" -t bug -p 1` | Bug with high priority (0=critical, 4=backlog) |
-| `tk create "title" -d "description" --tags "tag1,tag2"` | With description and tags |
-| `tk create "title" --parent <id>` | As child of a parent ticket |
+| `workertools ticket create "title"` | Create a task (default type) |
+| `workertools ticket create "title" --type bug --priority 1` | Bug with high priority (0=critical, 4=backlog) |
+| `workertools ticket create "title" --body "description"` | With description |
+| `workertools ticket create "title" --parent <id>` | As child of a parent ticket |
+| `workertools ticket create "title" --type epic` | Create an epic |
 
 ### Querying Tickets
 
 | Command | Purpose |
 |---|---|
-| `tk ready` | Work ready to claim (open + no unresolved deps). **Prefer this over `tk list`.** |
-| `tk list` | List all open tickets |
-| `tk list --status=in_progress` | Filter by status: open, in_progress, closed |
-| `tk list -T bug` | Filter by type |
-| `tk list -a "name"` | Filter by assignee |
-| `tk list --tags "tag"` | Filter by tag |
-| `tk show <id>` | Full detail on one ticket (supports partial ID matching) |
-| `tk blocked` | All blocked tickets |
-| `tk closed` | Recently closed tickets |
-| `tk query` | Output all tickets as JSON |
-| `tk query '.[] \| select(.status=="open")'` | Query with jq filter |
+| `workertools ticket list` | List all open tickets |
+| `workertools ticket list --status open` | Filter by status: open, in_progress, closed |
+| `workertools ticket list --type bug` | Filter by type |
+| `workertools ticket list --epic <id>` | Filter by parent epic |
+| `workertools ticket show <id>` | Full detail on one ticket |
+| `workertools ticket dispatchable <epic-id>` | Open children of an epic with no open blockers |
+| `workertools ticket status` | Project status report (epic tree with open/closed counts) |
+| `workertools ticket status -p <project>` | Status filtered by project key (e.g. `-p ur` for ur-* tickets) |
 
 ### Updating Tickets
 
 | Command | Purpose |
 |---|---|
-| `tk start <id>` | Set status to in_progress |
-| `tk close <id>` | Close a ticket |
-| `tk reopen <id>` | Reopen a closed ticket |
-| `tk add-note <id> "text"` | Append timestamped note |
-| `tk edit <id>` | Open ticket in $EDITOR (interactive — avoid in agents) |
+| `workertools ticket update <id> --status in_progress` | Start work on a ticket |
+| `workertools ticket update <id> --status closed` | Close a ticket |
+| `workertools ticket update <id> --status open` | Reopen a ticket |
+| `workertools ticket update <id> --title "new title"` | Change title |
+| `workertools ticket update <id> --priority 2` | Change priority |
+| `workertools ticket add-activity <id> "text"` | Append timestamped note |
 
-### Dependencies
+### Dependencies & Links
 
 | Command | Purpose |
 |---|---|
-| `tk dep <id> <depends-on>` | id depends on depends-on |
-| `tk dep tree <id>` | Dependency tree |
-| `tk dep cycle` | Detect dependency cycles |
+| `workertools ticket add-block <id> <blocker-id>` | blocker-id blocks id |
+| `workertools ticket remove-block <id> <blocker-id>` | Remove blocking dependency |
+| `workertools ticket add-link <id> <other-id>` | Bidirectional link |
+| `workertools ticket remove-link <id> <other-id>` | Remove link |
+
+### Metadata
+
+| Command | Purpose |
+|---|---|
+| `workertools ticket set-meta <id> <key> <value>` | Set metadata key-value pair |
+| `workertools ticket delete-meta <id> <key>` | Delete metadata key |
 
 ## Guidelines
 
-1. **Use `tk ready`** when the user asks "what should I work on next" — it excludes blocked tickets.
-2. **Add dependencies proactively** — if a ticket clearly depends on another, use `tk dep`.
-3. **Never use `tk edit`** — it opens an interactive editor. Use `tk add-note` for updates instead.
-4. **Use partial IDs** — `tk show 5c4` matches any ticket containing "5c4" in its ID.
-5. **Tickets are plain markdown** — no database sync needed. Changes are immediately visible and committable.
-6. **Use `tk query`** for programmatic access — pipe through `jq` for filtering.
+1. **Use `workertools ticket dispatchable <epic>`** when the user asks "what should I work on next" — it excludes blocked tickets.
+2. **Add dependencies proactively** — if a ticket clearly depends on another, use `add-block`.
+3. **Use full ticket IDs** — e.g., `ur-abc12`, not `abc12`.
+4. **Ticket IDs are prefixed** — all IDs follow the `{project}-{hash}` convention (e.g., `ur-f49c`).
 
 $ARGUMENTS

@@ -16,6 +16,7 @@ members = [
     "crates/workerd",
     "crates/workertools",
     "tools/tk-import",
+    "tools/tk-verify",
 ]
 default-members = [
     "crates/container",

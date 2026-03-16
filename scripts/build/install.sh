@@ -10,10 +10,10 @@ PROFILE="${UR_BUILD_PROFILE:-release}"
 INSTALL_DIR="${UR_INSTALL_DIR:-$HOME/.local/bin}"
 
 if [ "$PROFILE" = "debug" ]; then
-    cargo build -p ur -p builderd
+    cargo build -p ur -p builderd -p tk-import -p tk-verify
     TARGET_DIR="target/debug"
 else
-    cargo build --release -p ur -p builderd
+    cargo build --release -p ur -p builderd -p tk-import -p tk-verify
     TARGET_DIR="target/release"
 fi
 
@@ -27,10 +27,12 @@ mkdir -p "$INSTALL_DIR" "$HOME/.ur/logs"
 # Remove before copying: macOS caches code signature page hashes for running
 # binaries. Overwriting in-place (cp) invalidates the cache, causing the kernel
 # to SIGKILL the new binary on exec. Removing first creates a new inode.
-rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/builderd"
+rm -f "$INSTALL_DIR/ur" "$INSTALL_DIR/builderd" "$INSTALL_DIR/tk-import" "$INSTALL_DIR/tk-verify"
 cp "$TARGET_DIR/ur" "$INSTALL_DIR/ur"
 cp "$TARGET_DIR/builderd" "$INSTALL_DIR/builderd"
-echo "Installed ur and builderd to $INSTALL_DIR/"
+cp "$TARGET_DIR/tk-import" "$INSTALL_DIR/tk-import"
+cp "$TARGET_DIR/tk-verify" "$INSTALL_DIR/tk-verify"
+echo "Installed ur, builderd, tk-import, tk-verify to $INSTALL_DIR/"
 echo "Run 'ur start' to launch the server"
 
 # Download the default embedding model for RAG if not already cached.

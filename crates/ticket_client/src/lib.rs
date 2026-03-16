@@ -1,6 +1,7 @@
 pub mod args;
 mod execute;
 pub mod format;
+mod status;
 
 pub use args::TicketArgs;
 pub use execute::execute;

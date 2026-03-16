@@ -36,6 +36,10 @@ struct ParsedTicket {
     body: String,
 }
 
+fn is_duplicate_err(e: &tonic::Status) -> bool {
+    e.code() == tonic::Code::AlreadyExists || e.message().contains("UNIQUE constraint failed")
+}
+
 fn parse_ticket_file(path: &Path) -> Result<ParsedTicket, String> {
     let content =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -150,6 +154,7 @@ async fn run_migration(
     }
 
     let mut created = 0u32;
+    let mut updated = 0u32;
     let mut edge_count = 0u32;
     let mut meta_count = 0u32;
     let mut skipped_parents = 0u32;
@@ -179,11 +184,11 @@ async fn run_migration(
             );
         }
 
-        client
+        match client
             .create_ticket(CreateTicketRequest {
                 project: String::new(),
                 ticket_type: type_.to_string(),
-                status,
+                status: status.clone(),
                 priority: f.priority,
                 parent_id: parent_id.map(|s| s.to_string()),
                 title: t.title.clone(),
@@ -192,9 +197,26 @@ async fn run_migration(
                 created_at: Some(f.created.clone()),
             })
             .await
-            .map_err(|e| format!("create_ticket {}: {e}", f.id))?;
-
-        created += 1;
+        {
+            Ok(_) => created += 1,
+            Err(e) if is_duplicate_err(&e) => {
+                // Upsert: update existing ticket to match source
+                client
+                    .update_ticket(UpdateTicketRequest {
+                        id: f.id.clone(),
+                        status: Some(status),
+                        ticket_type: Some(type_.to_string()),
+                        priority: Some(f.priority),
+                        title: Some(t.title.clone()),
+                        body: Some(t.body.clone()),
+                        force: true,
+                    })
+                    .await
+                    .map_err(|e| format!("update_ticket {}: {e}", f.id))?;
+                updated += 1;
+            }
+            Err(e) => return Err(format!("create_ticket {}: {e}", f.id).into()),
+        }
         if created.is_multiple_of(50) {
             println!("  created {created}/{} tickets...", insert_order.len());
         }
@@ -211,14 +233,17 @@ async fn run_migration(
                 eprintln!("  warn: {} dep {dep} not found, skipping edge", f.id);
                 continue;
             }
-            client
+            match client
                 .add_block(AddBlockRequest {
                     blocker_id: dep.clone(),
                     blocked_id: f.id.clone(),
                 })
                 .await
-                .map_err(|e| format!("add_block {} -> {}: {e}", dep, f.id))?;
-            edge_count += 1;
+            {
+                Ok(_) => edge_count += 1,
+                Err(e) if is_duplicate_err(&e) => {}
+                Err(e) => return Err(format!("add_block {} -> {}: {e}", dep, f.id).into()),
+            }
         }
 
         for link in &f.links {
@@ -226,15 +251,19 @@ async fn run_migration(
                 continue;
             }
             // Only insert once: smaller id as left
-            if f.id < *link {
-                client
-                    .add_link(AddLinkRequest {
-                        left_id: f.id.clone(),
-                        right_id: link.clone(),
-                    })
-                    .await
-                    .map_err(|e| format!("add_link {} <-> {}: {e}", f.id, link))?;
-                edge_count += 1;
+            if f.id >= *link {
+                continue;
+            }
+            match client
+                .add_link(AddLinkRequest {
+                    left_id: f.id.clone(),
+                    right_id: link.clone(),
+                })
+                .await
+            {
+                Ok(_) => edge_count += 1,
+                Err(e) if is_duplicate_err(&e) => {}
+                Err(e) => return Err(format!("add_link {} <-> {}: {e}", f.id, link).into()),
             }
         }
     }
@@ -294,6 +323,9 @@ async fn run_migration(
 
     println!("\nMigration complete:");
     println!("  Tickets created:     {created}");
+    if updated > 0 {
+        println!("  Tickets updated:     {updated} (already existed)");
+    }
     println!("  Edges created:       {edge_count}");
     println!("  Meta entries:        {meta_count}");
     if skipped_parents > 0 {

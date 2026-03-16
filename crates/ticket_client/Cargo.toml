@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 bytes = "1"
+chrono = "0.4"
 clap = { workspace = true }
 http-body = "1"
 tonic = { workspace = true }

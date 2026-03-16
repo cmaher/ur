@@ -7,7 +7,7 @@ description: Use when executing multiple ticket issues with subagents, dispatchi
 
 Execute tickets with subagents. Sequential by default — one ticket per agent, minimal reporting back. Keeps the parent context window small.
 
-**Core principle:** The parent orchestrates via `tk`; subagents do the work. Only essential outcomes flow back.
+**Core principle:** The parent orchestrates via `workertools ticket`; subagents do the work. Only essential outcomes flow back.
 
 ## Before Starting — Branch Setup
 
@@ -21,7 +21,7 @@ Ensure you have the latest remote code and a working branch for the epic:
    ```
 4. **Record the branch on the epic ticket:**
    ```bash
-   tk add-note <epic-id> "branch: <branch-name>"
+   workertools ticket add-activity <epic-id> "branch: <branch-name>"
    ```
 
 ## VCS: Sequential Stacking (Critical)
@@ -29,7 +29,7 @@ Ensure you have the latest remote code and a working branch for the epic:
 Agents stack commits sequentially on the working branch. Each agent commits, and the next agent inherits all previous work.
 
 ```
-origin/master → agent1 commits → agent2 commits → ...
+origin/master -> agent1 commits -> agent2 commits -> ...
 ```
 
 - **Sequential**: Agents stack automatically via `git commit`. No extra VCS commands needed between agents.
@@ -40,22 +40,22 @@ origin/master → agent1 commits → agent2 commits → ...
 ```dot
 digraph tickets_agents {
     "Fresh from master" [shape=doublecircle];
-    "Query tk ready" [shape=box];
+    "Query dispatchable" [shape=box];
     "Pick next ticket" [shape=box];
-    "tk show for context" [shape=box];
+    "Show ticket for context" [shape=box];
     "Dispatch subagent" [shape=box];
     "Record 1-2 line summary" [shape=box];
-    "More ready tickets?" [shape=diamond];
+    "More dispatchable tickets?" [shape=diamond];
     "Report final summary" [shape=doublecircle];
 
-    "Fresh from master" -> "Query tk ready";
-    "Query tk ready" -> "Pick next ticket";
-    "Pick next ticket" -> "tk show for context";
-    "tk show for context" -> "Dispatch subagent";
+    "Fresh from master" -> "Query dispatchable";
+    "Query dispatchable" -> "Pick next ticket";
+    "Pick next ticket" -> "Show ticket for context";
+    "Show ticket for context" -> "Dispatch subagent";
     "Dispatch subagent" -> "Record 1-2 line summary";
-    "Record 1-2 line summary" -> "More ready tickets?";
-    "More ready tickets?" -> "Query tk ready" [label="yes — re-query\nfor newly unblocked"];
-    "More ready tickets?" -> "Run full CI" [label="no"];
+    "Record 1-2 line summary" -> "More dispatchable tickets?";
+    "More dispatchable tickets?" -> "Query dispatchable" [label="yes — re-query\nfor newly unblocked"];
+    "More dispatchable tickets?" -> "Run full CI" [label="no"];
     "Run full CI" -> "Report final summary";
 }
 ```
@@ -67,7 +67,7 @@ digraph tickets_agents {
 
 ## Sequential (Default)
 
-- Re-query `tk ready` each iteration — newly unblocked tickets surface naturally
+- Re-query `workertools ticket dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
 - Pass only 1-2 sentence summaries between tasks
 - Parent never reads files or explores code inline — if it takes more than a glance, delegate
 
@@ -77,7 +77,7 @@ Use only when explicitly requested or when tickets are clearly independent:
 
 1. Each agent runs `/tk:start <id>` — claims ticket
 2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
-3. Each agent follows `/tk:start` teardown when done (close ticket, sync Jira)
+3. Each agent follows `/tk:start` teardown when done (close ticket)
 
 ## Subagent Prompt Template
 
@@ -101,7 +101,7 @@ Testing:
 - The parent agent will run full CI after all issues are done
 
 When done:
-1. Follow the "After Work is Done" section from /tk:start (close ticket, sync Jira)
+1. Follow the "After Work is Done" section from /tk:start (close ticket)
 2. Do NOT add ticket IDs to commit messages
 3. Return ONLY a 1-2 sentence summary of what you did and any key values/paths the next task might need
 ```
@@ -113,6 +113,6 @@ When done:
 | Switching branches mid-work | **Never.** Stack via `git commit` on the working branch — next agent inherits automatically |
 | Parent reads full subagent output | Ask for "1-2 sentence summary" in every prompt |
 | Parent explores code inline | Delegate to subagent |
-| Subagent skips teardown | Prompt must say "follow /tk:start teardown" — covers close, Jira sync |
-| Re-query skipped after completion | Always `tk ready` again — deps may have unblocked |
+| Subagent skips teardown | Prompt must say "follow /tk:start teardown" — covers close |
+| Re-query skipped after completion | Always `workertools ticket dispatchable <epic>` again — deps may have unblocked |
 | Parallel without `/tk:start` | Two agents grab same ticket — `/tk:start` claims it |
