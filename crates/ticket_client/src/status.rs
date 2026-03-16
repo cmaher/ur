@@ -181,6 +181,7 @@ mod tests {
             body: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
+            project: "test".to_owned(),
         }
     }
 

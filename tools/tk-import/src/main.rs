@@ -40,6 +40,13 @@ fn is_duplicate_err(e: &tonic::Status) -> bool {
     e.code() == tonic::Code::AlreadyExists || e.message().contains("UNIQUE constraint failed")
 }
 
+/// Derive a project key from a ticket ID by extracting the prefix before the first `-`.
+///
+/// For example, `ur-h0ny` yields `ur`, `foo-bar-baz` yields `foo`.
+fn derive_project_from_id(id: &str) -> String {
+    id.split('-').next().unwrap_or("").to_string()
+}
+
 fn parse_ticket_file(path: &Path) -> Result<ParsedTicket, String> {
     let content =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -77,6 +84,7 @@ async fn run_migration(
     tickets_dir: &Path,
     client: &mut TicketServiceClient<Channel>,
     dry_run: bool,
+    project_override: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pattern = tickets_dir.join("*.md");
     let paths: Vec<PathBuf> = glob::glob(pattern.to_str().unwrap())?
@@ -184,9 +192,13 @@ async fn run_migration(
             );
         }
 
+        let project = project_override
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| derive_project_from_id(&f.id));
+
         match client
             .create_ticket(CreateTicketRequest {
-                project: String::new(),
+                project,
                 ticket_type: type_.to_string(),
                 status: status.clone(),
                 priority: f.priority,
@@ -343,6 +355,7 @@ async fn main() {
     let mut tickets_dir = PathBuf::from(".tickets");
     let mut server_addr = "http://127.0.0.1:42069".to_string();
     let mut dry_run = false;
+    let mut project_override: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -354,6 +367,10 @@ async fn main() {
             "--server" | "-s" => {
                 i += 1;
                 server_addr = args[i].clone();
+            }
+            "--project" | "-p" => {
+                i += 1;
+                project_override = Some(args[i].clone());
             }
             "--dry-run" | "-n" => {
                 dry_run = true;
@@ -367,6 +384,9 @@ async fn main() {
                 println!("  -t, --tickets <DIR>    Tickets directory (default: .tickets)");
                 println!(
                     "  -s, --server <ADDR>    Server address (default: http://127.0.0.1:42069)"
+                );
+                println!(
+                    "  -p, --project <KEY>    Override project for all tickets (default: derived from ticket ID prefix)"
                 );
                 println!("  -n, --dry-run          Parse and show what would be imported");
                 println!("  -h, --help             Show this help");
@@ -383,6 +403,11 @@ async fn main() {
     println!("tk -> ur ticket migration (via gRPC)");
     println!("  Source:  {}", tickets_dir.display());
     println!("  Server:  {server_addr}");
+    if let Some(ref p) = project_override {
+        println!("  Project: {p} (override)");
+    } else {
+        println!("  Project: (derived from ticket ID prefix)");
+    }
     if dry_run {
         println!("  Mode:    DRY RUN");
     }
@@ -404,7 +429,14 @@ async fn main() {
         };
 
         let mut client = TicketServiceClient::new(channel);
-        if let Err(e) = run_migration(&tickets_dir, &mut client, false).await {
+        if let Err(e) = run_migration(
+            &tickets_dir,
+            &mut client,
+            false,
+            project_override.as_deref(),
+        )
+        .await
+        {
             eprintln!("Migration failed: {e}");
             std::process::exit(1);
         }
@@ -412,7 +444,9 @@ async fn main() {
         // Dry run doesn't need a server connection
         let dummy_channel = Channel::from_static("http://[::1]:1").connect_lazy();
         let mut client = TicketServiceClient::new(dummy_channel);
-        if let Err(e) = run_migration(&tickets_dir, &mut client, true).await {
+        if let Err(e) =
+            run_migration(&tickets_dir, &mut client, true, project_override.as_deref()).await
+        {
             eprintln!("Migration failed: {e}");
             std::process::exit(1);
         }

@@ -30,6 +30,7 @@ message Ticket {
   string body = 7;
   string created_at = 8;
   string updated_at = 9;
+  string project = 10;
 }
 
 message MetadataEntry {
@@ -208,6 +209,7 @@ message ListActivitiesResponse {
 
 message DispatchableTicketsRequest {
   string epic_id = 1;
+  optional string project = 2;
 }
 
 message DispatchableTicketsResponse {

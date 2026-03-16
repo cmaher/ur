@@ -30,6 +30,7 @@ where
     match args {
         TicketArgs::Create {
             title,
+            project,
             ticket_type,
             parent,
             priority,
@@ -37,7 +38,7 @@ where
         } => {
             let resp = client
                 .create_ticket(CreateTicketRequest {
-                    project: String::new(),
+                    project: project.unwrap_or_default(),
                     ticket_type,
                     status: "open".to_owned(),
                     priority,
@@ -54,13 +55,16 @@ where
         }
 
         TicketArgs::List {
+            project,
+            all,
             epic,
             ticket_type,
             status,
         } => {
+            let project_filter = if all { None } else { project };
             let resp = client
                 .list_tickets(ListTicketsRequest {
-                    project: None,
+                    project: project_filter,
                     ticket_type,
                     status,
                     parent_id: epic,
@@ -247,10 +251,11 @@ where
             Ok(TicketOutput::Updated { id })
         }
 
-        TicketArgs::Dispatchable { epic_id } => {
+        TicketArgs::Dispatchable { epic_id, project } => {
             let resp = client
                 .dispatchable_tickets(DispatchableTicketsRequest {
                     epic_id: epic_id.clone(),
+                    project,
                 })
                 .await
                 .with_status_context("get dispatchable tickets")?;
@@ -261,7 +266,7 @@ where
         TicketArgs::Status { project } => {
             let resp = client
                 .list_tickets(ListTicketsRequest {
-                    project: None,
+                    project: project.clone(),
                     ticket_type: None,
                     status: None,
                     parent_id: None,

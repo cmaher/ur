@@ -2,6 +2,7 @@
 
 pub struct Ticket {
     pub id: String,
+    pub project: String,
     pub type_: String,
     pub status: String,
     pub priority: i32,
@@ -15,6 +16,7 @@ pub struct Ticket {
 #[derive(Default)]
 pub struct NewTicket {
     pub id: String,
+    pub project: String,
     pub type_: String,
     pub priority: i32,
     pub parent_id: Option<String>,
@@ -36,6 +38,7 @@ pub struct TicketUpdate {
 }
 
 pub struct TicketFilter {
+    pub project: Option<String>,
     pub status: Option<String>,
     pub type_: Option<String>,
     pub parent_id: Option<String>,

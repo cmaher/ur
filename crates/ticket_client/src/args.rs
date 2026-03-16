@@ -8,6 +8,10 @@ pub enum TicketArgs {
         /// Ticket title
         title: String,
 
+        /// Project key
+        #[arg(short, long)]
+        project: Option<String>,
+
         /// Ticket type (epic or task)
         #[arg(long = "type", default_value = "task")]
         ticket_type: String,
@@ -27,6 +31,14 @@ pub enum TicketArgs {
 
     /// List tickets with optional filters
     List {
+        /// Project key
+        #[arg(short, long)]
+        project: Option<String>,
+
+        /// Show tickets from all projects (omit project filter)
+        #[arg(long)]
+        all: bool,
+
         /// Filter by parent epic ID
         #[arg(long)]
         epic: Option<String>,
@@ -164,6 +176,10 @@ pub enum TicketArgs {
     Dispatchable {
         /// Epic ticket ID
         epic_id: String,
+
+        /// Project key
+        #[arg(short, long)]
+        project: Option<String>,
     },
 
     /// Close a ticket (sugar for `update <id> --status closed`)
