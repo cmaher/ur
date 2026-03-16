@@ -135,7 +135,7 @@ impl HostExecService for HostExecServiceHandler {
         req: Request<HostExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
         // Extract agent context from metadata (if present)
-        let (process_id, agent_context, config) = self.resolve_request_context(&req)?;
+        let (process_id, agent_context, config) = self.resolve_request_context(&req).await?;
 
         let req = req.into_inner();
 
@@ -226,7 +226,7 @@ impl HostExecService for HostExecServiceHandler {
         req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
         // Extract agent context to get per-project merged config
-        let (process_id, _agent_context, config) = self.resolve_request_context(&req)?;
+        let (process_id, _agent_context, config) = self.resolve_request_context(&req).await?;
 
         let commands = config.command_names();
         info!(
@@ -246,7 +246,7 @@ impl HostExecServiceHandler {
     /// - `agent_context` is the Lua-facing context (if the agent has a project/slot)
     /// - `effective_config` is the base hostexec config merged with per-project passthrough commands
     #[allow(clippy::result_large_err)]
-    fn resolve_request_context<T>(
+    async fn resolve_request_context<T: Send + Sync>(
         &self,
         req: &Request<T>,
     ) -> Result<
@@ -274,10 +274,11 @@ impl HostExecServiceHandler {
         let process_id = self
             .process_manager
             .resolve_process_id(&agent_id)
+            .await
             .map_err(|e| HostExecError::ProcessNotFound { agent_id: e })?;
 
         // Look up agent context (project_key, slot_path) from ProcessManager
-        let proc_context = self.process_manager.get_agent_context(&agent_id);
+        let proc_context = self.process_manager.get_agent_context(&agent_id).await;
 
         // Build Lua-facing AgentContext and merge per-project passthrough commands
         let (agent_context, config) = match proc_context {

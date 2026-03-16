@@ -79,11 +79,30 @@ async fn run_init() -> Result<()> {
     Ok(())
 }
 
-/// Background daemon loop. Stays alive for future daemon uses.
+/// Background daemon serving /healthz. Reaching this point means init succeeded.
 async fn run_daemon() -> Result<()> {
     info!("workerd daemon starting");
+
+    let listener =
+        tokio::net::TcpListener::bind(("0.0.0.0", ur_config::WORKERD_HEALTHZ_PORT)).await?;
+    info!(
+        port = ur_config::WORKERD_HEALTHZ_PORT,
+        "healthz endpoint ready"
+    );
+
     loop {
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        let (mut stream, _) = listener.accept().await?;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf).await;
+            let body = "ok";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        });
     }
 }
 

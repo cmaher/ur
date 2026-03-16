@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
@@ -13,7 +12,7 @@ use ur_rpc::proto::core::{
     WorkerStopResponse, WorkerSummary,
 };
 
-use crate::{ProcessManager, RepoPoolManager, RepoRegistry};
+use crate::{ProcessManager, RepoPoolManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -98,7 +97,6 @@ impl From<CoreError> for Status {
 pub struct CoreServiceHandler {
     pub process_manager: ProcessManager,
     pub repo_pool_manager: RepoPoolManager,
-    pub repo_registry: Arc<RepoRegistry>,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
@@ -243,6 +241,7 @@ impl CoreService for CoreServiceHandler {
         let workspace_dir = self
             .process_manager
             .get_workspace_dir(&req.worker_id)
+            .await
             .map_err(|_| CoreError::WorkspaceNotFound {
                 process_id: req.worker_id.clone(),
             })?;
@@ -257,7 +256,7 @@ impl CoreService for CoreServiceHandler {
         _req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
         info!("worker_list request received");
-        let summaries = self.process_manager.list();
+        let summaries = self.process_manager.list().await;
         let workers = summaries
             .into_iter()
             .map(|s| WorkerSummary {

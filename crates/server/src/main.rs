@@ -1,17 +1,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
+use ur_db::{AgentRepo, DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
-use ur_server::{
-    BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager, RepoRegistry,
-};
+use ur_server::{BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager};
 
 #[derive(Parser)]
 #[command(
@@ -59,14 +56,13 @@ async fn main() -> anyhow::Result<()> {
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
-    let repo_registry = Arc::new(RepoRegistry::new(host_workspace.clone()));
-
     // Determine the Docker command from env (docker vs nerdctl)
     let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
         Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
         _ => "docker".to_string(),
     };
-    let network_manager = NetworkManager::new(docker_command, cfg.network.worker_name.clone());
+    let network_manager =
+        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
     // UR_HOST_CONFIG is the host-side config directory path, needed for
     // constructing volume mounts in agent containers (which use host paths
@@ -113,21 +109,64 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
     let builderd_client = BuilderdClient::new(builderd_addr.clone());
+    let agent_repo = AgentRepo::new(db.pool().clone());
+
+    // Reconcile slots: sync DB rows with on-disk pool directories and project configs.
+    // Build project_key -> pool_dir map from the project configs.
+    let pool_root = local_workspace.join("pool");
+    let project_pool_dirs: std::collections::HashMap<String, PathBuf> = cfg
+        .projects
+        .keys()
+        .map(|k| (k.clone(), pool_root.join(k)))
+        .collect();
+    let slot_result = agent_repo
+        .reconcile_slots(&project_pool_dirs, &local_workspace)
+        .await
+        .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
+    info!(
+        deleted = ?slot_result.deleted_stale,
+        inserted = ?slot_result.inserted_orphaned,
+        "slot reconciliation complete"
+    );
+
     let repo_pool_manager = RepoPoolManager::new(
         &cfg,
         local_workspace.clone(),
         host_workspace.clone(),
         builderd_client,
+        agent_repo.clone(),
     );
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
-        repo_registry.clone(),
         repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),
         cfg.worker_port,
         prompt_modes,
+        agent_repo.clone(),
+    );
+
+    // Reconcile agents: check container liveness for active agents and update status.
+    let docker_cmd = docker_command.clone();
+    let agent_result = agent_repo
+        .reconcile_agents(|container_id| {
+            let cmd = docker_cmd.clone();
+            async move {
+                tokio::process::Command::new(&cmd)
+                    .args(["inspect", "--format", "{{.State.Running}}", &container_id])
+                    .output()
+                    .await
+                    .map(|o| o.stdout.starts_with(b"true"))
+                    .unwrap_or(false)
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("agent reconciliation failed: {e}"))?;
+    info!(
+        reclaimed = ?agent_result.reclaimed,
+        stopped = ?agent_result.marked_stopped,
+        "agent reconciliation complete"
     );
 
     #[cfg(feature = "hostexec")]
@@ -191,7 +230,6 @@ async fn main() -> anyhow::Result<()> {
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager: process_manager.clone(),
         repo_pool_manager,
-        repo_registry: repo_registry.clone(),
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
         projects: cfg.projects.clone(),
@@ -216,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         process_manager,
+        agent_repo,
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,

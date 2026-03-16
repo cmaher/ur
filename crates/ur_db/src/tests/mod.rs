@@ -1,3 +1,4 @@
+mod agent_repo_tests;
 mod database_tests;
 mod graph_tests;
 mod snapshot_tests;
