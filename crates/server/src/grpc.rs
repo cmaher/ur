@@ -166,8 +166,12 @@ impl CoreService for CoreServiceHandler {
         );
 
         // Phase 1: prepare (create repo, git init, register)
-        self.worker_manager
-            .prepare(&req.worker_id, &worker_id, workspace_dir.clone())
+        // prepare() returns the resolved workspace path — for the default case this
+        // is the newly created git-init'd directory that must be mounted into the
+        // container.
+        let workspace_dir = self
+            .worker_manager
+            .prepare(&req.worker_id, &worker_id, workspace_dir)
             .await
             .map_err(|e| CoreError::PrepareFailed {
                 reason: e.to_string(),

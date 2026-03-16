@@ -120,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|k| (k.clone(), pool_root.join(k)))
         .collect();
     let slot_result = worker_repo
-        .reconcile_slots(&project_pool_dirs, &local_workspace)
+        .reconcile_slots(&project_pool_dirs, &local_workspace, &host_workspace)
         .await
         .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
     info!(

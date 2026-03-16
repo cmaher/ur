@@ -363,13 +363,15 @@ impl WorkerManager {
 
     /// Phase 1 of launch: create repo dir and git init.
     /// When `workspace_dir` is Some, the directory is used as-is (no git init).
+    /// When None, creates a new directory under `self.workspace` and runs git init.
+    /// Returns the resolved workspace path for volume mounting.
     /// The caller is responsible for calling `run_and_record` after `prepare`.
     pub async fn prepare(
         &self,
         process_id: &str,
         worker_id: &WorkerId,
         workspace_dir: Option<PathBuf>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<PathBuf>, String> {
         // Check for duplicate process ID via database
         let running = self
             .worker_repo
@@ -392,6 +394,7 @@ impl WorkerManager {
         if let Some(ws_dir) = workspace_dir {
             // External workspace: skip git init (worker.workspace_path in DB handles CWD resolution)
             info!(process_id, %worker_id, workspace_dir = %ws_dir.display(), "registering external workspace");
+            Ok(Some(ws_dir))
         } else {
             // Default: create repo dir and git init
             info!(process_id, %worker_id, "creating repo directory and initializing git");
@@ -412,9 +415,8 @@ impl WorkerManager {
                     String::from_utf8_lossy(&git_init.stderr)
                 ));
             }
+            Ok(Some(repo_dir))
         }
-
-        Ok(())
     }
 
     /// Phase 2 of launch: run the container and record the worker in the database.
@@ -729,11 +731,12 @@ mod tests {
         let process_id = "test-proc";
         let wid = mgr.generate_worker_id(process_id);
 
-        mgr.prepare(process_id, &wid, None).await.unwrap();
+        let result = mgr.prepare(process_id, &wid, None).await.unwrap();
 
         // Verify repo dir exists and has .git
         let repo_dir = workspace.path().join(process_id);
         assert!(repo_dir.join(".git").exists());
+        assert_eq!(result, Some(repo_dir));
     }
 
     #[tokio::test]
@@ -746,12 +749,14 @@ mod tests {
         let ext_workspace = tempfile::tempdir().unwrap();
         let ext_path = ext_workspace.path().to_path_buf();
 
-        mgr.prepare(process_id, &wid, Some(ext_path.clone()))
+        let result = mgr
+            .prepare(process_id, &wid, Some(ext_path.clone()))
             .await
             .unwrap();
 
         // Should NOT have a .git dir — we skipped git init
         assert!(!ext_path.join(".git").exists());
+        assert_eq!(result, Some(ext_path));
     }
 
     #[tokio::test]
