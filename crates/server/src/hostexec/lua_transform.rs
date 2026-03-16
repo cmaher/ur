@@ -1357,15 +1357,29 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/ur.lua");
         for sub in &[
-            "create", "list", "show", "update", "set-meta", "delete-meta", "add-activity",
-            "list-activities", "add-block", "remove-block", "add-link", "remove-link",
-            "dispatchable", "status",
+            "create",
+            "list",
+            "show",
+            "update",
+            "set-meta",
+            "delete-meta",
+            "add-activity",
+            "list-activities",
+            "add-block",
+            "remove-block",
+            "add-link",
+            "remove-link",
+            "dispatchable",
+            "status",
         ] {
             let args: Vec<String> = vec!["ticket".into(), (*sub).into(), "ur-abc12".into()];
             let result = mgr
                 .run_transform(script, "ur", &args, "/workspace", None)
                 .unwrap();
-            assert_eq!(result.args, args, "ticket subcommand '{sub}' should be allowed");
+            assert_eq!(
+                result.args, args,
+                "ticket subcommand '{sub}' should be allowed"
+            );
         }
     }
 
@@ -1410,7 +1424,12 @@ mod tests {
         let args: Vec<String> = vec![];
         let result = mgr.run_transform(script, "ur", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("subcommand required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("subcommand required")
+        );
     }
 
     #[test]

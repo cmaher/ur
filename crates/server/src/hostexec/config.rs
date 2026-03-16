@@ -145,7 +145,10 @@ mod tests {
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
         assert!(!mgr.is_allowed("tk"));
-        assert_eq!(mgr.command_names(), vec!["cargo", "docker", "gh", "git", "ur"]);
+        assert_eq!(
+            mgr.command_names(),
+            vec!["cargo", "docker", "gh", "git", "ur"]
+        );
     }
 
     #[test]
