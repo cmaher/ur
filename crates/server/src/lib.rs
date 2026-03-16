@@ -24,6 +24,6 @@ pub use backup::BackupTaskManager;
 pub use builderd_client::BuilderdClient;
 pub use config::Config;
 pub use pool::RepoPoolManager;
-pub use process::{ProcessConfig, ProcessManager, WorkerContext, WorkerId};
+pub use process::{ProcessManager, WorkerConfig, WorkerContext, WorkerId};
 pub use proxy::SquidManager;
 pub use strategy::WorkerStrategy;

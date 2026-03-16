@@ -192,7 +192,7 @@ impl CoreService for CoreServiceHandler {
             (None, Vec::new())
         };
 
-        let config = crate::ProcessConfig {
+        let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
             image_id: req.image_id,

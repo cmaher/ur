@@ -111,7 +111,7 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 | `crates/ur/src/credential.rs` | CredentialManager: Keychain seeding, save-from-container |
 | `crates/ur/src/main.rs` | CLI entry, `process_launch()` calls `ensure_credentials()` |
 | `crates/server/src/process.rs` | ProcessManager: bind-mounts credentials, launches containers |
-| `crates/server/src/grpc.rs` | Server RPC handler, maps request to ProcessConfig |
+| `crates/server/src/grpc.rs` | Server RPC handler, maps request to WorkerConfig |
 | `containers/claude-worker/claude.json` | Baked-in `.claude.json` (onboarding + project trust) |
 | `containers/claude-worker/entrypoint.sh` | Starts tmux, keeps container alive |
 | `containers/claude-worker/claude-settings.json` | Baked-in settings (bypassPermissions mode) |

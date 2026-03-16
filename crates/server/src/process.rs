@@ -209,7 +209,7 @@ pub struct ProcessSummary {
 }
 
 /// Configuration for launching a container process.
-pub struct ProcessConfig {
+pub struct WorkerConfig {
     pub process_id: String,
     pub worker_id: WorkerId,
     pub image_id: String,
@@ -420,7 +420,7 @@ impl ProcessManager {
     /// Phase 2 of launch: run the container and record the worker in the database.
     /// Generates and stores a worker secret (UUID v4) for auth.
     /// Returns `(container_id, worker_secret)`.
-    pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
+    pub async fn run_and_record(&self, config: WorkerConfig) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
