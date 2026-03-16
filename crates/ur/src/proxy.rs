@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tracing::{debug, info, instrument, warn};
 
+use crate::output::{DomainList, OutputManager};
+
 /// Read the allowlist file, returning one domain per line.
 /// Returns an empty vec if the file does not exist.
 #[instrument(fields(path = %path.display()))]
@@ -91,8 +93,12 @@ pub fn signal_reconfigure(squid_hostname: &str) {
 }
 
 /// Print the domain list to stdout.
-pub fn print_domains(domains: &[String]) {
-    if domains.is_empty() {
+pub fn print_domains(domains: &[String], output: &OutputManager) {
+    if output.is_json() {
+        output.print_success(&DomainList {
+            domains: domains.to_vec(),
+        });
+    } else if domains.is_empty() {
         println!("(no domains in allowlist)");
     } else {
         for domain in domains {

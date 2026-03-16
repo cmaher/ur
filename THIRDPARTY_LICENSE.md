@@ -8,7 +8,7 @@ attribution are documented below.
 - **Source:** https://github.com/obra/superpowers
 - **License:** MIT
 - **Copyright:** (c) 2025 Jesse Vincent
-- **Usage:** The brainstorming skill in `.claude/skills/brainstorming/` is
+- **Usage:** The design skill in `containers/claude-worker/all-skills/design/` is
   adapted from the `superpowers` brainstorming skill. The original superpowers
   repository is also vendored as a submodule at
   `containers/claude-worker/vendor/superpowers/`.

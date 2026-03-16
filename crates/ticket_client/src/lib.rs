@@ -7,6 +7,119 @@ pub use args::TicketArgs;
 pub use execute::execute;
 pub use format::{format_ticket_detail, format_ticket_list};
 
+use serde::Serialize;
+use ur_rpc::proto::ticket::{
+    ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
+};
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TicketOutput {
+    Created {
+        id: String,
+    },
+    Updated {
+        id: String,
+    },
+    Listed {
+        tickets: Vec<Ticket>,
+    },
+    Shown {
+        ticket: Box<Ticket>,
+        metadata: Vec<MetadataEntry>,
+        activities: Vec<ActivityEntry>,
+    },
+    MetaSet {
+        id: String,
+        key: String,
+        value: String,
+    },
+    MetaDeleted {
+        id: String,
+        key: String,
+    },
+    ActivityAdded {
+        id: String,
+        activity_id: String,
+    },
+    ActivitiesListed {
+        id: String,
+        activities: Vec<ActivityDetail>,
+    },
+    BlockAdded {
+        id: String,
+        blocked_by_id: String,
+    },
+    BlockRemoved {
+        id: String,
+        blocked_by_id: String,
+    },
+    LinkAdded {
+        id: String,
+        linked_id: String,
+    },
+    LinkRemoved {
+        id: String,
+        linked_id: String,
+    },
+    Dispatchable {
+        epic_id: String,
+        tickets: Vec<DispatchableTicket>,
+    },
+    StatusReport {
+        report: String,
+        tickets: Vec<Ticket>,
+    },
+}
+
+/// Format a `TicketOutput` as human-readable text (same output as the pre-refactor CLI).
+pub fn format_output(output: &TicketOutput) -> String {
+    match output {
+        TicketOutput::Created { id } => format!("Created {id}"),
+        TicketOutput::Updated { id } => format!("Updated {id}"),
+        TicketOutput::Listed { tickets } => {
+            if tickets.is_empty() {
+                "No tickets found.".to_string()
+            } else {
+                format_ticket_list(tickets)
+            }
+        }
+        TicketOutput::Shown {
+            ticket,
+            metadata,
+            activities,
+        } => format_ticket_detail(ticket, metadata, activities),
+        TicketOutput::MetaSet { id, key, value } => format!("Set {key}={value} on {id}"),
+        TicketOutput::MetaDeleted { id, key } => format!("Deleted {key} from {id}"),
+        TicketOutput::ActivityAdded { id, activity_id } => {
+            format!("Added activity {activity_id} to {id}")
+        }
+        TicketOutput::ActivitiesListed { id, activities } => {
+            if activities.is_empty() {
+                format!("No activities found for {id}.")
+            } else {
+                format::format_activities(activities)
+            }
+        }
+        TicketOutput::BlockAdded { id, blocked_by_id } => {
+            format!("{blocked_by_id} now blocks {id}")
+        }
+        TicketOutput::BlockRemoved { id, blocked_by_id } => {
+            format!("{blocked_by_id} no longer blocks {id}")
+        }
+        TicketOutput::LinkAdded { id, linked_id } => format!("Linked {id} <-> {linked_id}"),
+        TicketOutput::LinkRemoved { id, linked_id } => format!("Unlinked {id} <-> {linked_id}"),
+        TicketOutput::Dispatchable { epic_id, tickets } => {
+            if tickets.is_empty() {
+                format!("No dispatchable tickets for {epic_id}.")
+            } else {
+                format::format_dispatchable(tickets)
+            }
+        }
+        TicketOutput::StatusReport { report, .. } => report.clone(),
+    }
+}
+
 #[cfg(test)]
 mod format_tests;
 #[cfg(test)]

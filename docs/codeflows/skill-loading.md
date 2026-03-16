@@ -6,8 +6,8 @@ How skills get baked into the container image and selectively activated at runti
 
 Two directories in the container build context supply skills:
 
-- `containers/claude-worker/vendor/superpowers/skills/` — upstream/third-party skills (brainstorming, writing-plans, systematic-debugging, etc.)
-- `containers/claude-worker/all-skills/` — project-specific skills and overrides (tk, bacon, ship, green, etc.)
+- `containers/claude-worker/vendor/superpowers/skills/` — upstream/third-party skills
+- `containers/claude-worker/all-skills/` — project-specific skills and overrides
 
 Both are merged into a single `potential-skills/` pool during the Docker build. **all-skills/ copies second, so project-specific versions override vendor skills with the same name.**
 
@@ -41,9 +41,7 @@ UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 
-**code** (default): tickets, ship, implement, bacon, green, cli-design, reclaude, systematic-debugging, test-driven-development, writing-skills
-
-**design**: tickets, ship, green, brainstorming, cli-design, reclaude, writing-skills
+Default skill lists for each mode are defined in `crates/server/src/strategy.rs` (`WorkerStrategy::skills()` and `common_skills()`). See that file for the current lists.
 
 ### ur.toml Override
 
@@ -89,4 +87,5 @@ Claude Code reads ~/.claude/skills/ at session start
 | `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
 | `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
 | `crates/workerd/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
+| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`) |
 | `crates/server/src/process.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |

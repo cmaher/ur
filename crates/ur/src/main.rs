@@ -2,9 +2,12 @@ mod builderd;
 mod compose;
 mod credential;
 mod db;
+mod describe;
 mod init;
+mod input;
 mod lifecycle_log;
 mod logging;
+mod output;
 mod project;
 mod proxy;
 mod rag;
@@ -22,6 +25,10 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
 
 use compose::{ComposeManager, compose_manager_from_config};
+use output::{
+    ContainerKilled, CredentialsSaved, ErrorCode, OutputManager, StructuredError, WorkerDir,
+    WorkerLaunched, WorkerStopped,
+};
 
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
@@ -29,6 +36,14 @@ struct Cli {
     /// TCP port of the server gRPC server (overrides ur.toml)
     #[arg(long)]
     port: Option<u16>,
+
+    /// Output format: text or json (also: OUTPUT_FORMAT env var)
+    #[arg(long, global = true)]
+    output: Option<String>,
+
+    /// Print command schema as JSON and exit
+    #[arg(long, global = true)]
+    describe: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -256,13 +271,17 @@ async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
     Some(CoreServiceClient::new(channel))
 }
 
-#[instrument(skip(config, compose))]
-fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
+#[instrument(skip(config, compose, output))]
+fn start_server(
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur start: beginning");
     info!("starting server");
 
-    match builderd::start_builderd(config) {
+    match builderd::start_builderd(config, output) {
         Ok(()) => log.info("ur start: builderd started"),
         Err(e) => {
             log.error(&format!("ur start: builderd failed: {e}"));
@@ -279,7 +298,7 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
     }
 
     info!("server started successfully");
-    println!("server started");
+    output.print_text("server started");
     log.info("ur start: complete");
 
     // Check if shared credentials exist; if not, hint about Keychain seeding.
@@ -289,32 +308,38 @@ fn start_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<
         .is_some_and(|m| m.len() > 0);
     if !has_credentials {
         warn!("no shared credentials found");
-        println!();
-        println!("No shared credentials found. Log in to Claude Code on this machine first.");
-        println!("Credentials will be seeded from the macOS Keychain on first process launch.");
+        if !output.is_json() {
+            println!();
+            println!("No shared credentials found. Log in to Claude Code on this machine first.");
+            println!("Credentials will be seeded from the macOS Keychain on first process launch.");
+        }
     }
 
     Ok(())
 }
 
-#[instrument(skip(config, compose))]
-fn stop_server(config: &ur_config::Config, compose: &ComposeManager) -> Result<()> {
+#[instrument(skip(config, compose, output))]
+fn stop_server(
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
     info!("stopping server");
-    kill_all_containers(&config.network.agent_prefix)?;
+    kill_all_containers(&config.network.agent_prefix, output)?;
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
-        println!("server is not running");
+        output.print_text("server is not running");
         log.info("ur stop: server was not running");
         return Ok(());
     }
     compose.down()?;
     info!("server stopped successfully");
-    println!("server stopped");
+    output.print_text("server stopped");
     log.info("ur stop: compose down succeeded");
 
-    builderd::stop_builderd(config)?;
+    builderd::stop_builderd(config, output)?;
     log.info("ur stop: builderd stopped");
     log.info("ur stop: complete");
     Ok(())
@@ -333,13 +358,15 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
     }
 }
 
-#[instrument]
-fn kill_all_containers(agent_prefix: &str) -> Result<()> {
+#[instrument(skip(output))]
+fn kill_all_containers(agent_prefix: &str, output: &OutputManager) -> Result<()> {
     let rt = container::runtime_from_env();
     let containers = rt.list_by_prefix(agent_prefix)?;
     if containers.is_empty() {
         debug!(agent_prefix, "no agent containers running");
-        println!("No agent containers running (prefix: {agent_prefix})");
+        output.print_text(&format!(
+            "No agent containers running (prefix: {agent_prefix})"
+        ));
         return Ok(());
     }
     info!(
@@ -356,7 +383,13 @@ fn kill_all_containers(agent_prefix: &str) -> Result<()> {
             eprintln!("Warning: failed to remove {}: {e}", id.0);
         }
         info!(container = %id.0, "container killed");
-        println!("Killed {}", id.0);
+        if output.is_json() {
+            output.print_success(&ContainerKilled {
+                container_id: id.0.clone(),
+            });
+        } else {
+            println!("Killed {}", id.0);
+        }
     }
     Ok(())
 }
@@ -382,40 +415,49 @@ fn process_attach(worker_id: &str, agent_prefix: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-#[instrument(skip(client))]
-async fn process_list(client: &mut CoreServiceClient<Channel>) -> Result<()> {
+#[instrument(skip(client, output))]
+async fn process_list(
+    client: &mut CoreServiceClient<Channel>,
+    output: &OutputManager,
+) -> Result<()> {
     info!("listing processes");
     let resp = client.worker_list(WorkerListRequest {}).await?;
     let workers = resp.into_inner().workers;
     if workers.is_empty() {
-        println!("No running workers.");
+        output.print_text("No running workers.");
         return Ok(());
     }
-    // Print header
-    println!(
-        "{:<20} {:<12} {:<16} {:<8}",
-        "WORKER", "PROJECT", "CONTAINER", "MODE"
-    );
-    for w in &workers {
-        let container_short = if w.container_id.len() > 12 {
-            &w.container_id[..12]
-        } else {
-            &w.container_id
-        };
-        let project = if w.project_key.is_empty() {
-            "-"
-        } else {
-            &w.project_key
-        };
-        println!(
-            "{:<20} {:<12} {:<16} {:<8}",
-            w.worker_id, project, container_short, w.mode
+    output.print_items(&workers, |workers| {
+        let mut out = format!(
+            "{:<20} {:<12} {:<16} {:<8}\n",
+            "WORKER", "PROJECT", "CONTAINER", "MODE"
         );
-    }
+        for w in workers {
+            let container_short = if w.container_id.len() > 12 {
+                &w.container_id[..12]
+            } else {
+                &w.container_id
+            };
+            let project = if w.project_key.is_empty() {
+                "-"
+            } else {
+                &w.project_key
+            };
+            out.push_str(&format!(
+                "{:<20} {:<12} {:<16} {:<8}\n",
+                w.worker_id, project, container_short, w.mode
+            ));
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    });
     Ok(())
 }
 
-#[instrument(skip(client), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
+#[allow(clippy::too_many_arguments)]
+#[instrument(skip(client, output), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
@@ -424,6 +466,7 @@ async fn process_launch(
     agent_prefix: &str,
     mode: &str,
     skills: &[String],
+    output: &OutputManager,
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching agent process");
 
@@ -445,7 +488,9 @@ async fn process_launch(
 
     let image_id = "ur-worker-rust:latest";
     let container_name = format!("{agent_prefix}{ticket_id}");
-    println!("Launching agent {container_name}...");
+    if !output.is_json() {
+        println!("Launching agent {container_name}...");
+    }
     let resp = client
         .worker_launch(WorkerLaunchRequest {
             worker_id: ticket_id.into(),
@@ -465,58 +510,94 @@ async fn process_launch(
         ticket_id,
         container_name, container_id, image_id, "agent process launched"
     );
-    println!("Agent {container_name} running (container {container_id})");
+    if output.is_json() {
+        output.print_success(&WorkerLaunched {
+            worker_id: ticket_id.to_string(),
+            container_id,
+        });
+    } else {
+        println!("Agent {container_name} running (container {container_id})");
+    }
     Ok(())
 }
 
-#[instrument(skip(client))]
-async fn process_stop(client: &mut CoreServiceClient<Channel>, worker_id: &str) -> Result<()> {
+#[instrument(skip(client, output))]
+async fn process_stop(
+    client: &mut CoreServiceClient<Channel>,
+    worker_id: &str,
+    output: &OutputManager,
+) -> Result<()> {
     info!(worker_id, "stopping agent process");
-    println!("Stopping {worker_id}...");
+    if !output.is_json() {
+        println!("Stopping {worker_id}...");
+    }
     client
         .worker_stop(WorkerStopRequest {
             worker_id: worker_id.into(),
         })
         .await?;
     info!(worker_id, "agent process stopped");
-    println!("Agent {worker_id} stopped.");
+    if output.is_json() {
+        output.print_success(&WorkerStopped {
+            worker_id: worker_id.to_string(),
+        });
+    } else {
+        println!("Agent {worker_id} stopped.");
+    }
     Ok(())
 }
 
-#[instrument(skip(command, project_keys), fields(command_name = command_name(&command)))]
+#[instrument(skip(command, project_keys, output), fields(command_name = command_name(&command)))]
 async fn handle_worker(
     command: WorkerCommands,
     port: u16,
     agent_prefix: &str,
     project_keys: &[String],
+    output: &OutputManager,
 ) -> Result<()> {
     match command {
         WorkerCommands::List => {
             let mut client = connect(port).await?;
-            process_list(&mut client).await
+            process_list(&mut client, output).await
         }
         WorkerCommands::Attach { worker_id, rm } => {
+            if output.is_json() {
+                let err = StructuredError::new(
+                    ErrorCode::InteractiveNotSupported,
+                    "attach is an interactive command and cannot produce JSON output",
+                );
+                output.print_error(&err);
+                process::exit(err.code.exit_code());
+            }
             let exit_code = process_attach(&worker_id, agent_prefix)?;
             if rm {
                 println!("Stopping {worker_id} (--rm)...");
                 let mut client = connect(port).await?;
-                process_stop(&mut client, &worker_id).await?;
+                process_stop(&mut client, &worker_id, output).await?;
             }
             process::exit(exit_code);
         }
         WorkerCommands::Kill { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
-            process_stop(&mut client, &worker_id).await
+            process_stop(&mut client, &worker_id, output).await
         }
         WorkerCommands::SaveCredentials { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
             info!(worker_id = %worker_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
             let id = container::ContainerId(format!("{agent_prefix}{worker_id}"));
             let cred_mgr = credential::CredentialManager;
             let paths = cred_mgr.save_from_container(&runtime, &id)?;
-            for path in &paths {
-                info!(path = %path.display(), "saved credential file");
-                println!("Saved {}", path.display());
+            if output.is_json() {
+                output.print_success(&CredentialsSaved {
+                    paths: paths.iter().map(|p| p.display().to_string()).collect(),
+                });
+            } else {
+                for path in &paths {
+                    info!(path = %path.display(), "saved credential file");
+                    println!("Saved {}", path.display());
+                }
             }
             Ok(())
         }
@@ -530,6 +611,14 @@ async fn handle_worker(
             mode,
             skills,
         } => {
+            input::validate_id(&ticket_id, "ticket_id")?;
+            if let Some(ref p) = project {
+                input::validate_id(p, "project")?;
+            }
+            if let Some(ref w) = workspace {
+                input::reject_path_traversal(w, "workspace")?;
+            }
+
             // Parse comma-separated skills; when provided they override the mode server-side
             let skills_vec: Vec<String> = skills
                 .iter()
@@ -581,7 +670,7 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             if force {
                 debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
-                let _ = process_stop(&mut client, &ticket_id).await;
+                let _ = process_stop(&mut client, &ticket_id, output).await;
             }
             process_launch(
                 &mut client,
@@ -591,14 +680,23 @@ async fn handle_worker(
                 agent_prefix,
                 &mode,
                 &skills_vec,
+                output,
             )
             .await?;
             if attach || rm {
+                if output.is_json() {
+                    let err = StructuredError::new(
+                        ErrorCode::InteractiveNotSupported,
+                        "attach is an interactive command and cannot produce JSON output",
+                    );
+                    output.print_error(&err);
+                    process::exit(err.code.exit_code());
+                }
                 let exit_code = process_attach(&ticket_id, agent_prefix)?;
                 if rm {
                     println!("Stopping {ticket_id} (--rm)...");
                     let mut client = connect(port).await?;
-                    process_stop(&mut client, &ticket_id).await?;
+                    process_stop(&mut client, &ticket_id, output).await?;
                 }
                 process::exit(exit_code);
             }
@@ -606,19 +704,26 @@ async fn handle_worker(
         }
         WorkerCommands::Status { worker_id } => {
             debug!(worker_id = ?worker_id, "querying process status");
-            println!("Status: {worker_id:?}");
+            output.print_text(&format!("Status: {worker_id:?}"));
             Ok(())
         }
         WorkerCommands::Stop { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
-            process_stop(&mut client, &worker_id).await
+            process_stop(&mut client, &worker_id, output).await
         }
         WorkerCommands::Dir { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
             let dir = process_workspace_dir(port, &worker_id).await?;
-            println!("{dir}");
+            if output.is_json() {
+                output.print_success(&WorkerDir { path: dir });
+            } else {
+                println!("{dir}");
+            }
             Ok(())
         }
         WorkerCommands::Vscode { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
             let dir = process_workspace_dir(port, &worker_id).await?;
             let status = process::Command::new("code")
                 .arg(&dir)
@@ -662,10 +767,36 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() {
+    let output_format = output::resolve_output_format_early();
 
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            output::handle_clap_error(e, output_format);
+        }
+    };
+
+    let out = OutputManager::from_args(cli.output.as_deref());
+
+    // Handle --describe: print schema JSON and exit
+    if cli.describe {
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let schema = describe::describe_command(&cmd);
+        println!("{}", serde_json::to_string_pretty(&schema).unwrap());
+        return;
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    if let Err(err) = rt.block_on(run(cli, &out)) {
+        let structured = StructuredError::from_anyhow(&err);
+        out.print_error(&structured);
+        std::process::exit(structured.code.exit_code());
+    }
+}
+
+async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     // Init bypasses config loading — it creates the config files.
     if let Commands::Init {
         force,
@@ -673,11 +804,14 @@ async fn main() -> Result<()> {
         force_squid,
     } = cli.command
     {
-        return init::run(init::InitFlags {
-            force,
-            force_config,
-            force_squid,
-        });
+        return init::run(
+            init::InitFlags {
+                force,
+                force_config,
+                force_squid,
+            },
+            output,
+        );
     }
 
     let config = load_config()?;
@@ -698,69 +832,104 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { .. } => unreachable!(),
-        Commands::Start => start_server(&config, &compose)?,
-        Commands::Stop => stop_server(&config, &compose)?,
+        Commands::Start => start_server(&config, &compose, output)?,
+        Commands::Stop => stop_server(&config, &compose, output)?,
         Commands::Tui => {
             info!("launching TUI");
-            println!("Launching TUI...");
+            output.print_text("Launching TUI...");
         }
         Commands::Worker { command } => {
             let project_keys: Vec<String> = config.projects.keys().cloned().collect();
-            handle_worker(command, port, &config.network.agent_prefix, &project_keys).await?
+            handle_worker(
+                command,
+                port,
+                &config.network.agent_prefix,
+                &project_keys,
+                output,
+            )
+            .await?
         }
         Commands::Proxy { command } => {
             let squid_dir = config.squid_dir();
             let allowlist_path = squid_dir.join("allowlist.txt");
             match command {
                 ProxyCommands::Allow { domain } => {
+                    input::validate_domain(&domain)?;
                     info!(domain = %domain, "allowing domain through proxy");
                     let domains = proxy::allow_domain(&allowlist_path, &domain)?;
                     proxy::signal_reconfigure(&config.proxy.hostname);
-                    proxy::print_domains(&domains);
+                    proxy::print_domains(&domains, output);
                 }
                 ProxyCommands::Block { domain } => {
+                    input::validate_domain(&domain)?;
                     info!(domain = %domain, "blocking domain from proxy");
                     let domains = proxy::block_domain(&allowlist_path, &domain)?;
                     proxy::signal_reconfigure(&config.proxy.hostname);
-                    proxy::print_domains(&domains);
+                    proxy::print_domains(&domains, output);
                 }
                 ProxyCommands::List => {
                     debug!("listing proxy domains");
                     let domains = proxy::read_allowlist(&allowlist_path)?;
-                    proxy::print_domains(&domains);
+                    proxy::print_domains(&domains, output);
                 }
             }
         }
         Commands::Project { command } => match command {
-            ProjectCommands::List => project::list(&config)?,
+            ProjectCommands::List => project::list(&config, output)?,
             ProjectCommands::Add {
                 path,
                 key,
                 name,
                 pool_limit,
-            } => project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit)?,
-            ProjectCommands::Remove { key, force } => project::remove(&config, &key, force)?,
+            } => {
+                if let Some(ref k) = key {
+                    input::validate_id(k, "key")?;
+                }
+                if let Some(ref n) = name {
+                    input::reject_control_chars(n, "name")?;
+                }
+                input::reject_path_traversal(&path, "path")?;
+                project::add(
+                    &config,
+                    &path,
+                    key.as_deref(),
+                    name.as_deref(),
+                    pool_limit,
+                    output,
+                )?
+            }
+            ProjectCommands::Remove { key, force } => {
+                input::validate_id(&key, "key")?;
+                project::remove(&config, &key, force, output)?
+            }
         },
         Commands::Rag { command } => match command {
-            RagCommands::Docs => rag::generate_docs(&config)?,
-            RagCommands::Index { language } => rag::index(port, &language).await?,
+            RagCommands::Docs => rag::generate_docs(&config, output)?,
+            RagCommands::Index { language } => rag::index(port, &language, output).await?,
             RagCommands::Search {
                 query,
                 language,
                 top_k,
-            } => rag::search(port, &query, &language, top_k).await?,
+            } => {
+                input::reject_control_chars(&query, "query")?;
+                rag::search(port, &query, &language, top_k, output).await?
+            }
             RagCommands::Model { command } => match command {
-                ModelCommands::Download => rag::download_model(&config)?,
+                ModelCommands::Download => rag::download_model(&config, output)?,
             },
         },
         Commands::Db { command } => match command {
-            DbCommands::Backup => db::backup(&config).await?,
-            DbCommands::Restore { path } => db::restore(&config, &path).await?,
-            DbCommands::List => db::list(&config)?,
+            DbCommands::Backup => db::backup(&config, output).await?,
+            DbCommands::Restore { path } => {
+                input::reject_path_traversal(&path, "path")?;
+                db::restore(&config, &path, output).await?
+            }
+            DbCommands::List => db::list(&config, output)?,
         },
-        Commands::Ticket { command } => ticket::handle(port, command).await?,
+        Commands::Ticket { command } => ticket::handle(port, command, output).await?,
         Commands::Agent { command } => match command {
             AgentCommands::Dir { worker_id } => {
+                input::validate_id(&worker_id, "worker_id")?;
                 let mut client = connect(port).await?;
                 let resp = client
                     .worker_info(WorkerInfoRequest {
@@ -771,7 +940,13 @@ async fn main() -> Result<()> {
                 if workspace_dir.is_empty() {
                     bail!("no workspace directory for agent {worker_id}");
                 }
-                println!("{workspace_dir}");
+                if output.is_json() {
+                    output.print_success(&WorkerDir {
+                        path: workspace_dir,
+                    });
+                } else {
+                    println!("{workspace_dir}");
+                }
             }
         },
     }

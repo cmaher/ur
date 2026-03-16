@@ -866,7 +866,7 @@ mod tests {
         assert!(code.contains(&"tickets".to_string()));
         assert!(code.contains(&"ship".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
-        assert!(design.contains(&"brainstorming".to_string()));
+        assert!(design.contains(&"design".to_string()));
     }
 
     #[test]
@@ -903,7 +903,7 @@ skills = ["a", "b"]
         assert_eq!(custom, vec!["a", "b"]);
         // design default should still be present
         let design = cfg.resolve_skills("design", &[]).unwrap();
-        assert!(design.contains(&"brainstorming".to_string()));
+        assert!(design.contains(&"design".to_string()));
     }
 
     #[test]
@@ -927,7 +927,7 @@ skills = ["a", "b"]
         let cfg = PromptModesConfig::default();
         let (strategy, skills) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
-        assert!(skills.contains(&"brainstorming".to_string()));
+        assert!(skills.contains(&"design".to_string()));
     }
 
     #[test]

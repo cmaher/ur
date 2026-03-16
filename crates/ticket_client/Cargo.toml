@@ -6,6 +6,8 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 bytes = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 chrono = "0.4"
 clap = { workspace = true }
 http-body = "1"

@@ -73,7 +73,7 @@ impl WorkerStrategy {
                 ]);
             }
             Self::Design => {
-                skills.extend(["brainstorming".into()]);
+                skills.extend(["design".into()]);
             }
         }
         skills
@@ -107,9 +107,9 @@ mod tests {
     }
 
     #[test]
-    fn design_skills_include_brainstorming() {
+    fn design_skills_include_design() {
         let skills = WorkerStrategy::Design.skills();
-        assert!(skills.contains(&"brainstorming".to_string()));
+        assert!(skills.contains(&"design".to_string()));
         // Design should NOT have code-specific skills
         assert!(!skills.contains(&"implement".to_string()));
         assert!(!skills.contains(&"bacon".to_string()));

@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if !protos.is_empty() {
         tonic_build::configure()
+            .type_attribute(".", "#[derive(serde::Serialize)]")
             .build_server(true)
             .build_client(true)
             .compile_protos(&protos, &[&proto_dir])?;

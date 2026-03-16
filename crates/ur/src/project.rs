@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
+use crate::output::{OutputManager, ProjectAdded, ProjectInfo, ProjectRemoved};
+
 /// Resolve the git remote "origin" URL for a repository directory.
 fn git_remote_origin(path: &Path) -> Result<String> {
     let output = std::process::Command::new("git")
@@ -46,11 +48,11 @@ fn derive_key_from_repo(repo: &str) -> Result<String> {
 }
 
 /// List all configured projects.
-pub fn list(config: &ur_config::Config) -> Result<()> {
+pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     debug!("listing projects");
 
     if config.projects.is_empty() {
-        println!("No projects configured.");
+        output.print_text("No projects configured.");
         return Ok(());
     }
 
@@ -60,18 +62,38 @@ pub fn list(config: &ur_config::Config) -> Result<()> {
     let mut projects: Vec<_> = config.projects.values().collect();
     projects.sort_by_key(|p| &p.key);
 
-    for proj in projects {
-        let pool_dir = pool_base.join(&proj.key);
-        let slots_in_use = count_pool_slots(&pool_dir);
-        println!(
-            "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}",
-            key = proj.key,
-            repo = proj.repo,
-            name = proj.name,
-            limit = proj.pool_limit,
-            slots = slots_in_use,
-        );
-    }
+    let items: Vec<ProjectInfo> = projects
+        .iter()
+        .map(|proj| {
+            let pool_dir = pool_base.join(&proj.key);
+            let slots_in_use = count_pool_slots(&pool_dir);
+            ProjectInfo {
+                key: proj.key.clone(),
+                repo: proj.repo.clone(),
+                name: proj.name.clone(),
+                pool_limit: proj.pool_limit,
+                slots_in_use,
+            }
+        })
+        .collect();
+
+    output.print_items(&items, |items| {
+        let mut out = String::new();
+        for proj in items {
+            out.push_str(&format!(
+                "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}\n",
+                key = proj.key,
+                repo = proj.repo,
+                name = proj.name,
+                limit = proj.pool_limit,
+                slots = proj.slots_in_use,
+            ));
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    });
 
     Ok(())
 }
@@ -94,6 +116,7 @@ pub fn add(
     key: Option<&str>,
     name: Option<&str>,
     pool_limit: Option<u32>,
+    output: &OutputManager,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)
         .with_context(|| format!("failed to resolve path: {}", path.display()))?;
@@ -140,12 +163,24 @@ pub fn add(
         .with_context(|| format!("failed to write {}", toml_path.display()))?;
 
     info!(key = %key, "project added");
-    println!("Added project '{key}' (repo: {repo})");
+    if output.is_json() {
+        output.print_success(&ProjectAdded {
+            key: key.clone(),
+            repo,
+        });
+    } else {
+        println!("Added project '{key}' (repo: {repo})");
+    }
     Ok(())
 }
 
 /// Remove a project from `ur.toml` and delete its pool directory.
-pub fn remove(config: &ur_config::Config, key: &str, force: bool) -> Result<()> {
+pub fn remove(
+    config: &ur_config::Config,
+    key: &str,
+    force: bool,
+    output: &OutputManager,
+) -> Result<()> {
     if !force {
         bail!("--force is required to remove a project (this deletes all pool clones)");
     }
@@ -180,12 +215,20 @@ pub fn remove(config: &ur_config::Config, key: &str, force: bool) -> Result<()> 
         info!(path = %pool_dir.display(), "deleting pool directory");
         std::fs::remove_dir_all(&pool_dir)
             .with_context(|| format!("failed to delete pool directory {}", pool_dir.display()))?;
-        println!("Deleted pool directory: {}", pool_dir.display());
+        if !output.is_json() {
+            println!("Deleted pool directory: {}", pool_dir.display());
+        }
     } else {
         debug!(path = %pool_dir.display(), "no pool directory to delete");
     }
 
-    println!("Removed project '{key}'");
+    if output.is_json() {
+        output.print_success(&ProjectRemoved {
+            key: key.to_string(),
+        });
+    } else {
+        println!("Removed project '{key}'");
+    }
     Ok(())
 }
 
@@ -213,6 +256,10 @@ mod tests {
             .output()
             .unwrap();
         repo_dir
+    }
+
+    fn text_output() -> OutputManager {
+        OutputManager::from_args(Some("text"))
     }
 
     #[test]
@@ -258,7 +305,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         let repo = make_git_repo("git@github.com:cmaher/ur.git");
-        add(&config, repo.path(), None, None, None).unwrap();
+        add(&config, repo.path(), None, None, None, &text_output()).unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(updated.projects.contains_key("ur"));
@@ -276,6 +323,7 @@ mod tests {
             Some("mykey"),
             Some("My Project"),
             Some(5),
+            &text_output(),
         )
         .unwrap();
 
@@ -297,7 +345,7 @@ repo = "git@github.com:cmaher/ur.git"
 "#,
         );
         let repo = make_git_repo("git@github.com:other/ur.git");
-        let err = add(&config, repo.path(), None, None, None).unwrap_err();
+        let err = add(&config, repo.path(), None, None, None, &text_output()).unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -317,7 +365,7 @@ repo = "git@github.com:cmaher/ur.git"
         std::fs::create_dir_all(&pool_dir).unwrap();
         std::fs::create_dir(pool_dir.join("0")).unwrap();
 
-        remove(&config, "ur", true).unwrap();
+        remove(&config, "ur", true, &text_output()).unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(!updated.projects.contains_key("ur"));
@@ -334,7 +382,7 @@ repo = "git@github.com:cmaher/ur.git"
 repo = "git@github.com:cmaher/ur.git"
 "#,
         );
-        let err = remove(&config, "ur", false).unwrap_err();
+        let err = remove(&config, "ur", false, &text_output()).unwrap_err();
         assert!(err.to_string().contains("--force"));
     }
 
@@ -342,7 +390,7 @@ repo = "git@github.com:cmaher/ur.git"
     fn remove_nonexistent_project_fails() {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
-        let err = remove(&config, "nope", true).unwrap_err();
+        let err = remove(&config, "nope", true, &text_output()).unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 
@@ -351,7 +399,7 @@ repo = "git@github.com:cmaher/ur.git"
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         // Should not error
-        list(&config).unwrap();
+        list(&config, &text_output()).unwrap();
     }
 
     #[test]

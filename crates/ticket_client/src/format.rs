@@ -1,6 +1,8 @@
 use std::fmt::Write;
 
-use ur_rpc::proto::ticket::{ActivityEntry, MetadataEntry, Ticket};
+use ur_rpc::proto::ticket::{
+    ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
+};
 
 /// Format a single ticket's full detail view (used by `show`).
 pub fn format_ticket_detail(
@@ -64,5 +66,42 @@ pub fn format_ticket_list(tickets: &[Ticket]) -> String {
         .unwrap();
     }
     write!(out, "\n{} ticket(s)", tickets.len()).unwrap();
+    out
+}
+
+/// Format activity details (used by `list-activities`).
+pub fn format_activities(activities: &[ActivityDetail]) -> String {
+    let mut out = String::new();
+    for a in activities {
+        let Some(entry) = &a.entry else {
+            continue;
+        };
+        write!(
+            out,
+            "[{}] {}: {}",
+            entry.timestamp, entry.author, entry.message
+        )
+        .unwrap();
+        for m in &a.metadata {
+            write!(out, "\n  {}: {}", m.key, m.value).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// Format dispatchable tickets table.
+pub fn format_dispatchable(tickets: &[DispatchableTicket]) -> String {
+    let mut out = String::new();
+    writeln!(out, "{:<20} {:<4} TITLE", "ID", "PRI").unwrap();
+    let separator: String = std::iter::repeat_n('-', 48).collect();
+    writeln!(out, "{separator}").unwrap();
+    for t in tickets {
+        writeln!(out, "{:<20} {:<4} {}", t.id, t.priority, t.title).unwrap();
+    }
+    write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
     out
 }

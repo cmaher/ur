@@ -3,11 +3,13 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
 
+use crate::output::{BackupCreated, BackupEntry, BackupList, OutputManager};
+
 /// Run an on-demand database backup using VACUUM INTO.
 ///
 /// Connects directly to the SQLite database file and creates a consistent
 /// snapshot in the configured backup directory.
-pub async fn backup(config: &ur_config::Config) -> Result<()> {
+pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let backup_path = config
         .backup
         .path
@@ -46,7 +48,13 @@ pub async fn backup(config: &ur_config::Config) -> Result<()> {
     clean_old_backups(backup_path, &filename, config.backup.retain_count);
 
     info!(path = %target.display(), "backup completed");
-    println!("Backup created: {}", target.display());
+    if output.is_json() {
+        output.print_success(&BackupCreated {
+            path: target.display().to_string(),
+        });
+    } else {
+        println!("Backup created: {}", target.display());
+    }
     Ok(())
 }
 
@@ -55,7 +63,11 @@ pub async fn backup(config: &ur_config::Config) -> Result<()> {
 /// Copies the backup file to a new location (the active database path with a
 /// `.restored` suffix) so the user can inspect it before replacing the live
 /// database. Prints instructions for completing the swap.
-pub async fn restore(config: &ur_config::Config, source: &Path) -> Result<()> {
+pub async fn restore(
+    config: &ur_config::Config,
+    source: &Path,
+    output: &OutputManager,
+) -> Result<()> {
     if !source.exists() {
         bail!("backup file not found: {}", source.display());
     }
@@ -84,32 +96,42 @@ pub async fn restore(config: &ur_config::Config, source: &Path) -> Result<()> {
         .await
         .context("restore failed — backup may be corrupt or incompatible")?;
 
-    println!("Restored database verified: {}", restore_target.display());
-    println!();
-    println!("To complete the restore:");
-    println!("  1. Stop the server: ur stop");
-    println!(
-        "  2. Replace the database: mv {} {}",
-        restore_target.display(),
-        db_path.display()
-    );
-    println!("  3. Start the server: ur start");
+    if output.is_json() {
+        output.print_text(&format!(
+            "Restored database verified: {}",
+            restore_target.display()
+        ));
+    } else {
+        println!("Restored database verified: {}", restore_target.display());
+        println!();
+        println!("To complete the restore:");
+        println!("  1. Stop the server: ur stop");
+        println!(
+            "  2. Replace the database: mv {} {}",
+            restore_target.display(),
+            db_path.display()
+        );
+        println!("  3. Start the server: ur start");
+    }
 
     Ok(())
 }
 
 /// List available backup files.
-pub fn list(config: &ur_config::Config) -> Result<()> {
+pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let backup_path = match &config.backup.path {
         Some(p) => p,
         None => {
-            println!("No backup path configured — set [backup] path in ur.toml");
+            output.print_text("No backup path configured — set [backup] path in ur.toml");
             return Ok(());
         }
     };
 
     if !backup_path.exists() {
-        println!("Backup directory does not exist: {}", backup_path.display());
+        output.print_text(&format!(
+            "Backup directory does not exist: {}",
+            backup_path.display()
+        ));
         return Ok(());
     }
 
@@ -129,7 +151,7 @@ pub fn list(config: &ur_config::Config) -> Result<()> {
         .collect();
 
     if entries.is_empty() {
-        println!("No backups found in {}", backup_path.display());
+        output.print_text(&format!("No backups found in {}", backup_path.display()));
         return Ok(());
     }
 
@@ -138,21 +160,44 @@ pub fn list(config: &ur_config::Config) -> Result<()> {
 
     debug!(count = entries.len(), "listing backup files");
 
-    println!(
-        "Backups in {} (retain_count: {}):",
-        backup_path.display(),
-        config.backup.retain_count
-    );
-    for (name, size) in &entries {
-        let size_display = format_size(*size);
-        // Extract timestamp from filename: ur-backup-YYYYMMDDTHHMMSSZ.db
-        let timestamp = name
-            .strip_prefix("ur-backup-")
-            .and_then(|s| s.strip_suffix(".db"))
-            .unwrap_or("?");
-        println!("  {timestamp}  {size_display:>8}  {name}");
+    if output.is_json() {
+        let backup_entries: Vec<BackupEntry> = entries
+            .iter()
+            .map(|(name, size)| {
+                let timestamp = name
+                    .strip_prefix("ur-backup-")
+                    .and_then(|s| s.strip_suffix(".db"))
+                    .unwrap_or("?")
+                    .to_string();
+                BackupEntry {
+                    name: name.clone(),
+                    timestamp,
+                    size_bytes: *size,
+                }
+            })
+            .collect();
+        output.print_success(&BackupList {
+            directory: backup_path.display().to_string(),
+            retain_count: config.backup.retain_count,
+            backups: backup_entries,
+        });
+    } else {
+        println!(
+            "Backups in {} (retain_count: {}):",
+            backup_path.display(),
+            config.backup.retain_count
+        );
+        for (name, size) in &entries {
+            let size_display = format_size(*size);
+            // Extract timestamp from filename: ur-backup-YYYYMMDDTHHMMSSZ.db
+            let timestamp = name
+                .strip_prefix("ur-backup-")
+                .and_then(|s| s.strip_suffix(".db"))
+                .unwrap_or("?");
+            println!("  {timestamp}  {size_display:>8}  {name}");
+        }
+        println!("{} backup(s) total", entries.len());
     }
-    println!("{} backup(s) total", entries.len());
 
     Ok(())
 }
