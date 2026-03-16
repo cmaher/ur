@@ -139,7 +139,10 @@ async fn run_verify(
 
     let known_ids: HashSet<&str> = tickets.iter().map(|t| t.front.id.as_str()).collect();
 
-    println!("Parsed {} tickets, verifying against ur...\n", tickets.len());
+    println!(
+        "Parsed {} tickets, verifying against ur...\n",
+        tickets.len()
+    );
 
     let mut mismatches: Vec<Mismatch> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
@@ -154,9 +157,7 @@ async fn run_verify(
         {
             Ok(r) => r.into_inner(),
             Err(e) => {
-                if e.code() == tonic::Code::NotFound
-                    || e.message().contains("not found")
-                {
+                if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
                     missing.push(f.id.clone());
                 } else {
                     return Err(format!("get_ticket {}: {e}", f.id).into());
@@ -254,13 +255,7 @@ async fn run_verify(
             &f.id,
             &mut mismatches,
         );
-        check_meta(
-            meta,
-            "branch",
-            f.branch.as_deref(),
-            &f.id,
-            &mut mismatches,
-        );
+        check_meta(meta, "branch", f.branch.as_deref(), &f.id, &mut mismatches);
         check_meta(
             meta,
             "external-ref",

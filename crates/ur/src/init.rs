@@ -249,7 +249,10 @@ mod tests {
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert!(content.contains("[backup]"), "should be reset to default");
-        assert!(!content.contains("daemon_port"), "custom config should be gone");
+        assert!(
+            !content.contains("daemon_port"),
+            "custom config should be gone"
+        );
     }
 
     #[test]
@@ -261,8 +264,14 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, true, false)).unwrap();
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(toml_content.contains("[backup]"), "ur.toml should be overwritten with default");
-        assert!(!toml_content.contains("daemon_port"), "custom config should be gone");
+        assert!(
+            toml_content.contains("[backup]"),
+            "ur.toml should be overwritten with default"
+        );
+        assert!(
+            !toml_content.contains("daemon_port"),
+            "custom config should be gone"
+        );
     }
 
     #[test]

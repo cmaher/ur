@@ -37,8 +37,7 @@ struct ParsedTicket {
 }
 
 fn is_duplicate_err(e: &tonic::Status) -> bool {
-    e.code() == tonic::Code::AlreadyExists
-        || e.message().contains("UNIQUE constraint failed")
+    e.code() == tonic::Code::AlreadyExists || e.message().contains("UNIQUE constraint failed")
 }
 
 fn parse_ticket_file(path: &Path) -> Result<ParsedTicket, String> {
@@ -262,9 +261,7 @@ async fn run_migration(
                 {
                     Ok(_) => edge_count += 1,
                     Err(e) if is_duplicate_err(&e) => {}
-                    Err(e) => {
-                        return Err(format!("add_link {} <-> {}: {e}", f.id, link).into())
-                    }
+                    Err(e) => return Err(format!("add_link {} <-> {}: {e}", f.id, link).into()),
                 }
             }
         }

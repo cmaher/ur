@@ -27,10 +27,7 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
     let mut children: HashMap<&str, Vec<&Ticket>> = HashMap::new();
     for t in &items {
         if !t.parent_id.is_empty() {
-            children
-                .entry(t.parent_id.as_str())
-                .or_default()
-                .push(t);
+            children.entry(t.parent_id.as_str()).or_default().push(t);
         }
     }
 
@@ -77,10 +74,7 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
 
     // Count open/closed non-epic descendants (recursive via stack)
     let descendant_counts = |eid: &str| -> Counts {
-        let mut c = Counts {
-            open: 0,
-            closed: 0,
-        };
+        let mut c = Counts { open: 0, closed: 0 };
         let mut stack = vec![eid.to_owned()];
         while let Some(id) = stack.pop() {
             if let Some(kids) = children.get(id.as_str()) {
@@ -171,7 +165,14 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
 mod tests {
     use super::*;
 
-    fn ticket(id: &str, title: &str, ticket_type: &str, status: &str, priority: i64, parent_id: &str) -> Ticket {
+    fn ticket(
+        id: &str,
+        title: &str,
+        ticket_type: &str,
+        status: &str,
+        priority: i64,
+        parent_id: &str,
+    ) -> Ticket {
         Ticket {
             id: id.to_owned(),
             title: title.to_owned(),
@@ -222,9 +223,7 @@ mod tests {
 
     #[test]
     fn orphaned_tickets() {
-        let tickets = vec![
-            ticket("ur-t1", "Orphan Task", "task", "open", 0, ""),
-        ];
+        let tickets = vec![ticket("ur-t1", "Orphan Task", "task", "open", 0, "")];
         let report = build_status_report(&tickets, "2026-03-15", None);
         assert!(report.contains("[Orphaned]"));
         assert!(report.contains("ur-t1"));
