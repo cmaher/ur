@@ -5,7 +5,7 @@ and creates bash shims for host-executed commands.
 
 Two modes:
 - `workerd init` — synchronous initialization: skills, git hooks, hostexec shims. Run by entrypoint before anything else.
-- `workerd` (no args) — background daemon loop. Stays alive for future daemon uses.
+- `workerd` (no args) — background daemon serving `/healthz` on port 9119. Starts after init, so healthy = ready. Used as Docker HEALTHCHECK.
 
 Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var
