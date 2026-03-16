@@ -6,7 +6,7 @@ use ur_db::WorkerRepo;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-use crate::ProcessManager;
+use crate::WorkerManager;
 use crate::grpc::CoreServiceHandler;
 
 /// Start the host gRPC server on a TCP socket.
@@ -48,7 +48,7 @@ pub async fn serve_grpc(
 #[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn serve_worker_grpc(
     addr: SocketAddr,
-    process_manager: ProcessManager,
+    worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     projects: HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
@@ -77,7 +77,7 @@ pub async fn serve_worker_grpc(
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             config: hostexec_config,
             lua: crate::hostexec::LuaTransformManager::new(),
-            process_manager,
+            worker_manager,
             projects,
             builderd_addr,
             host_workspace,

@@ -190,7 +190,7 @@ impl PromptModesConfig {
     }
 }
 
-/// Context for a running worker, returned by `ProcessManager::get_worker_context`.
+/// Context for a running worker, returned by `WorkerManager::get_worker_context`.
 #[derive(Debug, Clone)]
 pub struct WorkerContext {
     /// Project key if launched with `--project`, or `None` for raw workspace launches.
@@ -199,8 +199,8 @@ pub struct WorkerContext {
     pub slot_path: PathBuf,
 }
 
-/// Summary of a running process, returned by `ProcessManager::list()`.
-pub struct ProcessSummary {
+/// Summary of a running process, returned by `WorkerManager::list()`.
+pub struct WorkerSummary {
     pub process_id: String,
     pub worker_id: String,
     pub container_id: String,
@@ -232,7 +232,7 @@ pub struct WorkerConfig {
 /// Orchestrates the full lifecycle of worker processes:
 /// repo registration, git init, container run/stop.
 #[derive(Clone)]
-pub struct ProcessManager {
+pub struct WorkerManager {
     workspace: PathBuf,
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
@@ -247,7 +247,7 @@ pub struct ProcessManager {
     worker_repo: WorkerRepo,
 }
 
-impl ProcessManager {
+impl WorkerManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         workspace: PathBuf,
@@ -566,15 +566,15 @@ impl ProcessManager {
     }
 
     /// List all running processes with their metadata.
-    pub async fn list(&self) -> Vec<ProcessSummary> {
+    pub async fn list(&self) -> Vec<WorkerSummary> {
         let workers = self
             .worker_repo
             .list_workers_by_status("running")
             .await
             .unwrap_or_default();
-        let mut result: Vec<ProcessSummary> = workers
+        let mut result: Vec<WorkerSummary> = workers
             .into_iter()
-            .map(|worker| ProcessSummary {
+            .map(|worker| WorkerSummary {
                 process_id: worker.process_id,
                 worker_id: worker.worker_id,
                 container_id: worker.container_id,
@@ -689,7 +689,7 @@ mod tests {
         WorkerRepo::new(db.pool().clone())
     }
 
-    async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
+    async fn test_manager() -> (WorkerManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
         let agent_repo = test_worker_repo().await;
@@ -710,7 +710,7 @@ mod tests {
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
             worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         };
-        let mgr = ProcessManager::new(
+        let mgr = WorkerManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
             repo_pool_manager,

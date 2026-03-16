@@ -93,10 +93,10 @@ ur.toml
 CLI launch request
   → grpc.rs: CoreServiceHandler::worker_launch()
     → reads ProjectConfig fields (git_hooks_dir, mounts, hostexec, etc.)
-    → builds WorkerConfig struct (crates/server/src/process.rs)
+    → builds WorkerConfig struct (crates/server/src/worker.rs)
 
 WorkerConfig
-  → ProcessManager::run_and_record()
+  → WorkerManager::run_and_record()
     → RunOptsBuilder (crates/server/src/run_opts_builder.rs)
       .add_workspace()     — mounts workspace_dir → /workspace
       .add_credentials()   — mounts credentials file

@@ -7,8 +7,8 @@ use tracing::info;
 
 use container::NetworkManager;
 use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
-use ur_server::process::PromptModesConfig;
-use ur_server::{BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager};
+use ur_server::worker::PromptModesConfig;
+use ur_server::{BackupTaskManager, BuilderdClient, Config, RepoPoolManager, WorkerManager};
 
 #[derive(Parser)]
 #[command(
@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
         builderd_client,
         worker_repo.clone(),
     );
-    let process_manager = ProcessManager::new(
+    let worker_manager = WorkerManager::new(
         local_workspace,
         host_config_dir,
         repo_pool_manager.clone(),
@@ -228,7 +228,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
-        process_manager: process_manager.clone(),
+        worker_manager: worker_manager.clone(),
         repo_pool_manager,
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
@@ -253,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
 
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
-        process_manager,
+        worker_manager,
         worker_repo,
         cfg.projects,
         #[cfg(feature = "hostexec")]

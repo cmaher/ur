@@ -12,7 +12,7 @@ use ur_rpc::proto::core::{
     WorkerStopResponse, WorkerSummary,
 };
 
-use crate::{ProcessManager, RepoPoolManager};
+use crate::{RepoPoolManager, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -95,7 +95,7 @@ impl From<CoreError> for Status {
 /// gRPC implementation of the CoreService.
 #[derive(Clone)]
 pub struct CoreServiceHandler {
-    pub process_manager: ProcessManager,
+    pub worker_manager: WorkerManager,
     pub repo_pool_manager: RepoPoolManager,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
@@ -130,7 +130,7 @@ impl CoreService for CoreServiceHandler {
 
         // Resolve worker strategy from the mode field early in the launch flow.
         let (strategy, resolved_skills) = self
-            .process_manager
+            .worker_manager
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
@@ -158,7 +158,7 @@ impl CoreService for CoreServiceHandler {
         };
 
         // Generate unique worker ID for this launch
-        let worker_id = self.process_manager.generate_worker_id(&req.worker_id);
+        let worker_id = self.worker_manager.generate_worker_id(&req.worker_id);
         info!(
             worker_id = req.worker_id,
             internal_worker_id = %worker_id,
@@ -166,7 +166,7 @@ impl CoreService for CoreServiceHandler {
         );
 
         // Phase 1: prepare (create repo, git init, register)
-        self.process_manager
+        self.worker_manager
             .prepare(&req.worker_id, &worker_id, workspace_dir.clone())
             .await
             .map_err(|e| CoreError::PrepareFailed {
@@ -207,7 +207,7 @@ impl CoreService for CoreServiceHandler {
             mounts,
         };
         let (container_id, _agent_secret) = self
-            .process_manager
+            .worker_manager
             .run_and_record(config)
             .await
             .map_err(|e| CoreError::RunFailed {
@@ -223,7 +223,7 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_stop request received");
-        self.process_manager
+        self.worker_manager
             .stop(&req.worker_id)
             .await
             .map_err(|e| CoreError::StopFailed {
@@ -239,7 +239,7 @@ impl CoreService for CoreServiceHandler {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_info request received");
         let workspace_dir = self
-            .process_manager
+            .worker_manager
             .get_workspace_dir(&req.worker_id)
             .await
             .map_err(|_| CoreError::WorkspaceNotFound {
@@ -256,7 +256,7 @@ impl CoreService for CoreServiceHandler {
         _req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
         info!("worker_list request received");
-        let summaries = self.process_manager.list().await;
+        let summaries = self.worker_manager.list().await;
         let workers = summaries
             .into_iter()
             .map(|s| WorkerSummary {
