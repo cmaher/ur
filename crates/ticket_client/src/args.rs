@@ -13,7 +13,7 @@ pub enum TicketArgs {
         ticket_type: String,
 
         /// Parent ticket ID
-        #[arg(long)]
+        #[arg(long, alias = "epic")]
         parent: Option<String>,
 
         /// Priority (lower is higher priority)
@@ -28,7 +28,7 @@ pub enum TicketArgs {
     /// List tickets with optional filters
     List {
         /// Filter by parent epic ID
-        #[arg(long)]
+        #[arg(long, alias = "parent")]
         epic: Option<String>,
 
         /// Filter by ticket type
@@ -72,7 +72,7 @@ pub enum TicketArgs {
         ticket_type: Option<String>,
 
         /// New parent ticket ID
-        #[arg(long)]
+        #[arg(long, alias = "epic")]
         parent: Option<String>,
 
         /// Force the update (e.g. close an epic with open children)
@@ -168,6 +168,12 @@ pub enum TicketArgs {
         #[arg(short, long)]
         project: Option<String>,
     },
+
+    /// Print command schema as JSON (for agent introspection)
+    Schema {
+        /// Specific subcommand to describe (omit for all commands)
+        subcommand: Option<String>,
+    },
 }
 
 /// A parsed key=value pair for activity metadata.
@@ -190,6 +196,10 @@ fn parse_key_value(s: &str) -> Result<KeyValue, String> {
 /// Wrapper struct for use as a clap subcommand group.
 #[derive(Debug, Parser)]
 pub struct TicketCommand {
+    /// Output as JSON (for machine consumption)
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: TicketArgs,
 }

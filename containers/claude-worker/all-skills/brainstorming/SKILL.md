@@ -30,7 +30,7 @@ You MUST create a task for each of these items and complete them in order:
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Create epic ticket** — write the full design document as the epic's description using `tk`
+6. **Create epic ticket** — write the full design document as the epic's body using `ur ticket create`
 7. **Create child tickets** — one per discrete task, all parented to the epic
 
 ## Process Flow
@@ -107,16 +107,14 @@ digraph brainstorming {
 
 **Creating the epic:**
 
-- Use `tk create "Epic title" --type epic` to create the epic
-- The epic description should contain the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
-- Edit the epic's `.md` file directly to write the full design as the ticket body (below the YAML frontmatter)
+- Use `ur ticket create "Epic title" --type epic --body "full design document"` to create the epic
+- The epic body should contain the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
 
 **Creating child tickets:**
 
-- Create one ticket per discrete, implementable task using `tk create "Task title" --parent <epic-id>`
-- Each ticket should have a clear scope description written into its `.md` body
-- Order tickets by dependency — use `tk dep <id> <dep-id>` for hard dependencies
-- Use `tk link <id> <id>` for related but non-blocking relationships
+- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <epic-id> --body "scope description"`
+- Order tickets by dependency — use `ur ticket add-block <id> <blocker-id>` for hard dependencies
+- Use `ur ticket add-link <id> <other-id>` for related but non-blocking relationships
 - Tickets should be small enough for a single agent to complete in one session
 
 **That's it. You're done.** Do not suggest next steps. Do not mention coding. Do not invoke any other skill. The user has a complete set of tickets and will decide what to do with them.

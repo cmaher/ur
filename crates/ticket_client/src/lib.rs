@@ -1,6 +1,8 @@
 pub mod args;
 mod execute;
 pub mod format;
+mod json_output;
+pub mod schema;
 mod status;
 
 pub use args::TicketArgs;

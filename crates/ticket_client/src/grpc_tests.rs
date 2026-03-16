@@ -348,6 +348,7 @@ async fn execute_create_and_show() {
             body: "Body text".into(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("create should succeed");
@@ -360,6 +361,7 @@ async fn execute_create_and_show() {
             status: None,
         },
         &mut client,
+        false,
     )
     .await
     .expect("list should succeed");
@@ -380,6 +382,7 @@ async fn execute_create_and_list_filtered() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -400,6 +403,7 @@ async fn execute_create_and_list_filtered() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -412,6 +416,7 @@ async fn execute_create_and_list_filtered() {
             status: Some("open".into()),
         },
         &mut client,
+        false,
     )
     .await
     .expect("list with status filter should succeed");
@@ -427,6 +432,7 @@ async fn execute_show_nonexistent_returns_error() {
             id: "ur-nonexistent".into(),
         },
         &mut client,
+        false,
     )
     .await;
 
@@ -458,6 +464,7 @@ async fn execute_update_nonexistent_returns_error() {
             force: false,
         },
         &mut client,
+        false,
     )
     .await;
 
@@ -482,6 +489,7 @@ async fn execute_set_and_delete_meta() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -499,6 +507,7 @@ async fn execute_set_and_delete_meta() {
             value: "prod".into(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("set-meta should succeed");
@@ -517,6 +526,7 @@ async fn execute_set_and_delete_meta() {
             key: "env".into(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("delete-meta should succeed");
@@ -544,6 +554,7 @@ async fn execute_add_and_list_activities() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -561,6 +572,7 @@ async fn execute_add_and_list_activities() {
             meta: vec![],
         },
         &mut client,
+        false,
     )
     .await
     .expect("add-activity should succeed");
@@ -571,6 +583,7 @@ async fn execute_add_and_list_activities() {
             id: ticket_id.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("list-activities should succeed");
@@ -599,6 +612,7 @@ async fn execute_add_and_remove_block() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -612,6 +626,7 @@ async fn execute_add_and_remove_block() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -629,6 +644,7 @@ async fn execute_add_and_remove_block() {
             blocked_by_id: id_a.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("add-block should succeed");
@@ -646,6 +662,7 @@ async fn execute_add_and_remove_block() {
             blocked_by_id: id_a.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("remove-block should succeed");
@@ -671,6 +688,7 @@ async fn execute_add_and_remove_link() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -684,6 +702,7 @@ async fn execute_add_and_remove_link() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -701,6 +720,7 @@ async fn execute_add_and_remove_link() {
             linked_id: id_b.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("add-link should succeed");
@@ -718,6 +738,7 @@ async fn execute_add_and_remove_link() {
             linked_id: id_b.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("remove-link should succeed");
@@ -742,6 +763,7 @@ async fn execute_update_existing_ticket() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -763,6 +785,7 @@ async fn execute_update_existing_ticket() {
             force: false,
         },
         &mut client,
+        false,
     )
     .await
     .expect("update should succeed");
@@ -791,6 +814,7 @@ async fn execute_dispatchable() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -811,6 +835,7 @@ async fn execute_dispatchable() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -821,6 +846,7 @@ async fn execute_dispatchable() {
             epic_id: epic_id.clone(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("dispatchable should succeed");
@@ -853,6 +879,7 @@ async fn execute_list_activities_empty() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await
     .unwrap();
@@ -863,6 +890,7 @@ async fn execute_list_activities_empty() {
             id: "ur-t0001".into(),
         },
         &mut client,
+        false,
     )
     .await
     .expect("list-activities on ticket with no activities should succeed");
@@ -881,6 +909,7 @@ async fn execute_list_empty() {
             status: None,
         },
         &mut client,
+        false,
     )
     .await
     .expect("list on empty store should succeed");
@@ -923,6 +952,7 @@ async fn auth_rejection_propagates_error() {
             body: String::new(),
         },
         &mut client,
+        false,
     )
     .await;
 

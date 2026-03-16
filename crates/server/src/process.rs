@@ -863,7 +863,7 @@ mod tests {
     fn prompt_modes_default_has_code_and_design() {
         let cfg = PromptModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"tk".to_string()));
+        assert!(code.contains(&"implement".to_string()));
         assert!(code.contains(&"ship".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
         assert!(design.contains(&"brainstorming".to_string()));
@@ -911,7 +911,7 @@ skills = ["a", "b"]
         let toml = "daemon_port = 5000\n";
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"tk".to_string()));
+        assert!(code.contains(&"implement".to_string()));
     }
 
     #[test]
@@ -919,7 +919,7 @@ skills = ["a", "b"]
         let cfg = PromptModesConfig::default();
         let (strategy, skills) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
-        assert!(skills.contains(&"tk:agents".to_string()));
+        assert!(skills.contains(&"implement".to_string()));
     }
 
     #[test]

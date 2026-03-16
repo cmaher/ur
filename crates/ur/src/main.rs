@@ -57,8 +57,8 @@ enum Commands {
     },
     /// Manage tickets
     Ticket {
-        #[command(subcommand)]
-        command: ticket_client::TicketArgs,
+        #[command(flatten)]
+        args: ticket_client::args::TicketCommand,
     },
     /// Start the server
     Start,
@@ -758,7 +758,7 @@ async fn main() -> Result<()> {
             DbCommands::Restore { path } => db::restore(&config, &path).await?,
             DbCommands::List => db::list(&config)?,
         },
-        Commands::Ticket { command } => ticket::handle(port, command).await?,
+        Commands::Ticket { args } => ticket::handle(port, args.command, args.json).await?,
         Commands::Agent { command } => match command {
             AgentCommands::Dir { worker_id } => {
                 let mut client = connect(port).await?;

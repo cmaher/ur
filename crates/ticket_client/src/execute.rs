@@ -7,6 +7,7 @@ use ur_rpc::proto::ticket::*;
 
 use crate::args::TicketArgs;
 use crate::format::{format_ticket_detail, format_ticket_list};
+use crate::json_output::{self, DispatchableJson, TicketJson};
 use crate::status::build_status_report;
 
 /// Execute a ticket subcommand against the given gRPC client.
@@ -16,7 +17,7 @@ use crate::status::build_status_report;
 ///
 /// Generic over the transport type `T` so callers can pass a plain `Channel`
 /// or an `InterceptedService<Channel, F>` with auth headers.
-pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>) -> Result<()>
+pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>, json: bool) -> Result<()>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -47,7 +48,11 @@ where
                 .await
                 .context("failed to create ticket")?;
             let id = resp.into_inner().id;
-            println!("Created {id}");
+            if json {
+                println!("{}", serde_json::json!({"id": id}));
+            } else {
+                println!("Created {id}");
+            }
         }
 
         TicketArgs::List {
@@ -67,7 +72,10 @@ where
                 .await
                 .context("failed to list tickets")?;
             let tickets = resp.into_inner().tickets;
-            if tickets.is_empty() {
+            if json {
+                let items: Vec<TicketJson> = tickets.iter().map(TicketJson::from).collect();
+                println!("{}", serde_json::to_string(&items).unwrap());
+            } else if tickets.is_empty() {
                 println!("No tickets found.");
             } else {
                 println!("{}", format_ticket_list(&tickets));
@@ -84,10 +92,15 @@ where
                 .ticket
                 .as_ref()
                 .context("server returned empty ticket")?;
-            println!(
-                "{}",
-                format_ticket_detail(t, &inner.metadata, &inner.activities)
-            );
+            if json {
+                let detail = json_output::ticket_detail_json(t, &inner.metadata, &inner.activities);
+                println!("{}", serde_json::to_string(&detail).unwrap());
+            } else {
+                println!(
+                    "{}",
+                    format_ticket_detail(t, &inner.metadata, &inner.activities)
+                );
+            }
         }
 
         TicketArgs::Update {
@@ -112,7 +125,11 @@ where
                 })
                 .await
                 .context("failed to update ticket")?;
-            println!("Updated {id}");
+            if json {
+                println!("{}", serde_json::json!({"id": id, "updated": true}));
+            } else {
+                println!("Updated {id}");
+            }
         }
 
         TicketArgs::SetMeta { id, key, value } => {
@@ -221,7 +238,11 @@ where
                 .await
                 .context("failed to get dispatchable tickets")?;
             let tickets = resp.into_inner().tickets;
-            if tickets.is_empty() {
+            if json {
+                let items: Vec<DispatchableJson> =
+                    tickets.iter().map(DispatchableJson::from).collect();
+                println!("{}", serde_json::to_string(&items).unwrap());
+            } else if tickets.is_empty() {
                 println!("No dispatchable tickets for {epic_id}.");
             } else {
                 let mut out = String::new();
@@ -254,6 +275,10 @@ where
                 "{}",
                 build_status_report(&tickets, &today, project.as_deref())
             );
+        }
+
+        TicketArgs::Schema { subcommand } => {
+            crate::schema::print_schema(subcommand.as_deref());
         }
     }
 

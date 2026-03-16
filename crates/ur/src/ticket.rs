@@ -12,7 +12,7 @@ async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
     Ok(TicketServiceClient::new(channel))
 }
 
-pub async fn handle(port: u16, args: TicketArgs) -> Result<()> {
+pub async fn handle(port: u16, args: TicketArgs, json: bool) -> Result<()> {
     let mut client = connect_ticket(port).await?;
-    ticket_client::execute(args, &mut client).await
+    ticket_client::execute(args, &mut client, json).await
 }
