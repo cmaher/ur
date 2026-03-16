@@ -73,7 +73,10 @@ impl BackupTaskManager {
             return Ok(None);
         }
 
-        Self::validate_backup_path(&backup_path)?;
+        if let Err(e) = Self::validate_backup_path(&backup_path) {
+            warn!("backup disabled: {e}");
+            return Ok(None);
+        }
 
         let interval = Duration::from_secs(self.config.interval_minutes * 60);
         let manager = self.snapshot_manager.clone();
@@ -388,7 +391,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_errors_on_invalid_path() {
+    async fn spawn_returns_none_on_invalid_path() {
         let db_tmp = TempDir::new().unwrap();
         let (_db, sm) = create_test_db(&db_tmp).await;
         let config = BackupConfig {
@@ -399,8 +402,9 @@ mod tests {
         };
         let mgr = BackupTaskManager::new(sm, config);
         let (_tx, rx) = watch::channel(false);
-        let err = mgr.spawn(rx).expect_err("should fail");
-        assert!(err.contains("does not exist"), "{err}");
+        // Invalid paths are gracefully handled — spawn returns Ok(None) with a warning
+        let result = mgr.spawn(rx).expect("should not error");
+        assert!(result.is_none(), "invalid path should disable backup");
     }
 
     #[tokio::test]
