@@ -34,11 +34,14 @@ impl WorkerStrategy {
     ///
     /// - `Code` acquires an exclusive numbered slot via `pool.acquire_exclusive`.
     /// - `Design` acquires a shared named slot via `pool.acquire_shared("design", ...)`.
+    ///
+    /// Returns (host_path, slot_id) — the host-side path for Docker mounts and the
+    /// slot ID for linking via worker_slot.
     pub async fn acquire_slot(
         &self,
         pool: &RepoPoolManager,
         project_key: &str,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<(PathBuf, String), String> {
         match self {
             Self::Code => pool.acquire_exclusive(project_key).await,
             Self::Design => pool.acquire_shared("design", project_key).await,
@@ -48,14 +51,15 @@ impl WorkerStrategy {
     /// Release a pool slot using this strategy's release mode.
     ///
     /// - `Code` releases the exclusive slot via `pool.release_exclusive`.
-    /// - `Design` is a no-op (shared slots are not tracked).
+    /// - `Design` unlinks the worker from the shared slot.
     pub async fn release_slot(
         &self,
         pool: &RepoPoolManager,
+        worker_id: &str,
         slot_path: &Path,
     ) -> Result<(), String> {
         match self {
-            Self::Code => pool.release_exclusive(slot_path).await,
+            Self::Code => pool.release_exclusive(worker_id, slot_path).await,
             Self::Design => Ok(()),
         }
     }

@@ -136,8 +136,8 @@ impl CoreService for CoreServiceHandler {
 
         // Resolve workspace: project_key triggers pool acquire via the strategy,
         // otherwise use the explicit workspace_dir from the request.
-        let (workspace_dir, project_key) = if !req.project_key.is_empty() {
-            let slot_path = strategy
+        let (workspace_dir, project_key, slot_id) = if !req.project_key.is_empty() {
+            let (slot_path, slot_id) = strategy
                 .acquire_slot(&self.repo_pool_manager, &req.project_key)
                 .await
                 .map_err(|e| CoreError::PoolSlotFailed {
@@ -147,14 +147,15 @@ impl CoreService for CoreServiceHandler {
                 worker_id = req.worker_id,
                 project_key = req.project_key,
                 slot_path = %slot_path.display(),
+                slot_id = %slot_id,
                 strategy = strategy.name(),
                 "acquired pool slot"
             );
-            (Some(slot_path), req.project_key.clone())
+            (Some(slot_path), req.project_key.clone(), Some(slot_id))
         } else if !req.workspace_dir.is_empty() {
-            (Some(PathBuf::from(&req.workspace_dir)), String::new())
+            (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
         } else {
-            (None, String::new())
+            (None, String::new(), None)
         };
 
         // Generate unique worker ID for this launch
@@ -209,6 +210,7 @@ impl CoreService for CoreServiceHandler {
             skills,
             git_hooks_dir,
             mounts,
+            slot_id,
         };
         let (container_id, _worker_secret) = self
             .worker_manager

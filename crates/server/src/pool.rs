@@ -96,28 +96,25 @@ impl RepoPoolManager {
     /// Acquire an exclusive repo slot for the given project.
     ///
     /// 1. Looks up the project in config.
-    /// 2. Queries DB for an available exclusive slot for this project.
-    /// 3. If found, resets it to origin/master and marks it in-use in DB.
+    /// 2. Queries DB for an available exclusive slot (not linked to an active worker).
+    /// 3. If found, resets it to origin/master.
     /// 4. If none available, scans disk for existing slots, clones a new one (if under pool_limit),
     ///    and inserts a new slot row in the DB.
     ///
-    /// Returns the host-side path to the acquired slot directory (for Docker volume mounts).
-    pub async fn acquire_exclusive(&self, project_key: &str) -> Result<PathBuf, String> {
+    /// Returns (host_path, slot_id) — the host-side path for Docker volume mounts and the
+    /// slot ID for linking via worker_slot.
+    pub async fn acquire_exclusive(&self, project_key: &str) -> Result<(PathBuf, String), String> {
         let project = self
             .projects
             .get(project_key)
             .ok_or_else(|| format!("unknown project: {project_key}"))?;
 
-        // Query DB for available exclusive slots
-        let db_slots = self
+        // Query DB for an available exclusive slot (not linked to an active worker)
+        let available_slot = self
             .worker_repo
-            .list_slots_by_project(project_key)
+            .find_available_exclusive_slot(project_key)
             .await
-            .map_err(|e| format!("db error listing slots: {e}"))?;
-
-        let available_slot = db_slots
-            .iter()
-            .find(|s| s.slot_type == "exclusive" && s.status == "available");
+            .map_err(|e| format!("db error finding available slot: {e}"))?;
 
         if let Some(slot) = available_slot {
             let host_path = PathBuf::from(&slot.host_path);
@@ -132,11 +129,7 @@ impl RepoPoolManager {
                 self.reclone_slot(&project.repo, project_key, &slot_name)
                     .await?;
             }
-            self.worker_repo
-                .update_slot_status(&slot_id, "in_use")
-                .await
-                .map_err(|e| format!("db error marking slot in_use: {e}"))?;
-            return Ok(host_path);
+            return Ok((host_path, slot_id));
         }
 
         // No available slot — check pool_limit using disk scan
@@ -166,15 +159,15 @@ impl RepoPoolManager {
         self.clone_slot(&project.repo, project_key, &slot_name)
             .await?;
 
-        // Insert new slot row in DB with status in_use
+        // Insert new slot row in DB
         let now = Utc::now().to_rfc3339();
+        let slot_id = Uuid::new_v4().to_string();
         let new_slot = ur_db::model::Slot {
-            id: Uuid::new_v4().to_string(),
+            id: slot_id.clone(),
             project_key: project_key.to_owned(),
             slot_name: slot_name.clone(),
             slot_type: "exclusive".to_owned(),
             host_path: host_path.display().to_string(),
-            status: "in_use".to_owned(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -183,7 +176,7 @@ impl RepoPoolManager {
             .await
             .map_err(|e| format!("db error inserting new slot: {e}"))?;
 
-        Ok(host_path)
+        Ok((host_path, slot_id))
     }
 
     /// Acquire a shared (named) repo slot for the given project.
@@ -194,11 +187,14 @@ impl RepoPoolManager {
     ///
     /// A per-slot mutex serializes the reset to avoid git lock conflicts when
     /// multiple workers acquire the same shared slot concurrently.
+    ///
+    /// Returns (host_path, slot_id) — the host-side path and the slot ID for linking
+    /// via worker_slot.
     pub async fn acquire_shared(
         &self,
         slot_name: &str,
         project_key: &str,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<(PathBuf, String), String> {
         let project = self
             .projects
             .get(project_key)
@@ -254,37 +250,68 @@ impl RepoPoolManager {
                 .await?;
         }
 
-        Ok(host_path)
+        // Ensure the shared slot has a DB row, get its ID
+        let slot_id = self
+            .ensure_shared_slot_row(project_key, slot_name, &host_path)
+            .await?;
+
+        Ok((host_path, slot_id))
+    }
+
+    /// Ensure a shared slot has a DB row, returning its slot ID.
+    /// If no row exists, insert one.
+    async fn ensure_shared_slot_row(
+        &self,
+        project_key: &str,
+        slot_name: &str,
+        host_path: &Path,
+    ) -> Result<String, String> {
+        let host_path_str = host_path.display().to_string();
+        if let Some(existing) = self
+            .worker_repo
+            .get_slot_by_host_path(&host_path_str)
+            .await
+            .map_err(|e| format!("db error looking up shared slot: {e}"))?
+        {
+            return Ok(existing.id);
+        }
+
+        let now = Utc::now().to_rfc3339();
+        let slot_id = Uuid::new_v4().to_string();
+        let new_slot = ur_db::model::Slot {
+            id: slot_id.clone(),
+            project_key: project_key.to_owned(),
+            slot_name: slot_name.to_owned(),
+            slot_type: "shared".to_owned(),
+            host_path: host_path_str,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.worker_repo
+            .insert_slot(&new_slot)
+            .await
+            .map_err(|e| format!("db error inserting shared slot: {e}"))?;
+
+        Ok(slot_id)
     }
 
     /// Release a previously acquired exclusive slot, resetting it to a clean state.
     ///
     /// Fetches, checks out master, resets to origin/master, and cleans.
-    /// Updates the slot status to available in the database.
-    /// `slot_path` is a host-side path.
-    pub async fn release_exclusive(&self, slot_path: &Path) -> Result<(), String> {
-        info!(path = %slot_path.display(), "releasing exclusive pool slot");
-
-        let host_path_str = slot_path.display().to_string();
-        let slot = self
-            .worker_repo
-            .get_slot_by_host_path(&host_path_str)
-            .await
-            .map_err(|e| format!("db error looking up slot: {e}"))?;
+    /// Unlinks the worker from the slot in the worker_slot join table.
+    /// `slot_path` is a host-side path, `worker_id` identifies the worker to unlink.
+    pub async fn release_exclusive(&self, worker_id: &str, slot_path: &Path) -> Result<(), String> {
+        info!(worker_id, path = %slot_path.display(), "releasing exclusive pool slot");
 
         if let Err(e) = self.reset_slot(slot_path).await {
-            // Mark available anyway so the next acquire can reclone it.
+            // Unlink anyway so the next acquire can reclone it.
             warn!(path = %slot_path.display(), error = %e, "reset failed during release, slot will be recloned on next acquire");
         }
 
-        if let Some(slot) = slot {
-            self.worker_repo
-                .update_slot_status(&slot.id, "available")
-                .await
-                .map_err(|e| format!("db error marking slot available: {e}"))?;
-        } else {
-            warn!(path = %slot_path.display(), "slot not found in DB during release");
-        }
+        self.worker_repo
+            .unlink_worker_slot(worker_id)
+            .await
+            .map_err(|e| format!("db error unlinking worker from slot: {e}"))?;
 
         Ok(())
     }
@@ -556,26 +583,57 @@ mod tests {
         (mgr, workspace)
     }
 
-    /// Insert a slot row into the DB for testing.
+    /// Insert a slot row into the DB for testing. Returns the slot ID.
     async fn insert_test_slot(
         worker_repo: &WorkerRepo,
         project_key: &str,
         slot_name: &str,
         host_path: &Path,
-        status: &str,
-    ) {
+    ) -> String {
         let now = Utc::now().to_rfc3339();
+        let id = Uuid::new_v4().to_string();
         let slot = ur_db::model::Slot {
-            id: Uuid::new_v4().to_string(),
+            id: id.clone(),
             project_key: project_key.to_owned(),
             slot_name: slot_name.to_owned(),
             slot_type: "exclusive".to_owned(),
             host_path: host_path.display().to_string(),
-            status: status.to_owned(),
             created_at: now.clone(),
             updated_at: now,
         };
         worker_repo.insert_slot(&slot).await.unwrap();
+        id
+    }
+
+    /// Insert a slot and mark it as in-use by linking a fake worker to it.
+    async fn insert_test_slot_in_use(
+        worker_repo: &WorkerRepo,
+        project_key: &str,
+        slot_name: &str,
+        host_path: &Path,
+    ) -> String {
+        let slot_id = insert_test_slot(worker_repo, project_key, slot_name, host_path).await;
+        // Create a fake running worker linked to this slot
+        let worker_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let worker = ur_db::model::Worker {
+            worker_id: worker_id.clone(),
+            process_id: format!("proc-{slot_name}"),
+            project_key: project_key.to_owned(),
+            container_id: format!("container-{slot_name}"),
+            worker_secret: "secret".to_owned(),
+            strategy: "code".to_owned(),
+            status: "running".to_owned(),
+            workspace_path: Some(host_path.display().to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        worker_repo.insert_worker(&worker).await.unwrap();
+        worker_repo
+            .link_worker_slot(&worker_id, &slot_id)
+            .await
+            .unwrap();
+        slot_id
     }
 
     #[tokio::test]
@@ -620,10 +678,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 1).await;
 
-        // Create one slot directory and mark it in-use in DB
+        // Create one slot directory and mark it in-use in DB (linked to a running worker)
         let slot0 = workspace.join("pool").join("testproj").join("0");
         std::fs::create_dir_all(&slot0).unwrap();
-        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0, "in_use").await;
+        insert_test_slot_in_use(&mgr.worker_repo, "testproj", "0", &slot0).await;
 
         // Acquire should fail — 1 slot exists on disk, none available in DB, pool_limit = 1
         let result = mgr.acquire_exclusive("testproj").await;
@@ -658,47 +716,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn slot_status_updates_via_db() {
+    async fn worker_slot_link_unlink_via_db() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, _) = test_pool(tmp.path(), 10).await;
         let slot_path = PathBuf::from("/fake/slot/0");
 
-        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot_path, "available").await;
+        let slot_id = insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot_path).await;
 
-        // Verify slot is available
-        let slot = mgr
+        // Initially no worker is linked
+        let available = mgr
             .worker_repo
-            .get_slot_by_host_path(&slot_path.display().to_string())
+            .find_available_exclusive_slot("testproj")
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(slot.status, "available");
+        assert!(
+            available.is_some(),
+            "slot should be available (no linked worker)"
+        );
 
-        // Update to in_use
+        // Create a worker and link it
+        let now = Utc::now().to_rfc3339();
+        let worker = ur_db::model::Worker {
+            worker_id: "test-worker-1".to_owned(),
+            process_id: "proc-1".to_owned(),
+            project_key: "testproj".to_owned(),
+            container_id: "container-1".to_owned(),
+            worker_secret: "secret".to_owned(),
+            strategy: "code".to_owned(),
+            status: "running".to_owned(),
+            workspace_path: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        mgr.worker_repo.insert_worker(&worker).await.unwrap();
         mgr.worker_repo
-            .update_slot_status(&slot.id, "in_use")
+            .link_worker_slot("test-worker-1", &slot_id)
             .await
             .unwrap();
-        let slot = mgr
-            .worker_repo
-            .get_slot_by_host_path(&slot_path.display().to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(slot.status, "in_use");
 
-        // Update back to available
-        mgr.worker_repo
-            .update_slot_status(&slot.id, "available")
-            .await
-            .unwrap();
-        let slot = mgr
+        // Now the slot should not be available
+        let available = mgr
             .worker_repo
-            .get_slot_by_host_path(&slot_path.display().to_string())
+            .find_available_exclusive_slot("testproj")
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(slot.status, "available");
+        assert!(
+            available.is_none(),
+            "slot should not be available (linked to running worker)"
+        );
+
+        // Unlink the worker
+        mgr.worker_repo
+            .unlink_worker_slot("test-worker-1")
+            .await
+            .unwrap();
+
+        // Slot should be available again
+        let available = mgr
+            .worker_repo
+            .find_available_exclusive_slot("testproj")
+            .await
+            .unwrap();
+        assert!(available.is_some(), "slot should be available after unlink");
     }
 
     #[tokio::test]
@@ -804,10 +883,10 @@ mod tests {
         std::fs::create_dir_all(&slot1).unwrap();
         std::fs::create_dir_all(&slot2).unwrap();
 
-        // Mark slots 0 and 1 as in-use in DB, slot 2 as available
-        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0, "in_use").await;
-        insert_test_slot(&mgr.worker_repo, "testproj", "1", &slot1, "in_use").await;
-        insert_test_slot(&mgr.worker_repo, "testproj", "2", &slot2, "available").await;
+        // Slots 0 and 1 are in-use (linked to running workers), slot 2 is available
+        insert_test_slot_in_use(&mgr.worker_repo, "testproj", "0", &slot0).await;
+        insert_test_slot_in_use(&mgr.worker_repo, "testproj", "1", &slot1).await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "2", &slot2).await;
 
         // Acquire should try slot 2, which will fail on builderd connection (expected in
         // unit tests — the important thing is it selects the right slot).
@@ -816,7 +895,7 @@ mod tests {
         // The git reset via builderd will fail because there's no builderd running,
         // but the error should reference slot 2's path (proving correct selection).
         match result {
-            Ok(path) => assert_eq!(path, slot2),
+            Ok((path, _slot_id)) => assert_eq!(path, slot2),
             Err(e) => assert!(
                 e.contains(&slot2.to_string_lossy().to_string()),
                 "expected error to reference slot2 path, got: {e}"
