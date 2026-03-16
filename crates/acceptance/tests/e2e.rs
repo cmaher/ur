@@ -89,6 +89,53 @@ fn detect_container_runtime() -> String {
     "docker".into()
 }
 
+/// Force-remove all containers and networks matching a name prefix.
+/// Cleans up stale resources from prior failed runs regardless of run ID.
+fn force_remove_by_prefix(runtime: &str, prefix: &str) {
+    // Remove containers matching prefix
+    let output = Command::new(runtime)
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name={prefix}"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .output();
+    if let Ok(output) = output {
+        let names = String::from_utf8_lossy(&output.stdout);
+        for name in names.lines().filter(|l| !l.is_empty()) {
+            let _ = Command::new(runtime)
+                .args(["rm", "-f", name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    // Remove networks matching prefix
+    let output = Command::new(runtime)
+        .args([
+            "network",
+            "ls",
+            "--filter",
+            &format!("name={prefix}"),
+            "--format",
+            "{{.Name}}",
+        ])
+        .output();
+    if let Ok(output) = output {
+        let names = String::from_utf8_lossy(&output.stdout);
+        for name in names.lines().filter(|l| !l.is_empty()) {
+            let _ = Command::new(runtime)
+                .args(["network", "rm", name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+
 /// Force-remove a container if it exists (cleanup from prior failed runs).
 fn force_remove_container(runtime: &str, name: &str) {
     let _ = Command::new(runtime)
@@ -311,20 +358,10 @@ fn e2e_all() {
     let daemon_port = 19870u16;
     let project_key = "poolproj";
 
-    // ---- (0) Clean up stale containers from prior failed runs ----
-    force_remove_container(&runtime, &names.server_hostname);
-    force_remove_container(&runtime, &names.squid_hostname);
-    force_remove_container(&runtime, &names.qdrant_hostname);
-    // Worker containers that scenarios will use
-    for ticket in [
-        "ping-test",
-        "pool-test",
-        "design-test-1",
-        "design-test-2",
-        "design-code-test",
-    ] {
-        force_remove_container(&runtime, &format!("{}{ticket}", names.agent_prefix));
-    }
+    // ---- (0) Clean up stale containers/networks from ANY prior e2e run ----
+    // Docker's name filter does substring matching, so "-e2e-" catches all
+    // ur-{id}-e2e-{role} containers regardless of which random run ID created them.
+    force_remove_by_prefix(&runtime, "-e2e-");
 
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
@@ -376,27 +413,29 @@ fn e2e_all() {
         project_key,
     };
 
-    // ---- (2) ur start (once for all scenarios) ----
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-    let up_output = run_cmd(&ur, &["start"], &env_slice);
-    assert!(
-        up_output.status.success(),
-        "ur start failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&up_output.stdout),
-        String::from_utf8_lossy(&up_output.stderr),
-    );
-
-    // Init workspace git repo (needed for workspace-mount scenario)
-    let workspace_dir = config_path.join("workspace");
-    let git_init = Command::new("git")
-        .args(["init", workspace_dir.to_str().unwrap()])
-        .output()
-        .expect("failed to run git init");
-    assert!(git_init.status.success(), "git init failed");
-
-    // ---- (3) Run scenarios sequentially ----
+    // ---- (2) ur start, run scenarios, always tear down ----
+    // Everything from `ur start` onward is wrapped in catch_unwind so that
+    // teardown runs even if `ur start` itself fails (e.g., port conflict).
     let scenario_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let env_pairs = env.env();
+        let env_slice = env_pairs.to_vec();
+        let up_output = run_cmd(&ur, &["start"], &env_slice);
+        assert!(
+            up_output.status.success(),
+            "ur start failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
+
+        // Init workspace git repo (needed for workspace-mount scenario)
+        let workspace_dir = config_path.join("workspace");
+        let git_init = Command::new("git")
+            .args(["init", workspace_dir.to_str().unwrap()])
+            .output()
+            .expect("failed to run git init");
+        assert!(git_init.status.success(), "git init failed");
+
+        // ---- (3) Run scenarios sequentially ----
         scenario_ping_and_git(&env);
         scenario_project_pool_launch(&env);
         scenario_design_mode_pool_launch(&env);
