@@ -5,9 +5,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use ur_db::{EdgeKind, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
-use ur_rpc::error::{
-    self, DOMAIN_TICKET, INTERNAL, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN,
-};
+use ur_rpc::error::{self, DOMAIN_TICKET, INTERNAL, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN};
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
@@ -217,9 +215,7 @@ impl TicketService for TicketServiceHandler {
             .get_ticket(&req.id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?
-            .ok_or_else(|| TicketError::NotFound {
-                id: req.id.clone(),
-            })?;
+            .ok_or_else(|| TicketError::NotFound { id: req.id.clone() })?;
 
         let meta = self
             .ticket_repo

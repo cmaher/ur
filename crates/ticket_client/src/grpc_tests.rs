@@ -6,7 +6,7 @@ use tonic::transport::{Channel, Endpoint, Server};
 use tonic::{Code, Request, Response, Status};
 
 use ur_rpc::error::{
-    self, StatusResultExt, DOMAIN_CORE, DOMAIN_TICKET, NOT_FOUND, UNAUTHENTICATED,
+    self, DOMAIN_CORE, DOMAIN_TICKET, NOT_FOUND, StatusResultExt, UNAUTHENTICATED,
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::ticket_service_server::{TicketService, TicketServiceServer};

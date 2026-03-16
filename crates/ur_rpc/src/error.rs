@@ -124,10 +124,15 @@ mod tests {
         assert_eq!(status.code(), Code::FailedPrecondition);
         assert_eq!(status.message(), "ticket has open children");
 
-        let info = status.get_details_error_info().expect("should have ErrorInfo");
+        let info = status
+            .get_details_error_info()
+            .expect("should have ErrorInfo");
         assert_eq!(info.domain, DOMAIN_TICKET);
         assert_eq!(info.reason, TICKET_HAS_OPEN_CHILDREN);
-        assert_eq!(info.metadata.get("ticket_id").map(|s| s.as_str()), Some("ur-abc"));
+        assert_eq!(
+            info.metadata.get("ticket_id").map(|s| s.as_str()),
+            Some("ur-abc")
+        );
     }
 
     #[test]

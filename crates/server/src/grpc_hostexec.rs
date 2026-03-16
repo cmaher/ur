@@ -10,8 +10,8 @@ use ur_rpc::error::{
     self, BUILDERD_UNAVAILABLE, COMMAND_NOT_ALLOWED, DOMAIN_HOSTEXEC, INTERNAL, INVALID_ARGUMENT,
     NOT_FOUND, TRANSFORM_REJECTED,
 };
-use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::builder::BuilderExecRequest;
+use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
@@ -197,12 +197,13 @@ impl HostExecService for HostExecServiceHandler {
             env: transform_result.env,
         };
 
-        let response = client
-            .exec(builder_req)
-            .await
-            .map_err(|e| HostExecError::BuilderdExecFailed {
-                message: e.to_string(),
-            })?;
+        let response =
+            client
+                .exec(builder_req)
+                .await
+                .map_err(|e| HostExecError::BuilderdExecFailed {
+                    message: e.to_string(),
+                })?;
 
         // Stream builderd response back to worker
         let mut inbound = response.into_inner();
@@ -261,21 +262,19 @@ impl HostExecServiceHandler {
             return Ok((String::new(), None, self.config.clone()));
         };
 
-        let agent_id_str = agent_id_val.to_str().map_err(|_| HostExecError::InvalidAgentId {
-            reason: "invalid ur-agent-id header encoding".into(),
-        })?;
-        let agent_id =
-            crate::AgentId::parse(agent_id_str).map_err(|e| HostExecError::InvalidAgentId {
-                reason: e,
+        let agent_id_str = agent_id_val
+            .to_str()
+            .map_err(|_| HostExecError::InvalidAgentId {
+                reason: "invalid ur-agent-id header encoding".into(),
             })?;
+        let agent_id = crate::AgentId::parse(agent_id_str)
+            .map_err(|e| HostExecError::InvalidAgentId { reason: e })?;
 
         // Look up process_id from ProcessManager
-        let process_id =
-            self.process_manager
-                .resolve_process_id(&agent_id)
-                .map_err(|e| HostExecError::ProcessNotFound {
-                    agent_id: e,
-                })?;
+        let process_id = self
+            .process_manager
+            .resolve_process_id(&agent_id)
+            .map_err(|e| HostExecError::ProcessNotFound { agent_id: e })?;
 
         // Look up agent context (project_key, slot_path) from ProcessManager
         let proc_context = self.process_manager.get_agent_context(&agent_id);
