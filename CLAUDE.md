@@ -22,7 +22,7 @@ Cargo workspace:
 
 ## Development
 
-- **CI runs via the pre-push git hook** — avoid running `cargo make ci` manually.
+- **CI runs via the pre-push git hook** — avoid running `cargo make ci` manually. The pre-push hook runs full CI (fmt, clippy, tests, build), so `git push` can take several minutes. When pushing in the background, use a long timeout (≥5 min) when waiting for output.
 - `cargo make fmt-fix` - Fix formatting
 - `cargo make clippy` - Run clippy lints
 - `cargo make audit` - Check dependency vulnerabilities
