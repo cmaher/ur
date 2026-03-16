@@ -8,7 +8,7 @@ pub mod ticket_repo;
 #[cfg(test)]
 mod tests;
 
-pub use agent_repo::AgentRepo;
+pub use agent_repo::{AgentReconcileResult, AgentRepo, SlotReconcileResult};
 pub use database::DatabaseManager;
 pub use graph::GraphManager;
 pub use model::{
