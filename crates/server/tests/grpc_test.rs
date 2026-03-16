@@ -99,7 +99,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         &ur_config::HostExecConfig::default(),
     )
     .unwrap();
-    let handler = ur_server::grpc::CoreServiceHandler {
+    ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_pool_manager,
         workspace,
@@ -107,8 +107,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         projects: std::collections::HashMap::new(),
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
-    };
-    handler
+    }
 }
 
 #[tokio::test]
