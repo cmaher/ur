@@ -127,6 +127,9 @@ pub const WORKSPACE_MOUNT: &str = "/workspace";
 /// constructing paths for builderd (which runs on the host).
 pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
 
+/// Container-side mount point for the backup directory.
+pub const BACKUP_CONTAINER_PATH: &str = "/backup";
+
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).

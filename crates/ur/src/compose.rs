@@ -150,6 +150,8 @@ struct ComposeParams {
     qdrant_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
+    /// Host-side backup path, if configured. Mounted at `/backup` in the server container.
+    backup_path: Option<PathBuf>,
 }
 
 /// Generate the docker compose YAML programmatically.
@@ -162,6 +164,7 @@ pub fn generate_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
     rag: &ur_config::RagConfig,
+    backup: &ur_config::BackupConfig,
 ) -> String {
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
@@ -169,6 +172,7 @@ pub fn generate_compose(
         qdrant_container_name: rag.qdrant_hostname.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
+        backup_path: if backup.enabled { backup.path.clone() } else { None },
     };
 
     let mut out = String::with_capacity(2048);
@@ -238,6 +242,15 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
     writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}/fastembed:/fastembed:ro").unwrap();
+    if let Some(backup_path) = &params.backup_path {
+        writeln!(
+            out,
+            "      - {}:{}",
+            backup_path.display(),
+            ur_config::BACKUP_CONTAINER_PATH,
+        )
+        .unwrap();
+    }
 
     // Environment
     writeln!(out, "    environment:").unwrap();
@@ -249,6 +262,14 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     )
     .unwrap();
     writeln!(out, "      - FASTEMBED_CACHE_DIR=/fastembed").unwrap();
+    if params.backup_path.is_some() {
+        writeln!(
+            out,
+            "      - UR_BACKUP_PATH={}",
+            ur_config::BACKUP_CONTAINER_PATH,
+        )
+        .unwrap();
+    }
     writeln!(
         out,
         "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-42070}}"
@@ -325,7 +346,8 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         env_vars.push(("UR_CONTAINER".to_string(), val));
     }
 
-    let compose_content = generate_compose(&config.network, &config.proxy, &config.rag);
+    let compose_content =
+        generate_compose(&config.network, &config.proxy, &config.rag, &config.backup);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -418,7 +440,13 @@ mod tests {
             embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
             docs: ur_config::RagDocsConfig::default(),
         };
-        let generated = generate_compose(&network, &proxy, &rag);
+        let backup = ur_config::BackupConfig {
+            path: None,
+            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            enabled: true,
+            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        };
+        let generated = generate_compose(&network, &proxy, &rag, &backup);
 
         // Verify all three services are present
         assert!(generated.contains("  ur-squid:"));
@@ -471,7 +499,13 @@ mod tests {
             embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
             docs: ur_config::RagDocsConfig::default(),
         };
-        let generated = generate_compose(&network, &proxy, &rag);
+        let backup = ur_config::BackupConfig {
+            path: None,
+            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            enabled: true,
+            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        };
+        let generated = generate_compose(&network, &proxy, &rag, &backup);
 
         // Verify top-level structure: starts with comment, then services, then networks
         assert!(generated.starts_with("# Auto-generated"));

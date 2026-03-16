@@ -96,9 +96,15 @@ async fn main() -> anyhow::Result<()> {
     info!(db_path = %db_path.display(), "database initialized");
 
     // Start periodic backup task (if configured)
+    // UR_BACKUP_PATH overrides the host path from ur.toml — set by compose generation
+    // to map the container-side mount point.
+    let mut backup_config = cfg.backup.clone();
+    if let Ok(container_path) = std::env::var("UR_BACKUP_PATH") {
+        backup_config.path = Some(std::path::PathBuf::from(container_path));
+    }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let snapshot_manager = SnapshotManager::new(db.pool().clone());
-    let backup_task_manager = BackupTaskManager::new(snapshot_manager, cfg.backup.clone());
+    let backup_task_manager = BackupTaskManager::new(snapshot_manager, backup_config);
     let backup_handle = backup_task_manager
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
