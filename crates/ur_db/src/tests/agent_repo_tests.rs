@@ -255,6 +255,135 @@ async fn get_agent_context() {
     db.cleanup().await;
 }
 
+#[tokio::test]
+async fn verify_agent_stopped_still_verifies() {
+    // verify_agent checks agent_id + secret only, not status.
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    let mut agent = test_agent("a1", "proj-a", None);
+    agent.status = "stopped".to_owned();
+    r.insert_agent(&agent).await.unwrap();
+
+    assert!(r.verify_agent("a1", "secret-a1").await.unwrap());
+    assert!(!r.verify_agent("a1", "wrong").await.unwrap());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_slot_by_host_path() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+
+    let found = r.get_slot_by_host_path("/tmp/s1").await.unwrap();
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().id, "s1");
+
+    let missing = r.get_slot_by_host_path("/tmp/nonexistent").await.unwrap();
+    assert!(missing.is_none());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn list_all_slots_across_projects() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+    r.insert_slot(&test_slot("s2", "proj-b")).await.unwrap();
+    r.insert_slot(&test_slot("s3", "proj-a")).await.unwrap();
+
+    let all = r.list_all_slots().await.unwrap();
+    assert_eq!(all.len(), 3);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn list_active_agents_filters_by_status() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    // Insert agents in various statuses.
+    let mut a1 = test_agent("a1", "proj-a", None);
+    a1.status = "running".to_owned();
+    r.insert_agent(&a1).await.unwrap();
+
+    let mut a2 = test_agent("a2", "proj-a", None);
+    a2.status = "provisioning".to_owned();
+    r.insert_agent(&a2).await.unwrap();
+
+    let mut a3 = test_agent("a3", "proj-a", None);
+    a3.status = "stopped".to_owned();
+    r.insert_agent(&a3).await.unwrap();
+
+    let mut a4 = test_agent("a4", "proj-a", None);
+    a4.status = "stopping".to_owned();
+    r.insert_agent(&a4).await.unwrap();
+
+    let active = r.list_active_agents().await.unwrap();
+    assert_eq!(active.len(), 3);
+
+    let active_ids: Vec<&str> = active.iter().map(|a| a.agent_id.as_str()).collect();
+    assert!(active_ids.contains(&"a1"));
+    assert!(active_ids.contains(&"a2"));
+    assert!(active_ids.contains(&"a4"));
+    assert!(!active_ids.contains(&"a3"));
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn delete_agents_by_slot_id() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+
+    let a1 = test_agent("a1", "proj-a", Some("s1"));
+    let a2 = test_agent("a2", "proj-a", Some("s1"));
+    let a3 = test_agent("a3", "proj-a", None);
+    r.insert_agent(&a1).await.unwrap();
+    r.insert_agent(&a2).await.unwrap();
+    r.insert_agent(&a3).await.unwrap();
+
+    let deleted = r.delete_agents_by_slot_id("s1").await.unwrap();
+    assert_eq!(deleted, 2);
+
+    // a1 and a2 gone, a3 still present.
+    assert!(r.get_agent("a1").await.unwrap().is_none());
+    assert!(r.get_agent("a2").await.unwrap().is_none());
+    assert!(r.get_agent("a3").await.unwrap().is_some());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn exclusive_slots_in_use_ignores_shared_slots() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    // Insert an exclusive slot and a shared slot, both in_use.
+    let mut exclusive = test_slot("s1", "proj-a");
+    exclusive.slot_type = "exclusive".to_owned();
+    r.insert_slot(&exclusive).await.unwrap();
+    r.update_slot_status("s1", "in_use").await.unwrap();
+
+    let mut shared = test_slot("s2", "proj-a");
+    shared.slot_type = "shared".to_owned();
+    r.insert_slot(&shared).await.unwrap();
+    r.update_slot_status("s2", "in_use").await.unwrap();
+
+    // Only the exclusive slot should be counted.
+    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 1);
+
+    db.cleanup().await;
+}
+
 // --- Reconciliation tests ---
 
 #[tokio::test]
