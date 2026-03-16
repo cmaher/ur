@@ -12,10 +12,9 @@ use ur_db::AgentRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
+use crate::RepoPoolManager;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
-use crate::{RepoPoolManager, RepoRegistry};
-use std::sync::Arc;
 
 /// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
@@ -238,7 +237,6 @@ pub struct ProcessManager {
     /// Host-side config directory path, used to construct volume mounts for
     /// agent containers (e.g., shared credentials file).
     host_config_dir: PathBuf,
-    repo_registry: Arc<RepoRegistry>,
     repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
@@ -254,7 +252,6 @@ impl ProcessManager {
     pub fn new(
         workspace: PathBuf,
         host_config_dir: PathBuf,
-        repo_registry: Arc<RepoRegistry>,
         repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
@@ -265,7 +262,6 @@ impl ProcessManager {
         Self {
             workspace,
             host_config_dir,
-            repo_registry,
             repo_pool_manager,
             network_manager,
             network_config,
@@ -365,9 +361,8 @@ impl ProcessManager {
             .expect("failed to register agent");
     }
 
-    /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
-    /// When `workspace_dir` is Some, the directory is used as-is (no git init)
-    /// and registered via `register_absolute`.
+    /// Phase 1 of launch: create repo dir and git init.
+    /// When `workspace_dir` is Some, the directory is used as-is (no git init).
     /// The caller is responsible for calling `run_and_record` after `prepare`.
     pub async fn prepare(
         &self,
@@ -395,9 +390,8 @@ impl ProcessManager {
         }
 
         if let Some(ws_dir) = workspace_dir {
-            // External workspace: register the absolute path directly, skip git init
+            // External workspace: skip git init (agent.workspace_path in DB handles CWD resolution)
             info!(process_id, %agent_id, workspace_dir = %ws_dir.display(), "registering external workspace");
-            self.repo_registry.register_absolute(process_id, ws_dir);
         } else {
             // Default: create repo dir and git init
             info!(process_id, %agent_id, "creating repo directory and initializing git");
@@ -418,8 +412,6 @@ impl ProcessManager {
                     String::from_utf8_lossy(&git_init.stderr)
                 ));
             }
-
-            self.repo_registry.register(process_id, process_id);
         }
 
         Ok(())
@@ -509,8 +501,7 @@ impl ProcessManager {
         Ok((cid.0, agent_secret))
     }
 
-    /// Stop a running agent process by agent ID. Stops + removes the container,
-    /// unregisters from RepoRegistry.
+    /// Stop a running agent process by agent ID. Stops + removes the container.
     pub async fn stop_by_agent_id(&self, agent_id: &AgentId) -> Result<(), String> {
         let agent = self
             .agent_repo
@@ -553,10 +544,7 @@ impl ProcessManager {
                 .await?;
         }
 
-        // 3. Unregister from RepoRegistry
-        self.repo_registry.unregister(&agent.process_id);
-
-        // 4. Update status to stopped in database
+        // 3. Update status to stopped in database
         self.agent_repo
             .update_agent_status(&agent_id.0, "stopped")
             .await
@@ -697,7 +685,6 @@ mod tests {
 
     async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
-        let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let config = test_config(workspace.path());
         let agent_repo = test_agent_repo().await;
         let repo_pool_manager = RepoPoolManager::new(
@@ -720,7 +707,6 @@ mod tests {
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
-            registry,
             repo_pool_manager,
             network_manager,
             network_config,
@@ -742,10 +728,6 @@ mod tests {
         // Verify repo dir exists and has .git
         let repo_dir = workspace.path().join(process_id);
         assert!(repo_dir.join(".git").exists());
-
-        // Verify registry resolves
-        let resolved = mgr.repo_registry.resolve(process_id);
-        assert!(resolved.is_ok());
     }
 
     #[tokio::test]
@@ -764,10 +746,6 @@ mod tests {
 
         // Should NOT have a .git dir — we skipped git init
         assert!(!ext_path.join(".git").exists());
-
-        // Registry should resolve to the external path directly
-        let resolved = mgr.repo_registry.resolve(process_id).unwrap();
-        assert_eq!(resolved, ext_path);
     }
 
     #[tokio::test]

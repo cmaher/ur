@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
@@ -9,9 +8,7 @@ use tracing::info;
 use container::NetworkManager;
 use ur_db::{AgentRepo, DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
-use ur_server::{
-    BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager, RepoRegistry,
-};
+use ur_server::{BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager};
 
 #[derive(Parser)]
 #[command(
@@ -58,8 +55,6 @@ async fn main() -> anyhow::Result<()> {
 
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
-
-    let repo_registry = Arc::new(RepoRegistry::new(host_workspace.clone()));
 
     // Determine the Docker command from env (docker vs nerdctl)
     let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
@@ -124,7 +119,6 @@ async fn main() -> anyhow::Result<()> {
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
-        repo_registry.clone(),
         repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),
@@ -194,7 +188,6 @@ async fn main() -> anyhow::Result<()> {
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         process_manager: process_manager.clone(),
         repo_pool_manager,
-        repo_registry: repo_registry.clone(),
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
         projects: cfg.projects.clone(),

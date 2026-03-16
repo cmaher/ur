@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 
 use tonic::transport::{Endpoint, Server};
 
@@ -18,7 +17,6 @@ async fn make_test_components(
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    let repo_registry = Arc::new(ur_server::RepoRegistry::new(workspace.clone()));
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
@@ -70,7 +68,6 @@ async fn make_test_components(
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),
-        repo_registry.clone(),
         repo_pool_manager.clone(),
         network_manager,
         network_config,
@@ -86,7 +83,6 @@ async fn make_test_components(
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager: process_manager.clone(),
         repo_pool_manager,
-        repo_registry,
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),

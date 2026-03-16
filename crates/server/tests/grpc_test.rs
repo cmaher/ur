@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 
 use tonic::transport::{Endpoint, Server};
 
@@ -33,16 +32,10 @@ async fn spawn_grpc_server(
 }
 
 /// Helper: create a CoreServiceHandler from a temp dir with workspace.
-async fn make_grpc_handler(
-    dir: &Path,
-) -> (
-    ur_server::grpc::CoreServiceHandler,
-    Arc<ur_server::RepoRegistry>,
-) {
+async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    let repo_registry = Arc::new(ur_server::RepoRegistry::new(workspace.clone()));
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
@@ -94,7 +87,6 @@ async fn make_grpc_handler(
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),
-        repo_registry.clone(),
         repo_pool_manager.clone(),
         network_manager,
         network_config,
@@ -110,14 +102,13 @@ async fn make_grpc_handler(
     let handler = ur_server::grpc::CoreServiceHandler {
         process_manager,
         repo_pool_manager,
-        repo_registry: repo_registry.clone(),
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: std::collections::HashMap::new(),
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (handler, repo_registry)
+    handler
 }
 
 #[tokio::test]
@@ -127,7 +118,7 @@ async fn grpc_ping_over_tcp() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    let (handler, _repo_registry) = make_grpc_handler(dir.path()).await;
+    let handler = make_grpc_handler(dir.path()).await;
     let (channel, _addr) = spawn_grpc_server(handler).await;
 
     let mut client = CoreServiceClient::new(channel);
