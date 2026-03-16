@@ -36,4 +36,7 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 USER worker
 WORKDIR /workspace
 
+HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \
+    CMD curl -sf http://localhost:9119/healthz || exit 1
+
 ENTRYPOINT ["/entrypoint.sh"]

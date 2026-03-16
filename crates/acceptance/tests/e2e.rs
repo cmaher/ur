@@ -145,6 +145,27 @@ fn force_remove_container(runtime: &str, name: &str) {
         .status();
 }
 
+/// Wait for a container to become healthy (Docker HEALTHCHECK passing).
+/// Polls `docker inspect` up to 30s.
+fn wait_for_healthy(runtime: &str, container: &str) {
+    for i in 0..60 {
+        let output = Command::new(runtime)
+            .args(["inspect", "--format", "{{.State.Health.Status}}", container])
+            .output()
+            .expect("failed to inspect container health");
+        let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if status == "healthy" {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if i == 59 {
+            panic!(
+                "container '{container}' did not become healthy after 30s (last status: {status})"
+            );
+        }
+    }
+}
+
 /// Extra project entries to append to ur.toml.
 struct ProjectEntry {
     key: String,
@@ -515,6 +536,8 @@ fn scenario_workspace_mount(env: &TestEnv) {
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
 
+        wait_for_healthy(&env.runtime, &container_name);
+
         // ---- exec ur-ping inside container ----
         let ping_output = Command::new(&env.runtime)
             .args(["exec", &container_name, "ur-ping"])
@@ -579,6 +602,8 @@ fn scenario_pool_launch(env: &TestEnv) {
             launch_stdout.contains(&container_name),
             "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
         );
+
+        wait_for_healthy(&env.runtime, &container_name);
 
         // ---- Verify workspace has cloned content ----
         let ls_output = Command::new(&env.runtime)
@@ -777,6 +802,8 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
             launch_stdout.contains(&container_name_1),
             "launch output should contain container name '{container_name_1}'.\nGot: {launch_stdout}"
         );
+
+        wait_for_healthy(&env.runtime, &container_name_1);
 
         // ---- Verify design/ slot directory exists on host ----
         let design_slot = env
