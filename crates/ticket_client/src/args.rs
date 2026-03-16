@@ -161,6 +161,13 @@ pub enum TicketArgs {
         /// Epic ticket ID
         epic_id: String,
     },
+
+    /// Print project status report (epic tree with open/closed counts)
+    Status {
+        /// Project key to filter tickets by ID prefix (e.g. "ur" shows ur-* tickets)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
 }
 
 /// A parsed key=value pair for activity metadata.

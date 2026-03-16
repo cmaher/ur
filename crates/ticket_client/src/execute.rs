@@ -7,6 +7,7 @@ use ur_rpc::proto::ticket::*;
 
 use crate::args::TicketArgs;
 use crate::format::{format_ticket_detail, format_ticket_list};
+use crate::status::build_status_report;
 
 /// Execute a ticket subcommand against the given gRPC client.
 ///
@@ -95,7 +96,7 @@ where
             body,
             status,
             priority,
-            ticket_type: _,
+            ticket_type,
             parent: _,
             force,
         } => {
@@ -107,6 +108,7 @@ where
                     title,
                     body,
                     force,
+                    ticket_type,
                 })
                 .await
                 .context("failed to update ticket")?;
@@ -232,6 +234,26 @@ where
                 write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
                 println!("{out}");
             }
+        }
+
+        TicketArgs::Status { project } => {
+            let resp = client
+                .list_tickets(ListTicketsRequest {
+                    project: None,
+                    ticket_type: None,
+                    status: None,
+                    parent_id: None,
+                    meta_key: None,
+                    meta_value: None,
+                })
+                .await
+                .context("failed to list tickets")?;
+            let tickets = resp.into_inner().tickets;
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            println!(
+                "{}",
+                build_status_report(&tickets, &today, project.as_deref())
+            );
         }
     }
 

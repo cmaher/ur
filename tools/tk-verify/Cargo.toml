@@ -1,0 +1,13 @@
+[package]
+name = "tk-verify"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[dependencies]
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+tonic = "0.13"
+ur_rpc = { path = "../../crates/ur_rpc", features = ["ticket"] }

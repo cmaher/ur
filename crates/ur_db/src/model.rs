@@ -28,6 +28,7 @@ pub struct NewTicket {
 
 pub struct TicketUpdate {
     pub status: Option<String>,
+    pub type_: Option<String>,
     pub priority: Option<i32>,
     pub title: Option<String>,
     pub body: Option<String>,

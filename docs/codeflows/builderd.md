@@ -12,7 +12,7 @@ working directories to decouple the server from knowing the builder's filesystem
 ```
 ur-server (container)
 │
-├── HostExecServiceHandler (worker commands: git, gh, tk)
+├── HostExecServiceHandler (worker commands: git, gh)
 │   └── BuilderDaemonServiceClient::exec() ──────┐
 │                                                  │
 ├── RepoPoolManager (pool git operations)          │

@@ -97,9 +97,10 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
     let should_force_config = flags.force || flags.force_config;
     let should_force_squid = flags.force || flags.force_squid;
 
+    let default_toml = default_ur_toml(&config_dir);
     write_file(
         &config_dir.join("ur.toml"),
-        "",
+        &default_toml,
         should_force_config,
         "--force or --force-config",
     )?;
@@ -127,6 +128,15 @@ fn run_in(config_dir: PathBuf, flags: InitFlags) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn default_ur_toml(config_dir: &Path) -> String {
+    let backup_dir = config_dir.join("backups");
+    format!(
+        "[backup]\npath = \"{}\"\ninterval_minutes = {}\n",
+        backup_dir.display(),
+        ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+    )
 }
 
 fn init_dir(path: &Path) -> Result<()> {
@@ -189,12 +199,15 @@ mod tests {
     }
 
     #[test]
-    fn ur_toml_is_empty() {
+    fn ur_toml_has_backup_section() {
         let tmp = TempDir::new().unwrap();
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(content.is_empty());
+        assert!(content.contains("[backup]"));
+        assert!(content.contains("interval_minutes = 30"));
+        let expected_path = tmp.path().join("backups");
+        assert!(content.contains(&format!("path = \"{}\"", expected_path.display())));
     }
 
     #[test]
@@ -235,7 +248,8 @@ mod tests {
         run_with_dir(tmp.path(), flags(true, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(content.is_empty());
+        assert!(content.contains("[backup]"), "should be reset to default");
+        assert!(!content.contains("daemon_port"), "custom config should be gone");
     }
 
     #[test]
@@ -247,7 +261,8 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, true, false)).unwrap();
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert!(toml_content.is_empty(), "ur.toml should be overwritten");
+        assert!(toml_content.contains("[backup]"), "ur.toml should be overwritten with default");
+        assert!(!toml_content.contains("daemon_port"), "custom config should be gone");
     }
 
     #[test]

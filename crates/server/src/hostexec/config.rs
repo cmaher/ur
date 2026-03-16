@@ -146,7 +146,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut cfg = empty_config();
         cfg.commands.insert(
-            "tk".into(),
+            "rg".into(),
             HostExecCommandConfig {
                 lua: None,
                 default_script: false,
@@ -157,8 +157,8 @@ mod tests {
 
         assert!(mgr.is_allowed("git"));
         assert!(mgr.is_allowed("gh"));
-        assert!(mgr.is_allowed("tk"));
-        assert!(mgr.get("tk").unwrap().lua_source.is_none());
+        assert!(mgr.is_allowed("rg"));
+        assert!(mgr.get("rg").unwrap().lua_source.is_none());
     }
 
     #[test]
@@ -221,15 +221,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
-        let extra = vec!["tk".into(), "make".into()];
+        let extra = vec!["rg".into(), "jq".into()];
         let merged = mgr.with_passthrough_commands(&extra);
 
         assert!(merged.is_allowed("git"));
         assert!(merged.is_allowed("gh"));
-        assert!(merged.is_allowed("tk"));
-        assert!(merged.is_allowed("make"));
-        assert!(merged.get("tk").unwrap().lua_source.is_none());
-        assert!(merged.get("make").unwrap().lua_source.is_none());
+        assert!(merged.is_allowed("rg"));
+        assert!(merged.is_allowed("jq"));
+        assert!(merged.get("rg").unwrap().lua_source.is_none());
+        assert!(merged.get("jq").unwrap().lua_source.is_none());
     }
 
     #[test]
@@ -238,11 +238,11 @@ mod tests {
         let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
         // git already exists with a Lua script — passthrough should not replace it
-        let extra = vec!["git".into(), "tk".into()];
+        let extra = vec!["git".into(), "rg".into()];
         let merged = mgr.with_passthrough_commands(&extra);
 
         assert!(merged.get("git").unwrap().lua_source.is_some());
-        assert!(merged.get("tk").unwrap().lua_source.is_none());
+        assert!(merged.get("rg").unwrap().lua_source.is_none());
     }
 
     #[test]
@@ -259,7 +259,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut cfg = empty_config();
         cfg.commands.insert(
-            "tk".into(),
+            "jq".into(),
             HostExecCommandConfig {
                 lua: None,
                 default_script: false,
@@ -267,12 +267,12 @@ mod tests {
         );
 
         let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
-        let extra = vec!["make".into()];
+        let extra = vec!["rg".into()];
         let merged = mgr.with_passthrough_commands(&extra);
 
         assert!(merged.is_allowed("git"));
         assert!(merged.is_allowed("gh"));
-        assert!(merged.is_allowed("tk"));
-        assert!(merged.is_allowed("make"));
+        assert!(merged.is_allowed("jq"));
+        assert!(merged.is_allowed("rg"));
     }
 }
