@@ -9,7 +9,7 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 /// Build a ProcessManager and CoreServiceHandler for testing.
-fn make_test_components(
+async fn make_test_components(
     dir: &Path,
 ) -> (
     ur_server::ProcessManager,
@@ -62,6 +62,10 @@ fn make_test_components(
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
     );
+    let db = ur_db::DatabaseManager::open(":memory:")
+        .await
+        .expect("failed to open in-memory db");
+    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),
@@ -71,6 +75,7 @@ fn make_test_components(
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
+        agent_repo,
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -116,10 +121,10 @@ async fn spawn_authed_server(
         .unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_without_agent_headers() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path());
+    let (process_manager, handler) = make_test_components(dir.path()).await;
     let channel = spawn_authed_server(process_manager, handler).await;
 
     let mut client = CoreServiceClient::new(channel);
@@ -131,23 +136,25 @@ async fn worker_server_rejects_requests_without_agent_headers() {
     assert!(status.message().contains("missing ur-agent-id"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path());
+    let (process_manager, handler) = make_test_components(dir.path()).await;
 
     // Register a real agent so the ID exists but use a different secret in the request
     let agent_id = process_manager.generate_agent_id("authtest");
     let real_secret = "real-secret-value";
-    process_manager.register_agent(
-        agent_id.clone(),
-        "authtest".into(),
-        String::new(),
-        None,
-        ur_server::WorkerStrategy::Code,
-        "fake-cid".into(),
-        real_secret.into(),
-    );
+    process_manager
+        .register_agent(
+            agent_id.clone(),
+            "authtest".into(),
+            String::new(),
+            None,
+            ur_server::WorkerStrategy::Code,
+            "fake-cid".into(),
+            real_secret.into(),
+        )
+        .await;
 
     let channel = spawn_authed_server(process_manager, handler).await;
 
@@ -168,22 +175,24 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     assert!(status.message().contains("agent authentication failed"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, handler) = make_test_components(dir.path());
+    let (process_manager, handler) = make_test_components(dir.path()).await;
 
     let agent_id = process_manager.generate_agent_id("validtest");
     let secret = "correct-secret-value";
-    process_manager.register_agent(
-        agent_id.clone(),
-        "validtest".into(),
-        String::new(),
-        None,
-        ur_server::WorkerStrategy::Code,
-        "fake-cid".into(),
-        secret.into(),
-    );
+    process_manager
+        .register_agent(
+            agent_id.clone(),
+            "validtest".into(),
+            String::new(),
+            None,
+            ur_server::WorkerStrategy::Code,
+            "fake-cid".into(),
+            secret.into(),
+        )
+        .await;
 
     let channel = spawn_authed_server(process_manager, handler).await;
 

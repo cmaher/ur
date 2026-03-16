@@ -243,6 +243,7 @@ impl CoreService for CoreServiceHandler {
         let workspace_dir = self
             .process_manager
             .get_workspace_dir(&req.worker_id)
+            .await
             .map_err(|_| CoreError::WorkspaceNotFound {
                 process_id: req.worker_id.clone(),
             })?;
@@ -257,7 +258,7 @@ impl CoreService for CoreServiceHandler {
         _req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
         info!("worker_list request received");
-        let summaries = self.process_manager.list();
+        let summaries = self.process_manager.list().await;
         let workers = summaries
             .into_iter()
             .map(|s| WorkerSummary {

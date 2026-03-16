@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
+use ur_db::{AgentRepo, DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
 use ur_server::process::PromptModesConfig;
 use ur_server::{
     BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager, RepoRegistry,
@@ -119,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         host_workspace.clone(),
         builderd_client,
     );
+    let agent_repo = AgentRepo::new(db.pool().clone());
     let process_manager = ProcessManager::new(
         local_workspace,
         host_config_dir,
@@ -128,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.network.clone(),
         cfg.worker_port,
         prompt_modes,
+        agent_repo,
     );
 
     #[cfg(feature = "hostexec")]

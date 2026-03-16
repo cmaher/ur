@@ -33,7 +33,7 @@ async fn spawn_grpc_server(
 }
 
 /// Helper: create a CoreServiceHandler from a temp dir with workspace.
-fn make_grpc_handler(
+async fn make_grpc_handler(
     dir: &Path,
 ) -> (
     ur_server::grpc::CoreServiceHandler,
@@ -86,6 +86,10 @@ fn make_grpc_handler(
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
     );
+    let db = ur_db::DatabaseManager::open(":memory:")
+        .await
+        .expect("failed to open in-memory db");
+    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),
@@ -95,6 +99,7 @@ fn make_grpc_handler(
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
+        agent_repo,
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -121,7 +126,7 @@ async fn grpc_ping_over_tcp() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    let (handler, _repo_registry) = make_grpc_handler(dir.path());
+    let (handler, _repo_registry) = make_grpc_handler(dir.path()).await;
     let (channel, _addr) = spawn_grpc_server(handler).await;
 
     let mut client = CoreServiceClient::new(channel);

@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 
+use chrono::Utc;
 use rand::Rng;
 use serde::Deserialize;
 use tracing::info;
 use uuid::Uuid;
 
 use ur_config::NetworkConfig;
+use ur_db::AgentRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 use crate::{RepoPoolManager, RepoRegistry};
+use std::sync::Arc;
 
 /// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
@@ -198,21 +200,6 @@ pub struct AgentContext {
     pub slot_path: PathBuf,
 }
 
-/// Tracks a running agent process, keyed by `AgentId` in the process table.
-struct ProcessEntry {
-    /// The original process_id (without random suffix).
-    process_id: String,
-    /// Project key if launched with `--project`, or empty for raw workspace launches.
-    project_key: String,
-    /// Host path to the repo slot (workspace dir or pool slot).
-    slot_path: Option<PathBuf>,
-    /// Worker strategy governing slot acquisition and release behavior.
-    strategy: WorkerStrategy,
-    container_id: String,
-    /// Secret token (UUID v4) for authenticating agent requests.
-    agent_secret: String,
-}
-
 /// Summary of a running process, returned by `ProcessManager::list()`.
 pub struct ProcessSummary {
     pub process_id: String,
@@ -259,7 +246,7 @@ pub struct ProcessManager {
     /// Injected into containers as part of `UR_SERVER_ADDR`.
     worker_port: u16,
     prompt_modes: PromptModesConfig,
-    processes: Arc<RwLock<HashMap<AgentId, ProcessEntry>>>,
+    agent_repo: AgentRepo,
 }
 
 impl ProcessManager {
@@ -273,6 +260,7 @@ impl ProcessManager {
         network_config: NetworkConfig,
         worker_port: u16,
         prompt_modes: PromptModesConfig,
+        agent_repo: AgentRepo,
     ) -> Self {
         Self {
             workspace,
@@ -283,7 +271,7 @@ impl ProcessManager {
             network_config,
             worker_port,
             prompt_modes,
-            processes: Arc::new(RwLock::new(HashMap::new())),
+            agent_repo,
         }
     }
 
@@ -302,50 +290,52 @@ impl ProcessManager {
         AgentId::generate(process_id)
     }
 
-    /// Look up a process entry by agent ID and return the associated process_id.
-    pub fn resolve_process_id(&self, agent_id: &AgentId) -> Result<String, String> {
-        let procs = self.processes.read().expect("process lock poisoned");
-        procs
-            .get(agent_id)
-            .map(|entry| entry.process_id.clone())
+    /// Look up an agent by agent ID and return the associated process_id.
+    pub async fn resolve_process_id(&self, agent_id: &AgentId) -> Result<String, String> {
+        let agent = self
+            .agent_repo
+            .get_agent(&agent_id.0)
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        agent
+            .map(|a| a.process_id)
             .ok_or_else(|| format!("unknown agent: {agent_id}"))
     }
 
     /// Look up agent context (project_key, slot_path) by agent ID.
-    /// Returns `None` if the agent is not registered or has no slot_path.
-    pub fn get_agent_context(&self, agent_id: &AgentId) -> Option<AgentContext> {
-        let procs = self.processes.read().expect("process lock poisoned");
-        let entry = procs.get(agent_id)?;
-        let slot_path = entry.slot_path.clone()?;
-        let project_key = if entry.project_key.is_empty() {
+    /// Returns `None` if the agent is not registered or has no workspace_path.
+    pub async fn get_agent_context(&self, agent_id: &AgentId) -> Option<AgentContext> {
+        let agent = self.agent_repo.get_agent(&agent_id.0).await.ok()??;
+        let workspace_path = agent.workspace_path?;
+        let project_key = if agent.project_key.is_empty() {
             None
         } else {
-            Some(entry.project_key.clone())
+            Some(agent.project_key)
         };
         Some(AgentContext {
             project_key,
-            slot_path,
+            slot_path: PathBuf::from(workspace_path),
         })
     }
 
     /// Verify that the given agent_id and secret match a registered agent.
-    pub fn verify_agent(&self, agent_id: &str, secret: &str) -> bool {
-        let Ok(parsed) = AgentId::parse(agent_id) else {
+    pub async fn verify_agent(&self, agent_id: &str, secret: &str) -> bool {
+        let Ok(_parsed) = AgentId::parse(agent_id) else {
             return false;
         };
-        let procs = self.processes.read().expect("process lock poisoned");
-        procs
-            .get(&parsed)
-            .is_some_and(|entry| entry.agent_secret == secret)
+        self.agent_repo
+            .verify_agent(agent_id, secret)
+            .await
+            .unwrap_or(false)
     }
 
-    /// Register an agent in the process table without running a container.
+    /// Register an agent in the database without running a container.
     ///
     /// Used by tests that need a registered agent but cannot (or should not) spawn
     /// a real container. The caller supplies the agent_secret and container_id
     /// directly.
     #[allow(clippy::too_many_arguments)]
-    pub fn register_agent(
+    pub async fn register_agent(
         &self,
         agent_id: AgentId,
         process_id: String,
@@ -355,18 +345,24 @@ impl ProcessManager {
         container_id: String,
         agent_secret: String,
     ) {
-        let mut procs = self.processes.write().expect("process lock poisoned");
-        procs.insert(
-            agent_id,
-            ProcessEntry {
-                process_id,
-                project_key,
-                slot_path,
-                strategy,
-                container_id,
-                agent_secret,
-            },
-        );
+        let now = Utc::now().to_rfc3339();
+        let agent = ur_db::model::Agent {
+            agent_id: agent_id.0,
+            process_id,
+            project_key,
+            slot_id: None,
+            container_id,
+            agent_secret,
+            strategy: strategy.name().to_owned(),
+            status: "running".to_owned(),
+            workspace_path: slot_path.map(|p| p.display().to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.agent_repo
+            .insert_agent(&agent)
+            .await
+            .expect("failed to register agent");
     }
 
     /// Phase 1 of launch: create repo dir, git init, register in RepoRegistry.
@@ -379,12 +375,23 @@ impl ProcessManager {
         agent_id: &AgentId,
         workspace_dir: Option<PathBuf>,
     ) -> Result<(), String> {
-        // Check for duplicate process ID
-        {
-            let procs = self.processes.read().expect("process lock poisoned");
-            if procs.values().any(|e| e.process_id == process_id) {
-                return Err(format!("process already running: {process_id}"));
-            }
+        // Check for duplicate process ID via database
+        let running = self
+            .agent_repo
+            .list_agents_by_status("running")
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        let provisioning = self
+            .agent_repo
+            .list_agents_by_status("provisioning")
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        let has_duplicate = running
+            .iter()
+            .chain(provisioning.iter())
+            .any(|a| a.process_id == process_id);
+        if has_duplicate {
+            return Err(format!("process already running: {process_id}"));
         }
 
         if let Some(ws_dir) = workspace_dir {
@@ -418,7 +425,7 @@ impl ProcessManager {
         Ok(())
     }
 
-    /// Phase 2 of launch: run the container and record the process entry.
+    /// Phase 2 of launch: run the container and record the agent in the database.
     /// Generates and stores an agent secret (UUID v4) for auth.
     /// Returns `(container_id, agent_secret)`.
     pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
@@ -479,21 +486,25 @@ impl ProcessManager {
             "process launched"
         );
 
-        // Record in process map keyed by agent ID
-        {
-            let mut procs = self.processes.write().expect("process lock poisoned");
-            procs.insert(
-                config.agent_id,
-                ProcessEntry {
-                    process_id: config.process_id,
-                    project_key: config.project_key,
-                    slot_path: config.workspace_dir,
-                    strategy: config.strategy,
-                    container_id: cid.0.clone(),
-                    agent_secret: agent_secret.clone(),
-                },
-            );
-        }
+        // Record in database
+        let now = Utc::now().to_rfc3339();
+        let agent = ur_db::model::Agent {
+            agent_id: config.agent_id.0,
+            process_id: config.process_id,
+            project_key: config.project_key,
+            slot_id: None,
+            container_id: cid.0.clone(),
+            agent_secret: agent_secret.clone(),
+            strategy: config.strategy.name().to_owned(),
+            status: "running".to_owned(),
+            workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        self.agent_repo
+            .insert_agent(&agent)
+            .await
+            .map_err(|e| format!("failed to record agent: {e}"))?;
 
         Ok((cid.0, agent_secret))
     }
@@ -501,50 +512,58 @@ impl ProcessManager {
     /// Stop a running agent process by agent ID. Stops + removes the container,
     /// unregisters from RepoRegistry.
     pub async fn stop_by_agent_id(&self, agent_id: &AgentId) -> Result<(), String> {
-        let entry = {
-            let mut procs = self.processes.write().expect("process lock poisoned");
-            procs
-                .remove(agent_id)
-                .ok_or_else(|| format!("unknown agent: {agent_id}"))?
-        };
+        let agent = self
+            .agent_repo
+            .get_agent(&agent_id.0)
+            .await
+            .map_err(|e| format!("db error: {e}"))?
+            .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
 
         info!(
-            process_id = entry.process_id,
+            process_id = agent.process_id,
             %agent_id,
-            container_id = entry.container_id,
+            container_id = agent.container_id,
             "stopping container"
         );
 
         // 1. Stop + remove container (scoped so rt is dropped before await)
         {
             let rt = container::runtime_from_env();
-            let cid = container::ContainerId(entry.container_id);
+            let cid = container::ContainerId(agent.container_id.clone());
             rt.stop(&cid).map_err(|e| e.to_string())?;
             rt.rm(&cid).map_err(|e| e.to_string())?;
         }
 
         // 2. Release pool slot if this was a project-based launch
-        if !entry.project_key.is_empty()
-            && let Some(ref slot_path) = entry.slot_path
+        let strategy = WorkerStrategy::from_name(&agent.strategy)
+            .map_err(|e| format!("invalid strategy in db: {e}"))?;
+        if !agent.project_key.is_empty()
+            && let Some(ref workspace_path) = agent.workspace_path
         {
+            let slot_path = PathBuf::from(workspace_path);
             info!(
-                process_id = entry.process_id,
-                project_key = entry.project_key,
+                process_id = agent.process_id,
+                project_key = agent.project_key,
                 slot_path = %slot_path.display(),
-                strategy = entry.strategy.name(),
+                strategy = strategy.name(),
                 "releasing pool slot"
             );
-            entry
-                .strategy
-                .release_slot(&self.repo_pool_manager, slot_path)
+            strategy
+                .release_slot(&self.repo_pool_manager, &slot_path)
                 .await?;
         }
 
         // 3. Unregister from RepoRegistry
-        self.repo_registry.unregister(&entry.process_id);
+        self.repo_registry.unregister(&agent.process_id);
+
+        // 4. Update status to stopped in database
+        self.agent_repo
+            .update_agent_status(&agent_id.0, "stopped")
+            .await
+            .map_err(|e| format!("failed to update agent status: {e}"))?;
 
         info!(
-            process_id = entry.process_id,
+            process_id = agent.process_id,
             %agent_id,
             "process stopped"
         );
@@ -553,44 +572,53 @@ impl ProcessManager {
     }
 
     /// List all running processes with their metadata.
-    pub fn list(&self) -> Vec<ProcessSummary> {
-        let procs = self.processes.read().expect("process lock poisoned");
-        let mut result: Vec<ProcessSummary> = procs
-            .iter()
-            .map(|(agent_id, entry)| ProcessSummary {
-                process_id: entry.process_id.clone(),
-                agent_id: agent_id.0.clone(),
-                container_id: entry.container_id.clone(),
-                project_key: entry.project_key.clone(),
-                mode: entry.strategy.name().to_owned(),
+    pub async fn list(&self) -> Vec<ProcessSummary> {
+        let agents = self
+            .agent_repo
+            .list_agents_by_status("running")
+            .await
+            .unwrap_or_default();
+        let mut result: Vec<ProcessSummary> = agents
+            .into_iter()
+            .map(|agent| ProcessSummary {
+                process_id: agent.process_id,
+                agent_id: agent.agent_id,
+                container_id: agent.container_id,
+                project_key: agent.project_key,
+                mode: agent.strategy,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
         result
     }
 
-    /// Stop a running agent process by process_id (searches all entries).
-    /// Used by the CLI which only knows the process_id, not the agent_id.
     /// Look up the workspace/slot directory for a running process by its process ID.
-    pub fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
-        let procs = self.processes.read().expect("process lock poisoned");
-        let entry = procs
+    pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
+        let agents = self
+            .agent_repo
+            .list_agents_by_status("running")
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        let agent = agents
             .iter()
-            .find(|(_, entry)| entry.process_id == process_id)
-            .map(|(_, entry)| entry)
+            .find(|a| a.process_id == process_id)
             .ok_or_else(|| format!("unknown process: {process_id}"))?;
-        Ok(entry.slot_path.clone())
+        Ok(agent.workspace_path.as_ref().map(PathBuf::from))
     }
 
+    /// Stop a running agent process by process_id (searches all entries).
+    /// Used by the CLI which only knows the process_id, not the agent_id.
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
-        let agent_id = {
-            let procs = self.processes.read().expect("process lock poisoned");
-            procs
-                .iter()
-                .find(|(_, entry)| entry.process_id == process_id)
-                .map(|(id, _)| id.clone())
-                .ok_or_else(|| format!("unknown process: {process_id}"))?
-        };
+        let agents = self
+            .agent_repo
+            .list_agents_by_status("running")
+            .await
+            .map_err(|e| format!("db error: {e}"))?;
+        let agent = agents
+            .iter()
+            .find(|a| a.process_id == process_id)
+            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+        let agent_id = AgentId::parse(&agent.agent_id)?;
         self.stop_by_agent_id(&agent_id).await
     }
 }
@@ -660,7 +688,14 @@ mod tests {
         }
     }
 
-    fn test_manager() -> (ProcessManager, tempfile::TempDir) {
+    async fn test_agent_repo() -> AgentRepo {
+        let db = ur_db::DatabaseManager::open(":memory:")
+            .await
+            .expect("failed to open in-memory db");
+        AgentRepo::new(db.pool().clone())
+    }
+
+    async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let config = test_config(workspace.path());
@@ -680,6 +715,7 @@ mod tests {
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
             agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
         };
+        let agent_repo = test_agent_repo().await;
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -689,13 +725,14 @@ mod tests {
             network_config,
             ur_config::DEFAULT_DAEMON_PORT + 1,
             PromptModesConfig::default(),
+            agent_repo,
         );
         (mgr, workspace)
     }
 
     #[tokio::test]
     async fn prepare_creates_repo_and_registers() {
-        let (mgr, workspace) = test_manager();
+        let (mgr, workspace) = test_manager().await;
         let process_id = "test-proc";
         let agent_id = mgr.generate_agent_id(process_id);
 
@@ -712,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_with_workspace_skips_git_init() {
-        let (mgr, _workspace) = test_manager();
+        let (mgr, _workspace) = test_manager().await;
         let process_id = "ws-proc";
         let agent_id = mgr.generate_agent_id(process_id);
 
@@ -734,24 +771,20 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_duplicate_process_id_returns_error() {
-        let (mgr, _workspace) = test_manager();
+        let (mgr, _workspace) = test_manager().await;
 
         let existing_agent_id = AgentId("dup-proc-ab12".into());
-        // Manually insert a process entry
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                existing_agent_id,
-                ProcessEntry {
-                    process_id: "dup-proc".into(),
-                    project_key: String::new(),
-                    slot_path: None,
-                    strategy: WorkerStrategy::Code,
-                    container_id: "fake-cid".into(),
-                    agent_secret: Uuid::new_v4().to_string(),
-                },
-            );
-        }
+        // Insert a running agent into the database
+        mgr.register_agent(
+            existing_agent_id,
+            "dup-proc".into(),
+            String::new(),
+            None,
+            WorkerStrategy::Code,
+            "fake-cid".into(),
+            Uuid::new_v4().to_string(),
+        )
+        .await;
 
         // A new agent_id with a different suffix should still be rejected
         // because the process_id matches.
@@ -763,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_unknown_process_returns_error() {
-        let (mgr, _workspace) = test_manager();
+        let (mgr, _workspace) = test_manager().await;
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown process"));
@@ -811,25 +844,22 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_process_id_works() {
-        let (mgr, _workspace) = test_manager();
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("test-ab12".into());
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "test".into(),
-                    project_key: "myproject".into(),
-                    slot_path: None,
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: Uuid::new_v4().to_string(),
-                },
-            );
-        }
-        assert_eq!(mgr.resolve_process_id(&agent_id).unwrap(), "test");
+        mgr.register_agent(
+            agent_id.clone(),
+            "test".into(),
+            "myproject".into(),
+            None,
+            WorkerStrategy::Code,
+            "cid".into(),
+            Uuid::new_v4().to_string(),
+        )
+        .await;
+        assert_eq!(mgr.resolve_process_id(&agent_id).await.unwrap(), "test");
         assert!(
             mgr.resolve_process_id(&AgentId("unknown-ab12".into()))
+                .await
                 .is_err()
         );
     }
@@ -975,132 +1005,112 @@ skills = ["only-one"]
         assert_eq!(skills, vec!["only-one"]);
     }
 
-    #[test]
-    fn verify_agent_valid_pair_returns_true() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn verify_agent_valid_pair_returns_true() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("test-ab12".into());
         let secret = "my-secret-token";
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "test".into(),
-                    project_key: "proj".into(),
-                    slot_path: Some(PathBuf::from("/tmp/slot")),
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: secret.into(),
-                },
-            );
-        }
-        assert!(mgr.verify_agent("test-ab12", secret));
+        mgr.register_agent(
+            agent_id.clone(),
+            "test".into(),
+            "proj".into(),
+            Some(PathBuf::from("/tmp/slot")),
+            WorkerStrategy::Code,
+            "cid".into(),
+            secret.into(),
+        )
+        .await;
+        assert!(mgr.verify_agent("test-ab12", secret).await);
     }
 
-    #[test]
-    fn verify_agent_wrong_secret_returns_false() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn verify_agent_wrong_secret_returns_false() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("test-ab12".into());
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "test".into(),
-                    project_key: String::new(),
-                    slot_path: None,
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: "correct-secret".into(),
-                },
-            );
-        }
-        assert!(!mgr.verify_agent("test-ab12", "wrong-secret"));
+        mgr.register_agent(
+            agent_id.clone(),
+            "test".into(),
+            String::new(),
+            None,
+            WorkerStrategy::Code,
+            "cid".into(),
+            "correct-secret".into(),
+        )
+        .await;
+        assert!(!mgr.verify_agent("test-ab12", "wrong-secret").await);
     }
 
-    #[test]
-    fn verify_agent_unknown_id_returns_false() {
-        let (mgr, _workspace) = test_manager();
-        assert!(!mgr.verify_agent("unknown-ab12", "any-secret"));
+    #[tokio::test]
+    async fn verify_agent_unknown_id_returns_false() {
+        let (mgr, _workspace) = test_manager().await;
+        assert!(!mgr.verify_agent("unknown-ab12", "any-secret").await);
     }
 
-    #[test]
-    fn verify_agent_invalid_id_format_returns_false() {
-        let (mgr, _workspace) = test_manager();
-        assert!(!mgr.verify_agent("nodash", "any-secret"));
+    #[tokio::test]
+    async fn verify_agent_invalid_id_format_returns_false() {
+        let (mgr, _workspace) = test_manager().await;
+        assert!(!mgr.verify_agent("nodash", "any-secret").await);
     }
 
-    #[test]
-    fn get_agent_context_returns_context_for_registered_agent() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn get_agent_context_returns_context_for_registered_agent() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("ctx-ab12".into());
         let slot = PathBuf::from("/tmp/slot");
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "ctx".into(),
-                    project_key: "myproject".into(),
-                    slot_path: Some(slot.clone()),
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: "secret".into(),
-                },
-            );
-        }
-        let ctx = mgr.get_agent_context(&agent_id).unwrap();
+        mgr.register_agent(
+            agent_id.clone(),
+            "ctx".into(),
+            "myproject".into(),
+            Some(slot.clone()),
+            WorkerStrategy::Code,
+            "cid".into(),
+            "secret".into(),
+        )
+        .await;
+        let ctx = mgr.get_agent_context(&agent_id).await.unwrap();
         assert_eq!(ctx.project_key, Some("myproject".to_string()));
         assert_eq!(ctx.slot_path, slot);
     }
 
-    #[test]
-    fn get_agent_context_empty_project_key_maps_to_none() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn get_agent_context_empty_project_key_maps_to_none() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("ws-ab12".into());
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "ws".into(),
-                    project_key: String::new(),
-                    slot_path: Some(PathBuf::from("/tmp/ws")),
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: "secret".into(),
-                },
-            );
-        }
-        let ctx = mgr.get_agent_context(&agent_id).unwrap();
+        mgr.register_agent(
+            agent_id.clone(),
+            "ws".into(),
+            String::new(),
+            Some(PathBuf::from("/tmp/ws")),
+            WorkerStrategy::Code,
+            "cid".into(),
+            "secret".into(),
+        )
+        .await;
+        let ctx = mgr.get_agent_context(&agent_id).await.unwrap();
         assert_eq!(ctx.project_key, None);
     }
 
-    #[test]
-    fn get_agent_context_returns_none_for_unknown_agent() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn get_agent_context_returns_none_for_unknown_agent() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("missing-ab12".into());
-        assert!(mgr.get_agent_context(&agent_id).is_none());
+        assert!(mgr.get_agent_context(&agent_id).await.is_none());
     }
 
-    #[test]
-    fn get_agent_context_returns_none_when_no_slot_path() {
-        let (mgr, _workspace) = test_manager();
+    #[tokio::test]
+    async fn get_agent_context_returns_none_when_no_slot_path() {
+        let (mgr, _workspace) = test_manager().await;
         let agent_id = AgentId("nosl-ab12".into());
-        {
-            let mut procs = mgr.processes.write().unwrap();
-            procs.insert(
-                agent_id.clone(),
-                ProcessEntry {
-                    process_id: "nosl".into(),
-                    project_key: "proj".into(),
-                    slot_path: None,
-                    strategy: WorkerStrategy::Code,
-                    container_id: "cid".into(),
-                    agent_secret: "secret".into(),
-                },
-            );
-        }
-        assert!(mgr.get_agent_context(&agent_id).is_none());
+        mgr.register_agent(
+            agent_id.clone(),
+            "nosl".into(),
+            "proj".into(),
+            None,
+            WorkerStrategy::Code,
+            "cid".into(),
+            "secret".into(),
+        )
+        .await;
+        assert!(mgr.get_agent_context(&agent_id).await.is_none());
     }
 }

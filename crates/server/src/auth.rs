@@ -1,3 +1,4 @@
+use tokio::runtime::Handle;
 use tonic::{Request, Status};
 use ur_config::{AGENT_ID_HEADER, AGENT_SECRET_HEADER};
 
@@ -28,7 +29,15 @@ pub fn worker_auth_interceptor(
             .to_str()
             .map_err(|_| Status::unauthenticated("invalid ur-agent-secret header value"))?;
 
-        if !process_manager.verify_agent(agent_id, secret) {
+        // Bridge async verify_agent into the sync interceptor context.
+        let pm = process_manager.clone();
+        let agent_id = agent_id.to_owned();
+        let secret = secret.to_owned();
+        let verified = tokio::task::block_in_place(|| {
+            Handle::current().block_on(pm.verify_agent(&agent_id, &secret))
+        });
+
+        if !verified {
             return Err(Status::unauthenticated(
                 "agent authentication failed: invalid agent-id or secret",
             ));
