@@ -61,7 +61,8 @@ async fn main() -> anyhow::Result<()> {
         Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
         _ => "docker".to_string(),
     };
-    let network_manager = NetworkManager::new(docker_command, cfg.network.worker_name.clone());
+    let network_manager =
+        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
     // UR_HOST_CONFIG is the host-side config directory path, needed for
     // constructing volume mounts in agent containers (which use host paths
@@ -109,6 +110,25 @@ async fn main() -> anyhow::Result<()> {
 
     let builderd_client = BuilderdClient::new(builderd_addr.clone());
     let agent_repo = AgentRepo::new(db.pool().clone());
+
+    // Reconcile slots: sync DB rows with on-disk pool directories and project configs.
+    // Build project_key -> pool_dir map from the project configs.
+    let pool_root = local_workspace.join("pool");
+    let project_pool_dirs: std::collections::HashMap<String, PathBuf> = cfg
+        .projects
+        .keys()
+        .map(|k| (k.clone(), pool_root.join(k)))
+        .collect();
+    let slot_result = agent_repo
+        .reconcile_slots(&project_pool_dirs, &local_workspace)
+        .await
+        .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
+    info!(
+        deleted = ?slot_result.deleted_stale,
+        inserted = ?slot_result.inserted_orphaned,
+        "slot reconciliation complete"
+    );
+
     let repo_pool_manager = RepoPoolManager::new(
         &cfg,
         local_workspace.clone(),
@@ -124,7 +144,29 @@ async fn main() -> anyhow::Result<()> {
         cfg.network.clone(),
         cfg.worker_port,
         prompt_modes,
-        agent_repo,
+        agent_repo.clone(),
+    );
+
+    // Reconcile agents: check container liveness for active agents and update status.
+    let docker_cmd = docker_command.clone();
+    let agent_result = agent_repo
+        .reconcile_agents(|container_id| {
+            let cmd = docker_cmd.clone();
+            async move {
+                tokio::process::Command::new(&cmd)
+                    .args(["inspect", "--format", "{{.State.Running}}", &container_id])
+                    .output()
+                    .await
+                    .map(|o| o.stdout.starts_with(b"true"))
+                    .unwrap_or(false)
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("agent reconciliation failed: {e}"))?;
+    info!(
+        reclaimed = ?agent_result.reclaimed,
+        stopped = ?agent_result.marked_stopped,
+        "agent reconciliation complete"
     );
 
     #[cfg(feature = "hostexec")]
@@ -212,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         process_manager,
+        agent_repo,
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,
