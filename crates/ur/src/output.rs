@@ -367,13 +367,17 @@ mod tests {
 
     #[test]
     fn output_manager_text_mode() {
-        let om = OutputManager { format: OutputFormat::Text };
+        let om = OutputManager {
+            format: OutputFormat::Text,
+        };
         assert!(!om.is_json());
     }
 
     #[test]
     fn output_manager_json_mode() {
-        let om = OutputManager { format: OutputFormat::Json };
+        let om = OutputManager {
+            format: OutputFormat::Json,
+        };
         assert!(om.is_json());
     }
 

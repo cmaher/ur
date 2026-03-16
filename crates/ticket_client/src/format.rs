@@ -1,6 +1,8 @@
 use std::fmt::Write;
 
-use ur_rpc::proto::ticket::{ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket};
+use ur_rpc::proto::ticket::{
+    ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
+};
 
 /// Format a single ticket's full detail view (used by `show`).
 pub fn format_ticket_detail(

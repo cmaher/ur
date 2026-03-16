@@ -311,9 +311,7 @@ fn start_server(
         if !output.is_json() {
             println!();
             println!("No shared credentials found. Log in to Claude Code on this machine first.");
-            println!(
-                "Credentials will be seeded from the macOS Keychain on first process launch."
-            );
+            println!("Credentials will be seeded from the macOS Keychain on first process launch.");
         }
     }
 
@@ -649,9 +647,7 @@ async fn handle_worker(
                     let dir_name = cwd
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("cannot determine directory name from cwd")
-                        })?
+                        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
                         .to_owned();
                     if project_keys.contains(&dir_name) {
                         debug!(project_key = %dir_name, "derived project from cwd");
@@ -893,7 +889,14 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                     input::reject_control_chars(n, "name")?;
                 }
                 input::reject_path_traversal(&path, "path")?;
-                project::add(&config, &path, key.as_deref(), name.as_deref(), pool_limit, output)?
+                project::add(
+                    &config,
+                    &path,
+                    key.as_deref(),
+                    name.as_deref(),
+                    pool_limit,
+                    output,
+                )?
             }
             ProjectCommands::Remove { key, force } => {
                 input::validate_id(&key, "key")?;

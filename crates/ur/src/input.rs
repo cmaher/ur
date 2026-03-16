@@ -10,7 +10,10 @@ pub fn validate_id(input: &str, field: &str) -> Result<()> {
         bail!("{field} must not be empty");
     }
     if input.len() > 256 {
-        bail!("{field} must be at most 256 characters (got {})", input.len());
+        bail!(
+            "{field} must be at most 256 characters (got {})",
+            input.len()
+        );
     }
     reject_control_chars(input, field)?;
     if !input

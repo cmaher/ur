@@ -31,12 +31,7 @@ pub fn describe_command(cmd: &clap::Command) -> CommandSchema {
             let possible_values = if possible.is_empty() {
                 None
             } else {
-                Some(
-                    possible
-                        .iter()
-                        .map(|v| v.get_name().to_string())
-                        .collect(),
-                )
+                Some(possible.iter().map(|v| v.get_name().to_string()).collect())
             };
 
             let default_value = a

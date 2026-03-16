@@ -63,7 +63,11 @@ pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Resul
 /// Copies the backup file to a new location (the active database path with a
 /// `.restored` suffix) so the user can inspect it before replacing the live
 /// database. Prints instructions for completing the swap.
-pub async fn restore(config: &ur_config::Config, source: &Path, output: &OutputManager) -> Result<()> {
+pub async fn restore(
+    config: &ur_config::Config,
+    source: &Path,
+    output: &OutputManager,
+) -> Result<()> {
     if !source.exists() {
         bail!("backup file not found: {}", source.display());
     }

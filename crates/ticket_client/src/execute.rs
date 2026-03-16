@@ -15,7 +15,10 @@ use crate::status::build_status_report;
 ///
 /// Generic over the transport type `T` so callers can pass a plain `Channel`
 /// or an `InterceptedService<Channel, F>` with auth headers.
-pub async fn execute<T>(args: TicketArgs, client: &mut TicketServiceClient<T>) -> Result<TicketOutput>
+pub async fn execute<T>(
+    args: TicketArgs,
+    client: &mut TicketServiceClient<T>,
+) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -75,9 +78,7 @@ where
                 .await
                 .context("failed to get ticket")?;
             let inner = resp.into_inner();
-            let t = inner
-                .ticket
-                .context("server returned empty ticket")?;
+            let t = inner.ticket.context("server returned empty ticket")?;
             Ok(TicketOutput::Shown {
                 ticket: Box::new(t),
                 metadata: inner.metadata,

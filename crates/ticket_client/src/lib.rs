@@ -8,7 +8,9 @@ pub use execute::execute;
 pub use format::{format_ticket_detail, format_ticket_list};
 
 use serde::Serialize;
-use ur_rpc::proto::ticket::{ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket};
+use ur_rpc::proto::ticket::{
+    ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
