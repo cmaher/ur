@@ -40,7 +40,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-        agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());

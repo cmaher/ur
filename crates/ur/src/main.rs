@@ -325,7 +325,7 @@ fn stop_server(
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
     info!("stopping server");
-    kill_all_containers(&config.network.agent_prefix, output)?;
+    kill_all_containers(&config.network.worker_prefix, output)?;
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
         output.print_text("server is not running");
@@ -921,7 +921,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             handle_worker(
                 command,
                 port,
-                &config.network.agent_prefix,
+                &config.network.worker_prefix,
                 &project_keys,
                 output,
             )

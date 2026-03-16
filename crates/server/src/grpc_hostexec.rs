@@ -257,7 +257,7 @@ impl HostExecServiceHandler {
         ),
         HostExecError,
     > {
-        let Some(worker_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) else {
+        let Some(worker_id_val) = req.metadata().get(ur_config::WORKER_ID_HEADER) else {
             // No worker ID header — host-server request (e.g., from `ur` CLI).
             return Ok((String::new(), None, self.config.clone()));
         };
@@ -265,7 +265,7 @@ impl HostExecServiceHandler {
         let worker_id_str = worker_id_val
             .to_str()
             .map_err(|_| HostExecError::InvalidWorkerId {
-                reason: "invalid ur-agent-id header encoding".into(),
+                reason: "invalid ur-worker-id header encoding".into(),
             })?;
         let worker_id = crate::WorkerId::parse(worker_id_str)
             .map_err(|e| HostExecError::InvalidWorkerId { reason: e })?;
@@ -285,7 +285,7 @@ impl HostExecServiceHandler {
             Some(ref ctx) if ctx.project_key.is_some() => {
                 let project_key = ctx.project_key.as_ref().unwrap();
                 let lua_ctx = crate::hostexec::WorkerContext {
-                    agent_id: worker_id_str.to_owned(),
+                    worker_id: worker_id_str.to_owned(),
                     project_key: project_key.clone(),
                     slot_path: ctx.slot_path.clone(),
                 };
@@ -303,7 +303,7 @@ impl HostExecServiceHandler {
             Some(ref ctx) => {
                 // Worker has a slot but no project — raw workspace mount
                 let lua_ctx = crate::hostexec::WorkerContext {
-                    agent_id: worker_id_str.to_owned(),
+                    worker_id: worker_id_str.to_owned(),
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                 };

@@ -386,7 +386,7 @@ mod tests {
                 name: "ur".to_string(),
                 worker_name: "ur-workers".to_string(),
                 server_hostname: "ur-server".to_string(),
-                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
+                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
             },
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
@@ -433,7 +433,7 @@ mod tests {
             name: "test-net".to_string(),
             worker_name: "test-workers".to_string(),
             server_hostname: "test-server".to_string(),
-            agent_prefix: "test-agent-".to_string(),
+            worker_prefix: "test-worker-".to_string(),
         };
         let proxy = ur_config::ProxyConfig {
             hostname: "test-squid".to_string(),
@@ -492,7 +492,7 @@ mod tests {
             name: "ur".to_string(),
             worker_name: "ur-workers".to_string(),
             server_hostname: "ur-server".to_string(),
-            agent_prefix: "ur-agent-".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
         };
         let proxy = ur_config::ProxyConfig {
             hostname: "ur-squid".to_string(),

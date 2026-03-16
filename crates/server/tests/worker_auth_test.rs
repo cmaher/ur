@@ -22,7 +22,7 @@ async fn make_test_components(
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-        agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
@@ -132,7 +132,7 @@ async fn worker_server_rejects_requests_without_worker_headers() {
     assert!(result.is_err());
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    assert!(status.message().contains("missing ur-agent-id"));
+    assert!(status.message().contains("missing ur-worker-id"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -160,10 +160,10 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", worker_id.to_string().parse().unwrap());
+        .insert("ur-worker-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
-        .insert("ur-agent-secret", "wrong-secret".parse().unwrap());
+        .insert("ur-worker-secret", "wrong-secret".parse().unwrap());
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(request).await;
@@ -198,10 +198,10 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", worker_id.to_string().parse().unwrap());
+        .insert("ur-worker-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
-        .insert("ur-agent-secret", secret.parse().unwrap());
+        .insert("ur-worker-secret", secret.parse().unwrap());
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(request).await;

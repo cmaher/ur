@@ -22,9 +22,9 @@ use std::sync::LazyLock;
 /// Generate a short unique prefix for this test run to avoid container/network
 /// collisions with other concurrent CI runs or local stacks.
 ///
-/// Uses `UR_AGENT_ID` env var if set, otherwise generates 4 random hex chars.
+/// Uses `UR_WORKER_ID` env var if set, otherwise generates 4 random hex chars.
 fn test_run_id() -> String {
-    std::env::var("UR_AGENT_ID").unwrap_or_else(|_| {
+    std::env::var("UR_WORKER_ID").unwrap_or_else(|_| {
         use std::collections::hash_map::RandomState;
         use std::hash::{BuildHasher, Hasher};
         let mut hasher = RandomState::new().build_hasher();
@@ -179,7 +179,7 @@ struct TestNames {
     network: String,
     worker_network: String,
     server_hostname: String,
-    agent_prefix: String,
+    worker_prefix: String,
     qdrant_hostname: String,
 }
 
@@ -192,7 +192,7 @@ fn test_names(label: &str) -> TestNames {
         network: format!("ur-{id}-{label}"),
         worker_network: format!("ur-{id}-{label}-workers"),
         server_hostname: format!("ur-{id}-{label}-server"),
-        agent_prefix: format!("ur-{id}-{label}-agent-"),
+        worker_prefix: format!("ur-{id}-{label}-worker-"),
         qdrant_hostname: format!("ur-{id}-{label}-qdrant"),
     }
 }
@@ -257,7 +257,7 @@ fn write_test_config(
          name = \"{network}\"\n\
          worker_name = \"{worker_network}\"\n\
          server_hostname = \"{server}\"\n\
-         agent_prefix = \"{agent_prefix}\"\n\
+         worker_prefix = \"{worker_prefix}\"\n\
          \n\
          [rag]\n\
          qdrant_hostname = \"{qdrant}\"\n\
@@ -268,7 +268,7 @@ fn write_test_config(
         network = names.network,
         worker_network = names.worker_network,
         server = names.server_hostname,
-        agent_prefix = names.agent_prefix,
+        worker_prefix = names.worker_prefix,
         qdrant = names.qdrant_hostname,
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
@@ -385,7 +385,7 @@ impl TestEnv {
 
     /// Build a container name from the shared worker prefix and a ticket ID.
     fn container_name(&self, ticket_id: &str) -> String {
-        format!("{}{ticket_id}", self.names.agent_prefix)
+        format!("{}{ticket_id}", self.names.worker_prefix)
     }
 }
 

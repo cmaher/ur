@@ -437,10 +437,13 @@ impl ProcessManager {
         let mut env_vars = vec![
             (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
             (
-                ur_config::UR_AGENT_ID_ENV.into(),
+                ur_config::UR_WORKER_ID_ENV.into(),
                 config.worker_id.0.clone(),
             ),
-            (ur_config::UR_AGENT_SECRET_ENV.into(), worker_secret.clone()),
+            (
+                ur_config::UR_WORKER_SECRET_ENV.into(),
+                worker_secret.clone(),
+            ),
         ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
@@ -452,7 +455,7 @@ impl ProcessManager {
         }
 
         // Build RunOpts via the builder
-        let container_name = format!("{}{}", self.network_config.agent_prefix, config.process_id);
+        let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
             config.image_id.clone(),
             container_name,
@@ -660,7 +663,7 @@ mod tests {
                 name: ur_config::DEFAULT_NETWORK_NAME.into(),
                 worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
                 server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
+                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
             hostexec: ur_config::HostExecConfig::default(),
             rag: ur_config::RagConfig {
@@ -705,7 +708,7 @@ mod tests {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
             worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-            agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
+            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),

@@ -261,7 +261,7 @@ impl CoreService for CoreServiceHandler {
             .into_iter()
             .map(|s| WorkerSummary {
                 worker_id: s.process_id,
-                agent_id: s.worker_id,
+                worker_id_full: s.worker_id,
                 container_id: s.container_id,
                 project_key: s.project_key,
                 mode: s.mode,

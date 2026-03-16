@@ -11,7 +11,7 @@ use mlua::{Lua, StdLib, Value};
 /// `None` when no worker/project is associated (e.g., raw `-w` workspace mounts).
 #[derive(Debug, Clone)]
 pub struct WorkerContext {
-    pub agent_id: String,
+    pub worker_id: String,
     pub project_key: String,
     pub slot_path: PathBuf,
 }
@@ -77,8 +77,8 @@ impl LuaTransformManager {
             let tbl = lua
                 .create_table()
                 .map_err(|e| anyhow::anyhow!("creating worker_context table: {e}"))?;
-            tbl.set("agent_id", ctx.agent_id.as_str())
-                .map_err(|e| anyhow::anyhow!("setting agent_id: {e}"))?;
+            tbl.set("worker_id", ctx.worker_id.as_str())
+                .map_err(|e| anyhow::anyhow!("setting worker_id: {e}"))?;
             tbl.set("project_key", ctx.project_key.as_str())
                 .map_err(|e| anyhow::anyhow!("setting project_key: {e}"))?;
             tbl.set("slot_path", ctx.slot_path.to_string_lossy().as_ref())
@@ -272,7 +272,7 @@ mod tests {
                 return {
                     command = command,
                     args = {
-                        worker_context.agent_id,
+                        worker_context.worker_id,
                         worker_context.project_key,
                         worker_context.slot_path,
                     },
@@ -281,7 +281,7 @@ mod tests {
             end
         "#;
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -316,7 +316,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -335,7 +335,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -354,7 +354,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -370,7 +370,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -386,7 +386,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -419,7 +419,7 @@ mod tests {
         // return structured tables (ur-ami7). It compiles correctly.
         let mgr = LuaTransformManager::new();
         let ctx = WorkerContext {
-            agent_id: "test-ab12".into(),
+            worker_id: "test-ab12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -456,7 +456,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -480,7 +480,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -499,7 +499,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -691,7 +691,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/cargo.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -710,7 +710,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/cargo.lua");
         let ctx = WorkerContext {
-            agent_id: "deploy-x7q2".into(),
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };

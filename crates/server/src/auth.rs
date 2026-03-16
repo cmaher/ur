@@ -1,10 +1,10 @@
 use tokio::runtime::Handle;
 use tonic::{Request, Status};
-use ur_config::{AGENT_ID_HEADER, AGENT_SECRET_HEADER};
+use ur_config::{WORKER_ID_HEADER, WORKER_SECRET_HEADER};
 use ur_db::WorkerRepo;
 
 /// Creates a tonic interceptor that validates worker requests by checking
-/// `ur-agent-id` and `ur-agent-secret` metadata headers against the
+/// `ur-worker-id` and `ur-worker-secret` metadata headers against the
 /// `WorkerRepo`'s registered workers.
 ///
 /// Returns `Status::unauthenticated` if either header is missing or the
@@ -17,16 +17,16 @@ pub fn worker_auth_interceptor(
         let metadata = req.metadata();
 
         let worker_id = metadata
-            .get(AGENT_ID_HEADER)
-            .ok_or_else(|| Status::unauthenticated("missing ur-agent-id header"))?
+            .get(WORKER_ID_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
             .to_str()
-            .map_err(|_| Status::unauthenticated("invalid ur-agent-id header value"))?;
+            .map_err(|_| Status::unauthenticated("invalid ur-worker-id header value"))?;
 
         let secret = metadata
-            .get(AGENT_SECRET_HEADER)
-            .ok_or_else(|| Status::unauthenticated("missing ur-agent-secret header"))?
+            .get(WORKER_SECRET_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-secret header"))?
             .to_str()
-            .map_err(|_| Status::unauthenticated("invalid ur-agent-secret header value"))?;
+            .map_err(|_| Status::unauthenticated("invalid ur-worker-secret header value"))?;
 
         // Bridge async verify_worker into the sync interceptor context.
         let repo = worker_repo.clone();

@@ -35,7 +35,7 @@ Docker network configuration for container networking.
 | `name` | string | `"ur"` | Infrastructure network (internet-connected) |
 | `worker_name` | string | `"ur-workers"` | Worker network (internal, no internet) |
 | `server_hostname` | string | `"ur-server"` | Server hostname via Docker DNS |
-| `agent_prefix` | string | `"ur-agent-"` | Container name prefix for workers |
+| `worker_prefix` | string | `"ur-worker-"` | Container name prefix for workers |
 
 ## `[projects.<key>]` Section
 
