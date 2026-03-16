@@ -459,8 +459,8 @@ fn e2e_all() {
         assert!(git_init.status.success(), "git init failed");
 
         // ---- (3) Run scenarios sequentially ----
-        scenario_ping_and_git(&env);
-        scenario_project_pool_launch(&env);
+        scenario_workspace_mount(&env);
+        scenario_pool_launch(&env);
         scenario_design_mode_pool_launch(&env);
         scenario_rag_search(&env);
     }));
@@ -486,8 +486,8 @@ fn e2e_all() {
 // Scenarios
 // ---------------------------------------------------------------------------
 
-/// Workspace mount, ping, git status, squid proxy, Lua validation.
-fn scenario_ping_and_git(env: &TestEnv) {
+/// Workspace mount: verify `-w` launches and mounts the host directory.
+fn scenario_workspace_mount(env: &TestEnv) {
     let ticket_id = "ping-test";
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
@@ -535,25 +535,99 @@ fn scenario_ping_and_git(env: &TestEnv) {
             "ur-ping should return 'pong', got: {ping_stdout}"
         );
 
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Pool launch: clone, ping, git hostexec, squid proxy, Lua validation, host dir structure.
+/// All container-side tests run against a single pool container to avoid redundant launches.
+fn scenario_pool_launch(env: &TestEnv) {
+    let ticket_id = "pool-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        // ---- Verify workspace has cloned content ----
+        let ls_output = Command::new(&env.runtime)
+            .args(["exec", &container_name, "ls", "/workspace/README.md"])
+            .output()
+            .expect("failed to exec ls in container");
+        assert_eq!(
+            ls_output.status.code(),
+            Some(0),
+            "pool slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output.stdout),
+            String::from_utf8_lossy(&ls_output.stderr),
+        );
+
+        // ---- exec ur-ping inside container ----
+        let ping_output = Command::new(&env.runtime)
+            .args(["exec", &container_name, "ur-ping"])
+            .output()
+            .expect("failed to exec ur-ping in container");
+        assert_eq!(
+            ping_output.status.code(),
+            Some(0),
+            "ur-ping should exit 0.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ping_output.stdout),
+            String::from_utf8_lossy(&ping_output.stderr),
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&ping_output.stdout).trim(),
+            "pong",
+            "ur-ping should return 'pong'"
+        );
+
         // ---- Test hostexec: git commands via worker -> server -> builderd -> host ----
         let git_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "git", "status"])
+            .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
             .output()
-            .expect("failed to exec git status in container");
-
+            .expect("failed to exec git log in container");
         assert_eq!(
             git_output.status.code(),
             Some(0),
-            "git status should exit 0 (hostexec pipeline: worker -> server -> builderd -> host).\n\
-             stdout: {}\nstderr: {}",
+            "git log should work in pool slot.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&git_output.stdout),
             String::from_utf8_lossy(&git_output.stderr),
         );
 
         let git_stdout = String::from_utf8_lossy(&git_output.stdout);
         assert!(
-            git_stdout.contains("branch") || git_stdout.contains("No commits"),
-            "git status should show repo info.\nGot: {git_stdout}"
+            git_stdout.contains("initial commit"),
+            "git log should show our commit.\nGot: {git_stdout}"
         );
 
         // ---- Test hostexec Lua validation: -C flag blocking ----
@@ -625,88 +699,6 @@ fn scenario_ping_and_git(env: &TestEnv) {
             "allowed domain should connect through squid (not 000/403).\n\
              http_connect: {allowed_code}\nstderr: {}",
             String::from_utf8_lossy(&allowed_curl.stderr),
-        );
-
-        // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
-        assert!(
-            stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stop_output.stdout),
-            String::from_utf8_lossy(&stop_output.stderr),
-        );
-    }));
-
-    if let Err(e) = result {
-        // Force-remove worker container before re-raising
-        force_remove_container(&env.runtime, &container_name);
-        std::panic::resume_unwind(e);
-    }
-}
-
-/// Pool launch, verify clone, git log, host dir structure.
-fn scenario_project_pool_launch(env: &TestEnv) {
-    let ticket_id = "pool-test";
-    let container_name = env.container_name(ticket_id);
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch pool worker ----
-        let launch_output = run_cmd(
-            &env.ur,
-            &["worker", "launch", "-p", env.project_key, ticket_id],
-            &env_slice,
-        );
-        assert!(
-            launch_output.status.success(),
-            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
-            env.project_key,
-            String::from_utf8_lossy(&launch_output.stdout),
-            String::from_utf8_lossy(&launch_output.stderr),
-        );
-
-        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
-        assert!(
-            launch_stdout.contains(&container_name),
-            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
-        );
-
-        // ---- Verify workspace has cloned content ----
-        let ls_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "ls", "/workspace/README.md"])
-            .output()
-            .expect("failed to exec ls in container");
-        assert_eq!(
-            ls_output.status.code(),
-            Some(0),
-            "pool slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&ls_output.stdout),
-            String::from_utf8_lossy(&ls_output.stderr),
-        );
-
-        // ---- Verify git commands work via hostexec ----
-        // Wait for workerd init to create the git shim (entrypoint runs async)
-        let mut git_output = None;
-        for _ in 0..10 {
-            let out = Command::new(&env.runtime)
-                .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
-                .output()
-                .expect("failed to exec git log in container");
-            if out.status.code() == Some(0) {
-                git_output = Some(out);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        let git_output = git_output.expect(
-            "git log never succeeded in pool slot — workerd may not have created shims in time",
-        );
-
-        let git_stdout = String::from_utf8_lossy(&git_output.stdout);
-        assert!(
-            git_stdout.contains("initial commit"),
-            "git log should show our commit.\nGot: {git_stdout}"
         );
 
         // ---- Verify pool directory structure on host ----
