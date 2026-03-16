@@ -54,7 +54,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    │   ├── workspace_dir provided? → register_absolute (no git init)
    │   └── no workspace? → create dir, git init, register
    │
-   ├── Spawn per-agent gRPC server
+   ├── Spawn per-worker gRPC server
    │   └── TCP on 0.0.0.0:<random_port> (reachable via Docker network)
    │
    └── Phase 2: ProcessManager.run_and_record()
@@ -71,7 +71,7 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 
 3. Container startup (entrypoint.sh)
    ├── mkdir -p ~/.claude
-   ├── Start tmux session "agent"
+   ├── Start tmux session "worker"
    └── exec sleep infinity
 ```
 
