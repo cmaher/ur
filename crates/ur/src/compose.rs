@@ -259,10 +259,10 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     // Environment
     writeln!(out, "    environment:").unwrap();
     writeln!(out, "      - UR_CONFIG=/config").unwrap();
-    writeln!(out, "      - UR_HOST_CONFIG=${{UR_CONFIG:-~/.ur}}").unwrap();
+    writeln!(out, "      - UR_HOST_CONFIG=${{UR_CONFIG:-${{HOME}}/.ur}}").unwrap();
     writeln!(
         out,
-        "      - UR_HOST_WORKSPACE=${{UR_WORKSPACE:-~/.ur/workspace}}"
+        "      - UR_HOST_WORKSPACE=${{UR_WORKSPACE:-${{HOME}}/.ur/workspace}}"
     )
     .unwrap();
     writeln!(out, "      - FASTEMBED_CACHE_DIR=/fastembed").unwrap();

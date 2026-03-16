@@ -428,7 +428,10 @@ async fn reconcile_slots_deletes_stale_db_rows() {
     let mut configs = HashMap::new();
     configs.insert("proj-a".to_owned(), pool_dir.clone());
 
-    let result = r.reconcile_slots(&configs, workspace.path()).await.unwrap();
+    let result = r
+        .reconcile_slots(&configs, workspace.path(), workspace.path())
+        .await
+        .unwrap();
 
     assert_eq!(result.deleted_stale, vec!["stale-slot"]);
     assert!(result.inserted_orphaned.is_empty());
@@ -456,7 +459,10 @@ async fn reconcile_slots_inserts_orphaned_directories() {
     let mut configs = HashMap::new();
     configs.insert("proj-a".to_owned(), pool_dir.clone());
 
-    let result = r.reconcile_slots(&configs, workspace.path()).await.unwrap();
+    let result = r
+        .reconcile_slots(&configs, workspace.path(), workspace.path())
+        .await
+        .unwrap();
 
     assert!(result.deleted_stale.is_empty());
     assert_eq!(result.inserted_orphaned.len(), 2);
@@ -503,7 +509,10 @@ async fn reconcile_slots_mixed_stale_and_orphaned() {
     let mut configs = HashMap::new();
     configs.insert("proj-a".to_owned(), pool_dir.clone());
 
-    let result = r.reconcile_slots(&configs, workspace.path()).await.unwrap();
+    let result = r
+        .reconcile_slots(&configs, workspace.path(), workspace.path())
+        .await
+        .unwrap();
 
     assert_eq!(result.deleted_stale.len(), 1);
     assert_eq!(result.inserted_orphaned.len(), 1);
@@ -661,7 +670,10 @@ async fn reconcile_slots_cleans_stale_project_slots() {
     // Empty configs -- no projects configured.
     let configs: HashMap<String, PathBuf> = HashMap::new();
 
-    let result = r.reconcile_slots(&configs, workspace.path()).await.unwrap();
+    let result = r
+        .reconcile_slots(&configs, workspace.path(), workspace.path())
+        .await
+        .unwrap();
 
     assert_eq!(result.deleted_stale, vec!["orphan-proj-slot"]);
     assert!(r.get_slot("orphan-proj-slot").await.unwrap().is_none());

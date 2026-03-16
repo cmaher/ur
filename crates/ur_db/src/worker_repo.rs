@@ -579,6 +579,7 @@ impl WorkerRepo {
         &self,
         project_configs: &HashMap<String, std::path::PathBuf>,
         local_workspace: &Path,
+        host_workspace: &Path,
     ) -> Result<SlotReconcileResult, sqlx::Error> {
         let mut result = SlotReconcileResult {
             deleted_stale: Vec::new(),
@@ -596,11 +597,13 @@ impl WorkerRepo {
                 .insert(slot.slot_name.clone(), slot);
         }
 
-        let pool_root = local_workspace.join("pool");
+        let local_pool_root = local_workspace.join("pool");
+        let host_pool_root = host_workspace.join("pool");
 
         for project_key in project_configs.keys() {
-            let project_pool_dir = pool_root.join(project_key);
-            let disk_slot_names = scan_disk_slots(&project_pool_dir).await;
+            let local_pool_dir = local_pool_root.join(project_key);
+            let host_pool_dir = host_pool_root.join(project_key);
+            let disk_slot_names = scan_disk_slots(&local_pool_dir).await;
 
             let db_slots = db_slots_by_project.remove(project_key).unwrap_or_default();
 
@@ -608,7 +611,7 @@ impl WorkerRepo {
                 .await?;
             self.insert_orphaned_slots(
                 project_key,
-                &project_pool_dir,
+                &host_pool_dir,
                 &db_slots,
                 &disk_slot_names,
                 &mut result,

@@ -337,7 +337,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     project_configs.insert("test-proj".to_owned(), pool_dir.clone());
 
     let slot_result = worker_repo2
-        .reconcile_slots(&project_configs, &workspace)
+        .reconcile_slots(&project_configs, &workspace, &workspace)
         .await
         .unwrap();
 
