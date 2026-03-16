@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
     // UR_HOST_CONFIG is the host-side config directory path, needed for
-    // constructing volume mounts in agent containers (which use host paths
+    // constructing volume mounts in worker containers (which use host paths
     // via the Docker socket). Falls back to the server's own config_dir
     // (only correct when the server runs directly on the host, not in a container).
     let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)

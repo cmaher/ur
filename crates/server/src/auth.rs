@@ -5,10 +5,10 @@ use ur_db::AgentRepo;
 
 /// Creates a tonic interceptor that validates worker requests by checking
 /// `ur-agent-id` and `ur-agent-secret` metadata headers against the
-/// `AgentRepo`'s registered agents.
+/// `AgentRepo`'s registered workers.
 ///
 /// Returns `Status::unauthenticated` if either header is missing or the
-/// agent_id/secret pair doesn't match a registered agent.
+/// worker_id/secret pair doesn't match a registered worker.
 #[allow(clippy::result_large_err)]
 pub fn worker_auth_interceptor(
     agent_repo: AgentRepo,
@@ -16,7 +16,7 @@ pub fn worker_auth_interceptor(
     move |req: Request<()>| {
         let metadata = req.metadata();
 
-        let agent_id = metadata
+        let worker_id = metadata
             .get(AGENT_ID_HEADER)
             .ok_or_else(|| Status::unauthenticated("missing ur-agent-id header"))?
             .to_str()
@@ -30,17 +30,17 @@ pub fn worker_auth_interceptor(
 
         // Bridge async verify_agent into the sync interceptor context.
         let repo = agent_repo.clone();
-        let agent_id = agent_id.to_owned();
+        let worker_id = worker_id.to_owned();
         let secret = secret.to_owned();
         let verified = tokio::task::block_in_place(|| {
             Handle::current()
-                .block_on(repo.verify_agent(&agent_id, &secret))
+                .block_on(repo.verify_agent(&worker_id, &secret))
                 .unwrap_or(false)
         });
 
         if !verified {
             return Err(Status::unauthenticated(
-                "agent authentication failed: invalid agent-id or secret",
+                "worker authentication failed: invalid worker-id or secret",
             ));
         }
 

@@ -26,9 +26,9 @@ type SharedLockMap = Arc<RwLock<HashMap<(String, String), Arc<Mutex<()>>>>>;
 /// since the server runs inside a Docker container without SSH keys or git credentials.
 ///
 /// Supports two acquisition modes:
-/// - **Exclusive** (numbered slots): Acquired by one agent at a time, tracked via slot table
+/// - **Exclusive** (numbered slots): Acquired by one worker at a time, tracked via slot table
 ///   in the database (`status = 'in_use'` / `'available'`).
-/// - **Shared** (named slots): Multiple agents can use the same slot concurrently,
+/// - **Shared** (named slots): Multiple workers can use the same slot concurrently,
 ///   with per-slot mutexes serializing the initial reset.
 #[derive(Clone)]
 pub struct RepoPoolManager {
@@ -188,12 +188,12 @@ impl RepoPoolManager {
 
     /// Acquire a shared (named) repo slot for the given project.
     ///
-    /// Shared slots are not tracked in the `in_use` set — multiple agents can hold
+    /// Shared slots are not tracked in the `in_use` set — multiple workers can hold
     /// the same slot concurrently. The slot is cloned on first use (if the directory
     /// doesn't exist) and reset to origin/master on each acquire.
     ///
     /// A per-slot mutex serializes the reset to avoid git lock conflicts when
-    /// multiple agents acquire the same shared slot concurrently.
+    /// multiple workers acquire the same shared slot concurrently.
     pub async fn acquire_shared(
         &self,
         slot_name: &str,

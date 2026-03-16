@@ -35,11 +35,11 @@ pub enum HostExecError {
     #[error("builderd exec failed: {message}")]
     BuilderdExecFailed { message: String },
 
-    #[error("invalid agent ID: {reason}")]
-    InvalidAgentId { reason: String },
+    #[error("invalid worker ID: {reason}")]
+    InvalidWorkerId { reason: String },
 
-    #[error("process not found for agent: {agent_id}")]
-    ProcessNotFound { agent_id: String },
+    #[error("process not found for worker: {worker_id}")]
+    ProcessNotFound { worker_id: String },
 
     #[error("invalid working directory {path}: {reason}")]
     InvalidWorkingDir { path: String, reason: String },
@@ -80,16 +80,16 @@ impl From<HostExecError> for Status {
                 INTERNAL,
                 HashMap::new(),
             ),
-            HostExecError::InvalidAgentId { .. } => error::status_with_info(
+            HostExecError::InvalidWorkerId { .. } => error::status_with_info(
                 Code::InvalidArgument,
                 err.to_string(),
                 DOMAIN_HOSTEXEC,
                 INVALID_ARGUMENT,
                 HashMap::new(),
             ),
-            HostExecError::ProcessNotFound { agent_id } => {
+            HostExecError::ProcessNotFound { worker_id } => {
                 let mut meta = HashMap::new();
-                meta.insert("agent_id".into(), agent_id.clone());
+                meta.insert("worker_id".into(), worker_id.clone());
                 error::status_with_info(
                     Code::NotFound,
                     err.to_string(),
@@ -134,8 +134,8 @@ impl HostExecService for HostExecServiceHandler {
         &self,
         req: Request<HostExecRequest>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        // Extract agent context from metadata (if present)
-        let (process_id, agent_context, config) = self.resolve_request_context(&req).await?;
+        // Extract worker context from metadata (if present)
+        let (process_id, worker_context, config) = self.resolve_request_context(&req).await?;
 
         let req = req.into_inner();
 
@@ -152,7 +152,7 @@ impl HostExecService for HostExecServiceHandler {
 
         // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution.
         // For pool workers, /workspace maps to a specific slot subdirectory, not the root.
-        let slot_path = agent_context.as_ref().map(|ctx| ctx.slot_path.as_path());
+        let slot_path = worker_context.as_ref().map(|ctx| ctx.slot_path.as_path());
         let host_working_dir = self.map_working_dir(&req.working_dir, slot_path)?;
 
         // 3. Lua transform (if configured)
@@ -163,7 +163,7 @@ impl HostExecService for HostExecServiceHandler {
                     &req.command,
                     &req.args,
                     &host_working_dir,
-                    agent_context.as_ref(),
+                    worker_context.as_ref(),
                 )
                 .map_err(|e| HostExecError::TransformRejected {
                     reason: e.to_string(),
@@ -225,8 +225,8 @@ impl HostExecService for HostExecServiceHandler {
         &self,
         req: Request<ListHostExecCommandsRequest>,
     ) -> Result<Response<ListHostExecCommandsResponse>, Status> {
-        // Extract agent context to get per-project merged config
-        let (process_id, _agent_context, config) = self.resolve_request_context(&req).await?;
+        // Extract worker context to get per-project merged config
+        let (process_id, _worker_context, config) = self.resolve_request_context(&req).await?;
 
         let commands = config.command_names();
         info!(
@@ -239,11 +239,11 @@ impl HostExecService for HostExecServiceHandler {
 }
 
 impl HostExecServiceHandler {
-    /// Extract agent context from request metadata and resolve per-request state.
+    /// Extract worker context from request metadata and resolve per-request state.
     ///
-    /// Returns `(process_id, agent_context, effective_config)` where:
-    /// - `process_id` is resolved from the agent ID (or empty for host-server requests)
-    /// - `agent_context` is the Lua-facing context (if the agent has a project/slot)
+    /// Returns `(process_id, worker_context, effective_config)` where:
+    /// - `process_id` is resolved from the worker ID (or empty for host-server requests)
+    /// - `worker_context` is the Lua-facing context (if the worker has a project/slot)
     /// - `effective_config` is the base hostexec config merged with per-project passthrough commands
     #[allow(clippy::result_large_err)]
     async fn resolve_request_context<T: Send + Sync>(
@@ -252,40 +252,40 @@ impl HostExecServiceHandler {
     ) -> Result<
         (
             String,
-            Option<crate::hostexec::AgentContext>,
+            Option<crate::hostexec::WorkerContext>,
             HostExecConfigManager,
         ),
         HostExecError,
     > {
-        let Some(agent_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) else {
-            // No agent ID header — host-server request (e.g., from `ur` CLI).
+        let Some(worker_id_val) = req.metadata().get(ur_config::AGENT_ID_HEADER) else {
+            // No worker ID header — host-server request (e.g., from `ur` CLI).
             return Ok((String::new(), None, self.config.clone()));
         };
 
-        let agent_id_str = agent_id_val
+        let worker_id_str = worker_id_val
             .to_str()
-            .map_err(|_| HostExecError::InvalidAgentId {
+            .map_err(|_| HostExecError::InvalidWorkerId {
                 reason: "invalid ur-agent-id header encoding".into(),
             })?;
-        let agent_id = crate::AgentId::parse(agent_id_str)
-            .map_err(|e| HostExecError::InvalidAgentId { reason: e })?;
+        let worker_id = crate::WorkerId::parse(worker_id_str)
+            .map_err(|e| HostExecError::InvalidWorkerId { reason: e })?;
 
         // Look up process_id from ProcessManager
         let process_id = self
             .process_manager
-            .resolve_process_id(&agent_id)
+            .resolve_process_id(&worker_id)
             .await
-            .map_err(|e| HostExecError::ProcessNotFound { agent_id: e })?;
+            .map_err(|e| HostExecError::ProcessNotFound { worker_id: e })?;
 
-        // Look up agent context (project_key, slot_path) from ProcessManager
-        let proc_context = self.process_manager.get_agent_context(&agent_id).await;
+        // Look up worker context (project_key, slot_path) from ProcessManager
+        let proc_context = self.process_manager.get_worker_context(&worker_id).await;
 
-        // Build Lua-facing AgentContext and merge per-project passthrough commands
-        let (agent_context, config) = match proc_context {
+        // Build Lua-facing WorkerContext and merge per-project passthrough commands
+        let (worker_context, config) = match proc_context {
             Some(ref ctx) if ctx.project_key.is_some() => {
                 let project_key = ctx.project_key.as_ref().unwrap();
-                let lua_ctx = crate::hostexec::AgentContext {
-                    agent_id: agent_id_str.to_owned(),
+                let lua_ctx = crate::hostexec::WorkerContext {
+                    agent_id: worker_id_str.to_owned(),
                     project_key: project_key.clone(),
                     slot_path: ctx.slot_path.clone(),
                 };
@@ -301,9 +301,9 @@ impl HostExecServiceHandler {
                 (Some(lua_ctx), merged_config)
             }
             Some(ref ctx) => {
-                // Agent has a slot but no project — raw workspace mount
-                let lua_ctx = crate::hostexec::AgentContext {
-                    agent_id: agent_id_str.to_owned(),
+                // Worker has a slot but no project — raw workspace mount
+                let lua_ctx = crate::hostexec::WorkerContext {
+                    agent_id: worker_id_str.to_owned(),
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                 };
@@ -312,7 +312,7 @@ impl HostExecServiceHandler {
             None => (None, self.config.clone()),
         };
 
-        Ok((process_id, agent_context, config))
+        Ok((process_id, worker_context, config))
     }
 
     /// Map container CWD to a `%WORKSPACE%` template path for builderd.

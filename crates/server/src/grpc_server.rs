@@ -43,7 +43,7 @@ pub async fn serve_grpc(
 /// Start the shared worker gRPC server on a TCP socket.
 ///
 /// Serves all container workers. Registers HostExec, RAG, and Ticket services,
-/// all wrapped with the agent auth interceptor that validates `ur-agent-id` and
+/// all wrapped with the worker auth interceptor that validates `ur-agent-id` and
 /// `ur-agent-secret` metadata headers via `AgentRepo`.
 #[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn serve_worker_grpc(
