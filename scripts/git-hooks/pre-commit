@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook: auto-fix formatting and re-stage changed files.
+# Install with: cargo make install-hooks
+
+cargo make fmt-fix
+
+# Re-stage any files that cargo fmt modified
+git diff --name-only | while IFS= read -r file; do
+    git add "$file"
+done
