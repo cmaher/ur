@@ -8,7 +8,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use ur_config::NetworkConfig;
-use ur_db::AgentRepo;
+use ur_db::WorkerRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
@@ -16,21 +16,21 @@ use crate::RepoPoolManager;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
-/// Unique identifier for a running agent, format: `{process_id}-{4 random [a-z0-9]}`.
+/// Unique identifier for a running worker, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
 /// The random suffix prevents collisions when the same process_id is reused
 /// across launches (e.g. after a stop/start cycle).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AgentId(pub String);
+pub struct WorkerId(pub String);
 
-impl std::fmt::Display for AgentId {
+impl std::fmt::Display for WorkerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl AgentId {
-    /// Generate a new agent ID from a process_id by appending `-{4 random [a-z0-9]}`.
+impl WorkerId {
+    /// Generate a new worker ID from a process_id by appending `-{4 random [a-z0-9]}`.
     pub fn generate(process_id: &str) -> Self {
         let mut rng = rand::rng();
         let suffix: String = (0..4)
@@ -46,14 +46,14 @@ impl AgentId {
         Self(format!("{process_id}-{suffix}"))
     }
 
-    /// Validate that a string matches the expected agent ID format:
+    /// Validate that a string matches the expected worker ID format:
     /// non-empty prefix, a dash, then exactly 4 alphanumeric lowercase chars.
     pub fn parse(s: &str) -> Result<Self, String> {
         let Some(dash_pos) = s.rfind('-') else {
-            return Err(format!("invalid agent ID (no dash): {s}"));
+            return Err(format!("invalid worker ID (no dash): {s}"));
         };
         if dash_pos == 0 {
-            return Err(format!("invalid agent ID (empty process_id): {s}"));
+            return Err(format!("invalid worker ID (empty process_id): {s}"));
         }
         let suffix = &s[dash_pos + 1..];
         if suffix.len() != 4
@@ -62,7 +62,7 @@ impl AgentId {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         {
             return Err(format!(
-                "invalid agent ID suffix (expected 4 [a-z0-9] chars): {s}"
+                "invalid worker ID suffix (expected 4 [a-z0-9] chars): {s}"
             ));
         }
         Ok(Self(s.to_string()))
@@ -190,9 +190,9 @@ impl PromptModesConfig {
     }
 }
 
-/// Context for a running agent, returned by `ProcessManager::get_agent_context`.
+/// Context for a running worker, returned by `ProcessManager::get_worker_context`.
 #[derive(Debug, Clone)]
-pub struct AgentContext {
+pub struct WorkerContext {
     /// Project key if launched with `--project`, or `None` for raw workspace launches.
     pub project_key: Option<String>,
     /// Host path to the repo slot (workspace dir or pool slot).
@@ -202,7 +202,7 @@ pub struct AgentContext {
 /// Summary of a running process, returned by `ProcessManager::list()`.
 pub struct ProcessSummary {
     pub process_id: String,
-    pub agent_id: String,
+    pub worker_id: String,
     pub container_id: String,
     pub project_key: String,
     pub mode: String,
@@ -211,7 +211,7 @@ pub struct ProcessSummary {
 /// Configuration for launching a container process.
 pub struct ProcessConfig {
     pub process_id: String,
-    pub agent_id: AgentId,
+    pub worker_id: WorkerId,
     pub image_id: String,
     pub cpus: u32,
     pub memory: String,
@@ -229,13 +229,13 @@ pub struct ProcessConfig {
     pub mounts: Vec<ur_config::MountConfig>,
 }
 
-/// Orchestrates the full lifecycle of agent processes:
+/// Orchestrates the full lifecycle of worker processes:
 /// repo registration, git init, container run/stop.
 #[derive(Clone)]
 pub struct ProcessManager {
     workspace: PathBuf,
     /// Host-side config directory path, used to construct volume mounts for
-    /// agent containers (e.g., shared credentials file).
+    /// worker containers (e.g., shared credentials file).
     host_config_dir: PathBuf,
     repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
@@ -244,7 +244,7 @@ pub struct ProcessManager {
     /// Injected into containers as part of `UR_SERVER_ADDR`.
     worker_port: u16,
     prompt_modes: PromptModesConfig,
-    agent_repo: AgentRepo,
+    worker_repo: WorkerRepo,
 }
 
 impl ProcessManager {
@@ -257,7 +257,7 @@ impl ProcessManager {
         network_config: NetworkConfig,
         worker_port: u16,
         prompt_modes: PromptModesConfig,
-        agent_repo: AgentRepo,
+        worker_repo: WorkerRepo,
     ) -> Self {
         Self {
             workspace,
@@ -267,7 +267,7 @@ impl ProcessManager {
             network_config,
             worker_port,
             prompt_modes,
-            agent_repo,
+            worker_repo,
         }
     }
 
@@ -281,84 +281,84 @@ impl ProcessManager {
         self.prompt_modes.resolve_mode(mode)
     }
 
-    /// Generate a new unique agent ID for the given process_id.
-    pub fn generate_agent_id(&self, process_id: &str) -> AgentId {
-        AgentId::generate(process_id)
+    /// Generate a new unique worker ID for the given process_id.
+    pub fn generate_worker_id(&self, process_id: &str) -> WorkerId {
+        WorkerId::generate(process_id)
     }
 
-    /// Look up an agent by agent ID and return the associated process_id.
-    pub async fn resolve_process_id(&self, agent_id: &AgentId) -> Result<String, String> {
-        let agent = self
-            .agent_repo
-            .get_agent(&agent_id.0)
+    /// Look up a worker by worker ID and return the associated process_id.
+    pub async fn resolve_process_id(&self, worker_id: &WorkerId) -> Result<String, String> {
+        let worker = self
+            .worker_repo
+            .get_worker(&worker_id.0)
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        agent
-            .map(|a| a.process_id)
-            .ok_or_else(|| format!("unknown agent: {agent_id}"))
+        worker
+            .map(|w| w.process_id)
+            .ok_or_else(|| format!("unknown worker: {worker_id}"))
     }
 
-    /// Look up agent context (project_key, slot_path) by agent ID.
-    /// Returns `None` if the agent is not registered or has no workspace_path.
-    pub async fn get_agent_context(&self, agent_id: &AgentId) -> Option<AgentContext> {
-        let agent = self.agent_repo.get_agent(&agent_id.0).await.ok()??;
-        let workspace_path = agent.workspace_path?;
-        let project_key = if agent.project_key.is_empty() {
+    /// Look up worker context (project_key, slot_path) by worker ID.
+    /// Returns `None` if the worker is not registered or has no workspace_path.
+    pub async fn get_worker_context(&self, worker_id: &WorkerId) -> Option<WorkerContext> {
+        let worker = self.worker_repo.get_worker(&worker_id.0).await.ok()??;
+        let workspace_path = worker.workspace_path?;
+        let project_key = if worker.project_key.is_empty() {
             None
         } else {
-            Some(agent.project_key)
+            Some(worker.project_key)
         };
-        Some(AgentContext {
+        Some(WorkerContext {
             project_key,
             slot_path: PathBuf::from(workspace_path),
         })
     }
 
-    /// Verify that the given agent_id and secret match a registered agent.
-    pub async fn verify_agent(&self, agent_id: &str, secret: &str) -> bool {
-        let Ok(_parsed) = AgentId::parse(agent_id) else {
+    /// Verify that the given worker_id and secret match a registered worker.
+    pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> bool {
+        let Ok(_parsed) = WorkerId::parse(worker_id) else {
             return false;
         };
-        self.agent_repo
-            .verify_agent(agent_id, secret)
+        self.worker_repo
+            .verify_worker(worker_id, secret)
             .await
             .unwrap_or(false)
     }
 
-    /// Register an agent in the database without running a container.
+    /// Register a worker in the database without running a container.
     ///
-    /// Used by tests that need a registered agent but cannot (or should not) spawn
+    /// Used by tests that need a registered worker but cannot (or should not) spawn
     /// a real container. The caller supplies the agent_secret and container_id
     /// directly.
     #[allow(clippy::too_many_arguments)]
-    pub async fn register_agent(
+    pub async fn register_worker(
         &self,
-        agent_id: AgentId,
+        worker_id: WorkerId,
         process_id: String,
         project_key: String,
         slot_path: Option<PathBuf>,
         strategy: WorkerStrategy,
         container_id: String,
-        agent_secret: String,
+        worker_secret: String,
     ) {
         let now = Utc::now().to_rfc3339();
-        let agent = ur_db::model::Agent {
-            agent_id: agent_id.0,
+        let worker = ur_db::model::Worker {
+            worker_id: worker_id.0,
             process_id,
             project_key,
             slot_id: None,
             container_id,
-            agent_secret,
+            worker_secret,
             strategy: strategy.name().to_owned(),
             status: "running".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
         };
-        self.agent_repo
-            .insert_agent(&agent)
+        self.worker_repo
+            .insert_worker(&worker)
             .await
-            .expect("failed to register agent");
+            .expect("failed to register worker");
     }
 
     /// Phase 1 of launch: create repo dir and git init.
@@ -367,18 +367,18 @@ impl ProcessManager {
     pub async fn prepare(
         &self,
         process_id: &str,
-        agent_id: &AgentId,
+        worker_id: &WorkerId,
         workspace_dir: Option<PathBuf>,
     ) -> Result<(), String> {
         // Check for duplicate process ID via database
         let running = self
-            .agent_repo
-            .list_agents_by_status("running")
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let provisioning = self
-            .agent_repo
-            .list_agents_by_status("provisioning")
+            .worker_repo
+            .list_workers_by_status("provisioning")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let has_duplicate = running
@@ -390,11 +390,11 @@ impl ProcessManager {
         }
 
         if let Some(ws_dir) = workspace_dir {
-            // External workspace: skip git init (agent.workspace_path in DB handles CWD resolution)
-            info!(process_id, %agent_id, workspace_dir = %ws_dir.display(), "registering external workspace");
+            // External workspace: skip git init (worker.workspace_path in DB handles CWD resolution)
+            info!(process_id, %worker_id, workspace_dir = %ws_dir.display(), "registering external workspace");
         } else {
             // Default: create repo dir and git init
-            info!(process_id, %agent_id, "creating repo directory and initializing git");
+            info!(process_id, %worker_id, "creating repo directory and initializing git");
             let repo_dir = self.workspace.join(process_id);
             tokio::fs::create_dir_all(&repo_dir)
                 .await
@@ -417,17 +417,17 @@ impl ProcessManager {
         Ok(())
     }
 
-    /// Phase 2 of launch: run the container and record the agent in the database.
-    /// Generates and stores an agent secret (UUID v4) for auth.
-    /// Returns `(container_id, agent_secret)`.
+    /// Phase 2 of launch: run the container and record the worker in the database.
+    /// Generates and stores a worker secret (UUID v4) for auth.
+    /// Returns `(container_id, worker_secret)`.
     pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
-        // Generate agent secret for worker auth
-        let agent_secret = Uuid::new_v4().to_string();
+        // Generate worker secret for worker auth
+        let worker_secret = Uuid::new_v4().to_string();
 
         // Build env vars
         let server_addr = format!(
@@ -436,8 +436,14 @@ impl ProcessManager {
         );
         let mut env_vars = vec![
             (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
-            (ur_config::UR_AGENT_ID_ENV.into(), config.agent_id.0.clone()),
-            (ur_config::UR_AGENT_SECRET_ENV.into(), agent_secret.clone()),
+            (
+                ur_config::UR_WORKER_ID_ENV.into(),
+                config.worker_id.0.clone(),
+            ),
+            (
+                ur_config::UR_WORKER_SECRET_ENV.into(),
+                worker_secret.clone(),
+            ),
         ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
@@ -449,7 +455,7 @@ impl ProcessManager {
         }
 
         // Build RunOpts via the builder
-        let container_name = format!("{}{}", self.network_config.agent_prefix, config.process_id);
+        let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
             config.image_id.clone(),
             container_name,
@@ -473,68 +479,68 @@ impl ProcessManager {
 
         info!(
             process_id = config.process_id,
-            agent_id = %config.agent_id,
+            worker_id = %config.worker_id,
             container_id = cid.0,
             "process launched"
         );
 
         // Record in database
         let now = Utc::now().to_rfc3339();
-        let agent = ur_db::model::Agent {
-            agent_id: config.agent_id.0,
+        let worker = ur_db::model::Worker {
+            worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
             slot_id: None,
             container_id: cid.0.clone(),
-            agent_secret: agent_secret.clone(),
+            worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
             status: "running".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
         };
-        self.agent_repo
-            .insert_agent(&agent)
+        self.worker_repo
+            .insert_worker(&worker)
             .await
-            .map_err(|e| format!("failed to record agent: {e}"))?;
+            .map_err(|e| format!("failed to record worker: {e}"))?;
 
-        Ok((cid.0, agent_secret))
+        Ok((cid.0, worker_secret))
     }
 
-    /// Stop a running agent process by agent ID. Stops + removes the container.
-    pub async fn stop_by_agent_id(&self, agent_id: &AgentId) -> Result<(), String> {
-        let agent = self
-            .agent_repo
-            .get_agent(&agent_id.0)
+    /// Stop a running worker process by worker ID. Stops + removes the container.
+    pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), String> {
+        let worker = self
+            .worker_repo
+            .get_worker(&worker_id.0)
             .await
             .map_err(|e| format!("db error: {e}"))?
-            .ok_or_else(|| format!("unknown agent: {agent_id}"))?;
+            .ok_or_else(|| format!("unknown worker: {worker_id}"))?;
 
         info!(
-            process_id = agent.process_id,
-            %agent_id,
-            container_id = agent.container_id,
+            process_id = worker.process_id,
+            %worker_id,
+            container_id = worker.container_id,
             "stopping container"
         );
 
         // 1. Stop + remove container (scoped so rt is dropped before await)
         {
             let rt = container::runtime_from_env();
-            let cid = container::ContainerId(agent.container_id.clone());
+            let cid = container::ContainerId(worker.container_id.clone());
             rt.stop(&cid).map_err(|e| e.to_string())?;
             rt.rm(&cid).map_err(|e| e.to_string())?;
         }
 
         // 2. Release pool slot if this was a project-based launch
-        let strategy = WorkerStrategy::from_name(&agent.strategy)
+        let strategy = WorkerStrategy::from_name(&worker.strategy)
             .map_err(|e| format!("invalid strategy in db: {e}"))?;
-        if !agent.project_key.is_empty()
-            && let Some(ref workspace_path) = agent.workspace_path
+        if !worker.project_key.is_empty()
+            && let Some(ref workspace_path) = worker.workspace_path
         {
             let slot_path = PathBuf::from(workspace_path);
             info!(
-                process_id = agent.process_id,
-                project_key = agent.project_key,
+                process_id = worker.process_id,
+                project_key = worker.project_key,
                 slot_path = %slot_path.display(),
                 strategy = strategy.name(),
                 "releasing pool slot"
@@ -545,14 +551,14 @@ impl ProcessManager {
         }
 
         // 3. Update status to stopped in database
-        self.agent_repo
-            .update_agent_status(&agent_id.0, "stopped")
+        self.worker_repo
+            .update_worker_status(&worker_id.0, "stopped")
             .await
-            .map_err(|e| format!("failed to update agent status: {e}"))?;
+            .map_err(|e| format!("failed to update worker status: {e}"))?;
 
         info!(
-            process_id = agent.process_id,
-            %agent_id,
+            process_id = worker.process_id,
+            %worker_id,
             "process stopped"
         );
 
@@ -561,19 +567,19 @@ impl ProcessManager {
 
     /// List all running processes with their metadata.
     pub async fn list(&self) -> Vec<ProcessSummary> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .unwrap_or_default();
-        let mut result: Vec<ProcessSummary> = agents
+        let mut result: Vec<ProcessSummary> = workers
             .into_iter()
-            .map(|agent| ProcessSummary {
-                process_id: agent.process_id,
-                agent_id: agent.agent_id,
-                container_id: agent.container_id,
-                project_key: agent.project_key,
-                mode: agent.strategy,
+            .map(|worker| ProcessSummary {
+                process_id: worker.process_id,
+                worker_id: worker.worker_id,
+                container_id: worker.container_id,
+                project_key: worker.project_key,
+                mode: worker.strategy,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
@@ -582,32 +588,32 @@ impl ProcessManager {
 
     /// Look up the workspace/slot directory for a running process by its process ID.
     pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let agent = agents
+        let worker = workers
             .iter()
-            .find(|a| a.process_id == process_id)
+            .find(|w| w.process_id == process_id)
             .ok_or_else(|| format!("unknown process: {process_id}"))?;
-        Ok(agent.workspace_path.as_ref().map(PathBuf::from))
+        Ok(worker.workspace_path.as_ref().map(PathBuf::from))
     }
 
-    /// Stop a running agent process by process_id (searches all entries).
-    /// Used by the CLI which only knows the process_id, not the agent_id.
+    /// Stop a running worker process by process_id (searches all entries).
+    /// Used by the CLI which only knows the process_id, not the worker_id.
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let agent = agents
+        let worker = workers
             .iter()
-            .find(|a| a.process_id == process_id)
+            .find(|w| w.process_id == process_id)
             .ok_or_else(|| format!("unknown process: {process_id}"))?;
-        let agent_id = AgentId::parse(&agent.agent_id)?;
-        self.stop_by_agent_id(&agent_id).await
+        let worker_id = WorkerId::parse(&worker.worker_id)?;
+        self.stop_by_worker_id(&worker_id).await
     }
 }
 
@@ -657,7 +663,7 @@ mod tests {
                 name: ur_config::DEFAULT_NETWORK_NAME.into(),
                 worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
                 server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-                agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
+                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
             hostexec: ur_config::HostExecConfig::default(),
             rag: ur_config::RagConfig {
@@ -676,17 +682,17 @@ mod tests {
         }
     }
 
-    async fn test_agent_repo() -> AgentRepo {
+    async fn test_worker_repo() -> WorkerRepo {
         let db = ur_db::DatabaseManager::open(":memory:")
             .await
             .expect("failed to open in-memory db");
-        AgentRepo::new(db.pool().clone())
+        WorkerRepo::new(db.pool().clone())
     }
 
     async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
-        let agent_repo = test_agent_repo().await;
+        let agent_repo = test_worker_repo().await;
         let repo_pool_manager = RepoPoolManager::new(
             &config,
             workspace.path().to_path_buf(),
@@ -702,7 +708,7 @@ mod tests {
             name: ur_config::DEFAULT_NETWORK_NAME.into(),
             worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
-            agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
+            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         };
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
@@ -721,7 +727,7 @@ mod tests {
     async fn prepare_creates_repo_and_registers() {
         let (mgr, workspace) = test_manager().await;
         let process_id = "test-proc";
-        let agent_id = mgr.generate_agent_id(process_id);
+        let agent_id = mgr.generate_worker_id(process_id);
 
         mgr.prepare(process_id, &agent_id, None).await.unwrap();
 
@@ -734,7 +740,7 @@ mod tests {
     async fn prepare_with_workspace_skips_git_init() {
         let (mgr, _workspace) = test_manager().await;
         let process_id = "ws-proc";
-        let agent_id = mgr.generate_agent_id(process_id);
+        let agent_id = mgr.generate_worker_id(process_id);
 
         // Create a temp dir to act as the external workspace
         let ext_workspace = tempfile::tempdir().unwrap();
@@ -752,9 +758,9 @@ mod tests {
     async fn prepare_duplicate_process_id_returns_error() {
         let (mgr, _workspace) = test_manager().await;
 
-        let existing_agent_id = AgentId("dup-proc-ab12".into());
-        // Insert a running agent into the database
-        mgr.register_agent(
+        let existing_agent_id = WorkerId("dup-proc-ab12".into());
+        // Insert a running worker into the database
+        mgr.register_worker(
             existing_agent_id,
             "dup-proc".into(),
             String::new(),
@@ -765,9 +771,9 @@ mod tests {
         )
         .await;
 
-        // A new agent_id with a different suffix should still be rejected
+        // A new worker_id with a different suffix should still be rejected
         // because the process_id matches.
-        let new_agent_id = AgentId("dup-proc-zz99".into());
+        let new_agent_id = WorkerId("dup-proc-zz99".into());
         let result = mgr.prepare("dup-proc", &new_agent_id, None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("process already running"));
@@ -782,8 +788,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_id_generate_format() {
-        let id = AgentId::generate("deploy");
+    fn worker_id_generate_format() {
+        let id = WorkerId::generate("deploy");
         assert!(
             id.0.starts_with("deploy-"),
             "expected deploy- prefix: {}",
@@ -800,32 +806,32 @@ mod tests {
     }
 
     #[test]
-    fn agent_id_parse_valid() {
-        let id = AgentId::parse("deploy-x7q2").unwrap();
+    fn worker_id_parse_valid() {
+        let id = WorkerId::parse("deploy-x7q2").unwrap();
         assert_eq!(id.0, "deploy-x7q2");
     }
 
     #[test]
-    fn agent_id_parse_rejects_bad_suffix() {
-        assert!(AgentId::parse("deploy-ABCD").is_err());
-        assert!(AgentId::parse("deploy-abc").is_err());
-        assert!(AgentId::parse("deploy-abcde").is_err());
-        assert!(AgentId::parse("nodash").is_err());
-        assert!(AgentId::parse("-ab12").is_err());
+    fn worker_id_parse_rejects_bad_suffix() {
+        assert!(WorkerId::parse("deploy-ABCD").is_err());
+        assert!(WorkerId::parse("deploy-abc").is_err());
+        assert!(WorkerId::parse("deploy-abcde").is_err());
+        assert!(WorkerId::parse("nodash").is_err());
+        assert!(WorkerId::parse("-ab12").is_err());
     }
 
     #[test]
-    fn agent_id_parse_with_multiple_dashes() {
+    fn worker_id_parse_with_multiple_dashes() {
         // process_id itself can contain dashes; we use rfind for the last dash
-        let id = AgentId::parse("my-proc-x7q2").unwrap();
+        let id = WorkerId::parse("my-proc-x7q2").unwrap();
         assert_eq!(id.0, "my-proc-x7q2");
     }
 
     #[tokio::test]
     async fn resolve_process_id_works() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("test-ab12".into());
-        mgr.register_agent(
+        let agent_id = WorkerId("test-ab12".into());
+        mgr.register_worker(
             agent_id.clone(),
             "test".into(),
             "myproject".into(),
@@ -837,7 +843,7 @@ mod tests {
         .await;
         assert_eq!(mgr.resolve_process_id(&agent_id).await.unwrap(), "test");
         assert!(
-            mgr.resolve_process_id(&AgentId("unknown-ab12".into()))
+            mgr.resolve_process_id(&WorkerId("unknown-ab12".into()))
                 .await
                 .is_err()
         );
@@ -985,11 +991,11 @@ skills = ["only-one"]
     }
 
     #[tokio::test]
-    async fn verify_agent_valid_pair_returns_true() {
+    async fn verify_worker_valid_pair_returns_true() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("test-ab12".into());
+        let agent_id = WorkerId("test-ab12".into());
         let secret = "my-secret-token";
-        mgr.register_agent(
+        mgr.register_worker(
             agent_id.clone(),
             "test".into(),
             "proj".into(),
@@ -999,14 +1005,14 @@ skills = ["only-one"]
             secret.into(),
         )
         .await;
-        assert!(mgr.verify_agent("test-ab12", secret).await);
+        assert!(mgr.verify_worker("test-ab12", secret).await);
     }
 
     #[tokio::test]
-    async fn verify_agent_wrong_secret_returns_false() {
+    async fn verify_worker_wrong_secret_returns_false() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("test-ab12".into());
-        mgr.register_agent(
+        let agent_id = WorkerId("test-ab12".into());
+        mgr.register_worker(
             agent_id.clone(),
             "test".into(),
             String::new(),
@@ -1016,27 +1022,27 @@ skills = ["only-one"]
             "correct-secret".into(),
         )
         .await;
-        assert!(!mgr.verify_agent("test-ab12", "wrong-secret").await);
+        assert!(!mgr.verify_worker("test-ab12", "wrong-secret").await);
     }
 
     #[tokio::test]
-    async fn verify_agent_unknown_id_returns_false() {
+    async fn verify_worker_unknown_id_returns_false() {
         let (mgr, _workspace) = test_manager().await;
-        assert!(!mgr.verify_agent("unknown-ab12", "any-secret").await);
+        assert!(!mgr.verify_worker("unknown-ab12", "any-secret").await);
     }
 
     #[tokio::test]
-    async fn verify_agent_invalid_id_format_returns_false() {
+    async fn verify_worker_invalid_id_format_returns_false() {
         let (mgr, _workspace) = test_manager().await;
-        assert!(!mgr.verify_agent("nodash", "any-secret").await);
+        assert!(!mgr.verify_worker("nodash", "any-secret").await);
     }
 
     #[tokio::test]
-    async fn get_agent_context_returns_context_for_registered_agent() {
+    async fn get_worker_context_returns_context_for_registered_agent() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("ctx-ab12".into());
+        let agent_id = WorkerId("ctx-ab12".into());
         let slot = PathBuf::from("/tmp/slot");
-        mgr.register_agent(
+        mgr.register_worker(
             agent_id.clone(),
             "ctx".into(),
             "myproject".into(),
@@ -1046,16 +1052,16 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        let ctx = mgr.get_agent_context(&agent_id).await.unwrap();
+        let ctx = mgr.get_worker_context(&agent_id).await.unwrap();
         assert_eq!(ctx.project_key, Some("myproject".to_string()));
         assert_eq!(ctx.slot_path, slot);
     }
 
     #[tokio::test]
-    async fn get_agent_context_empty_project_key_maps_to_none() {
+    async fn get_worker_context_empty_project_key_maps_to_none() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("ws-ab12".into());
-        mgr.register_agent(
+        let agent_id = WorkerId("ws-ab12".into());
+        mgr.register_worker(
             agent_id.clone(),
             "ws".into(),
             String::new(),
@@ -1065,22 +1071,22 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        let ctx = mgr.get_agent_context(&agent_id).await.unwrap();
+        let ctx = mgr.get_worker_context(&agent_id).await.unwrap();
         assert_eq!(ctx.project_key, None);
     }
 
     #[tokio::test]
-    async fn get_agent_context_returns_none_for_unknown_agent() {
+    async fn get_worker_context_returns_none_for_unknown_agent() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("missing-ab12".into());
-        assert!(mgr.get_agent_context(&agent_id).await.is_none());
+        let agent_id = WorkerId("missing-ab12".into());
+        assert!(mgr.get_worker_context(&agent_id).await.is_none());
     }
 
     #[tokio::test]
-    async fn get_agent_context_returns_none_when_no_slot_path() {
+    async fn get_worker_context_returns_none_when_no_slot_path() {
         let (mgr, _workspace) = test_manager().await;
-        let agent_id = AgentId("nosl-ab12".into());
-        mgr.register_agent(
+        let agent_id = WorkerId("nosl-ab12".into());
+        mgr.register_worker(
             agent_id.clone(),
             "nosl".into(),
             "proj".into(),
@@ -1090,6 +1096,6 @@ skills = ["only-one"]
             "secret".into(),
         )
         .await;
-        assert!(mgr.get_agent_context(&agent_id).await.is_none());
+        assert!(mgr.get_worker_context(&agent_id).await.is_none());
     }
 }

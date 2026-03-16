@@ -87,13 +87,13 @@ pub struct Slot {
     pub updated_at: String,
 }
 
-pub struct Agent {
-    pub agent_id: String,
+pub struct Worker {
+    pub worker_id: String,
     pub process_id: String,
     pub project_key: String,
     pub slot_id: Option<String>,
     pub container_id: String,
-    pub agent_secret: String,
+    pub worker_secret: String,
     pub strategy: String,
     pub status: String,
     pub workspace_path: Option<String>,

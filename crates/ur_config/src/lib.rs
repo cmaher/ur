@@ -76,22 +76,22 @@ pub const UR_CONFIG_ENV: &str = "UR_CONFIG";
 /// Environment variable: `host:port` address for worker→server gRPC connections.
 pub const UR_SERVER_ADDR_ENV: &str = "UR_SERVER_ADDR";
 
-/// Environment variable: unique agent ID injected into containers at launch.
+/// Environment variable: unique worker ID injected into containers at launch.
 /// Format: `{process_id}-{4 random [a-z0-9]}`, e.g. `deploy-x7q2`.
-pub const UR_AGENT_ID_ENV: &str = "UR_AGENT_ID";
+pub const UR_WORKER_ID_ENV: &str = "UR_WORKER_ID";
 
-/// gRPC metadata header key for the agent ID.
+/// gRPC metadata header key for the worker ID.
 /// Sent by workertools and workerd on every request so the server can identify
-/// which agent is making the call.
-pub const AGENT_ID_HEADER: &str = "ur-agent-id";
+/// which worker is making the call.
+pub const WORKER_ID_HEADER: &str = "ur-worker-id";
 
-/// Environment variable: per-agent secret (UUID v4) injected into containers at launch.
-/// Used alongside `UR_AGENT_ID` to authenticate worker requests to the shared worker server.
-pub const UR_AGENT_SECRET_ENV: &str = "UR_AGENT_SECRET";
+/// Environment variable: per-worker secret (UUID v4) injected into containers at launch.
+/// Used alongside `UR_WORKER_ID` to authenticate worker requests to the shared worker server.
+pub const UR_WORKER_SECRET_ENV: &str = "UR_WORKER_SECRET";
 
-/// gRPC metadata header key for the agent secret.
+/// gRPC metadata header key for the worker secret.
 /// Sent by workertools on every request to the worker server for authentication.
-pub const AGENT_SECRET_HEADER: &str = "ur-agent-secret";
+pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";
 
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
@@ -99,7 +99,7 @@ pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
 /// Environment variable: host-side config directory path.
 ///
 /// The server container sees its config at `/config` (bind mount), but needs the
-/// original host path when constructing volume mounts for agent containers
+/// original host path when constructing volume mounts for worker containers
 /// (which go through the Docker socket and use host paths).
 pub const UR_HOST_CONFIG_ENV: &str = "UR_HOST_CONFIG";
 
@@ -114,7 +114,7 @@ pub const CLAUDE_CREDENTIALS_FILENAME: &str = ".credentials.json";
 /// Without this file, Claude Code prompts for login even when credentials exist.
 pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
 
-/// Home directory of the worker user inside agent containers.
+/// Home directory of the worker user inside worker containers.
 pub const WORKER_HOME: &str = "/home/worker";
 
 /// Container-internal mount point for the workspace volume.
@@ -172,8 +172,8 @@ pub const DEFAULT_WORKER_NETWORK_NAME: &str = "ur-workers";
 /// Default hostname that containers use to reach the server via Docker DNS.
 pub const DEFAULT_SERVER_HOSTNAME: &str = "ur-server";
 
-/// Default container name prefix for agent containers (e.g., `ur-agent-myticket`).
-pub const DEFAULT_AGENT_PREFIX: &str = "ur-agent-";
+/// Default container name prefix for worker containers (e.g., `ur-worker-myticket`).
+pub const DEFAULT_WORKER_PREFIX: &str = "ur-worker-";
 
 /// Default maximum number of cached repo clones per project.
 pub const DEFAULT_POOL_LIMIT: u32 = 10;
@@ -331,7 +331,7 @@ struct RawNetworkConfig {
     name: Option<String>,
     worker_name: Option<String>,
     server_hostname: Option<String>,
-    agent_prefix: Option<String>,
+    worker_prefix: Option<String>,
 }
 
 /// Raw TOML representation for the `[rag]` section.
@@ -378,9 +378,9 @@ pub struct NetworkConfig {
     /// Hostname containers use to reach the server via Docker DNS (default: "ur-server").
     /// This must match the container/service name of the server on the Docker network.
     pub server_hostname: String,
-    /// Container name prefix for agent containers (default: "ur-agent-").
-    /// Agent containers are named `{agent_prefix}{process_id}`.
-    pub agent_prefix: String,
+    /// Container name prefix for worker containers (default: "ur-worker-").
+    /// Worker containers are named `{worker_prefix}{process_id}`.
+    pub worker_prefix: String,
 }
 
 /// RAG (Retrieval-Augmented Generation) configuration.
@@ -450,7 +450,7 @@ pub struct ProjectConfig {
 pub struct Config {
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
-    /// Agent workspace directory.
+    /// Worker workspace directory.
     pub workspace: PathBuf,
     /// TCP port the server listens on (default: 42069).
     pub daemon_port: u16,
@@ -542,15 +542,15 @@ impl Config {
                 server_hostname: n
                     .server_hostname
                     .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
-                agent_prefix: n
-                    .agent_prefix
-                    .unwrap_or_else(|| DEFAULT_AGENT_PREFIX.to_string()),
+                worker_prefix: n
+                    .worker_prefix
+                    .unwrap_or_else(|| DEFAULT_WORKER_PREFIX.to_string()),
             },
             None => NetworkConfig {
                 name: DEFAULT_NETWORK_NAME.to_string(),
                 worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
                 server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
-                agent_prefix: DEFAULT_AGENT_PREFIX.to_string(),
+                worker_prefix: DEFAULT_WORKER_PREFIX.to_string(),
             },
         };
 
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
-        assert_eq!(cfg.network.agent_prefix, DEFAULT_AGENT_PREFIX);
+        assert_eq!(cfg.network.worker_prefix, DEFAULT_WORKER_PREFIX);
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
         assert_eq!(cfg.network.server_hostname, DEFAULT_SERVER_HOSTNAME);
-        assert_eq!(cfg.network.agent_prefix, DEFAULT_AGENT_PREFIX);
+        assert_eq!(cfg.network.worker_prefix, DEFAULT_WORKER_PREFIX);
     }
 
     #[test]
@@ -800,14 +800,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\nagent_prefix = \"test-agent-\"\n",
+            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\nworker_prefix = \"test-worker-\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, "custom-net");
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
-        assert_eq!(cfg.network.agent_prefix, "test-agent-");
+        assert_eq!(cfg.network.worker_prefix, "test-worker-");
     }
 
     #[test]

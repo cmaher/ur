@@ -7,6 +7,6 @@ Installed at `/usr/local/bin/workertools` in worker containers.
 - `workertools rag search <query>` — searches indexed documentation via RAG
 - Bash shims at `/home/worker/.local/bin/<command>` call `workertools host-exec`
 - Connects to ur-server via `$UR_SERVER_ADDR`
-- Auth headers (`ur-agent-id`, `ur-agent-secret`) injected via tonic interceptor for all subcommands
+- Auth headers (`ur-worker-id`, `ur-worker-secret`) injected via tonic interceptor for all subcommands
 - Exits with remote exit code
 - Ticket management is handled via `ur ticket` through host-exec (not a direct workertools subcommand)

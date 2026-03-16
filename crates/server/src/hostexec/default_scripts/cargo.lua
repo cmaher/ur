@@ -2,7 +2,7 @@
 -- Default cargo argument transform: blocks subcommands that escape the project
 -- directory or interact with the global crate registry.
 
-function transform(command, args, working_dir, agent_context)
+function transform(command, args, working_dir, worker_context)
     -- Subcommands that install/remove global binaries or touch the registry
     local blocked_subcommands = {
         ["install"] = true,
@@ -29,9 +29,9 @@ function transform(command, args, working_dir, agent_context)
             end
         end
 
-        -- Handle -C: rewrite if agent_context allows, block otherwise
+        -- Handle -C: rewrite if worker_context allows, block otherwise
         if arg == "-C" then
-            if agent_context == nil then
+            if worker_context == nil then
                 error("blocked flag: -C")
             end
             if i + 1 > #args then
@@ -40,8 +40,8 @@ function transform(command, args, working_dir, agent_context)
             local path_arg = args[i + 1]
             local stripped = path_arg:gsub("/+$", "")
             local final_component = stripped:match("([^/]+)$") or stripped
-            if final_component == agent_context.project_key or final_component == "workspace" then
-                args[i + 1] = agent_context.slot_path
+            if final_component == worker_context.project_key or final_component == "workspace" then
+                args[i + 1] = worker_context.slot_path
                 i = i + 2
             else
                 error("blocked flag: -C (path '" .. path_arg .. "' does not match project key or 'workspace')")

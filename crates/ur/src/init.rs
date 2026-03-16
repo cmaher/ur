@@ -21,8 +21,8 @@ const EXAMPLE_LUA: &str = "\
 --   command       (string) - the command name (e.g. \"cargo\", \"make\")
 --   args          (table)  - array of argument strings
 --   working_dir   (string) - host-mapped working directory
---   agent_context (table|nil) - per-agent metadata when running in a project:
---     .agent_id    (string) - unique agent identifier (e.g. \"deploy-x7q2\")
+--   worker_context (table|nil) - per-worker metadata when running in a project:
+--     .worker_id   (string) - unique worker identifier (e.g. \"deploy-x7q2\")
 --     .project_key (string) - project key from ur.toml (e.g. \"ur\")
 --     .slot_path   (string) - host-side repo pool slot path
 --
@@ -31,7 +31,7 @@ const EXAMPLE_LUA: &str = "\
 --   args        (table)            - array of argument strings (required)
 --   working_dir (string)           - working directory for the command (required)
 --   env         (table|nil)        - string->string env vars added to the process (optional)
-function transform(command, args, working_dir, agent_context)
+function transform(command, args, working_dir, worker_context)
     return {
         command = command,
         args = args,

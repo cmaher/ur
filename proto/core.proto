@@ -67,7 +67,7 @@ message WorkerListResponse {
 
 message WorkerSummary {
   string worker_id = 1;
-  string agent_id = 2;
+  string worker_id_full = 2;
   string container_id = 3;
   string project_key = 4;
   string mode = 5;

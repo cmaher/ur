@@ -12,7 +12,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `workspace` | path | `<config_dir>/workspace` | Agent workspace directory (host-side) |
+| `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
 | `daemon_port` | u16 | 42069 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `daemon_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
@@ -35,7 +35,7 @@ Docker network configuration for container networking.
 | `name` | string | `"ur"` | Infrastructure network (internet-connected) |
 | `worker_name` | string | `"ur-workers"` | Worker network (internal, no internet) |
 | `server_hostname` | string | `"ur-server"` | Server hostname via Docker DNS |
-| `agent_prefix` | string | `"ur-agent-"` | Container name prefix for agents |
+| `worker_prefix` | string | `"ur-worker-"` | Container name prefix for workers |
 
 ## `[projects.<key>]` Section
 
@@ -102,7 +102,7 @@ ProcessConfig
       .add_credentials()   — mounts credentials file
       .add_git_hooks()     — mounts git hooks (HostPath only; ProjectRelative sets env var)
       .add_mounts()        — mounts project-configured volumes (source → destination)
-      .add_env_vars()      — proxy vars, agent ID, server addr, skills
+      .add_env_vars()      — proxy vars, worker ID, server addr, skills
       .build() → RunOpts → container runtime
 ```
 

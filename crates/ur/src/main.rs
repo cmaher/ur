@@ -206,9 +206,9 @@ enum WorkerCommands {
     },
     /// Print the host directory assigned to a running process
     Dir { worker_id: String },
-    /// Force-stop a running agent process (via server)
+    /// Force-stop a running worker process (via server)
     Kill { worker_id: String },
-    /// Launch a new agent process
+    /// Launch a new worker process
     Launch {
         ticket_id: String,
         /// Mount a host directory as the container workspace (mutually exclusive with -p)
@@ -239,7 +239,7 @@ enum WorkerCommands {
     SaveCredentials { worker_id: String },
     /// Show process status
     Status { worker_id: Option<String> },
-    /// Stop a running agent process
+    /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
     Vscode { worker_id: String },
@@ -325,7 +325,7 @@ fn stop_server(
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
     info!("stopping server");
-    kill_all_containers(&config.network.agent_prefix, output)?;
+    kill_all_containers(&config.network.worker_prefix, output)?;
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
         output.print_text("server is not running");
@@ -357,19 +357,19 @@ async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
 }
 
 #[instrument(skip(output))]
-fn kill_all_containers(agent_prefix: &str, output: &OutputManager) -> Result<()> {
+fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()> {
     let rt = container::runtime_from_env();
-    let containers = rt.list_by_prefix(agent_prefix)?;
+    let containers = rt.list_by_prefix(worker_prefix)?;
     if containers.is_empty() {
-        debug!(agent_prefix, "no agent containers running");
+        debug!(worker_prefix, "no worker containers running");
         output.print_text(&format!(
-            "No agent containers running (prefix: {agent_prefix})"
+            "No worker containers running (prefix: {worker_prefix})"
         ));
         return Ok(());
     }
     info!(
         count = containers.len(),
-        agent_prefix, "killing all agent containers"
+        worker_prefix, "killing all worker containers"
     );
     for id in &containers {
         if let Err(e) = rt.stop(id) {
@@ -393,13 +393,13 @@ fn kill_all_containers(agent_prefix: &str, output: &OutputManager) -> Result<()>
 }
 
 #[instrument]
-fn process_attach(worker_id: &str, agent_prefix: &str) -> Result<i32> {
+fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
-    let id = ContainerId(format!("{agent_prefix}{worker_id}"));
+    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
     info!(container = %id.0, "attaching to process");
-    // Create an independent tmux session instead of attaching to "agent".
-    // `tmux attach -t agent` kills the session if the user exits the shell,
-    // preventing reconnection. A separate session survives agent-session death
+    // Create an independent tmux session instead of attaching to the worker.
+    // `tmux attach -t worker` kills the session if the user exits the shell,
+    // preventing reconnection. A separate session survives worker-session death
     // and vice versa. `-A` reattaches if the session already exists.
     let command: Vec<String> = vec![
         "tmux".into(),
@@ -461,12 +461,12 @@ async fn process_launch(
     ticket_id: &str,
     workspace: Option<PathBuf>,
     project_key: &str,
-    agent_prefix: &str,
+    worker_prefix: &str,
     mode: &str,
     skills: &[String],
     output: &OutputManager,
 ) -> Result<()> {
-    info!(ticket_id, project_key, "launching agent process");
+    info!(ticket_id, project_key, "launching worker process");
 
     // Refresh credentials from macOS Keychain and ensure config exists
     let cred_mgr = credential::CredentialManager;
@@ -485,9 +485,9 @@ async fn process_launch(
     };
 
     let image_id = "ur-worker-rust:latest";
-    let container_name = format!("{agent_prefix}{ticket_id}");
+    let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
-        println!("Launching agent {container_name}...");
+        println!("Launching worker {container_name}...");
     }
     let resp = client
         .worker_launch(WorkerLaunchRequest {
@@ -506,7 +506,7 @@ async fn process_launch(
     let container_id = resp.into_inner().container_id;
     info!(
         ticket_id,
-        container_name, container_id, image_id, "agent process launched"
+        container_name, container_id, image_id, "worker process launched"
     );
     if output.is_json() {
         output.print_success(&WorkerLaunched {
@@ -514,7 +514,7 @@ async fn process_launch(
             container_id,
         });
     } else {
-        println!("Agent {container_name} running (container {container_id})");
+        println!("Worker {container_name} running (container {container_id})");
     }
     Ok(())
 }
@@ -525,7 +525,7 @@ async fn process_stop(
     worker_id: &str,
     output: &OutputManager,
 ) -> Result<()> {
-    info!(worker_id, "stopping agent process");
+    info!(worker_id, "stopping worker process");
     if !output.is_json() {
         println!("Stopping {worker_id}...");
     }
@@ -534,13 +534,13 @@ async fn process_stop(
             worker_id: worker_id.into(),
         })
         .await?;
-    info!(worker_id, "agent process stopped");
+    info!(worker_id, "worker process stopped");
     if output.is_json() {
         output.print_success(&WorkerStopped {
             worker_id: worker_id.to_string(),
         });
     } else {
-        println!("Agent {worker_id} stopped.");
+        println!("Worker {worker_id} stopped.");
     }
     Ok(())
 }
@@ -549,7 +549,7 @@ async fn process_stop(
 async fn handle_worker(
     command: WorkerCommands,
     port: u16,
-    agent_prefix: &str,
+    worker_prefix: &str,
     project_keys: &[String],
     output: &OutputManager,
 ) -> Result<()> {
@@ -567,7 +567,7 @@ async fn handle_worker(
                 output.print_error(&err);
                 process::exit(err.code.exit_code());
             }
-            let exit_code = process_attach(&worker_id, agent_prefix)?;
+            let exit_code = process_attach(&worker_id, worker_prefix)?;
             if rm {
                 println!("Stopping {worker_id} (--rm)...");
                 let mut client = connect(port).await?;
@@ -584,7 +584,7 @@ async fn handle_worker(
             input::validate_id(&worker_id, "worker_id")?;
             info!(worker_id = %worker_id, "saving credentials from container");
             let runtime = container::runtime_from_env();
-            let id = container::ContainerId(format!("{agent_prefix}{worker_id}"));
+            let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
             let cred_mgr = credential::CredentialManager;
             let paths = cred_mgr.save_from_container(&runtime, &id)?;
             if output.is_json() {
@@ -675,7 +675,7 @@ async fn handle_worker(
                 &ticket_id,
                 workspace,
                 &resolved_project,
-                agent_prefix,
+                worker_prefix,
                 &mode,
                 &skills_vec,
                 output,
@@ -690,7 +690,7 @@ async fn handle_worker(
                     output.print_error(&err);
                     process::exit(err.code.exit_code());
                 }
-                let exit_code = process_attach(&ticket_id, agent_prefix)?;
+                let exit_code = process_attach(&ticket_id, worker_prefix)?;
                 if rm {
                     println!("Stopping {ticket_id} (--rm)...");
                     let mut client = connect(port).await?;
@@ -921,7 +921,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             handle_worker(
                 command,
                 port,
-                &config.network.agent_prefix,
+                &config.network.worker_prefix,
                 &project_keys,
                 output,
             )

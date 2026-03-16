@@ -27,7 +27,7 @@ fn container_config_path() -> PathBuf {
 /// Manages Claude Code credentials for container workers.
 ///
 /// Credentials (`.credentials.json`) are stored at `$UR_CONFIG/claude/` on the
-/// host and bind-mounted into all agent containers. The app config
+/// host and bind-mounted into all worker containers. The app config
 /// (`.claude.json`) is baked into the container image.
 #[derive(Clone)]
 pub struct CredentialManager;

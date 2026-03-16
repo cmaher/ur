@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use anyhow::Result;
 use mlua::{Lua, StdLib, Value};
 
-/// Agent context passed to Lua transform functions when available.
+/// Worker context passed to Lua transform functions when available.
 ///
-/// Contains per-agent metadata (identity, project association, host repo path)
-/// needed by transforms that perform per-agent logic (e.g., git -C rewriting).
-/// `None` when no agent/project is associated (e.g., raw `-w` workspace mounts).
+/// Contains per-worker metadata (identity, project association, host repo path)
+/// needed by transforms that perform per-worker logic (e.g., git -C rewriting).
+/// `None` when no worker/project is associated (e.g., raw `-w` workspace mounts).
 #[derive(Debug, Clone)]
-pub struct AgentContext {
-    pub agent_id: String,
+pub struct WorkerContext {
+    pub worker_id: String,
     pub project_key: String,
     pub slot_path: PathBuf,
 }
@@ -46,7 +46,7 @@ impl LuaTransformManager {
         command: &str,
         args: &[String],
         working_dir: &str,
-        agent_context: Option<&AgentContext>,
+        worker_context: Option<&WorkerContext>,
     ) -> Result<TransformResult> {
         let lua = Lua::new_with(
             StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
@@ -72,13 +72,13 @@ impl LuaTransformManager {
                 .map_err(|e| anyhow::anyhow!("setting lua arg: {e}"))?;
         }
 
-        // Build agent_context Lua table (nil if no context available)
-        let lua_agent_context = if let Some(ctx) = agent_context {
+        // Build worker_context Lua table (nil if no context available)
+        let lua_worker_context = if let Some(ctx) = worker_context {
             let tbl = lua
                 .create_table()
-                .map_err(|e| anyhow::anyhow!("creating agent_context table: {e}"))?;
-            tbl.set("agent_id", ctx.agent_id.as_str())
-                .map_err(|e| anyhow::anyhow!("setting agent_id: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("creating worker_context table: {e}"))?;
+            tbl.set("worker_id", ctx.worker_id.as_str())
+                .map_err(|e| anyhow::anyhow!("setting worker_id: {e}"))?;
             tbl.set("project_key", ctx.project_key.as_str())
                 .map_err(|e| anyhow::anyhow!("setting project_key: {e}"))?;
             tbl.set("slot_path", ctx.slot_path.to_string_lossy().as_ref())
@@ -89,7 +89,7 @@ impl LuaTransformManager {
         };
 
         let result = transform
-            .call::<Value>((command, lua_args, working_dir, lua_agent_context))
+            .call::<Value>((command, lua_args, working_dir, lua_worker_context))
             .map_err(|e| anyhow::anyhow!("lua transform failed: {e}"))?;
 
         match result {
@@ -262,26 +262,26 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_context_available_in_lua() {
+    fn test_worker_context_available_in_lua() {
         let mgr = LuaTransformManager::new();
         let script = r#"
-            function transform(command, args, working_dir, agent_context)
-                if agent_context == nil then
-                    error("expected agent_context")
+            function transform(command, args, working_dir, worker_context)
+                if worker_context == nil then
+                    error("expected worker_context")
                 end
                 return {
                     command = command,
                     args = {
-                        agent_context.agent_id,
-                        agent_context.project_key,
-                        agent_context.slot_path,
+                        worker_context.worker_id,
+                        worker_context.project_key,
+                        worker_context.slot_path,
                     },
                     working_dir = working_dir,
                 }
             end
         "#;
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -295,12 +295,12 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_context_nil_when_none() {
+    fn test_worker_context_nil_when_none() {
         let mgr = LuaTransformManager::new();
         let script = r#"
-            function transform(command, args, working_dir, agent_context)
-                if agent_context ~= nil then
-                    error("expected nil agent_context")
+            function transform(command, args, working_dir, worker_context)
+                if worker_context ~= nil then
+                    error("expected nil worker_context")
                 end
                 return { command = command, args = args, working_dir = working_dir }
             end
@@ -315,8 +315,8 @@ mod tests {
     fn test_git_dash_c_rewrite_with_project_key() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -334,8 +334,8 @@ mod tests {
     fn test_git_dash_c_rewrite_with_workspace() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -353,8 +353,8 @@ mod tests {
     fn test_git_dash_c_rewrite_bare_project_key() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -369,8 +369,8 @@ mod tests {
     fn test_git_dash_c_rewrite_trailing_slash() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -385,8 +385,8 @@ mod tests {
     fn test_git_dash_c_rejected_wrong_project() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn test_git_dash_c_blocked_without_agent_context() {
+    fn test_git_dash_c_blocked_without_worker_context() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "status".into()];
@@ -418,13 +418,13 @@ mod tests {
         // NOTE: This test will fail at runtime until scripts are updated to
         // return structured tables (ur-ami7). It compiles correctly.
         let mgr = LuaTransformManager::new();
-        let ctx = AgentContext {
-            agent_id: "test-ab12".into(),
+        let ctx = WorkerContext {
+            worker_id: "test-ab12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
 
-        // git.lua with agent context
+        // git.lua with worker context
         let git_script = include_str!("default_scripts/git.lua");
         let args: Vec<String> = vec!["status".into()];
         let result = mgr
@@ -432,7 +432,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, vec!["status"]);
 
-        // gh.lua with agent context
+        // gh.lua with worker context
         let gh_script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec!["pr".into(), "list".into()];
         let result = mgr
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_dash_c_blocks_without_agent_context() {
+    fn test_gh_dash_c_blocks_without_worker_context() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "list".into()];
@@ -455,8 +455,8 @@ mod tests {
     fn test_gh_dash_c_rewrite_with_project_key() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -479,8 +479,8 @@ mod tests {
     fn test_gh_dash_c_rewrite_with_workspace() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -498,8 +498,8 @@ mod tests {
     fn test_gh_dash_c_rejected_wrong_project() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cargo_dash_c_blocks_without_agent_context() {
+    fn test_cargo_dash_c_blocks_without_worker_context() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/cargo.lua");
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "build".into()];
@@ -690,8 +690,8 @@ mod tests {
     fn test_cargo_dash_c_rewrite_with_project_key() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/cargo.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -709,8 +709,8 @@ mod tests {
     fn test_cargo_dash_c_rejected_wrong_project() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/cargo.lua");
-        let ctx = AgentContext {
-            agent_id: "deploy-x7q2".into(),
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };

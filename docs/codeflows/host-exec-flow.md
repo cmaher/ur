@@ -9,7 +9,7 @@ with Lua-based validation and `%WORKSPACE%` CWD templating.
 
 1. Worker calls `git status` (or any configured command)
 2. Bash shim at `/home/worker/.local/bin/git` runs `workertools host-exec git status`
-3. `workertools` captures CWD, sends `HostExecRequest` to ur-server (per-agent gRPC)
+3. `workertools` captures CWD, sends `HostExecRequest` to ur-server (per-worker gRPC)
 4. ur-server `HostExecServiceHandler`:
    a. Checks command against merged allowlist (defaults + `[hostexec.commands]` from ur.toml)
    b. Maps CWD: `/workspace/...` -> `%WORKSPACE%/...` (template prefix, not a resolved host path)

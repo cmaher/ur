@@ -7,12 +7,12 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build a ProcessManager, AgentRepo, and CoreServiceHandler for testing.
+/// Build a ProcessManager, WorkerRepo, and CoreServiceHandler for testing.
 async fn make_test_components(
     dir: &Path,
 ) -> (
     ur_server::ProcessManager,
-    ur_db::AgentRepo,
+    ur_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
     let workspace = dir.join("workspace");
@@ -22,7 +22,7 @@ async fn make_test_components(
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-        agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.to_string(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
@@ -55,7 +55,7 @@ async fn make_test_components(
     let db = ur_db::DatabaseManager::open(":memory:")
         .await
         .expect("failed to open in-memory db");
-    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
+    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -64,7 +64,7 @@ async fn make_test_components(
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
@@ -74,7 +74,7 @@ async fn make_test_components(
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -90,16 +90,16 @@ async fn make_test_components(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (process_manager, agent_repo, handler)
+    (process_manager, worker_repo, handler)
 }
 
 /// Spawn a gRPC server with CoreService wrapped in the worker auth interceptor.
 async fn spawn_authed_server(
     _process_manager: ur_server::ProcessManager,
-    agent_repo: ur_db::AgentRepo,
+    worker_repo: ur_db::WorkerRepo,
     handler: ur_server::grpc::CoreServiceHandler,
 ) -> tonic::transport::Channel {
-    let interceptor = ur_server::auth::worker_auth_interceptor(agent_repo);
+    let interceptor = ur_server::auth::worker_auth_interceptor(worker_repo);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -121,10 +121,10 @@ async fn spawn_authed_server(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_server_rejects_requests_without_agent_headers() {
+async fn worker_server_rejects_requests_without_worker_headers() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
-    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
+    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(PingRequest {}).await;
@@ -132,20 +132,20 @@ async fn worker_server_rejects_requests_without_agent_headers() {
     assert!(result.is_err());
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    assert!(status.message().contains("missing ur-agent-id"));
+    assert!(status.message().contains("missing ur-worker-id"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
+    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
 
-    // Register a real agent so the ID exists but use a different secret in the request
-    let agent_id = process_manager.generate_agent_id("authtest");
+    // Register a real worker so the ID exists but use a different secret in the request
+    let worker_id = process_manager.generate_worker_id("authtest");
     let real_secret = "real-secret-value";
     process_manager
-        .register_agent(
-            agent_id.clone(),
+        .register_worker(
+            worker_id.clone(),
             "authtest".into(),
             String::new(),
             None,
@@ -155,15 +155,15 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
+    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", agent_id.to_string().parse().unwrap());
+        .insert("ur-worker-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
-        .insert("ur-agent-secret", "wrong-secret".parse().unwrap());
+        .insert("ur-worker-secret", "wrong-secret".parse().unwrap());
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(request).await;
@@ -171,19 +171,19 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     assert!(result.is_err());
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    assert!(status.message().contains("agent authentication failed"));
+    assert!(status.message().contains("worker authentication failed"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
+    let (process_manager, worker_repo, handler) = make_test_components(dir.path()).await;
 
-    let agent_id = process_manager.generate_agent_id("validtest");
+    let worker_id = process_manager.generate_worker_id("validtest");
     let secret = "correct-secret-value";
     process_manager
-        .register_agent(
-            agent_id.clone(),
+        .register_worker(
+            worker_id.clone(),
             "validtest".into(),
             String::new(),
             None,
@@ -193,15 +193,15 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
         )
         .await;
 
-    let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
+    let channel = spawn_authed_server(process_manager, worker_repo, handler).await;
 
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", agent_id.to_string().parse().unwrap());
+        .insert("ur-worker-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
-        .insert("ur-agent-secret", secret.parse().unwrap());
+        .insert("ur-worker-secret", secret.parse().unwrap());
 
     let mut client = CoreServiceClient::new(channel);
     let result = client.ping(request).await;

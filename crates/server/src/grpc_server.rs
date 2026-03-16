@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use tonic::transport::Server;
-use ur_db::AgentRepo;
+use ur_db::WorkerRepo;
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
@@ -43,13 +43,13 @@ pub async fn serve_grpc(
 /// Start the shared worker gRPC server on a TCP socket.
 ///
 /// Serves all container workers. Registers HostExec, RAG, and Ticket services,
-/// all wrapped with the agent auth interceptor that validates `ur-agent-id` and
-/// `ur-agent-secret` metadata headers via `AgentRepo`.
+/// all wrapped with the worker auth interceptor that validates `ur-worker-id` and
+/// `ur-worker-secret` metadata headers via `WorkerRepo`.
 #[allow(unused_variables, clippy::too_many_arguments)]
 pub async fn serve_worker_grpc(
     addr: SocketAddr,
     process_manager: ProcessManager,
-    agent_repo: AgentRepo,
+    worker_repo: WorkerRepo,
     projects: HashMap<String, ur_config::ProjectConfig>,
     #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
     #[cfg(feature = "hostexec")] builderd_addr: String,
@@ -59,7 +59,7 @@ pub async fn serve_worker_grpc(
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
 
-    let interceptor = crate::auth::worker_auth_interceptor(agent_repo);
+    let interceptor = crate::auth::worker_auth_interceptor(worker_repo);
 
     // Build the Routes collection, wrapping each service with the auth interceptor.
     let mut routes = tonic::service::Routes::builder();

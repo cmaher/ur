@@ -157,17 +157,17 @@ impl CoreService for CoreServiceHandler {
             (None, String::new())
         };
 
-        // Generate unique agent ID for this launch
-        let agent_id = self.process_manager.generate_agent_id(&req.worker_id);
+        // Generate unique worker ID for this launch
+        let worker_id = self.process_manager.generate_worker_id(&req.worker_id);
         info!(
             worker_id = req.worker_id,
-            agent_id = %agent_id,
-            "generated agent ID"
+            internal_worker_id = %worker_id,
+            "generated worker ID"
         );
 
         // Phase 1: prepare (create repo, git init, register)
         self.process_manager
-            .prepare(&req.worker_id, &agent_id, workspace_dir.clone())
+            .prepare(&req.worker_id, &worker_id, workspace_dir.clone())
             .await
             .map_err(|e| CoreError::PrepareFailed {
                 reason: e.to_string(),
@@ -194,7 +194,7 @@ impl CoreService for CoreServiceHandler {
 
         let config = crate::ProcessConfig {
             process_id: req.worker_id,
-            agent_id,
+            worker_id,
             image_id: req.image_id,
             cpus: req.cpus,
             memory: req.memory,
@@ -261,7 +261,7 @@ impl CoreService for CoreServiceHandler {
             .into_iter()
             .map(|s| WorkerSummary {
                 worker_id: s.process_id,
-                agent_id: s.agent_id,
+                worker_id_full: s.worker_id,
                 container_id: s.container_id,
                 project_key: s.project_key,
                 mode: s.mode,

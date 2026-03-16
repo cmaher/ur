@@ -3,7 +3,7 @@
 -- Workers may use all ticket subcommands and readonly query commands.
 -- Mutating commands (start, stop, worker launch/attach/stop/kill, etc.) are blocked.
 
-function transform(command, args, working_dir, agent_context)
+function transform(command, args, working_dir, worker_context)
     if #args == 0 then
         error("ur: subcommand required")
     end

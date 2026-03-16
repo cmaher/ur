@@ -918,7 +918,7 @@ async fn auth_rejection_propagates_error() {
             let _ = req;
             Err(error::status_with_info(
                 Code::Unauthenticated,
-                "missing ur-agent-id header",
+                "missing ur-worker-id header",
                 DOMAIN_CORE,
                 UNAUTHENTICATED,
                 HashMap::new(),

@@ -1,4 +1,4 @@
-// AgentRepo: CRUD operations for agent and slot tables, plus startup reconciliation.
+// WorkerRepo: CRUD operations for worker and slot tables, plus startup reconciliation.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -8,7 +8,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::model::{Agent, Slot};
+use crate::model::{Slot, Worker};
 
 /// Result of slot reconciliation: reports what was cleaned up or discovered.
 pub struct SlotReconcileResult {
@@ -18,49 +18,49 @@ pub struct SlotReconcileResult {
     pub inserted_orphaned: Vec<String>,
 }
 
-/// Result of agent reconciliation: reports what was reclaimed or marked dead.
-pub struct AgentReconcileResult {
-    /// Agent IDs whose containers are still alive (kept as running).
+/// Result of worker reconciliation: reports what was reclaimed or marked dead.
+pub struct WorkerReconcileResult {
+    /// Worker IDs whose containers are still alive (kept as running).
     pub reclaimed: Vec<String>,
-    /// Agent IDs whose containers are dead (marked stopped, slots released).
+    /// Worker IDs whose containers are dead (marked stopped, slots released).
     pub marked_stopped: Vec<String>,
 }
 
 #[derive(Clone)]
-pub struct AgentRepo {
+pub struct WorkerRepo {
     pool: SqlitePool,
 }
 
-impl AgentRepo {
+impl WorkerRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
-    // --- Agent methods ---
+    // --- Worker methods ---
 
-    pub async fn insert_agent(&self, agent: &Agent) -> Result<(), sqlx::Error> {
+    pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO agent (agent_id, process_id, project_key, slot_id, container_id, agent_secret, strategy, status, workspace_path, created_at, updated_at)
+            "INSERT INTO worker (worker_id, process_id, project_key, slot_id, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&agent.agent_id)
-        .bind(&agent.process_id)
-        .bind(&agent.project_key)
-        .bind(&agent.slot_id)
-        .bind(&agent.container_id)
-        .bind(&agent.agent_secret)
-        .bind(&agent.strategy)
-        .bind(&agent.status)
-        .bind(&agent.workspace_path)
-        .bind(&agent.created_at)
-        .bind(&agent.updated_at)
+        .bind(&worker.worker_id)
+        .bind(&worker.process_id)
+        .bind(&worker.project_key)
+        .bind(&worker.slot_id)
+        .bind(&worker.container_id)
+        .bind(&worker.worker_secret)
+        .bind(&worker.strategy)
+        .bind(&worker.status)
+        .bind(&worker.workspace_path)
+        .bind(&worker.created_at)
+        .bind(&worker.updated_at)
         .execute(&self.pool)
         .await?;
 
         Ok(())
     }
 
-    pub async fn get_agent(&self, agent_id: &str) -> Result<Option<Agent>, sqlx::Error> {
+    pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<
             _,
             (
@@ -77,34 +77,34 @@ impl AgentRepo {
                 String,
             ),
         >(
-            "SELECT agent_id, process_id, project_key, slot_id, container_id, agent_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM agent WHERE agent_id = ?",
+            "SELECT worker_id, process_id, project_key, slot_id, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+             FROM worker WHERE worker_id = ?",
         )
-        .bind(agent_id)
+        .bind(worker_id)
         .fetch_optional(&self.pool)
         .await?;
 
         Ok(row.map(
             |(
-                agent_id,
+                worker_id,
                 process_id,
                 project_key,
                 slot_id,
                 container_id,
-                agent_secret,
+                worker_secret,
                 strategy,
                 status,
                 workspace_path,
                 created_at,
                 updated_at,
             )| {
-                Agent {
-                    agent_id,
+                Worker {
+                    worker_id,
                     process_id,
                     project_key,
                     slot_id,
                     container_id,
-                    agent_secret,
+                    worker_secret,
                     strategy,
                     status,
                     workspace_path,
@@ -115,24 +115,24 @@ impl AgentRepo {
         ))
     }
 
-    pub async fn update_agent_status(
+    pub async fn update_worker_status(
         &self,
-        agent_id: &str,
+        worker_id: &str,
         status: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 
-        sqlx::query("UPDATE agent SET status = ?, updated_at = ? WHERE agent_id = ?")
+        sqlx::query("UPDATE worker SET status = ?, updated_at = ? WHERE worker_id = ?")
             .bind(status)
             .bind(&now)
-            .bind(agent_id)
+            .bind(worker_id)
             .execute(&self.pool)
             .await?;
 
         Ok(())
     }
 
-    pub async fn list_agents_by_status(&self, status: &str) -> Result<Vec<Agent>, sqlx::Error> {
+    pub async fn list_workers_by_status(&self, status: &str) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -149,8 +149,8 @@ impl AgentRepo {
                 String,
             ),
         >(
-            "SELECT agent_id, process_id, project_key, slot_id, container_id, agent_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM agent WHERE status = ? ORDER BY created_at ASC",
+            "SELECT worker_id, process_id, project_key, slot_id, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+             FROM worker WHERE status = ? ORDER BY created_at ASC",
         )
         .bind(status)
         .fetch_all(&self.pool)
@@ -160,25 +160,25 @@ impl AgentRepo {
             .into_iter()
             .map(
                 |(
-                    agent_id,
+                    worker_id,
                     process_id,
                     project_key,
                     slot_id,
                     container_id,
-                    agent_secret,
+                    worker_secret,
                     strategy,
                     status,
                     workspace_path,
                     created_at,
                     updated_at,
                 )| {
-                    Agent {
-                        agent_id,
+                    Worker {
+                        worker_id,
                         process_id,
                         project_key,
                         slot_id,
                         container_id,
-                        agent_secret,
+                        worker_secret,
                         strategy,
                         status,
                         workspace_path,
@@ -190,11 +190,11 @@ impl AgentRepo {
             .collect())
     }
 
-    pub async fn verify_agent(&self, agent_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
+    pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM agent WHERE agent_id = ? AND agent_secret = ?",
+            "SELECT COUNT(*) FROM worker WHERE worker_id = ? AND worker_secret = ?",
         )
-        .bind(agent_id)
+        .bind(worker_id)
         .bind(secret)
         .fetch_one(&self.pool)
         .await?;
@@ -202,11 +202,11 @@ impl AgentRepo {
         Ok(count > 0)
     }
 
-    pub async fn get_agent_context(
+    pub async fn get_worker_context(
         &self,
         project_key: &str,
         workspace_path: &str,
-    ) -> Result<Option<Agent>, sqlx::Error> {
+    ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<
             _,
             (
@@ -223,8 +223,8 @@ impl AgentRepo {
                 String,
             ),
         >(
-            "SELECT agent_id, process_id, project_key, slot_id, container_id, agent_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM agent WHERE project_key = ? AND workspace_path = ?",
+            "SELECT worker_id, process_id, project_key, slot_id, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+             FROM worker WHERE project_key = ? AND workspace_path = ?",
         )
         .bind(project_key)
         .bind(workspace_path)
@@ -233,25 +233,25 @@ impl AgentRepo {
 
         Ok(row.map(
             |(
-                agent_id,
+                worker_id,
                 process_id,
                 project_key,
                 slot_id,
                 container_id,
-                agent_secret,
+                worker_secret,
                 strategy,
                 status,
                 workspace_path,
                 created_at,
                 updated_at,
             )| {
-                Agent {
-                    agent_id,
+                Worker {
+                    worker_id,
                     process_id,
                     project_key,
                     slot_id,
                     container_id,
-                    agent_secret,
+                    worker_secret,
                     strategy,
                     status,
                     workspace_path,
@@ -493,9 +493,9 @@ impl AgentRepo {
             .collect())
     }
 
-    /// List agents whose status is one of the active lifecycle states
+    /// List workers whose status is one of the active lifecycle states
     /// (provisioning, running, stopping).
-    pub async fn list_active_agents(&self) -> Result<Vec<Agent>, sqlx::Error> {
+    pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<
             _,
             (
@@ -512,8 +512,8 @@ impl AgentRepo {
                 String,
             ),
         >(
-            "SELECT agent_id, process_id, project_key, slot_id, container_id, agent_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM agent WHERE status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
+            "SELECT worker_id, process_id, project_key, slot_id, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+             FROM worker WHERE status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -522,25 +522,25 @@ impl AgentRepo {
             .into_iter()
             .map(
                 |(
-                    agent_id,
+                    worker_id,
                     process_id,
                     project_key,
                     slot_id,
                     container_id,
-                    agent_secret,
+                    worker_secret,
                     strategy,
                     status,
                     workspace_path,
                     created_at,
                     updated_at,
                 )| {
-                    Agent {
-                        agent_id,
+                    Worker {
+                        worker_id,
                         process_id,
                         project_key,
                         slot_id,
                         container_id,
-                        agent_secret,
+                        worker_secret,
                         strategy,
                         status,
                         workspace_path,
@@ -552,9 +552,9 @@ impl AgentRepo {
             .collect())
     }
 
-    /// Delete all agents that reference a given slot_id.
-    pub async fn delete_agents_by_slot_id(&self, slot_id: &str) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM agent WHERE slot_id = ?")
+    /// Delete all workers that reference a given slot_id.
+    pub async fn delete_workers_by_slot_id(&self, slot_id: &str) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("DELETE FROM worker WHERE slot_id = ?")
             .bind(slot_id)
             .execute(&self.pool)
             .await?;
@@ -573,7 +573,7 @@ impl AgentRepo {
     /// pool root (`{local_workspace}/pool/`).
     ///
     /// For each project:
-    /// - Slot in DB but directory missing on disk: delete the slot row (and associated agent rows).
+    /// - Slot in DB but directory missing on disk: delete the slot row (and associated worker rows).
     /// - Directory on disk but no slot in DB: insert a new slot row with status "available".
     pub async fn reconcile_slots(
         &self,
@@ -625,7 +625,7 @@ impl AgentRepo {
         Ok(result)
     }
 
-    /// Delete slot rows that exist in DB but not on disk, along with their agents.
+    /// Delete slot rows that exist in DB but not on disk, along with their workers.
     async fn delete_stale_slots(
         &self,
         db_slots: &HashMap<String, Slot>,
@@ -636,7 +636,7 @@ impl AgentRepo {
             if disk_slot_names.contains(slot_name) {
                 continue;
             }
-            self.delete_agents_by_slot_id(&slot.id).await?;
+            self.delete_workers_by_slot_id(&slot.id).await?;
             self.delete_slot(&slot.id).await?;
             result.deleted_stale.push(slot.id.clone());
         }
@@ -680,54 +680,56 @@ impl AgentRepo {
         Ok(())
     }
 
-    /// Reconcile agent DB rows with live Docker containers.
+    /// Reconcile worker DB rows with live Docker containers.
     ///
     /// `is_container_alive` is an async function that takes a container_id string
     /// and returns whether the container is still running.
     ///
-    /// For each agent in an active state (provisioning, running, stopping):
+    /// For each worker in an active state (provisioning, running, stopping):
     /// - Container alive: update status to "running" (reclaim).
     /// - Container dead: update status to "stopped" and release its slot (set slot status to "available").
-    pub async fn reconcile_agents<F, Fut>(
+    pub async fn reconcile_workers<F, Fut>(
         &self,
         is_container_alive: F,
-    ) -> Result<AgentReconcileResult, sqlx::Error>
+    ) -> Result<WorkerReconcileResult, sqlx::Error>
     where
         F: Fn(String) -> Fut,
         Fut: Future<Output = bool>,
     {
-        let mut result = AgentReconcileResult {
+        let mut result = WorkerReconcileResult {
             reclaimed: Vec::new(),
             marked_stopped: Vec::new(),
         };
 
-        let active_agents = self.list_active_agents().await?;
+        let active_workers = self.list_active_workers().await?;
 
-        for agent in active_agents {
-            let alive = is_container_alive(agent.container_id.clone()).await;
-            self.reconcile_single_agent(agent, alive, &mut result)
+        for worker in active_workers {
+            let alive = is_container_alive(worker.container_id.clone()).await;
+            self.reconcile_single_worker(worker, alive, &mut result)
                 .await?;
         }
 
         Ok(result)
     }
 
-    /// Process a single agent during reconciliation.
-    async fn reconcile_single_agent(
+    /// Process a single worker during reconciliation.
+    async fn reconcile_single_worker(
         &self,
-        agent: Agent,
+        worker: Worker,
         alive: bool,
-        result: &mut AgentReconcileResult,
+        result: &mut WorkerReconcileResult,
     ) -> Result<(), sqlx::Error> {
         if alive {
-            self.update_agent_status(&agent.agent_id, "running").await?;
-            result.reclaimed.push(agent.agent_id);
+            self.update_worker_status(&worker.worker_id, "running")
+                .await?;
+            result.reclaimed.push(worker.worker_id);
         } else {
-            self.update_agent_status(&agent.agent_id, "stopped").await?;
-            if let Some(ref slot_id) = agent.slot_id {
+            self.update_worker_status(&worker.worker_id, "stopped")
+                .await?;
+            if let Some(ref slot_id) = worker.slot_id {
                 self.update_slot_status(slot_id, "available").await?;
             }
-            result.marked_stopped.push(agent.agent_id);
+            result.marked_stopped.push(worker.worker_id);
         }
         Ok(())
     }
