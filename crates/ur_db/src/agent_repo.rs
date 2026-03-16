@@ -320,6 +320,46 @@ impl AgentRepo {
         ))
     }
 
+    pub async fn get_slot_by_host_path(
+        &self,
+        host_path: &str,
+    ) -> Result<Option<Slot>, sqlx::Error> {
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project_key, slot_name, slot_type, host_path, status, created_at, updated_at
+             FROM slot WHERE host_path = ?",
+        )
+        .bind(host_path)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, project_key, slot_name, slot_type, host_path, status, created_at, updated_at)| {
+                Slot {
+                    id,
+                    project_key,
+                    slot_name,
+                    slot_type,
+                    host_path,
+                    status,
+                    created_at,
+                    updated_at,
+                }
+            },
+        ))
+    }
+
     pub async fn update_slot_status(&self, id: &str, status: &str) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 

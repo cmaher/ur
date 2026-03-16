@@ -77,6 +77,10 @@ async fn make_grpc_handler(
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         projects: std::collections::HashMap::new(),
     };
+    let db = ur_db::DatabaseManager::open(":memory:")
+        .await
+        .expect("failed to open in-memory db");
+    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -85,11 +89,8 @@ async fn make_grpc_handler(
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
+        agent_repo.clone(),
     );
-    let db = ur_db::DatabaseManager::open(":memory:")
-        .await
-        .expect("failed to open in-memory db");
-    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
         workspace.clone(),

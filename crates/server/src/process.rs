@@ -699,11 +699,13 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let registry = Arc::new(RepoRegistry::new(workspace.path().to_path_buf()));
         let config = test_config(workspace.path());
+        let agent_repo = test_agent_repo().await;
         let repo_pool_manager = RepoPoolManager::new(
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
             crate::BuilderdClient::new("http://localhost:42070".into()),
+            agent_repo.clone(),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),
@@ -715,7 +717,6 @@ mod tests {
             server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
             agent_prefix: ur_config::DEFAULT_AGENT_PREFIX.into(),
         };
-        let agent_repo = test_agent_repo().await;
         let mgr = ProcessManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
