@@ -1,19 +1,19 @@
-pub mod agent_repo;
 pub mod database;
 pub mod graph;
 pub mod model;
 pub mod snapshot;
 pub mod ticket_repo;
+pub mod worker_repo;
 
 #[cfg(test)]
 mod tests;
 
-pub use agent_repo::{AgentReconcileResult, AgentRepo, SlotReconcileResult};
 pub use database::DatabaseManager;
 pub use graph::GraphManager;
 pub use model::{
-    Activity, Agent, DispatchableTicket, Edge, EdgeKind, MetadataMatchTicket, NewTicket, Slot,
-    Ticket, TicketFilter, TicketUpdate,
+    Activity, DispatchableTicket, Edge, EdgeKind, MetadataMatchTicket, NewTicket, Slot, Ticket,
+    TicketFilter, TicketUpdate, Worker,
 };
 pub use snapshot::SnapshotManager;
 pub use ticket_repo::TicketRepo;
+pub use worker_repo::{SlotReconcileResult, WorkerReconcileResult, WorkerRepo};

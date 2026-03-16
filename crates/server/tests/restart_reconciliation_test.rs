@@ -1,11 +1,11 @@
 // Acceptance tests: server restart reclaims running workers.
 //
 // These tests exercise the full reconciliation path that runs on server startup:
-// AgentRepo reconciliation + gRPC auth verification after reclamation.
+// WorkerRepo reconciliation + gRPC auth verification after reclamation.
 // They simulate a server restart by:
 // 1. Setting up workers via ProcessManager (as a running server would)
 // 2. Creating a "fresh" gRPC server with the same DB (simulating restart)
-// 3. Running reconcile_agents (as main.rs does on startup)
+// 3. Running reconcile_workers (as main.rs does on startup)
 // 4. Verifying that reclaimed workers can still authenticate to the gRPC server
 
 use std::collections::HashMap;
@@ -18,13 +18,13 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 /// Build test components backed by the given database pool.
-/// Returns (ProcessManager, AgentRepo, CoreServiceHandler).
+/// Returns (ProcessManager, WorkerRepo, CoreServiceHandler).
 async fn make_components_with_db(
     dir: &Path,
     db: &ur_db::DatabaseManager,
 ) -> (
     ur_server::ProcessManager,
-    ur_db::AgentRepo,
+    ur_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
     let workspace = dir.join("workspace");
@@ -64,7 +64,7 @@ async fn make_components_with_db(
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         projects: HashMap::new(),
     };
-    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
+    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -73,7 +73,7 @@ async fn make_components_with_db(
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
@@ -83,7 +83,7 @@ async fn make_components_with_db(
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -99,15 +99,15 @@ async fn make_components_with_db(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
-    (process_manager, agent_repo, handler)
+    (process_manager, worker_repo, handler)
 }
 
 /// Spawn a gRPC server with worker auth interceptor, return channel.
 async fn spawn_authed_server(
-    agent_repo: ur_db::AgentRepo,
+    worker_repo: ur_db::WorkerRepo,
     handler: ur_server::grpc::CoreServiceHandler,
 ) -> tonic::transport::Channel {
-    let interceptor = ur_server::auth::worker_auth_interceptor(agent_repo);
+    let interceptor = ur_server::auth::worker_auth_interceptor(worker_repo);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -131,7 +131,7 @@ async fn spawn_authed_server(
 /// Helper: make an authenticated ping request.
 async fn authed_ping(
     client: &mut CoreServiceClient<tonic::transport::Channel>,
-    agent_id: &str,
+    worker_id: &str,
     secret: &str,
 ) -> Result<tonic::Response<ur_rpc::proto::core::PingResponse>, tonic::Status> {
     let mut request = tonic::Request::new(PingRequest {});
@@ -156,7 +156,7 @@ async fn restart_reclaims_worker_with_live_container() {
         .unwrap();
 
     // --- Phase 1: "Original server" registers a worker ---
-    let (_pm1, agent_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
     let worker_id_str = "restart-test-worker-1";
     let secret = "test-secret-reclaim";
@@ -174,34 +174,38 @@ async fn restart_reclaims_worker_with_live_container() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
-    agent_repo1.insert_slot(&slot).await.unwrap();
+    worker_repo1.insert_slot(&slot).await.unwrap();
 
     // Register the worker (simulates a launched worker).
-    let agent = ur_db::model::Agent {
-        agent_id: worker_id_str.to_owned(),
+    let agent = ur_db::model::Worker {
+        worker_id: worker_id_str.to_owned(),
         process_id: "restart-test".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_id: Some("slot-restart-1".to_owned()),
         container_id: "live-container-abc".to_owned(),
-        agent_secret: secret.to_owned(),
+        worker_secret: secret.to_owned(),
         strategy: "code".to_owned(),
         status: "running".to_owned(),
         workspace_path: Some(slot_path.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&agent).await.unwrap();
+    worker_repo1.insert_worker(&agent).await.unwrap();
 
     // Verify worker is running before "restart".
-    let pre = agent_repo1.get_agent(worker_id_str).await.unwrap().unwrap();
+    let pre = worker_repo1
+        .get_worker(worker_id_str)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(pre.status, "running");
 
     // --- Phase 2: "Server restart" — rebuild components with the same DB ---
-    let (_pm2, agent_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
 
     // Run reconciliation with container alive (simulates docker inspect returning true).
-    let reconcile_result = agent_repo2
-        .reconcile_agents(|container_id| async move { container_id == "live-container-abc" })
+    let reconcile_result = worker_repo2
+        .reconcile_workers(|container_id| async move { container_id == "live-container-abc" })
         .await
         .unwrap();
 
@@ -209,11 +213,15 @@ async fn restart_reclaims_worker_with_live_container() {
     assert!(reconcile_result.marked_stopped.is_empty());
 
     // Verify worker status is still "running" after reclamation.
-    let post = agent_repo2.get_agent(worker_id_str).await.unwrap().unwrap();
+    let post = worker_repo2
+        .get_worker(worker_id_str)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(post.status, "running");
 
     // Verify slot stays in_use.
-    let slot_post = agent_repo2
+    let slot_post = worker_repo2
         .get_slot("slot-restart-1")
         .await
         .unwrap()
@@ -221,7 +229,7 @@ async fn restart_reclaims_worker_with_live_container() {
     assert_eq!(slot_post.status, "in_use");
 
     // --- Phase 3: Verify auth still works on the new gRPC server ---
-    let channel = spawn_authed_server(agent_repo2.clone(), handler2).await;
+    let channel = spawn_authed_server(worker_repo2.clone(), handler2).await;
     let mut client = CoreServiceClient::new(channel);
 
     let result = authed_ping(&mut client, worker_id_str, secret).await;
@@ -229,19 +237,23 @@ async fn restart_reclaims_worker_with_live_container() {
     assert_eq!(result.unwrap().into_inner().message, "pong");
 
     // --- Phase 4: Stop worker, verify slot released ---
-    agent_repo2
-        .update_agent_status(worker_id_str, "stopped")
+    worker_repo2
+        .update_worker_status(worker_id_str, "stopped")
         .await
         .unwrap();
-    agent_repo2
+    worker_repo2
         .update_slot_status("slot-restart-1", "available")
         .await
         .unwrap();
 
-    let stopped = agent_repo2.get_agent(worker_id_str).await.unwrap().unwrap();
+    let stopped = worker_repo2
+        .get_worker(worker_id_str)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stopped.status, "stopped");
 
-    let slot_released = agent_repo2
+    let slot_released = worker_repo2
         .get_slot("slot-restart-1")
         .await
         .unwrap()
@@ -263,7 +275,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     std::fs::create_dir_all(&workspace).unwrap();
 
     // --- Phase 1: "Original server" registers worker with a slot ---
-    let (_pm1, agent_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
     // Create pool directory structure with a slot directory on disk.
     let pool_dir = workspace.join("pool").join("test-proj");
@@ -280,34 +292,34 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
-    agent_repo1.insert_slot(&slot).await.unwrap();
+    worker_repo1.insert_slot(&slot).await.unwrap();
 
-    let agent = ur_db::model::Agent {
-        agent_id: "worker-deleted-slot".to_owned(),
+    let agent = ur_db::model::Worker {
+        worker_id: "worker-deleted-slot".to_owned(),
         process_id: "proc-deleted".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_id: Some("slot-deleted-1".to_owned()),
         container_id: "dead-container-xyz".to_owned(),
-        agent_secret: "secret-deleted".to_owned(),
+        worker_secret: "secret-deleted".to_owned(),
         strategy: "code".to_owned(),
         status: "running".to_owned(),
         workspace_path: Some(slot_dir.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&agent).await.unwrap();
+    worker_repo1.insert_worker(&agent).await.unwrap();
 
     // Verify both exist.
     assert!(
-        agent_repo1
+        worker_repo1
             .get_slot("slot-deleted-1")
             .await
             .unwrap()
             .is_some()
     );
     assert!(
-        agent_repo1
-            .get_agent("worker-deleted-slot")
+        worker_repo1
+            .get_worker("worker-deleted-slot")
             .await
             .unwrap()
             .is_some()
@@ -318,13 +330,13 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     assert!(!slot_dir.exists());
 
     // --- Phase 3: "Server restart" — rebuild with same DB, run reconciliation ---
-    let (_pm2, agent_repo2, _handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), &db).await;
 
     // Run slot reconciliation (as main.rs does on startup).
     let mut project_configs = HashMap::new();
     project_configs.insert("test-proj".to_owned(), pool_dir.clone());
 
-    let slot_result = agent_repo2
+    let slot_result = worker_repo2
         .reconcile_slots(&project_configs, &workspace)
         .await
         .unwrap();
@@ -335,7 +347,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
 
     // Slot should be gone from DB.
     assert!(
-        agent_repo2
+        worker_repo2
             .get_slot("slot-deleted-1")
             .await
             .unwrap()
@@ -344,8 +356,8 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
 
     // Worker referencing that slot should also be deleted by cascade in reconcile_slots.
     assert!(
-        agent_repo2
-            .get_agent("worker-deleted-slot")
+        worker_repo2
+            .get_worker("worker-deleted-slot")
             .await
             .unwrap()
             .is_none()
@@ -363,7 +375,7 @@ async fn restart_mixed_live_and_dead_workers() {
         .await
         .unwrap();
 
-    let (_pm1, agent_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
     // Create two slots.
     let slot1 = ur_db::model::Slot {
@@ -386,50 +398,50 @@ async fn restart_mixed_live_and_dead_workers() {
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
-    agent_repo1.insert_slot(&slot1).await.unwrap();
-    agent_repo1.insert_slot(&slot2).await.unwrap();
+    worker_repo1.insert_slot(&slot1).await.unwrap();
+    worker_repo1.insert_slot(&slot2).await.unwrap();
 
     // Worker with live container.
     let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
-    let worker_live = ur_db::model::Agent {
-        agent_id: live_worker_id.to_owned(),
+    let worker_live = ur_db::model::Worker {
+        worker_id: live_worker_id.to_owned(),
         process_id: "proc-live".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_id: Some("slot-mix-1".to_owned()),
         container_id: "container-alive".to_owned(),
-        agent_secret: live_secret.to_owned(),
+        worker_secret: live_secret.to_owned(),
         strategy: "code".to_owned(),
         status: "running".to_owned(),
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&worker_live).await.unwrap();
+    worker_repo1.insert_worker(&worker_live).await.unwrap();
 
     // Worker with dead container.
     let dead_worker_id = "worker-mix-dead";
     let dead_secret = "secret-dead";
-    let worker_dead = ur_db::model::Agent {
-        agent_id: dead_worker_id.to_owned(),
+    let worker_dead = ur_db::model::Worker {
+        worker_id: dead_worker_id.to_owned(),
         process_id: "proc-dead".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_id: Some("slot-mix-2".to_owned()),
         container_id: "container-dead".to_owned(),
-        agent_secret: dead_secret.to_owned(),
+        worker_secret: dead_secret.to_owned(),
         strategy: "code".to_owned(),
         status: "running".to_owned(),
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&worker_dead).await.unwrap();
+    worker_repo1.insert_worker(&worker_dead).await.unwrap();
 
     // --- Phase 2: "Restart" with reconciliation ---
-    let (_pm2, agent_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
 
-    let reconcile_result = agent_repo2
-        .reconcile_agents(|cid| async move { cid == "container-alive" })
+    let reconcile_result = worker_repo2
+        .reconcile_workers(|cid| async move { cid == "container-alive" })
         .await
         .unwrap();
 
@@ -437,34 +449,34 @@ async fn restart_mixed_live_and_dead_workers() {
     assert_eq!(reconcile_result.marked_stopped, vec![dead_worker_id]);
 
     // Live worker: running, slot stays in_use.
-    let live = agent_repo2
-        .get_agent(live_worker_id)
+    let live = worker_repo2
+        .get_worker(live_worker_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(live.status, "running");
-    let s1 = agent_repo2.get_slot("slot-mix-1").await.unwrap().unwrap();
+    let s1 = worker_repo2.get_slot("slot-mix-1").await.unwrap().unwrap();
     assert_eq!(s1.status, "in_use");
 
     // Dead worker: stopped, slot released.
-    let dead = agent_repo2
-        .get_agent(dead_worker_id)
+    let dead = worker_repo2
+        .get_worker(dead_worker_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(dead.status, "stopped");
-    let s2 = agent_repo2.get_slot("slot-mix-2").await.unwrap().unwrap();
+    let s2 = worker_repo2.get_slot("slot-mix-2").await.unwrap().unwrap();
     assert_eq!(s2.status, "available");
 
     // --- Phase 3: Auth checks on new gRPC server ---
-    let channel = spawn_authed_server(agent_repo2.clone(), handler2).await;
+    let channel = spawn_authed_server(worker_repo2.clone(), handler2).await;
     let mut client = CoreServiceClient::new(channel);
 
     // Live worker auth works.
     let live_result = authed_ping(&mut client, live_worker_id, live_secret).await;
     assert!(live_result.is_ok(), "reclaimed worker should authenticate");
 
-    // Dead worker auth still technically succeeds (verify_agent checks id+secret,
+    // Dead worker auth still technically succeeds (verify_worker checks id+secret,
     // not status), which is correct — the server doesn't reject stopped workers
     // from authenticating; it just won't route work to them.
     let dead_result = authed_ping(&mut client, dead_worker_id, dead_secret).await;

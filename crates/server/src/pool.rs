@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use ur_config::{Config, ProjectConfig};
-use ur_db::AgentRepo;
+use ur_db::WorkerRepo;
 
 use crate::BuilderdClient;
 
@@ -43,7 +43,7 @@ pub struct RepoPoolManager {
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
     /// Database-backed slot repository for tracking exclusive slot availability.
-    agent_repo: AgentRepo,
+    worker_repo: WorkerRepo,
     shared_locks: SharedLockMap,
 }
 
@@ -53,14 +53,14 @@ impl RepoPoolManager {
         local_workspace: PathBuf,
         host_workspace: PathBuf,
         builderd_client: BuilderdClient,
-        agent_repo: AgentRepo,
+        worker_repo: WorkerRepo,
     ) -> Self {
         Self {
             local_workspace,
             host_workspace,
             builderd_client,
             projects: config.projects.clone(),
-            agent_repo,
+            worker_repo,
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -110,7 +110,7 @@ impl RepoPoolManager {
 
         // Query DB for available exclusive slots
         let db_slots = self
-            .agent_repo
+            .worker_repo
             .list_slots_by_project(project_key)
             .await
             .map_err(|e| format!("db error listing slots: {e}"))?;
@@ -132,7 +132,7 @@ impl RepoPoolManager {
                 self.reclone_slot(&project.repo, project_key, &slot_name)
                     .await?;
             }
-            self.agent_repo
+            self.worker_repo
                 .update_slot_status(&slot_id, "in_use")
                 .await
                 .map_err(|e| format!("db error marking slot in_use: {e}"))?;
@@ -178,7 +178,7 @@ impl RepoPoolManager {
             created_at: now.clone(),
             updated_at: now,
         };
-        self.agent_repo
+        self.worker_repo
             .insert_slot(&new_slot)
             .await
             .map_err(|e| format!("db error inserting new slot: {e}"))?;
@@ -267,7 +267,7 @@ impl RepoPoolManager {
 
         let host_path_str = slot_path.display().to_string();
         let slot = self
-            .agent_repo
+            .worker_repo
             .get_slot_by_host_path(&host_path_str)
             .await
             .map_err(|e| format!("db error looking up slot: {e}"))?;
@@ -278,7 +278,7 @@ impl RepoPoolManager {
         }
 
         if let Some(slot) = slot {
-            self.agent_repo
+            self.worker_repo
                 .update_slot_status(&slot.id, "available")
                 .await
                 .map_err(|e| format!("db error marking slot available: {e}"))?;
@@ -520,11 +520,11 @@ impl RepoPoolManager {
 mod tests {
     use super::*;
 
-    async fn test_agent_repo() -> AgentRepo {
+    async fn test_worker_repo() -> WorkerRepo {
         let db = ur_db::DatabaseManager::open(":memory:")
             .await
             .expect("failed to open in-memory db");
-        AgentRepo::new(db.pool().clone())
+        WorkerRepo::new(db.pool().clone())
     }
 
     /// Create a RepoPoolManager backed by a temp directory with a fake project config.
@@ -544,13 +544,13 @@ mod tests {
                 mounts: Vec::new(),
             },
         );
-        let agent_repo = test_agent_repo().await;
+        let worker_repo = test_worker_repo().await;
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
             builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
-            agent_repo,
+            worker_repo,
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
         };
         (mgr, workspace)
@@ -558,7 +558,7 @@ mod tests {
 
     /// Insert a slot row into the DB for testing.
     async fn insert_test_slot(
-        agent_repo: &AgentRepo,
+        worker_repo: &WorkerRepo,
         project_key: &str,
         slot_name: &str,
         host_path: &Path,
@@ -575,7 +575,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
         };
-        agent_repo.insert_slot(&slot).await.unwrap();
+        worker_repo.insert_slot(&slot).await.unwrap();
     }
 
     #[tokio::test]
@@ -623,7 +623,7 @@ mod tests {
         // Create one slot directory and mark it in-use in DB
         let slot0 = workspace.join("pool").join("testproj").join("0");
         std::fs::create_dir_all(&slot0).unwrap();
-        insert_test_slot(&mgr.agent_repo, "testproj", "0", &slot0, "in_use").await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0, "in_use").await;
 
         // Acquire should fail — 1 slot exists on disk, none available in DB, pool_limit = 1
         let result = mgr.acquire_exclusive("testproj").await;
@@ -663,11 +663,11 @@ mod tests {
         let (mgr, _) = test_pool(tmp.path(), 10).await;
         let slot_path = PathBuf::from("/fake/slot/0");
 
-        insert_test_slot(&mgr.agent_repo, "testproj", "0", &slot_path, "available").await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot_path, "available").await;
 
         // Verify slot is available
         let slot = mgr
-            .agent_repo
+            .worker_repo
             .get_slot_by_host_path(&slot_path.display().to_string())
             .await
             .unwrap()
@@ -675,12 +675,12 @@ mod tests {
         assert_eq!(slot.status, "available");
 
         // Update to in_use
-        mgr.agent_repo
+        mgr.worker_repo
             .update_slot_status(&slot.id, "in_use")
             .await
             .unwrap();
         let slot = mgr
-            .agent_repo
+            .worker_repo
             .get_slot_by_host_path(&slot_path.display().to_string())
             .await
             .unwrap()
@@ -688,12 +688,12 @@ mod tests {
         assert_eq!(slot.status, "in_use");
 
         // Update back to available
-        mgr.agent_repo
+        mgr.worker_repo
             .update_slot_status(&slot.id, "available")
             .await
             .unwrap();
         let slot = mgr
-            .agent_repo
+            .worker_repo
             .get_slot_by_host_path(&slot_path.display().to_string())
             .await
             .unwrap()
@@ -721,7 +721,7 @@ mod tests {
 
     #[tokio::test]
     async fn dual_workspace_paths() {
-        let agent_repo = test_agent_repo().await;
+        let worker_repo = test_worker_repo().await;
         let mut projects = HashMap::new();
         projects.insert(
             "proj".into(),
@@ -740,7 +740,7 @@ mod tests {
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
             builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
-            agent_repo,
+            worker_repo,
             shared_locks: Arc::new(RwLock::new(HashMap::new())),
         };
 
@@ -805,9 +805,9 @@ mod tests {
         std::fs::create_dir_all(&slot2).unwrap();
 
         // Mark slots 0 and 1 as in-use in DB, slot 2 as available
-        insert_test_slot(&mgr.agent_repo, "testproj", "0", &slot0, "in_use").await;
-        insert_test_slot(&mgr.agent_repo, "testproj", "1", &slot1, "in_use").await;
-        insert_test_slot(&mgr.agent_repo, "testproj", "2", &slot2, "available").await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0, "in_use").await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "1", &slot1, "in_use").await;
+        insert_test_slot(&mgr.worker_repo, "testproj", "2", &slot2, "available").await;
 
         // Acquire should try slot 2, which will fail on builderd connection (expected in
         // unit tests — the important thing is it selects the right slot).
@@ -842,7 +842,7 @@ mod tests {
         // The slot should NOT be in DB since clone failed
         let expected_slot = workspace.join("pool").join("testproj").join("0");
         let db_slot = mgr
-            .agent_repo
+            .worker_repo
             .get_slot_by_host_path(&expected_slot.display().to_string())
             .await
             .unwrap();

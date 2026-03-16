@@ -8,7 +8,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use ur_config::NetworkConfig;
-use ur_db::AgentRepo;
+use ur_db::WorkerRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
@@ -244,7 +244,7 @@ pub struct ProcessManager {
     /// Injected into containers as part of `UR_SERVER_ADDR`.
     worker_port: u16,
     prompt_modes: PromptModesConfig,
-    agent_repo: AgentRepo,
+    worker_repo: WorkerRepo,
 }
 
 impl ProcessManager {
@@ -257,7 +257,7 @@ impl ProcessManager {
         network_config: NetworkConfig,
         worker_port: u16,
         prompt_modes: PromptModesConfig,
-        agent_repo: AgentRepo,
+        worker_repo: WorkerRepo,
     ) -> Self {
         Self {
             workspace,
@@ -267,7 +267,7 @@ impl ProcessManager {
             network_config,
             worker_port,
             prompt_modes,
-            agent_repo,
+            worker_repo,
         }
     }
 
@@ -288,25 +288,25 @@ impl ProcessManager {
 
     /// Look up a worker by worker ID and return the associated process_id.
     pub async fn resolve_process_id(&self, worker_id: &WorkerId) -> Result<String, String> {
-        let agent = self
-            .agent_repo
-            .get_agent(&worker_id.0)
+        let worker = self
+            .worker_repo
+            .get_worker(&worker_id.0)
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        agent
-            .map(|a| a.process_id)
+        worker
+            .map(|w| w.process_id)
             .ok_or_else(|| format!("unknown worker: {worker_id}"))
     }
 
     /// Look up worker context (project_key, slot_path) by worker ID.
     /// Returns `None` if the worker is not registered or has no workspace_path.
     pub async fn get_worker_context(&self, worker_id: &WorkerId) -> Option<WorkerContext> {
-        let agent = self.agent_repo.get_agent(&worker_id.0).await.ok()??;
-        let workspace_path = agent.workspace_path?;
-        let project_key = if agent.project_key.is_empty() {
+        let worker = self.worker_repo.get_worker(&worker_id.0).await.ok()??;
+        let workspace_path = worker.workspace_path?;
+        let project_key = if worker.project_key.is_empty() {
             None
         } else {
-            Some(agent.project_key)
+            Some(worker.project_key)
         };
         Some(WorkerContext {
             project_key,
@@ -319,8 +319,8 @@ impl ProcessManager {
         let Ok(_parsed) = WorkerId::parse(worker_id) else {
             return false;
         };
-        self.agent_repo
-            .verify_agent(worker_id, secret)
+        self.worker_repo
+            .verify_worker(worker_id, secret)
             .await
             .unwrap_or(false)
     }
@@ -339,24 +339,24 @@ impl ProcessManager {
         slot_path: Option<PathBuf>,
         strategy: WorkerStrategy,
         container_id: String,
-        agent_secret: String,
+        worker_secret: String,
     ) {
         let now = Utc::now().to_rfc3339();
-        let agent = ur_db::model::Agent {
-            agent_id: worker_id.0,
+        let worker = ur_db::model::Worker {
+            worker_id: worker_id.0,
             process_id,
             project_key,
             slot_id: None,
             container_id,
-            agent_secret,
+            worker_secret,
             strategy: strategy.name().to_owned(),
             status: "running".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
         };
-        self.agent_repo
-            .insert_agent(&agent)
+        self.worker_repo
+            .insert_worker(&worker)
             .await
             .expect("failed to register worker");
     }
@@ -372,13 +372,13 @@ impl ProcessManager {
     ) -> Result<(), String> {
         // Check for duplicate process ID via database
         let running = self
-            .agent_repo
-            .list_agents_by_status("running")
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let provisioning = self
-            .agent_repo
-            .list_agents_by_status("provisioning")
+            .worker_repo
+            .list_workers_by_status("provisioning")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let has_duplicate = running
@@ -419,7 +419,7 @@ impl ProcessManager {
 
     /// Phase 2 of launch: run the container and record the worker in the database.
     /// Generates and stores a worker secret (UUID v4) for auth.
-    /// Returns `(container_id, agent_secret)`.
+    /// Returns `(container_id, worker_secret)`.
     pub async fn run_and_record(&self, config: ProcessConfig) -> Result<(String, String), String> {
         // Ensure the Docker network exists before launching the container
         self.network_manager
@@ -427,7 +427,7 @@ impl ProcessManager {
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
         // Generate worker secret for worker auth
-        let agent_secret = Uuid::new_v4().to_string();
+        let worker_secret = Uuid::new_v4().to_string();
 
         // Build env vars
         let server_addr = format!(
@@ -440,7 +440,7 @@ impl ProcessManager {
                 ur_config::UR_AGENT_ID_ENV.into(),
                 config.worker_id.0.clone(),
             ),
-            (ur_config::UR_AGENT_SECRET_ENV.into(), agent_secret.clone()),
+            (ur_config::UR_AGENT_SECRET_ENV.into(), worker_secret.clone()),
         ];
 
         // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
@@ -483,61 +483,61 @@ impl ProcessManager {
 
         // Record in database
         let now = Utc::now().to_rfc3339();
-        let agent = ur_db::model::Agent {
-            agent_id: config.worker_id.0,
+        let worker = ur_db::model::Worker {
+            worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
             slot_id: None,
             container_id: cid.0.clone(),
-            agent_secret: agent_secret.clone(),
+            worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
             status: "running".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
         };
-        self.agent_repo
-            .insert_agent(&agent)
+        self.worker_repo
+            .insert_worker(&worker)
             .await
             .map_err(|e| format!("failed to record worker: {e}"))?;
 
-        Ok((cid.0, agent_secret))
+        Ok((cid.0, worker_secret))
     }
 
     /// Stop a running worker process by worker ID. Stops + removes the container.
     pub async fn stop_by_worker_id(&self, worker_id: &WorkerId) -> Result<(), String> {
-        let agent = self
-            .agent_repo
-            .get_agent(&worker_id.0)
+        let worker = self
+            .worker_repo
+            .get_worker(&worker_id.0)
             .await
             .map_err(|e| format!("db error: {e}"))?
             .ok_or_else(|| format!("unknown worker: {worker_id}"))?;
 
         info!(
-            process_id = agent.process_id,
+            process_id = worker.process_id,
             %worker_id,
-            container_id = agent.container_id,
+            container_id = worker.container_id,
             "stopping container"
         );
 
         // 1. Stop + remove container (scoped so rt is dropped before await)
         {
             let rt = container::runtime_from_env();
-            let cid = container::ContainerId(agent.container_id.clone());
+            let cid = container::ContainerId(worker.container_id.clone());
             rt.stop(&cid).map_err(|e| e.to_string())?;
             rt.rm(&cid).map_err(|e| e.to_string())?;
         }
 
         // 2. Release pool slot if this was a project-based launch
-        let strategy = WorkerStrategy::from_name(&agent.strategy)
+        let strategy = WorkerStrategy::from_name(&worker.strategy)
             .map_err(|e| format!("invalid strategy in db: {e}"))?;
-        if !agent.project_key.is_empty()
-            && let Some(ref workspace_path) = agent.workspace_path
+        if !worker.project_key.is_empty()
+            && let Some(ref workspace_path) = worker.workspace_path
         {
             let slot_path = PathBuf::from(workspace_path);
             info!(
-                process_id = agent.process_id,
-                project_key = agent.project_key,
+                process_id = worker.process_id,
+                project_key = worker.project_key,
                 slot_path = %slot_path.display(),
                 strategy = strategy.name(),
                 "releasing pool slot"
@@ -548,13 +548,13 @@ impl ProcessManager {
         }
 
         // 3. Update status to stopped in database
-        self.agent_repo
-            .update_agent_status(&worker_id.0, "stopped")
+        self.worker_repo
+            .update_worker_status(&worker_id.0, "stopped")
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?;
 
         info!(
-            process_id = agent.process_id,
+            process_id = worker.process_id,
             %worker_id,
             "process stopped"
         );
@@ -564,19 +564,19 @@ impl ProcessManager {
 
     /// List all running processes with their metadata.
     pub async fn list(&self) -> Vec<ProcessSummary> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .unwrap_or_default();
-        let mut result: Vec<ProcessSummary> = agents
+        let mut result: Vec<ProcessSummary> = workers
             .into_iter()
-            .map(|agent| ProcessSummary {
-                process_id: agent.process_id,
-                worker_id: agent.agent_id,
-                container_id: agent.container_id,
-                project_key: agent.project_key,
-                mode: agent.strategy,
+            .map(|worker| ProcessSummary {
+                process_id: worker.process_id,
+                worker_id: worker.worker_id,
+                container_id: worker.container_id,
+                project_key: worker.project_key,
+                mode: worker.strategy,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
@@ -585,31 +585,31 @@ impl ProcessManager {
 
     /// Look up the workspace/slot directory for a running process by its process ID.
     pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let agent = agents
+        let worker = workers
             .iter()
-            .find(|a| a.process_id == process_id)
+            .find(|w| w.process_id == process_id)
             .ok_or_else(|| format!("unknown process: {process_id}"))?;
-        Ok(agent.workspace_path.as_ref().map(PathBuf::from))
+        Ok(worker.workspace_path.as_ref().map(PathBuf::from))
     }
 
     /// Stop a running worker process by process_id (searches all entries).
     /// Used by the CLI which only knows the process_id, not the worker_id.
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
-        let agents = self
-            .agent_repo
-            .list_agents_by_status("running")
+        let workers = self
+            .worker_repo
+            .list_workers_by_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let agent = agents
+        let worker = workers
             .iter()
-            .find(|a| a.process_id == process_id)
+            .find(|w| w.process_id == process_id)
             .ok_or_else(|| format!("unknown process: {process_id}"))?;
-        let worker_id = WorkerId::parse(&agent.agent_id)?;
+        let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
 }
@@ -679,17 +679,17 @@ mod tests {
         }
     }
 
-    async fn test_agent_repo() -> AgentRepo {
+    async fn test_worker_repo() -> WorkerRepo {
         let db = ur_db::DatabaseManager::open(":memory:")
             .await
             .expect("failed to open in-memory db");
-        AgentRepo::new(db.pool().clone())
+        WorkerRepo::new(db.pool().clone())
     }
 
     async fn test_manager() -> (ProcessManager, tempfile::TempDir) {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
-        let agent_repo = test_agent_repo().await;
+        let agent_repo = test_worker_repo().await;
         let repo_pool_manager = RepoPoolManager::new(
             &config,
             workspace.path().to_path_buf(),

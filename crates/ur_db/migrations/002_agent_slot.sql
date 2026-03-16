@@ -10,13 +10,13 @@ CREATE TABLE slot (
     UNIQUE(project_key, slot_name)
 );
 
-CREATE TABLE agent (
-    agent_id TEXT PRIMARY KEY NOT NULL,
+CREATE TABLE worker (
+    worker_id TEXT PRIMARY KEY NOT NULL,
     process_id TEXT NOT NULL,
     project_key TEXT NOT NULL,
     slot_id TEXT,
     container_id TEXT NOT NULL,
-    agent_secret TEXT NOT NULL,
+    worker_secret TEXT NOT NULL,
     strategy TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'provisioning',
     workspace_path TEXT,
@@ -25,6 +25,6 @@ CREATE TABLE agent (
     FOREIGN KEY (slot_id) REFERENCES slot(id)
 );
 
-CREATE INDEX idx_agent_status ON agent(status);
-CREATE INDEX idx_agent_process_id ON agent(process_id);
+CREATE INDEX idx_worker_status ON worker(status);
+CREATE INDEX idx_worker_process_id ON worker(process_id);
 CREATE INDEX idx_slot_project ON slot(project_key, status);

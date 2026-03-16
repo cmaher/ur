@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{AgentRepo, DatabaseManager, GraphManager, SnapshotManager, TicketRepo};
+use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
 use ur_server::process::PromptModesConfig;
 use ur_server::{BackupTaskManager, BuilderdClient, Config, ProcessManager, RepoPoolManager};
 
@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
     let builderd_client = BuilderdClient::new(builderd_addr.clone());
-    let agent_repo = AgentRepo::new(db.pool().clone());
+    let worker_repo = WorkerRepo::new(db.pool().clone());
 
     // Reconcile slots: sync DB rows with on-disk pool directories and project configs.
     // Build project_key -> pool_dir map from the project configs.
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
         .keys()
         .map(|k| (k.clone(), pool_root.join(k)))
         .collect();
-    let slot_result = agent_repo
+    let slot_result = worker_repo
         .reconcile_slots(&project_pool_dirs, &local_workspace)
         .await
         .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
         local_workspace.clone(),
         host_workspace.clone(),
         builderd_client,
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let process_manager = ProcessManager::new(
         local_workspace,
@@ -144,13 +144,13 @@ async fn main() -> anyhow::Result<()> {
         cfg.network.clone(),
         cfg.worker_port,
         prompt_modes,
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
 
     // Reconcile agents: check container liveness for active agents and update status.
     let docker_cmd = docker_command.clone();
-    let agent_result = agent_repo
-        .reconcile_agents(|container_id| {
+    let worker_result = worker_repo
+        .reconcile_workers(|container_id| {
             let cmd = docker_cmd.clone();
             async move {
                 tokio::process::Command::new(&cmd)
@@ -162,11 +162,11 @@ async fn main() -> anyhow::Result<()> {
             }
         })
         .await
-        .map_err(|e| anyhow::anyhow!("agent reconciliation failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("worker reconciliation failed: {e}"))?;
     info!(
-        reclaimed = ?agent_result.reclaimed,
-        stopped = ?agent_result.marked_stopped,
-        "agent reconciliation complete"
+        reclaimed = ?worker_result.reclaimed,
+        stopped = ?worker_result.marked_stopped,
+        "worker reconciliation complete"
     );
 
     #[cfg(feature = "hostexec")]
@@ -254,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         process_manager,
-        agent_repo,
+        worker_repo,
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,

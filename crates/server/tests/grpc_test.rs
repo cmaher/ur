@@ -73,7 +73,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
     let db = ur_db::DatabaseManager::open(":memory:")
         .await
         .expect("failed to open in-memory db");
-    let agent_repo = ur_db::AgentRepo::new(db.pool().clone());
+    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -82,7 +82,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
-        agent_repo.clone(),
+        worker_repo.clone(),
     );
     let process_manager = ur_server::ProcessManager::new(
         workspace.clone(),
@@ -92,7 +92,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         network_config,
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::process::PromptModesConfig::default(),
-        agent_repo,
+        worker_repo,
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
