@@ -7,7 +7,7 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build a ProcessManager, AgentRepo, and CoreServiceHandler for testing.
+/// Build a ProcessManager, WorkerRepo, and CoreServiceHandler for testing.
 async fn make_test_components(
     dir: &Path,
 ) -> (
@@ -121,7 +121,7 @@ async fn spawn_authed_server(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn worker_server_rejects_requests_without_agent_headers() {
+async fn worker_server_rejects_requests_without_worker_headers() {
     let dir = tempfile::tempdir().unwrap();
     let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
     let channel = spawn_authed_server(process_manager, agent_repo, handler).await;
@@ -140,12 +140,12 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
     let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
 
-    // Register a real agent so the ID exists but use a different secret in the request
-    let agent_id = process_manager.generate_agent_id("authtest");
+    // Register a real worker so the ID exists but use a different secret in the request
+    let worker_id = process_manager.generate_worker_id("authtest");
     let real_secret = "real-secret-value";
     process_manager
-        .register_agent(
-            agent_id.clone(),
+        .register_worker(
+            worker_id.clone(),
             "authtest".into(),
             String::new(),
             None,
@@ -160,7 +160,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", agent_id.to_string().parse().unwrap());
+        .insert("ur-agent-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
         .insert("ur-agent-secret", "wrong-secret".parse().unwrap());
@@ -171,7 +171,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
     assert!(result.is_err());
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    assert!(status.message().contains("agent authentication failed"));
+    assert!(status.message().contains("worker authentication failed"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -179,11 +179,11 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let (process_manager, agent_repo, handler) = make_test_components(dir.path()).await;
 
-    let agent_id = process_manager.generate_agent_id("validtest");
+    let worker_id = process_manager.generate_worker_id("validtest");
     let secret = "correct-secret-value";
     process_manager
-        .register_agent(
-            agent_id.clone(),
+        .register_worker(
+            worker_id.clone(),
             "validtest".into(),
             String::new(),
             None,
@@ -198,7 +198,7 @@ async fn worker_server_accepts_requests_with_valid_credentials() {
     let mut request = tonic::Request::new(PingRequest {});
     request
         .metadata_mut()
-        .insert("ur-agent-id", agent_id.to_string().parse().unwrap());
+        .insert("ur-agent-id", worker_id.to_string().parse().unwrap());
     request
         .metadata_mut()
         .insert("ur-agent-secret", secret.parse().unwrap());

@@ -383,7 +383,7 @@ impl TestEnv {
         vec![("UR_CONFIG", self.config_path.to_str().unwrap())]
     }
 
-    /// Build a container name from the shared agent prefix and a ticket ID.
+    /// Build a container name from the shared worker prefix and a ticket ID.
     fn container_name(&self, ticket_id: &str) -> String {
         format!("{}{ticket_id}", self.names.agent_prefix)
     }
@@ -420,9 +420,9 @@ fn e2e_all() {
     std::fs::write(
         rag_docs_dir.join("container.md"),
         "# Container Management\n\n\
-         The container module manages Docker containers for worker agents.\n\
+         The container module manages Docker containers for workers.\n\
          It handles lifecycle operations: create, start, stop, and remove.\n\
-         Each agent gets its own isolated container with mounted workspace.\n",
+         Each worker gets its own isolated container with mounted workspace.\n",
     )
     .expect("failed to write test doc");
     std::fs::write(

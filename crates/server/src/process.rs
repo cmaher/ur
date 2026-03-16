@@ -612,52 +612,6 @@ impl ProcessManager {
         let worker_id = WorkerId::parse(&agent.agent_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
-
-    // Backward-compatible aliases — will be removed once tests and CLI are updated.
-
-    /// Alias for `generate_worker_id`.
-    pub fn generate_agent_id(&self, process_id: &str) -> WorkerId {
-        self.generate_worker_id(process_id)
-    }
-
-    /// Alias for `resolve_process_id` (accepts `&WorkerId`).
-    pub async fn get_agent_context(&self, worker_id: &WorkerId) -> Option<WorkerContext> {
-        self.get_worker_context(worker_id).await
-    }
-
-    /// Alias for `verify_worker`.
-    pub async fn verify_agent(&self, worker_id: &str, secret: &str) -> bool {
-        self.verify_worker(worker_id, secret).await
-    }
-
-    /// Alias for `register_worker`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn register_agent(
-        &self,
-        worker_id: WorkerId,
-        process_id: String,
-        project_key: String,
-        slot_path: Option<PathBuf>,
-        strategy: WorkerStrategy,
-        container_id: String,
-        agent_secret: String,
-    ) {
-        self.register_worker(
-            worker_id,
-            process_id,
-            project_key,
-            slot_path,
-            strategy,
-            container_id,
-            agent_secret,
-        )
-        .await
-    }
-
-    /// Alias for `stop_by_worker_id`.
-    pub async fn stop_by_agent_id(&self, worker_id: &WorkerId) -> Result<(), String> {
-        self.stop_by_worker_id(worker_id).await
-    }
 }
 
 /// Ensure a file exists on disk, creating it (and parent dirs) if missing.

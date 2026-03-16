@@ -1,12 +1,12 @@
-// Acceptance tests: server restart reclaims running agents.
+// Acceptance tests: server restart reclaims running workers.
 //
 // These tests exercise the full reconciliation path that runs on server startup:
 // AgentRepo reconciliation + gRPC auth verification after reclamation.
 // They simulate a server restart by:
-// 1. Setting up agents via ProcessManager (as a running server would)
+// 1. Setting up workers via ProcessManager (as a running server would)
 // 2. Creating a "fresh" gRPC server with the same DB (simulating restart)
 // 3. Running reconcile_agents (as main.rs does on startup)
-// 4. Verifying that reclaimed agents can still authenticate to the gRPC server
+// 4. Verifying that reclaimed workers can still authenticate to the gRPC server
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -144,21 +144,21 @@ async fn authed_ping(
     client.ping(request).await
 }
 
-/// Scenario 1: Launch agent, restart server (rebuild stack with same DB),
-/// run reconciliation with container alive, verify agent is reclaimed and
-/// auth still works, then stop agent and verify slot released.
+/// Scenario 1: Launch worker, restart server (rebuild stack with same DB),
+/// run reconciliation with container alive, verify worker is reclaimed and
+/// auth still works, then stop worker and verify slot released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_reclaims_agent_with_live_container() {
+async fn restart_reclaims_worker_with_live_container() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test1.db");
     let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
         .await
         .unwrap();
 
-    // --- Phase 1: "Original server" registers an agent ---
+    // --- Phase 1: "Original server" registers a worker ---
     let (_pm1, agent_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
-    let agent_id_str = "restart-test-agent-1";
+    let worker_id_str = "restart-test-worker-1";
     let secret = "test-secret-reclaim";
     let slot_path = dir.path().join("workspace").join("slot0");
     std::fs::create_dir_all(&slot_path).unwrap();
@@ -176,9 +176,9 @@ async fn restart_reclaims_agent_with_live_container() {
     };
     agent_repo1.insert_slot(&slot).await.unwrap();
 
-    // Register the agent (simulates a launched worker).
+    // Register the worker (simulates a launched worker).
     let agent = ur_db::model::Agent {
-        agent_id: agent_id_str.to_owned(),
+        agent_id: worker_id_str.to_owned(),
         process_id: "restart-test".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_id: Some("slot-restart-1".to_owned()),
@@ -192,8 +192,8 @@ async fn restart_reclaims_agent_with_live_container() {
     };
     agent_repo1.insert_agent(&agent).await.unwrap();
 
-    // Verify agent is running before "restart".
-    let pre = agent_repo1.get_agent(agent_id_str).await.unwrap().unwrap();
+    // Verify worker is running before "restart".
+    let pre = agent_repo1.get_agent(worker_id_str).await.unwrap().unwrap();
     assert_eq!(pre.status, "running");
 
     // --- Phase 2: "Server restart" — rebuild components with the same DB ---
@@ -205,11 +205,11 @@ async fn restart_reclaims_agent_with_live_container() {
         .await
         .unwrap();
 
-    assert_eq!(reconcile_result.reclaimed, vec![agent_id_str]);
+    assert_eq!(reconcile_result.reclaimed, vec![worker_id_str]);
     assert!(reconcile_result.marked_stopped.is_empty());
 
-    // Verify agent status is still "running" after reclamation.
-    let post = agent_repo2.get_agent(agent_id_str).await.unwrap().unwrap();
+    // Verify worker status is still "running" after reclamation.
+    let post = agent_repo2.get_agent(worker_id_str).await.unwrap().unwrap();
     assert_eq!(post.status, "running");
 
     // Verify slot stays in_use.
@@ -224,13 +224,13 @@ async fn restart_reclaims_agent_with_live_container() {
     let channel = spawn_authed_server(agent_repo2.clone(), handler2).await;
     let mut client = CoreServiceClient::new(channel);
 
-    let result = authed_ping(&mut client, agent_id_str, secret).await;
+    let result = authed_ping(&mut client, worker_id_str, secret).await;
     assert!(result.is_ok(), "auth should work after reclamation");
     assert_eq!(result.unwrap().into_inner().message, "pong");
 
-    // --- Phase 4: Stop agent, verify slot released ---
+    // --- Phase 4: Stop worker, verify slot released ---
     agent_repo2
-        .update_agent_status(agent_id_str, "stopped")
+        .update_agent_status(worker_id_str, "stopped")
         .await
         .unwrap();
     agent_repo2
@@ -238,7 +238,7 @@ async fn restart_reclaims_agent_with_live_container() {
         .await
         .unwrap();
 
-    let stopped = agent_repo2.get_agent(agent_id_str).await.unwrap().unwrap();
+    let stopped = agent_repo2.get_agent(worker_id_str).await.unwrap().unwrap();
     assert_eq!(stopped.status, "stopped");
 
     let slot_released = agent_repo2
@@ -249,10 +249,10 @@ async fn restart_reclaims_agent_with_live_container() {
     assert_eq!(slot_released.status, "available");
 }
 
-/// Scenario 2: Launch agent, kill server, delete slot directory from disk,
-/// restart server — verify slot row is cleaned up and agent marked stopped.
+/// Scenario 2: Launch worker, kill server, delete slot directory from disk,
+/// restart server — verify slot row is cleaned up and worker marked stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_cleans_up_deleted_slot_and_marks_agent_stopped() {
+async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test2.db");
     let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
@@ -262,7 +262,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_agent_stopped() {
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    // --- Phase 1: "Original server" registers agent with a slot ---
+    // --- Phase 1: "Original server" registers worker with a slot ---
     let (_pm1, agent_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
     // Create pool directory structure with a slot directory on disk.
@@ -283,7 +283,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_agent_stopped() {
     agent_repo1.insert_slot(&slot).await.unwrap();
 
     let agent = ur_db::model::Agent {
-        agent_id: "agent-deleted-slot".to_owned(),
+        agent_id: "worker-deleted-slot".to_owned(),
         process_id: "proc-deleted".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_id: Some("slot-deleted-1".to_owned()),
@@ -307,7 +307,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_agent_stopped() {
     );
     assert!(
         agent_repo1
-            .get_agent("agent-deleted-slot")
+            .get_agent("worker-deleted-slot")
             .await
             .unwrap()
             .is_some()
@@ -342,21 +342,21 @@ async fn restart_cleans_up_deleted_slot_and_marks_agent_stopped() {
             .is_none()
     );
 
-    // Agent referencing that slot should also be deleted by cascade in reconcile_slots.
+    // Worker referencing that slot should also be deleted by cascade in reconcile_slots.
     assert!(
         agent_repo2
-            .get_agent("agent-deleted-slot")
+            .get_agent("worker-deleted-slot")
             .await
             .unwrap()
             .is_none()
     );
 }
 
-/// Scenario 3: Multiple agents across restart — one container alive, one dead.
-/// Verifies mixed reconciliation: live agent reclaimed, dead agent stopped with
-/// slot released, and only the reclaimed agent can authenticate.
+/// Scenario 3: Multiple workers across restart — one container alive, one dead.
+/// Verifies mixed reconciliation: live worker reclaimed, dead worker stopped with
+/// slot released, and only the reclaimed worker can authenticate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn restart_mixed_live_and_dead_agents() {
+async fn restart_mixed_live_and_dead_workers() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test3.db");
     let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
@@ -389,11 +389,11 @@ async fn restart_mixed_live_and_dead_agents() {
     agent_repo1.insert_slot(&slot1).await.unwrap();
     agent_repo1.insert_slot(&slot2).await.unwrap();
 
-    // Agent with live container.
-    let live_agent_id = "agent-mix-live";
+    // Worker with live container.
+    let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
-    let agent_live = ur_db::model::Agent {
-        agent_id: live_agent_id.to_owned(),
+    let worker_live = ur_db::model::Agent {
+        agent_id: live_worker_id.to_owned(),
         process_id: "proc-live".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_id: Some("slot-mix-1".to_owned()),
@@ -405,13 +405,13 @@ async fn restart_mixed_live_and_dead_agents() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&agent_live).await.unwrap();
+    agent_repo1.insert_agent(&worker_live).await.unwrap();
 
-    // Agent with dead container.
-    let dead_agent_id = "agent-mix-dead";
+    // Worker with dead container.
+    let dead_worker_id = "worker-mix-dead";
     let dead_secret = "secret-dead";
-    let agent_dead = ur_db::model::Agent {
-        agent_id: dead_agent_id.to_owned(),
+    let worker_dead = ur_db::model::Agent {
+        agent_id: dead_worker_id.to_owned(),
         process_id: "proc-dead".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_id: Some("slot-mix-2".to_owned()),
@@ -423,7 +423,7 @@ async fn restart_mixed_live_and_dead_agents() {
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
-    agent_repo1.insert_agent(&agent_dead).await.unwrap();
+    agent_repo1.insert_agent(&worker_dead).await.unwrap();
 
     // --- Phase 2: "Restart" with reconciliation ---
     let (_pm2, agent_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
@@ -433,17 +433,25 @@ async fn restart_mixed_live_and_dead_agents() {
         .await
         .unwrap();
 
-    assert_eq!(reconcile_result.reclaimed, vec![live_agent_id]);
-    assert_eq!(reconcile_result.marked_stopped, vec![dead_agent_id]);
+    assert_eq!(reconcile_result.reclaimed, vec![live_worker_id]);
+    assert_eq!(reconcile_result.marked_stopped, vec![dead_worker_id]);
 
-    // Live agent: running, slot stays in_use.
-    let live = agent_repo2.get_agent(live_agent_id).await.unwrap().unwrap();
+    // Live worker: running, slot stays in_use.
+    let live = agent_repo2
+        .get_agent(live_worker_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(live.status, "running");
     let s1 = agent_repo2.get_slot("slot-mix-1").await.unwrap().unwrap();
     assert_eq!(s1.status, "in_use");
 
-    // Dead agent: stopped, slot released.
-    let dead = agent_repo2.get_agent(dead_agent_id).await.unwrap().unwrap();
+    // Dead worker: stopped, slot released.
+    let dead = agent_repo2
+        .get_agent(dead_worker_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(dead.status, "stopped");
     let s2 = agent_repo2.get_slot("slot-mix-2").await.unwrap().unwrap();
     assert_eq!(s2.status, "available");
@@ -452,16 +460,16 @@ async fn restart_mixed_live_and_dead_agents() {
     let channel = spawn_authed_server(agent_repo2.clone(), handler2).await;
     let mut client = CoreServiceClient::new(channel);
 
-    // Live agent auth works.
-    let live_result = authed_ping(&mut client, live_agent_id, live_secret).await;
-    assert!(live_result.is_ok(), "reclaimed agent should authenticate");
+    // Live worker auth works.
+    let live_result = authed_ping(&mut client, live_worker_id, live_secret).await;
+    assert!(live_result.is_ok(), "reclaimed worker should authenticate");
 
-    // Dead agent auth still technically succeeds (verify_agent checks id+secret,
-    // not status), which is correct — the server doesn't reject stopped agents
+    // Dead worker auth still technically succeeds (verify_agent checks id+secret,
+    // not status), which is correct — the server doesn't reject stopped workers
     // from authenticating; it just won't route work to them.
-    let dead_result = authed_ping(&mut client, dead_agent_id, dead_secret).await;
+    let dead_result = authed_ping(&mut client, dead_worker_id, dead_secret).await;
     assert!(
         dead_result.is_ok(),
-        "stopped agent credentials remain valid in DB"
+        "stopped worker credentials remain valid in DB"
     );
 }

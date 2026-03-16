@@ -27,7 +27,3 @@ pub use pool::RepoPoolManager;
 pub use process::{ProcessConfig, ProcessManager, WorkerContext, WorkerId};
 pub use proxy::SquidManager;
 pub use strategy::WorkerStrategy;
-
-// Backward-compatible aliases — will be removed once tests and CLI are updated.
-pub type AgentId = WorkerId;
-pub type AgentContext = WorkerContext;
