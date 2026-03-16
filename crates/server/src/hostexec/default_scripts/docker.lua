@@ -3,7 +3,7 @@
 -- Workers may inspect container/image/network/volume state but cannot
 -- create, modify, or destroy resources on the host Docker daemon.
 
-function transform(command, args, working_dir, agent_context)
+function transform(command, args, working_dir, worker_context)
     -- Top-level commands that are inherently readonly
     local readonly_commands = {
         ["ps"] = true,
