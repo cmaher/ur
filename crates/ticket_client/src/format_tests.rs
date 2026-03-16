@@ -13,6 +13,7 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
         body: String::new(),
         created_at: "2026-03-15T10:00:00Z".to_owned(),
         updated_at: "2026-03-15T10:00:00Z".to_owned(),
+        project: "test".to_owned(),
     }
 }
 

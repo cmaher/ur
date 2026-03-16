@@ -12,6 +12,9 @@ pub fn format_ticket_detail(
 ) -> String {
     let mut out = String::new();
     writeln!(out, "ID:       {}", ticket.id).unwrap();
+    if !ticket.project.is_empty() {
+        writeln!(out, "Project:  {}", ticket.project).unwrap();
+    }
     writeln!(out, "Title:    {}", ticket.title).unwrap();
     writeln!(out, "Type:     {}", ticket.ticket_type).unwrap();
     writeln!(out, "Status:   {}", ticket.status).unwrap();

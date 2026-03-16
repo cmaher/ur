@@ -259,6 +259,7 @@ mod tests {
         let repo = TicketRepo::new(db.pool().clone(), graph_manager);
         let ticket = NewTicket {
             id: "ur-001".to_string(),
+            project: "ur".to_string(),
             type_: "epic".to_string(),
             priority: 1,
             parent_id: None,

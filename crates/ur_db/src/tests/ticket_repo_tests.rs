@@ -52,6 +52,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Epic One".into(),
         body: "First epic".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -64,6 +65,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Epic Two".into(),
         body: "Second epic".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -77,6 +79,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1A".into(),
         body: "First task in epic 1".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -89,6 +92,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1B".into(),
         body: "Second task in epic 1".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -101,6 +105,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-1".into()),
         title: "Task 1C".into(),
         body: "Third task in epic 1".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -129,6 +134,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-2".into()),
         title: "Task 2A".into(),
         body: "First task in epic 2".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -141,6 +147,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: Some("epic-2".into()),
         title: "Task 2B".into(),
         body: "Second task in epic 2".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -154,6 +161,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         parent_id: None,
         title: "Standalone Task".into(),
         body: "No parent".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -267,6 +275,7 @@ async fn create_ticket_with_parent() {
         parent_id: None,
         title: "Parent".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -305,6 +314,7 @@ async fn update_ticket_partial_fields() {
         parent_id: None,
         title: "Original".into(),
         body: "Original body".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -346,6 +356,7 @@ async fn update_ticket_clear_parent() {
         parent_id: None,
         title: "E".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -358,6 +369,7 @@ async fn update_ticket_clear_parent() {
         parent_id: Some("epic".into()),
         title: "C".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -421,6 +433,7 @@ async fn list_tickets_no_filter() {
 
     let all = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: None,
@@ -440,6 +453,7 @@ async fn list_tickets_filter_by_status() {
 
     let closed = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: Some("closed".into()),
             type_: None,
             parent_id: None,
@@ -459,6 +473,7 @@ async fn list_tickets_filter_by_type() {
 
     let epics = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: Some("epic".into()),
             parent_id: None,
@@ -477,6 +492,7 @@ async fn list_tickets_filter_by_parent() {
 
     let children = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
@@ -500,6 +516,7 @@ async fn list_tickets_combined_filters() {
     // Open tasks under epic-1
     let results = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: Some("open".into()),
             type_: None,
             parent_id: Some("epic-1".into()),
@@ -521,6 +538,7 @@ async fn list_tickets_ordered_by_priority() {
 
     let children = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
@@ -550,6 +568,7 @@ async fn set_and_get_ticket_metadata() {
         parent_id: None,
         title: "Meta test".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -582,6 +601,7 @@ async fn set_meta_upserts_existing_key() {
         parent_id: None,
         title: "Upsert".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -769,6 +789,7 @@ async fn add_activity_returns_generated_fields() {
         parent_id: None,
         title: "Act".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -867,7 +888,7 @@ async fn dispatchable_tickets_filters_blocked() {
 
     // epic-1 open children: task-1a (no blockers), task-1b (blocked by task-1a and task-2a)
     // task-1c is closed so not included
-    let dispatchable = repo.dispatchable_tickets("epic-1").await.unwrap();
+    let dispatchable = repo.dispatchable_tickets("epic-1", None).await.unwrap();
 
     assert_eq!(dispatchable.len(), 1);
     assert_eq!(dispatchable[0].id, "task-1a");
@@ -908,7 +929,7 @@ async fn dispatchable_tickets_unblocked_after_closing_blockers() {
     .await
     .unwrap();
 
-    let dispatchable = repo.dispatchable_tickets("epic-1").await.unwrap();
+    let dispatchable = repo.dispatchable_tickets("epic-1", None).await.unwrap();
 
     // task-1b should now be dispatchable (task-1a is closed so not included)
     assert_eq!(dispatchable.len(), 1);
@@ -922,7 +943,7 @@ async fn dispatchable_tickets_all_unblocked() {
     let (db, repo) = populated_db().await;
 
     // epic-2 open children: task-2a (no blockers), task-2b (no blockers)
-    let dispatchable = repo.dispatchable_tickets("epic-2").await.unwrap();
+    let dispatchable = repo.dispatchable_tickets("epic-2", None).await.unwrap();
 
     assert_eq!(dispatchable.len(), 2);
     let ids: Vec<&str> = dispatchable.iter().map(|t| t.id.as_str()).collect();
@@ -944,12 +965,13 @@ async fn dispatchable_tickets_empty_epic() {
         parent_id: None,
         title: "Empty".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
     .unwrap();
 
-    let dispatchable = repo.dispatchable_tickets("empty-epic").await.unwrap();
+    let dispatchable = repo.dispatchable_tickets("empty-epic", None).await.unwrap();
     assert!(dispatchable.is_empty());
 
     db.cleanup().await;
@@ -1008,6 +1030,7 @@ async fn epic_all_children_closed_true_for_no_children() {
         parent_id: None,
         title: "No kids".into(),
         body: "".into(),
+        project: "test".into(),
         ..Default::default()
     })
     .await
@@ -1029,6 +1052,7 @@ async fn hierarchy_children_of_epic() {
 
     let children = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: Some("epic-2".into()),
@@ -1052,6 +1076,7 @@ async fn hierarchy_top_level_tickets() {
     // with the current filter. Instead, list all and filter in memory.
     let all = repo
         .list_tickets(&TicketFilter {
+            project: None,
             status: None,
             type_: None,
             parent_id: None,

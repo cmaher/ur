@@ -99,6 +99,7 @@ impl TicketService for TicketServiceHandler {
 
         let new_ticket = NewTicket {
             id: id.clone(),
+            project: req.project,
             type_: req.ticket_type,
             priority: req.priority as i32,
             parent_id,
@@ -146,6 +147,7 @@ impl TicketService for TicketServiceHandler {
                         body: String::new(),
                         created_at: String::new(),
                         updated_at: String::new(),
+                        project: String::new(),
                     })
                     .collect()
             }
@@ -167,11 +169,13 @@ impl TicketService for TicketServiceHandler {
                         body: String::new(),
                         created_at: String::new(),
                         updated_at: String::new(),
+                        project: String::new(),
                     })
                     .collect()
             }
             _ => {
                 let filter = TicketFilter {
+                    project: req.project.filter(|s| !s.is_empty()),
                     status: req.status.filter(|s| !s.is_empty()),
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
                     parent_id: req.parent_id.filter(|s| !s.is_empty()),
@@ -195,6 +199,7 @@ impl TicketService for TicketServiceHandler {
                         body: t.body,
                         created_at: t.created_at,
                         updated_at: t.updated_at,
+                        project: t.project,
                     })
                     .collect()
             }
@@ -239,6 +244,7 @@ impl TicketService for TicketServiceHandler {
             body: t.body,
             created_at: t.created_at,
             updated_at: t.updated_at,
+            project: t.project,
         };
 
         let metadata: Vec<_> = meta
@@ -464,9 +470,10 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(epic_id = %req.epic_id, "dispatchable_tickets request");
 
+        let project = req.project.filter(|s| !s.is_empty());
         let tickets = self
             .ticket_repo
-            .dispatchable_tickets(&req.epic_id)
+            .dispatchable_tickets(&req.epic_id, project.as_deref())
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 

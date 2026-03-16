@@ -57,6 +57,7 @@ impl TicketService for MockTicketStore {
             body: req.body,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
+            project: req.project,
         };
         self.inner
             .lock()
@@ -354,6 +355,7 @@ async fn execute_create_and_show() {
     crate::execute(
         TicketArgs::Create {
             title: "Test ticket".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 2,
@@ -367,6 +369,8 @@ async fn execute_create_and_show() {
     // List tickets and verify the created ticket appears
     crate::execute(
         TicketArgs::List {
+            project: None,
+            all: true,
             epic: None,
             ticket_type: None,
             status: None,
@@ -386,6 +390,7 @@ async fn execute_create_and_list_filtered() {
     crate::execute(
         TicketArgs::Create {
             title: "Open ticket".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 1,
@@ -406,6 +411,7 @@ async fn execute_create_and_list_filtered() {
     crate::execute(
         TicketArgs::Create {
             title: "Another open ticket".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 2,
@@ -419,6 +425,8 @@ async fn execute_create_and_list_filtered() {
     // List with status filter
     crate::execute(
         TicketArgs::List {
+            project: None,
+            all: true,
             epic: None,
             ticket_type: None,
             status: Some("open".into()),
@@ -493,6 +501,7 @@ async fn execute_set_and_delete_meta() {
     crate::execute(
         TicketArgs::Create {
             title: "Meta test".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -555,6 +564,7 @@ async fn execute_add_and_list_activities() {
     crate::execute(
         TicketArgs::Create {
             title: "Activity test".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -610,6 +620,7 @@ async fn execute_add_and_remove_block() {
     crate::execute(
         TicketArgs::Create {
             title: "Blocker".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -623,6 +634,7 @@ async fn execute_add_and_remove_block() {
     crate::execute(
         TicketArgs::Create {
             title: "Blocked".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -682,6 +694,7 @@ async fn execute_add_and_remove_link() {
     crate::execute(
         TicketArgs::Create {
             title: "Ticket A".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -695,6 +708,7 @@ async fn execute_add_and_remove_link() {
     crate::execute(
         TicketArgs::Create {
             title: "Ticket B".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -753,6 +767,7 @@ async fn execute_update_existing_ticket() {
     crate::execute(
         TicketArgs::Create {
             title: "Original title".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -802,6 +817,7 @@ async fn execute_dispatchable() {
     crate::execute(
         TicketArgs::Create {
             title: "My Epic".into(),
+            project: Some("test".into()),
             ticket_type: "epic".into(),
             parent: None,
             priority: 0,
@@ -822,6 +838,7 @@ async fn execute_dispatchable() {
     crate::execute(
         TicketArgs::Create {
             title: "Child task".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: Some(epic_id.clone()),
             priority: 1,
@@ -836,6 +853,7 @@ async fn execute_dispatchable() {
     crate::execute(
         TicketArgs::Dispatchable {
             epic_id: epic_id.clone(),
+            project: None,
         },
         &mut client,
     )
@@ -864,6 +882,7 @@ async fn execute_list_activities_empty() {
     crate::execute(
         TicketArgs::Create {
             title: "No activities".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,
@@ -893,6 +912,8 @@ async fn execute_list_empty() {
     // List tickets on empty store — should succeed (print "No tickets found.")
     crate::execute(
         TicketArgs::List {
+            project: None,
+            all: true,
             epic: None,
             ticket_type: None,
             status: None,
@@ -940,6 +961,7 @@ async fn auth_rejection_propagates_error() {
     let result = crate::execute(
         TicketArgs::Create {
             title: "Should fail".into(),
+            project: Some("test".into()),
             ticket_type: "task".into(),
             parent: None,
             priority: 0,

@@ -456,6 +456,11 @@ impl WorkerManager {
             env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
         }
 
+        // Inject project key so workers can resolve project context via env
+        if !config.project_key.is_empty() {
+            env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
+        }
+
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
