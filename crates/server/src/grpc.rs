@@ -206,7 +206,7 @@ impl CoreService for CoreServiceHandler {
             git_hooks_dir,
             mounts,
         };
-        let (container_id, _agent_secret) = self
+        let (container_id, _worker_secret) = self
             .worker_manager
             .run_and_record(config)
             .await
