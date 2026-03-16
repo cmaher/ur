@@ -16,11 +16,10 @@ SQLite file: `$UR_CONFIG/ur.db` (alongside `ur.toml`, default `~/.ur/ur.db`).
 
 ## Schema
 
-Single migration (`migrations/001_initial.sql`) creates:
-- `ticket` — primary entity table
-- `activity` — timestamped updates on tickets
-- `meta` — unified metadata table with `(entity_id, entity_type, key)` PK
-- `edge` — unified edge table with `kind` discriminator (blocks, relates_to)
+Migrations (`migrations/`):
+- `001_initial.sql` — creates `ticket`, `activity`, `meta`, `edge` tables
+- `002_agent_slot.sql` — creates `slot` and `worker` tables
+- `003_ticket_project.sql` — adds `project` column to `ticket`, backfills from ID prefix
 
 ## Testing
 
