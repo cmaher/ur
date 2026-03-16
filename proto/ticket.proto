@@ -118,6 +118,11 @@ message UpdateTicketRequest {
   optional string body = 5;
   bool force = 6;
   optional string ticket_type = 7;
+  // Sentinel-based parent update:
+  //   absent → leave parent unchanged
+  //   "NONE" → clear parent (set to NULL)
+  //   any other value → re-parent to that ticket ID
+  optional string parent_id = 8;
 }
 
 message UpdateTicketResponse {}

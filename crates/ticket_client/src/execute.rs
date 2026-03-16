@@ -98,9 +98,15 @@ where
             status,
             priority,
             ticket_type,
-            parent: _,
+            parent,
+            no_parent,
             force,
         } => {
+            let parent_id = if no_parent {
+                Some("NONE".to_owned())
+            } else {
+                parent
+            };
             client
                 .update_ticket(UpdateTicketRequest {
                     id: id.clone(),
@@ -110,6 +116,7 @@ where
                     body,
                     force,
                     ticket_type,
+                    parent_id,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -208,6 +215,40 @@ where
                 .await
                 .with_status_context("unlink tickets")?;
             Ok(TicketOutput::LinkRemoved { id, linked_id })
+        }
+
+        TicketArgs::Close { id, force } => {
+            client
+                .update_ticket(UpdateTicketRequest {
+                    id: id.clone(),
+                    status: Some("closed".to_owned()),
+                    priority: None,
+                    title: None,
+                    body: None,
+                    force,
+                    ticket_type: None,
+                    parent_id: None,
+                })
+                .await
+                .with_status_context("close ticket")?;
+            Ok(TicketOutput::Updated { id })
+        }
+
+        TicketArgs::Open { id } => {
+            client
+                .update_ticket(UpdateTicketRequest {
+                    id: id.clone(),
+                    status: Some("open".to_owned()),
+                    priority: None,
+                    title: None,
+                    body: None,
+                    force: false,
+                    ticket_type: None,
+                    parent_id: None,
+                })
+                .await
+                .with_status_context("open ticket")?;
+            Ok(TicketOutput::Updated { id })
         }
 
         TicketArgs::Dispatchable { epic_id, project } => {

@@ -84,8 +84,12 @@ pub enum TicketArgs {
         ticket_type: Option<String>,
 
         /// New parent ticket ID
-        #[arg(long)]
+        #[arg(long, conflicts_with = "no_parent")]
         parent: Option<String>,
+
+        /// Clear the parent (remove from epic)
+        #[arg(long, conflicts_with = "parent")]
+        no_parent: bool,
 
         /// Force the update (e.g. close an epic with open children)
         #[arg(long)]
@@ -176,6 +180,22 @@ pub enum TicketArgs {
         /// Project key
         #[arg(short, long)]
         project: Option<String>,
+    },
+
+    /// Close a ticket (sugar for `update <id> --status closed`)
+    Close {
+        /// Ticket ID
+        id: String,
+
+        /// Force close (e.g. close an epic with open children)
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Open a ticket (sugar for `update <id> --status open`)
+    Open {
+        /// Ticket ID
+        id: String,
     },
 
     /// Print project status report (epic tree with open/closed counts)

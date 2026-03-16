@@ -222,6 +222,7 @@ async fn run_migration(
                         title: Some(t.title.clone()),
                         body: Some(t.body.clone()),
                         force: true,
+                        parent_id: None,
                     })
                     .await
                     .map_err(|e| format!("update_ticket {}: {e}", f.id))?;

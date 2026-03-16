@@ -272,6 +272,7 @@ mod tests {
                 priority,
                 ticket_type,
                 parent,
+                no_parent,
                 force,
             } => {
                 assert_eq!(id, "ur-abc12");
@@ -281,6 +282,7 @@ mod tests {
                 assert!(priority.is_none());
                 assert!(ticket_type.is_none());
                 assert!(parent.is_none());
+                assert!(!no_parent);
                 assert!(!force);
             }
             other => panic!("expected Update, got {other:?}"),
