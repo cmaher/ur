@@ -75,3 +75,28 @@ pub enum EdgeKind {
     Blocks,
     RelatesTo,
 }
+
+pub struct Slot {
+    pub id: String,
+    pub project_key: String,
+    pub slot_name: String,
+    pub slot_type: String,
+    pub host_path: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub struct Agent {
+    pub agent_id: String,
+    pub process_id: String,
+    pub project_key: String,
+    pub slot_id: Option<String>,
+    pub container_id: String,
+    pub agent_secret: String,
+    pub strategy: String,
+    pub status: String,
+    pub workspace_path: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
