@@ -42,12 +42,11 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
     // Find top-level epics (not a child of another open epic)
     let mut child_epic_ids: HashMap<&str, bool> = HashMap::new();
     for &pid in epics.keys() {
-        if let Some(kids) = children.get(pid) {
-            for kid in kids {
-                if kid.ticket_type == "epic" {
-                    child_epic_ids.insert(kid.id.as_str(), true);
-                }
-            }
+        let Some(kids) = children.get(pid) else {
+            continue;
+        };
+        for kid in kids.iter().filter(|k| k.ticket_type == "epic") {
+            child_epic_ids.insert(kid.id.as_str(), true);
         }
     }
     let mut top_epics: Vec<&Ticket> = epics
@@ -77,15 +76,14 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
         let mut c = Counts { open: 0, closed: 0 };
         let mut stack = vec![eid.to_owned()];
         while let Some(id) = stack.pop() {
-            if let Some(kids) = children.get(id.as_str()) {
-                for kid in kids {
-                    if kid.ticket_type == "epic" {
-                        stack.push(kid.id.clone());
-                    } else if kid.status == "closed" {
-                        c.closed += 1;
-                    } else {
-                        c.open += 1;
-                    }
+            let Some(kids) = children.get(id.as_str()) else {
+                continue;
+            };
+            for kid in kids {
+                match kid.ticket_type.as_str() {
+                    "epic" => stack.push(kid.id.clone()),
+                    _ if kid.status == "closed" => c.closed += 1,
+                    _ => c.open += 1,
                 }
             }
         }

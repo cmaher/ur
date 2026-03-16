@@ -251,18 +251,19 @@ async fn run_migration(
                 continue;
             }
             // Only insert once: smaller id as left
-            if f.id < *link {
-                match client
-                    .add_link(AddLinkRequest {
-                        left_id: f.id.clone(),
-                        right_id: link.clone(),
-                    })
-                    .await
-                {
-                    Ok(_) => edge_count += 1,
-                    Err(e) if is_duplicate_err(&e) => {}
-                    Err(e) => return Err(format!("add_link {} <-> {}: {e}", f.id, link).into()),
-                }
+            if f.id >= *link {
+                continue;
+            }
+            match client
+                .add_link(AddLinkRequest {
+                    left_id: f.id.clone(),
+                    right_id: link.clone(),
+                })
+                .await
+            {
+                Ok(_) => edge_count += 1,
+                Err(e) if is_duplicate_err(&e) => {}
+                Err(e) => return Err(format!("add_link {} <-> {}: {e}", f.id, link).into()),
             }
         }
     }
