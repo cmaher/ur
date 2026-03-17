@@ -30,10 +30,9 @@ impl WorkerStrategy {
         }
     }
 
-    /// Acquire a pool slot using this strategy's acquisition mode.
+    /// Acquire a pool slot for this worker strategy.
     ///
-    /// - `Code` acquires an exclusive numbered slot via `pool.acquire_exclusive`.
-    /// - `Design` acquires a shared named slot via `pool.acquire_shared("design", ...)`.
+    /// All strategies acquire an exclusive slot via `pool.acquire_slot`.
     ///
     /// Returns (host_path, slot_id) — the host-side path for Docker mounts and the
     /// slot ID for linking via worker_slot.
@@ -42,26 +41,19 @@ impl WorkerStrategy {
         pool: &RepoPoolManager,
         project_key: &str,
     ) -> Result<(PathBuf, String), String> {
-        match self {
-            Self::Code => pool.acquire_exclusive(project_key).await,
-            Self::Design => pool.acquire_shared("design", project_key).await,
-        }
+        pool.acquire_slot(project_key).await
     }
 
-    /// Release a pool slot using this strategy's release mode.
+    /// Release a pool slot for this worker strategy.
     ///
-    /// - `Code` releases the exclusive slot via `pool.release_exclusive`.
-    /// - `Design` unlinks the worker from the shared slot.
+    /// All strategies release the slot via `pool.release_slot`.
     pub async fn release_slot(
         &self,
         pool: &RepoPoolManager,
         worker_id: &str,
         slot_path: &Path,
     ) -> Result<(), String> {
-        match self {
-            Self::Code => pool.release_exclusive(worker_id, slot_path).await,
-            Self::Design => Ok(()),
-        }
+        pool.release_slot(worker_id, slot_path).await
     }
 
     /// Returns the default skill list for this strategy.

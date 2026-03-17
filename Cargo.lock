@@ -5007,6 +5007,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "tokio",
+ "tokio-stream",
  "tonic 0.13.1",
  "ur_config",
  "ur_rpc",

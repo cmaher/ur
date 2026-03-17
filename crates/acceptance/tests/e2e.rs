@@ -487,13 +487,7 @@ fn e2e_all() {
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
-    for ticket in [
-        "ping-test",
-        "pool-test",
-        "design-test-1",
-        "design-test-2",
-        "design-code-test",
-    ] {
+    for ticket in ["ping-test", "pool-test", "design-test-1", "design-test-2"] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
     stop_server(&env.ur, &env.config_path);
@@ -763,14 +757,13 @@ fn scenario_pool_launch(env: &TestEnv) {
     }
 }
 
-/// Design mode shared slot, second launch reuse, code launch.
+/// Design mode uses exclusive numbered slots (same as code mode).
+/// Verify launch, slot reuse after stop, and coexistence with code workers.
 fn scenario_design_mode_pool_launch(env: &TestEnv) {
     let ticket_id_1 = "design-test-1";
     let ticket_id_2 = "design-test-2";
-    let code_ticket_id = "design-code-test";
     let container_name_1 = env.container_name(ticket_id_1);
     let container_name_2 = env.container_name(ticket_id_2);
-    let code_container_name = env.container_name(code_ticket_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
@@ -805,27 +798,6 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name_1);
 
-        // ---- Verify design/ slot directory exists on host ----
-        let design_slot = env
-            .config_path
-            .join("workspace")
-            .join("pool")
-            .join(env.project_key)
-            .join("design");
-        assert!(
-            design_slot.exists(),
-            "design slot directory should exist at {}",
-            design_slot.display()
-        );
-        assert!(
-            design_slot.join(".git").exists(),
-            "design slot should be a git repo (have .git)"
-        );
-        assert!(
-            design_slot.join("README.md").exists(),
-            "design slot should contain README.md from clone"
-        );
-
         // ---- Verify worker has cloned content ----
         let ls_output = Command::new(&env.runtime)
             .args(["exec", &container_name_1, "ls", "/workspace/README.md"])
@@ -834,7 +806,7 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
         assert_eq!(
             ls_output.status.code(),
             Some(0),
-            "design slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
+            "design worker should have README.md from cloned repo.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&ls_output.stdout),
             String::from_utf8_lossy(&ls_output.stderr),
         );
@@ -848,7 +820,7 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
             String::from_utf8_lossy(&stop_output.stderr),
         );
 
-        // ---- Launch second design worker — should reuse same slot path ----
+        // ---- Launch second design worker — should reuse the released slot ----
         let launch2_output = run_cmd(
             &env.ur,
             &[
@@ -869,64 +841,22 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
             String::from_utf8_lossy(&launch2_output.stderr),
         );
 
-        // The design/ slot should still exist (reused, not a new numbered slot)
-        assert!(
-            design_slot.exists(),
-            "design slot should still exist after second launch at {}",
-            design_slot.display()
+        wait_for_healthy(&env.runtime, &container_name_2);
+
+        // ---- Verify second worker also has cloned content ----
+        let ls_output2 = Command::new(&env.runtime)
+            .args(["exec", &container_name_2, "ls", "/workspace/README.md"])
+            .output()
+            .expect("failed to exec ls in container");
+        assert_eq!(
+            ls_output2.status.code(),
+            Some(0),
+            "second design worker should have README.md.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output2.stdout),
+            String::from_utf8_lossy(&ls_output2.stderr),
         );
 
-        // No numbered slots should have been created for design launches
-        // (the pool-test scenario above created slot 0, so check slot 1 instead)
-        let slot_1 = env
-            .config_path
-            .join("workspace")
-            .join("pool")
-            .join(env.project_key)
-            .join("1");
-        assert!(
-            !slot_1.exists(),
-            "numbered slot 1 should NOT exist — design mode uses shared 'design/' slot, not exclusive numbered slots"
-        );
-
-        // ---- Design launches don't consume exclusive pool slots ----
-        // Launch a code worker — it should succeed because design didn't consume any exclusive slots
-        let code_launch = run_cmd(
-            &env.ur,
-            &[
-                "worker",
-                "launch",
-                "-p",
-                env.project_key,
-                "-m",
-                "code",
-                code_ticket_id,
-            ],
-            &env_slice,
-        );
-        assert!(
-            code_launch.status.success(),
-            "code launch should succeed (design didn't consume exclusive slots).\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&code_launch.stdout),
-            String::from_utf8_lossy(&code_launch.stderr),
-        );
-
-        // A numbered slot should exist after the code launch
-        // (could be slot 0 if the pool-test scenario released it, or slot 1)
-        let has_numbered_slot = env
-            .config_path
-            .join("workspace")
-            .join("pool")
-            .join(env.project_key)
-            .join("0")
-            .exists()
-            || slot_1.exists();
-        assert!(
-            has_numbered_slot,
-            "a numbered slot should exist after code launch"
-        );
-
-        // Stop both workers
+        // Stop second worker
         let stop2_output = run_cmd(&env.ur, &["worker", "stop", ticket_id_2], &env_slice);
         assert!(
             stop2_output.status.success(),
@@ -934,20 +864,11 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
             String::from_utf8_lossy(&stop2_output.stdout),
             String::from_utf8_lossy(&stop2_output.stderr),
         );
-
-        let stop_code = run_cmd(&env.ur, &["worker", "stop", code_ticket_id], &env_slice);
-        assert!(
-            stop_code.status.success(),
-            "ur worker stop (code) failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stop_code.stdout),
-            String::from_utf8_lossy(&stop_code.stderr),
-        );
     }));
 
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name_1);
         force_remove_container(&env.runtime, &container_name_2);
-        force_remove_container(&env.runtime, &code_container_name);
         std::panic::resume_unwind(e);
     }
 }

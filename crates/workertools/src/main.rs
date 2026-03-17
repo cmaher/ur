@@ -1,11 +1,14 @@
 use std::io::Write;
 
 use clap::{Parser, Subcommand};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Endpoint;
 
 use ur_rpc::proto::core::command_output::Payload;
-use ur_rpc::proto::hostexec::HostExecRequest;
+use ur_rpc::proto::hostexec::host_exec_message::Payload as HostExecPayload;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
+use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
 
@@ -20,6 +23,9 @@ struct Cli {
 enum Commands {
     /// Execute a command on the host via ur-server
     HostExec {
+        /// Enable bidirectional streaming (forward stdin to the remote command)
+        #[arg(long)]
+        bidi: bool,
         /// The command to execute
         command: String,
         /// Arguments to the command
@@ -53,8 +59,12 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::HostExec { command, args } => {
-            std::process::exit(run_host_exec(&command, args).await);
+        Commands::HostExec {
+            bidi,
+            command,
+            args,
+        } => {
+            std::process::exit(run_host_exec(&command, args, bidi).await);
         }
         Commands::Rag { command } => match command {
             RagCommands::Search {
@@ -68,7 +78,25 @@ async fn main() {
     }
 }
 
-async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
+async fn forward_stdin_to_stream(tx: mpsc::Sender<HostExecMessage>) {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match stdin.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let msg = HostExecMessage {
+            payload: Some(HostExecPayload::Stdin(buf[..n].to_vec())),
+        };
+        if tx.send(msg).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
     let addr = format!("http://{server_addr}");
@@ -87,11 +115,27 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/workspace".into());
 
-    let mut request = tonic::Request::new(HostExecRequest {
-        command: command.into(),
-        args,
-        working_dir,
-    });
+    let start_msg = HostExecMessage {
+        payload: Some(HostExecPayload::Start(HostExecRequest {
+            command: command.into(),
+            args,
+            working_dir,
+        })),
+    };
+
+    // Build the outbound stream: start frame first, then optional stdin forwarding.
+    let (tx, rx) = mpsc::channel::<HostExecMessage>(32);
+    tx.send(start_msg).await.unwrap();
+
+    if bidi {
+        tokio::spawn(forward_stdin_to_stream(tx));
+    }
+    // For non-bidi commands, `tx` is dropped here, closing the outbound stream
+    // after the start frame. The server will not expect any stdin frames.
+
+    let outbound = ReceiverStream::new(rx);
+
+    let mut request = tonic::Request::new(outbound);
 
     // Inject worker ID and secret metadata headers if available
     if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
@@ -135,6 +179,7 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
                 let _ = std::io::stderr().flush();
             }
             Payload::ExitCode(code) => exit_code = code,
+            Payload::AlreadyRunning(_) => {}
         }
     }
 

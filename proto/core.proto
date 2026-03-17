@@ -8,6 +8,9 @@ message CommandOutput {
     bytes stdout = 1;
     bytes stderr = 2;
     int32 exit_code = 3;
+    // Sent when a long-lived process is already running (e.g. reconnecting to
+    // an existing daemon). The bool value is always true when present.
+    bool already_running = 4;
   }
 }
 

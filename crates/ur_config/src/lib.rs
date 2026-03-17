@@ -286,6 +286,10 @@ struct RawHostExecCommandConfig {
     lua: Option<String>,
     /// Use the built-in default Lua script for this command (if one exists).
     default_script: Option<bool>,
+    /// When true, the process is expected to run indefinitely (e.g. a daemon).
+    long_lived: Option<bool>,
+    /// When true, the command uses bidirectional streaming (requires long_lived = true).
+    bidi: Option<bool>,
 }
 
 /// Resolved configuration for a single hostexec command.
@@ -295,6 +299,10 @@ pub struct HostExecCommandConfig {
     pub lua: Option<String>,
     /// Use the built-in default Lua script for this command (if one exists).
     pub default_script: bool,
+    /// When true, the process is expected to run indefinitely (e.g. a daemon).
+    pub long_lived: bool,
+    /// When true, the command uses bidirectional streaming (requires long_lived = true).
+    pub bidi: bool,
 }
 
 /// Resolved hostexec configuration from the `[hostexec]` section of `ur.toml`.
@@ -554,19 +562,7 @@ impl Config {
         };
 
         let hostexec = match raw.hostexec {
-            Some(h) => HostExecConfig {
-                commands: h
-                    .commands
-                    .into_iter()
-                    .map(|(name, raw_cmd)| {
-                        let cmd = HostExecCommandConfig {
-                            lua: raw_cmd.lua,
-                            default_script: raw_cmd.default_script.unwrap_or(false),
-                        };
-                        (name, cmd)
-                    })
-                    .collect(),
-            },
+            Some(h) => resolve_hostexec_config(h)?,
             None => HostExecConfig::default(),
         };
 
@@ -649,6 +645,25 @@ impl Config {
 
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
+
+fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecConfig> {
+    let mut commands = HashMap::new();
+    for (name, raw_cmd) in raw.commands {
+        let long_lived = raw_cmd.long_lived.unwrap_or(false);
+        let bidi = raw_cmd.bidi.unwrap_or(false);
+        if bidi && !long_lived {
+            anyhow::bail!("hostexec command '{name}': bidi = true requires long_lived = true");
+        }
+        let cmd = HostExecCommandConfig {
+            lua: raw_cmd.lua,
+            default_script: raw_cmd.default_script.unwrap_or(false),
+            long_lived,
+            bidi,
+        };
+        commands.insert(name, cmd);
+    }
+    Ok(HostExecConfig { commands })
+}
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
 fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
@@ -1410,5 +1425,92 @@ rg = { lua = "rg-safe.lua" }
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.backup.retain_count, 7);
+    }
+
+    #[test]
+    fn hostexec_long_lived_defaults_false() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+cargo = {}
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let cargo = &cfg.hostexec.commands["cargo"];
+        assert!(!cargo.long_lived);
+        assert!(!cargo.bidi);
+    }
+
+    #[test]
+    fn hostexec_long_lived_parses_true() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+daemon = { long_lived = true }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let daemon = &cfg.hostexec.commands["daemon"];
+        assert!(daemon.long_lived);
+        assert!(!daemon.bidi);
+    }
+
+    #[test]
+    fn hostexec_bidi_with_long_lived_parses() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+daemon = { long_lived = true, bidi = true }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let daemon = &cfg.hostexec.commands["daemon"];
+        assert!(daemon.long_lived);
+        assert!(daemon.bidi);
+    }
+
+    #[test]
+    fn hostexec_bidi_without_long_lived_errors() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+bad = { bidi = true }
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bidi = true requires long_lived = true"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn hostexec_bidi_false_with_long_lived_false_ok() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[hostexec.commands]
+tool = { long_lived = false, bidi = false }
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let tool = &cfg.hostexec.commands["tool"];
+        assert!(!tool.long_lived);
+        assert!(!tool.bidi);
     }
 }

@@ -9,6 +9,7 @@ use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonServiceS
 
 mod handler;
 mod logging;
+mod registry;
 
 #[derive(Parser)]
 #[command(name = "builderd", about = "Ur builder execution daemon")]
@@ -37,8 +38,12 @@ async fn main() -> anyhow::Result<()> {
         "builderd starting"
     );
 
+    let registry = registry::ProcessRegistry::new();
+    registry.spawn_reap_task();
+
     let handler = handler::BuilderDaemonHandler {
         workspace: cli.workspace,
+        registry,
     };
 
     Server::builder()

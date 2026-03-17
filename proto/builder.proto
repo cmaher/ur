@@ -3,7 +3,16 @@ package ur.builder;
 import "core.proto";
 
 service BuilderDaemonService {
-  rpc Exec(BuilderExecRequest) returns (stream ur.core.CommandOutput);
+  rpc Exec(stream BuilderExecMessage) returns (stream ur.core.CommandOutput);
+}
+
+// Wrapper for bidi-streaming Exec RPC. The first message must contain a `start`
+// frame; subsequent messages may carry `stdin` data for long-lived processes.
+message BuilderExecMessage {
+  oneof payload {
+    BuilderExecRequest start = 1;
+    bytes stdin = 2;
+  }
 }
 
 message BuilderExecRequest {
@@ -14,4 +23,7 @@ message BuilderExecRequest {
   // path. Actual resolution logic is handled separately from this proto definition.
   string working_dir = 3;
   map<string, string> env = 4;
+  // When true, the process is expected to run indefinitely (e.g. a daemon).
+  // The server should keep it in a process registry rather than waiting for exit.
+  bool long_lived = 5;
 }

@@ -3,8 +3,17 @@ package ur.hostexec;
 import "core.proto";
 
 service HostExecService {
-  rpc Exec(HostExecRequest) returns (stream ur.core.CommandOutput);
+  rpc Exec(stream HostExecMessage) returns (stream ur.core.CommandOutput);
   rpc ListCommands(ListHostExecCommandsRequest) returns (ListHostExecCommandsResponse);
+}
+
+// Wrapper for bidi-streaming Exec RPC. The first message must contain a `start`
+// frame; subsequent messages may carry `stdin` data for bidi-enabled commands.
+message HostExecMessage {
+  oneof payload {
+    HostExecRequest start = 1;
+    bytes stdin = 2;
+  }
 }
 
 message HostExecRequest {
@@ -15,6 +24,12 @@ message HostExecRequest {
 
 message ListHostExecCommandsRequest {}
 
+message HostExecCommandEntry {
+  string name = 1;
+  bool bidi = 2;
+}
+
 message ListHostExecCommandsResponse {
   repeated string commands = 1;
+  repeated HostExecCommandEntry entries = 2;
 }

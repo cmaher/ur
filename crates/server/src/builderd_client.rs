@@ -1,6 +1,8 @@
 use tokio_stream::StreamExt;
+use ur_rpc::proto::builder::BuilderExecMessage;
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
+use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
 use ur_rpc::proto::core::command_output::Payload;
 
 /// Thin client for executing commands on the host via builderd.
@@ -41,10 +43,16 @@ impl BuilderdClient {
             args: args.iter().map(|s| s.to_string()).collect(),
             working_dir: working_dir.to_string(),
             env: std::collections::HashMap::new(),
+            long_lived: false,
         };
 
+        let start_msg = BuilderExecMessage {
+            payload: Some(ExecPayload::Start(req)),
+        };
+
+        // Send a single start frame (no stdin) — backwards compatible one-shot execution.
         let response = client
-            .exec(req)
+            .exec(tokio_stream::once(start_msg))
             .await
             .map_err(|e| format!("builderd exec failed: {e}"))?;
 

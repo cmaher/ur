@@ -16,7 +16,6 @@ fn test_slot(id: &str, project_key: &str) -> Slot {
         id: id.to_owned(),
         project_key: project_key.to_owned(),
         slot_name: format!("slot-{id}"),
-        slot_type: "exclusive".to_owned(),
         host_path: format!("/tmp/{id}"),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -50,7 +49,6 @@ async fn insert_and_get_slot() {
     assert_eq!(fetched.id, "s1");
     assert_eq!(fetched.project_key, "proj-a");
     assert_eq!(fetched.slot_name, "slot-s1");
-    assert_eq!(fetched.slot_type, "exclusive");
 
     db.cleanup().await;
 }
@@ -85,28 +83,28 @@ async fn list_slots_by_project() {
 }
 
 #[tokio::test]
-async fn exclusive_slots_in_use_count() {
+async fn slots_in_use_count() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
     r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
     r.insert_slot(&test_slot("s2", "proj-a")).await.unwrap();
 
-    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 0);
+    assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 0);
 
     // Link a running worker to s1.
     let mut w1 = test_worker("w1", "proj-a");
     w1.status = "running".to_owned();
     r.insert_worker(&w1).await.unwrap();
     r.link_worker_slot("w1", "s1").await.unwrap();
-    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 1);
+    assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 1);
 
     // Link a running worker to s2.
     let mut w2 = test_worker("w2", "proj-a");
     w2.status = "running".to_owned();
     r.insert_worker(&w2).await.unwrap();
     r.link_worker_slot("w2", "s2").await.unwrap();
-    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 2);
+    assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 2);
 
     db.cleanup().await;
 }
@@ -349,38 +347,7 @@ async fn delete_workers_by_slot_id() {
 }
 
 #[tokio::test]
-async fn exclusive_slots_in_use_ignores_shared_slots() {
-    let db = TestDb::new().await;
-    let r = repo(&db);
-
-    // Insert an exclusive slot and a shared slot.
-    let mut exclusive = test_slot("s1", "proj-a");
-    exclusive.slot_type = "exclusive".to_owned();
-    r.insert_slot(&exclusive).await.unwrap();
-
-    let mut shared = test_slot("s2", "proj-a");
-    shared.slot_type = "shared".to_owned();
-    r.insert_slot(&shared).await.unwrap();
-
-    // Link running workers to both slots.
-    let mut w1 = test_worker("w1", "proj-a");
-    w1.status = "running".to_owned();
-    r.insert_worker(&w1).await.unwrap();
-    r.link_worker_slot("w1", "s1").await.unwrap();
-
-    let mut w2 = test_worker("w2", "proj-a");
-    w2.status = "running".to_owned();
-    r.insert_worker(&w2).await.unwrap();
-    r.link_worker_slot("w2", "s2").await.unwrap();
-
-    // Only the exclusive slot should be counted.
-    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 1);
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn exclusive_slots_in_use_ignores_stopped_workers() {
+async fn slots_in_use_ignores_stopped_workers() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
@@ -392,7 +359,7 @@ async fn exclusive_slots_in_use_ignores_stopped_workers() {
     r.insert_worker(&w1).await.unwrap();
     r.link_worker_slot("w1", "s1").await.unwrap();
 
-    assert_eq!(r.exclusive_slots_in_use("proj-a").await.unwrap(), 0);
+    assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 0);
 
     db.cleanup().await;
 }
@@ -436,7 +403,7 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         id: "stale-slot".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -507,13 +474,6 @@ async fn reconcile_slots_inserts_orphaned_directories() {
     let slots = r.list_slots_by_project("proj-a").await.unwrap();
     assert_eq!(slots.len(), 2);
 
-    // Check slot types: "0" should be exclusive, "design" should be shared.
-    let exclusive = slots.iter().find(|s| s.slot_name == "0").unwrap();
-    assert_eq!(exclusive.slot_type, "exclusive");
-
-    let shared = slots.iter().find(|s| s.slot_name == "design").unwrap();
-    assert_eq!(shared.slot_type, "shared");
-
     db.cleanup().await;
 }
 
@@ -532,7 +492,7 @@ async fn reconcile_slots_mixed_stale_and_orphaned() {
         id: "slot-0".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -691,7 +651,7 @@ async fn reconcile_slots_cleans_stale_project_slots() {
         id: "orphan-proj-slot".to_owned(),
         project_key: "deleted-proj".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: "/tmp/deleted-proj/0".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
