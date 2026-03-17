@@ -56,6 +56,13 @@ impl WorkerStrategy {
         pool.release_slot(worker_id, slot_path).await
     }
 
+    /// Returns the CLAUDE.md filename (without extension) for this strategy.
+    /// Used to set `UR_WORKER_CLAUDE` env var so workerd can copy the right
+    /// file from `potential-claudes/` to `~/.claude/CLAUDE.md`.
+    pub fn claude_md_name(&self) -> &'static str {
+        self.name()
+    }
+
     /// Returns the default skill list for this strategy.
     pub fn skills(&self) -> Vec<String> {
         let mut skills = common_skills();
@@ -123,6 +130,12 @@ mod tests {
             assert!(skills.contains(&"writing-skills".to_string()));
             assert!(skills.contains(&"rag-docs".to_string()));
         }
+    }
+
+    #[test]
+    fn claude_md_name_matches_strategy_name() {
+        assert_eq!(WorkerStrategy::Code.claude_md_name(), "code");
+        assert_eq!(WorkerStrategy::Design.claude_md_name(), "design");
     }
 
     #[test]

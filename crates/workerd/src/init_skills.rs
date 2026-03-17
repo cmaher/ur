@@ -5,6 +5,9 @@ use tracing::{info, warn};
 const SKILLS_ENV: &str = "UR_WORKER_SKILLS";
 const POTENTIAL_SKILLS_DIR: &str = ".claude/potential-skills";
 const SKILLS_DIR: &str = ".claude/skills";
+const CLAUDE_ENV: &str = "UR_WORKER_CLAUDE";
+const POTENTIAL_CLAUDES_DIR: &str = ".claude/potential-claudes";
+const CLAUDE_MD_DEST: &str = ".claude/CLAUDE.md";
 
 /// Manages skill directory initialization from potential-skills based on an env var.
 #[derive(Clone)]
@@ -23,6 +26,10 @@ impl InitSkillsManager {
     pub async fn run(&self) -> i32 {
         if let Err(e) = self.init_skills().await {
             eprintln!("init-skills failed: {e}");
+            return 1;
+        }
+        if let Err(e) = self.init_claude_md().await {
+            eprintln!("init-claude-md failed: {e}");
             return 1;
         }
         0
@@ -72,6 +79,51 @@ impl InitSkillsManager {
 
         Ok(())
     }
+
+    async fn init_claude_md(&self) -> Result<(), std::io::Error> {
+        let claude_name = match std::env::var(CLAUDE_ENV) {
+            Ok(val) if !val.trim().is_empty() => val,
+            _ => {
+                info!(
+                    env = CLAUDE_ENV,
+                    "env var empty or missing, skipping CLAUDE.md setup"
+                );
+                return Ok(());
+            }
+        };
+
+        let src = self
+            .home
+            .join(POTENTIAL_CLAUDES_DIR)
+            .join(format!("{claude_name}.md"));
+        let dst = self.home.join(CLAUDE_MD_DEST);
+
+        if !src.exists() {
+            warn!(
+                name = %claude_name,
+                path = %src.display(),
+                "strategy CLAUDE.md not found in potential-claudes"
+            );
+            return Ok(());
+        }
+
+        tokio::fs::copy(&src, &dst).await?;
+        info!(
+            name = %claude_name,
+            src = %src.display(),
+            dst = %dst.display(),
+            "copied strategy CLAUDE.md"
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl InitSkillsManager {
+    fn with_home(home: PathBuf) -> Self {
+        InitSkillsManager { home }
+    }
 }
 
 async fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), std::io::Error> {
@@ -95,4 +147,73 @@ async fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), std::io:
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // Serialize tests that modify env vars
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn setup_claude_dir(tmp: &TempDir, name: &str, content: &str) {
+        let potential_dir = tmp.path().join(POTENTIAL_CLAUDES_DIR);
+        std::fs::create_dir_all(&potential_dir).unwrap();
+        std::fs::write(potential_dir.join(format!("{name}.md")), content).unwrap();
+        // Ensure .claude dir exists for destination
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_copies_strategy_file() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        setup_claude_dir(&tmp, "code", "# Code Worker\nBe a coder.");
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe { std::env::set_var(CLAUDE_ENV, "code") };
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        mgr.init_claude_md().await.unwrap();
+        unsafe { std::env::remove_var(CLAUDE_ENV) };
+
+        let dest = tmp.path().join(CLAUDE_MD_DEST);
+        assert!(dest.exists(), "CLAUDE.md should be created");
+        let content = std::fs::read_to_string(&dest).unwrap();
+        assert_eq!(content, "# Code Worker\nBe a coder.");
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_missing_file_warns_but_succeeds() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe { std::env::set_var(CLAUDE_ENV, "nonexistent") };
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let result = mgr.init_claude_md().await;
+        unsafe { std::env::remove_var(CLAUDE_ENV) };
+
+        assert!(result.is_ok(), "missing file should not cause an error");
+        let dest = tmp.path().join(CLAUDE_MD_DEST);
+        assert!(!dest.exists(), "CLAUDE.md should not be created");
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_unset_env_skips() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe { std::env::remove_var(CLAUDE_ENV) };
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let result = mgr.init_claude_md().await;
+
+        assert!(result.is_ok(), "unset env should not cause an error");
+        let dest = tmp.path().join(CLAUDE_MD_DEST);
+        assert!(!dest.exists(), "CLAUDE.md should not be created");
+    }
 }

@@ -458,6 +458,12 @@ impl WorkerManager {
             env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
         }
 
+        // Inject strategy-specific CLAUDE.md name for workerd to copy at init
+        env_vars.push((
+            "UR_WORKER_CLAUDE".into(),
+            config.strategy.claude_md_name().into(),
+        ));
+
         // Inject project key so workers can resolve project context via env
         if !config.project_key.is_empty() {
             env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
