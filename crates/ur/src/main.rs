@@ -174,12 +174,31 @@ enum ModelCommands {
 
 #[derive(Subcommand)]
 enum ServerCommands {
+    /// Redeploy a single infrastructure component without rebuilding
+    Redeploy {
+        /// Component to redeploy
+        component: Component,
+    },
     /// Restart the server (stop then start)
     Restart,
     /// Start the server
     Start,
     /// Kill all containers and stop the server
     Stop,
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum Component {
+    /// ur-server container
+    Server,
+    /// builderd host-native process
+    Builderd,
+    /// ur-squid proxy container
+    Squid,
+    /// ur-qdrant vector DB container
+    Qdrant,
+    /// All components (builderd, squid, qdrant, server)
+    All,
 }
 
 #[derive(Subcommand)]
@@ -353,6 +372,45 @@ async fn stop_server(
     builderd::stop_builderd(config, output)?;
     log.info("ur stop: builderd stopped");
     log.info("ur stop: complete");
+    Ok(())
+}
+
+#[instrument(skip(config, compose, output))]
+fn redeploy_component(
+    component: &Component,
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
+    match component {
+        Component::Builderd => {
+            output.print_text("redeploying builderd...");
+            builderd::stop_builderd(config, output)?;
+            builderd::start_builderd(config, output)?;
+        }
+        Component::Squid => {
+            output.print_text("redeploying squid...");
+            compose.recreate_service("ur-squid")?;
+            output.print_text("squid redeployed");
+        }
+        Component::Qdrant => {
+            output.print_text("redeploying qdrant...");
+            compose.recreate_service("ur-qdrant")?;
+            output.print_text("qdrant redeployed");
+        }
+        Component::Server => {
+            output.print_text("redeploying server...");
+            compose.recreate_service("ur-server")?;
+            output.print_text("server redeployed");
+        }
+        Component::All => {
+            redeploy_component(&Component::Builderd, config, compose, output)?;
+            redeploy_component(&Component::Squid, config, compose, output)?;
+            redeploy_component(&Component::Qdrant, config, compose, output)?;
+            redeploy_component(&Component::Server, config, compose, output)?;
+            output.print_text("all components redeployed");
+        }
+    }
     Ok(())
 }
 
@@ -1000,6 +1058,9 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             }
         },
         Commands::Server { command } => match command {
+            ServerCommands::Redeploy { component } => {
+                redeploy_component(&component, &config, &compose, output)?;
+            }
             ServerCommands::Restart => {
                 stop_server(&config, &compose, output).await?;
                 start_server(&config, &compose, output)?;

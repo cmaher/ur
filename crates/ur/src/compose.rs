@@ -114,6 +114,36 @@ impl ComposeManager {
         Ok(())
     }
 
+    /// Ensure the compose file exists (write it if missing), then force-recreate a single service.
+    #[instrument(skip(self), fields(service, compose_file = %self.compose_file.display()))]
+    pub fn recreate_service(&self, service: &str) -> Result<()> {
+        if !self.compose_file.exists() {
+            debug!("compose file missing, writing before recreate");
+            fs::write(&self.compose_file, &self.compose_content).with_context(|| {
+                format!(
+                    "failed to write compose file: {}",
+                    self.compose_file.display()
+                )
+            })?;
+        }
+
+        info!(service, "force-recreating compose service");
+        let output = self
+            .base_command()
+            .args(["up", "-d", "--force-recreate", service])
+            .output()
+            .context("failed to run docker compose up")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            error!(service, stderr = %stderr, "docker compose recreate failed");
+            bail!("docker compose recreate {service} failed: {stderr}");
+        }
+
+        info!(service, "service recreated");
+        Ok(())
+    }
+
     /// Check if the server service is running via `docker compose ps`.
     ///
     /// Returns `true` if at least one container for the server service is running.
