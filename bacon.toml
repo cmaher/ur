@@ -122,7 +122,7 @@ allow_warnings = true
 # Shortcuts to internal functions (scrolling, toggling, etc.)
 # should go in your personal global prefs.toml file instead.
 [jobs.ai]
-command = ["cargo", "check", "--color", "never", "--message-format", "short"]
+command = ["cargo", "clippy", "--all-targets", "--color", "never", "--message-format", "short"]
 need_stdout = true
 watch = ["src", "crates"]
 
