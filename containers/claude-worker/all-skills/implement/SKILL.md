@@ -13,7 +13,10 @@ When given a single non-epic ticket:
 
 1. `ur ticket show <id>` — read the ticket
 2. `ur ticket update <id> --status in_progress` — claim it
+@/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
 3. Implement the work directly in this context
+@/home/worker/.claude/skill-hooks/implement/before-commit.md
+@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
 4. Commit, close: `ur ticket update <id> --status closed`
 
 No subagents needed. Just do the work.
@@ -80,6 +83,8 @@ Use only when explicitly requested or when tickets are clearly independent:
 - **Subagents**: Run only the minimum tests needed to validate their change (check CLAUDE.md for project-specific commands)
 - **Parent (after all issues done)**: Run full CI and fix any integration issues
 
+@/home/worker/.claude/skill-hooks/implement/before-dispatch.md
+
 ### Subagent Prompt Template
 
 ```
@@ -102,6 +107,9 @@ VCS:
 Testing:
 - Run only the minimum tests needed to validate YOUR change — not the full CI suite
 - The parent agent will run full CI after all issues are done
+
+@/home/worker/.claude/skill-hooks/implement/before-commit.md
+@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
 
 When done:
 1. Close the ticket: `ur ticket update <id> --status closed`
