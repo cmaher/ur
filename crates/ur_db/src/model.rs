@@ -4,7 +4,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Lifecycle status for workflow-driven tickets.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifecycleStatus {
     Design,
     #[default]

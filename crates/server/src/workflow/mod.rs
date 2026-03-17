@@ -1,0 +1,45 @@
+mod engine;
+pub mod handlers;
+
+pub use engine::WorkflowEngine;
+
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+
+use ur_db::TicketRepo;
+use ur_db::model::LifecycleStatus;
+
+/// Context passed to every workflow handler, providing access to shared
+/// managers and repositories needed to execute transitions.
+#[derive(Clone)]
+pub struct WorkflowContext {
+    pub ticket_repo: TicketRepo,
+}
+
+/// Key identifying a specific lifecycle transition.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TransitionKey {
+    pub from: LifecycleStatus,
+    pub to: LifecycleStatus,
+}
+
+impl fmt::Display for TransitionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} -> {}", self.from, self.to)
+    }
+}
+
+/// Trait for handling a specific lifecycle transition.
+///
+/// Implementations perform side effects (e.g., launching a worker, creating a
+/// PR) and return `Ok(())` on success. The engine deletes the event on success
+/// and increments attempts on failure.
+pub trait WorkflowHandler: Send + Sync {
+    fn handle(
+        &self,
+        ctx: &WorkflowContext,
+        ticket_id: &str,
+        transition: &TransitionKey,
+    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
+}
