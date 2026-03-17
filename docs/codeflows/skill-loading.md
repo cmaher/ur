@@ -78,14 +78,41 @@ workerd init                                     [crates/workerd/src/init_skills
 Claude Code reads ~/.claude/skills/ at session start
 ```
 
+## Per-Strategy CLAUDE.md Delivery
+
+Some capabilities (e.g., ticket management) are delivered as CLAUDE.md content rather than skills. This avoids the skill loading overhead and puts instructions directly in the worker's system context.
+
+### Build Time
+
+```
+COPY all-claudes/   /home/worker/.claude/potential-claudes/
+COPY shared-claudes/ /home/worker/.claude/shared-claudes/
+```
+
+- `all-claudes/` contains one `{strategy}.md` file per strategy (e.g., `code.md`, `design.md`)
+- `shared-claudes/` contains `.md` fragments included in all strategies (e.g., `tickets.md`)
+
+### Runtime (workerd init)
+
+```
+InitSkillsManager::init_claude_md()
+    1. Read UR_WORKER_CLAUDE env var (set by server from WorkerStrategy)
+    2. Read ~/.claude/potential-claudes/{value}.md as strategy content
+    3. Append all ~/.claude/shared-claudes/*.md files (sorted alphabetically)
+    4. Write composed result to ~/.claude/CLAUDE.md
+    5. Missing strategy file → warning (non-fatal)
+```
+
 ## Key Files
 
 | File | Role |
 |------|------|
-| `containers/claude-worker/Dockerfile` | Bakes both skill sources into potential-skills/ |
+| `containers/claude-worker/Dockerfile` | Bakes skill sources, strategy CLAUDEs, and shared CLAUDEs into image |
 | `containers/claude-worker/all-skills/` | Project-specific skills (override vendor) |
+| `containers/claude-worker/all-claudes/` | Per-strategy CLAUDE.md files |
+| `containers/claude-worker/shared-claudes/` | CLAUDE.md fragments shared across all strategies |
 | `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
 | `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
-| `crates/workerd/src/init_skills.rs` | Copies selected skills from potential-skills/ to skills/ |
+| `crates/workerd/src/init_skills.rs` | Copies skills and composes strategy CLAUDE.md |
 | `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`) |
-| `crates/server/src/worker.rs` | Mode resolution, injects UR_WORKER_SKILLS env var |
+| `crates/server/src/worker.rs` | Mode resolution, injects UR_WORKER_SKILLS and UR_WORKER_CLAUDE env vars |

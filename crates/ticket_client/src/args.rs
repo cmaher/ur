@@ -59,6 +59,7 @@ pub enum TicketArgs {
     },
 
     /// Update a ticket's fields
+    #[command(alias = "edit")]
     Update {
         /// Ticket ID
         id: String,

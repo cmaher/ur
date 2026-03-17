@@ -458,6 +458,12 @@ impl WorkerManager {
             env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
         }
 
+        // Inject strategy-specific CLAUDE.md name for workerd to copy at init
+        env_vars.push((
+            "UR_WORKER_CLAUDE".into(),
+            config.strategy.claude_md_name().into(),
+        ));
+
         // Inject project key so workers can resolve project context via env
         if !config.project_key.is_empty() {
             env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
@@ -898,7 +904,6 @@ mod tests {
     fn prompt_modes_default_has_code_and_design() {
         let cfg = PromptModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"tickets".to_string()));
         assert!(code.contains(&"ship".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
         assert!(design.contains(&"design".to_string()));
@@ -946,7 +951,7 @@ skills = ["a", "b"]
         let toml = "daemon_port = 5000\n";
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"tickets".to_string()));
+        assert!(code.contains(&"ship".to_string()));
     }
 
     #[test]
