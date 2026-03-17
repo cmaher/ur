@@ -272,6 +272,7 @@ impl CoreService for CoreServiceHandler {
                 project_key: s.project_key,
                 mode: s.mode,
                 grpc_port: 0,
+                directory: s.directory,
             })
             .collect();
         Ok(Response::new(WorkerListResponse { workers }))

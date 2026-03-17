@@ -75,4 +75,5 @@ message WorkerSummary {
   string project_key = 4;
   string mode = 5;
   uint32 grpc_port = 6;
+  string directory = 7;
 }
