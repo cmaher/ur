@@ -21,6 +21,15 @@ Every project goes through this process. A todo list, a single-function utility,
 
 This skill does NOT transition to implementation. There is no "next step" after tickets are created. The user will decide when and how to implement. Do not suggest coding, do not invoke writing-plans, do not mention implementation skills.
 
+## Spike Ticket
+
+The design skill is invoked on a **spike ticket** — the ticket that triggered this design session. The spike ticket becomes the epic parent of all created child tickets. You can identify the spike ticket from the current ticket context (e.g., `$TICKET_ID` or the ticket the user is working on).
+
+- The spike ticket MUST be converted to an epic (if not already) using `ur ticket update <spike-id> --type epic --output json`
+- The spike ticket's body should be updated with the full design document
+- All child tickets are parented to the spike ticket
+- When design is complete, **close the spike ticket** using `ur ticket update <spike-id> --status closed --output json`
+
 ## Checklist
 
 You MUST create a task for each of these items and complete them in order:
@@ -29,8 +38,9 @@ You MUST create a task for each of these items and complete them in order:
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
-5. **Create epic ticket** — write the full design document as the epic's description using `tk`
-6. **Create child tickets** — one per discrete task, all parented to the epic
+5. **Update spike ticket** — convert to epic if needed, write the full design document as the spike ticket's body
+6. **Create child tickets** — one per discrete task, all parented to the spike ticket
+7. **Close the spike ticket** — design is complete, close it
 
 ## Process Flow
 
@@ -41,8 +51,9 @@ digraph brainstorming {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
-    "Create epic with design doc" [shape=box];
+    "Update spike ticket with design doc" [shape=box];
     "Create child tickets" [shape=box];
+    "Close spike ticket" [shape=box];
     "Done — tickets ready" [shape=doublecircle];
 
     "Explore project context" -> "Ask clarifying questions";
@@ -50,9 +61,10 @@ digraph brainstorming {
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Create epic with design doc" [label="yes"];
-    "Create epic with design doc" -> "Create child tickets";
-    "Create child tickets" -> "Done — tickets ready";
+    "User approves design?" -> "Update spike ticket with design doc" [label="yes"];
+    "Update spike ticket with design doc" -> "Create child tickets";
+    "Create child tickets" -> "Close spike ticket";
+    "Close spike ticket" -> "Done — tickets ready";
 }
 ```
 
@@ -99,19 +111,24 @@ digraph brainstorming {
 
 ## After the Design
 
-**Creating the epic:**
+**Updating the spike ticket:**
 
-- Use `tk create "Epic title" --type epic` to create the epic
-- The epic description should contain the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
-- Edit the epic's `.md` file directly to write the full design as the ticket body (below the YAML frontmatter)
+- Convert the spike ticket to an epic if needed: `ur ticket update <spike-id> --type epic --output json`
+- Update the spike ticket's body with the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming: `ur ticket update <spike-id> --body "..." --output json`
 
 **Creating child tickets:**
 
-- Create one ticket per discrete, implementable task using `tk create "Task title" --parent <epic-id>`
-- Each ticket should have a clear scope description written into its `.md` body
-- Order tickets by dependency — use `tk dep <id> <dep-id>` for hard dependencies
-- Use `tk link <id> <id>` for related but non-blocking relationships
+- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <spike-id> --output json`
+- Do NOT use the `--wip` flag — child tickets must default to lifecycle_status=open so they are immediately dispatchable
+- Each ticket should have a clear scope description in the `--body` argument
+- Order tickets by dependency — use `ur ticket add-block <id> <dep-id> --output json` for hard dependencies
+- Use `ur ticket add-link <id> <id> --output json` for related but non-blocking relationships
 - Tickets should be small enough for a single agent to complete in one session
+
+**Closing the spike ticket:**
+
+- Once all child tickets are created, close the spike ticket: `ur ticket update <spike-id> --status closed --output json`
+- This signals that the design phase is complete and the spike has been broken down into actionable work
 
 **That's it. You're done.** Do not suggest next steps. Do not mention coding. Do not invoke any other skill. The user has a complete set of tickets and will decide what to do with them.
 
