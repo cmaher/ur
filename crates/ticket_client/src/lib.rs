@@ -62,6 +62,10 @@ pub enum TicketOutput {
         id: String,
         linked_id: String,
     },
+    Approved {
+        id: String,
+        feedback_mode: String,
+    },
     Dispatchable {
         epic_id: String,
         tickets: Vec<DispatchableTicket>,
@@ -109,6 +113,9 @@ pub fn format_output(output: &TicketOutput) -> String {
         }
         TicketOutput::LinkAdded { id, linked_id } => format!("Linked {id} <-> {linked_id}"),
         TicketOutput::LinkRemoved { id, linked_id } => format!("Unlinked {id} <-> {linked_id}"),
+        TicketOutput::Approved { id, feedback_mode } => {
+            format!("Approved {id} (feedback_mode={feedback_mode})")
+        }
         TicketOutput::Dispatchable { epic_id, tickets } => {
             if tickets.is_empty() {
                 format!("No dispatchable tickets for {epic_id}.")
@@ -421,6 +428,80 @@ mod tests {
                 assert_eq!(linked_id, "ur-def34");
             }
             other => panic!("expected RemoveLink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_feedback_now() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12", "--feedback-now"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(feedback_now);
+                assert!(!feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_feedback_later() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12", "--feedback-later"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(!feedback_now);
+                assert!(feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_default() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(!feedback_now);
+                assert!(!feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_with_lifecycle() {
+        let cmd = parse(&["ticket", "list", "--lifecycle", "implementing"]);
+        match cmd.command {
+            super::TicketArgs::List { lifecycle, .. } => {
+                assert_eq!(lifecycle.as_deref(), Some("implementing"));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_create_wip() {
+        let cmd = parse(&["ticket", "create", "WIP ticket", "--wip"]);
+        match cmd.command {
+            super::TicketArgs::Create { title, wip, .. } => {
+                assert_eq!(title, "WIP ticket");
+                assert!(wip);
+            }
+            other => panic!("expected Create, got {other:?}"),
         }
     }
 

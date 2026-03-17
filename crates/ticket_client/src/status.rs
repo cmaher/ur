@@ -147,7 +147,16 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
     if !orphans.is_empty() {
         writeln!(out, "[Orphaned]").unwrap();
         for o in &orphans {
-            writeln!(out, "  {:<12} {:<7} {}", o.id, o.status, o.title).unwrap();
+            if o.lifecycle_status.is_empty() {
+                writeln!(out, "  {:<12} {:<7} {}", o.id, o.status, o.title).unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "  {:<12} {:<7} {:<18} {}",
+                    o.id, o.status, o.lifecycle_status, o.title
+                )
+                .unwrap();
+            }
         }
         writeln!(out).unwrap();
     }

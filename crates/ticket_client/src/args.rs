@@ -203,6 +203,20 @@ pub enum TicketArgs {
         project: Option<String>,
     },
 
+    /// Approve a ticket (transition lifecycle from in_review to feedback_creating)
+    Approve {
+        /// Ticket ID
+        id: String,
+
+        /// Create feedback tickets immediately after approval
+        #[arg(long, group = "feedback_timing")]
+        feedback_now: bool,
+
+        /// Defer feedback ticket creation to later
+        #[arg(long, group = "feedback_timing")]
+        feedback_later: bool,
+    },
+
     /// Close a ticket (sugar for `update <id> --status closed`)
     Close {
         /// Ticket ID

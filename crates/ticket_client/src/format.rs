@@ -57,22 +57,49 @@ pub fn format_ticket_detail(
 
 /// Format a table of tickets (used by `list`).
 pub fn format_ticket_list(tickets: &[Ticket]) -> String {
+    // Show lifecycle column only if any ticket has a non-empty lifecycle_status
+    let show_lifecycle = tickets.iter().any(|t| !t.lifecycle_status.is_empty());
+
     let mut out = String::new();
-    writeln!(
-        out,
-        "{:<20} {:<10} {:<14} {:<4} TITLE",
-        "ID", "TYPE", "STATUS", "PRI"
-    )
-    .unwrap();
-    let separator: String = std::iter::repeat_n('-', 72).collect();
-    writeln!(out, "{separator}").unwrap();
-    for t in tickets {
+    if show_lifecycle {
         writeln!(
             out,
-            "{:<20} {:<10} {:<14} {:<4} {}",
-            t.id, t.ticket_type, t.status, t.priority, t.title
+            "{:<20} {:<10} {:<14} {:<18} {:<4} TITLE",
+            "ID", "TYPE", "STATUS", "LIFECYCLE", "PRI"
         )
         .unwrap();
+        let separator: String = std::iter::repeat_n('-', 90).collect();
+        writeln!(out, "{separator}").unwrap();
+        for t in tickets {
+            let lifecycle = if t.lifecycle_status.is_empty() {
+                "-"
+            } else {
+                &t.lifecycle_status
+            };
+            writeln!(
+                out,
+                "{:<20} {:<10} {:<14} {:<18} {:<4} {}",
+                t.id, t.ticket_type, t.status, lifecycle, t.priority, t.title
+            )
+            .unwrap();
+        }
+    } else {
+        writeln!(
+            out,
+            "{:<20} {:<10} {:<14} {:<4} TITLE",
+            "ID", "TYPE", "STATUS", "PRI"
+        )
+        .unwrap();
+        let separator: String = std::iter::repeat_n('-', 72).collect();
+        writeln!(out, "{separator}").unwrap();
+        for t in tickets {
+            writeln!(
+                out,
+                "{:<20} {:<10} {:<14} {:<4} {}",
+                t.id, t.ticket_type, t.status, t.priority, t.title
+            )
+            .unwrap();
+        }
     }
     write!(out, "\n{} ticket(s)", tickets.len()).unwrap();
     out
