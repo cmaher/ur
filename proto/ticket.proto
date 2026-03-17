@@ -31,6 +31,8 @@ message Ticket {
   string created_at = 8;
   string updated_at = 9;
   string project = 10;
+  string lifecycle_status = 11;
+  string branch = 12;
 }
 
 message MetadataEntry {
@@ -75,6 +77,8 @@ message CreateTicketRequest {
   optional string id = 8;
   // If set, use this timestamp instead of now (for migrations/imports).
   optional string created_at = 9;
+  // If true, set lifecycle_status to "design" (WIP ticket).
+  bool wip = 10;
 }
 
 message CreateTicketResponse {
@@ -90,6 +94,7 @@ message ListTicketsRequest {
   optional string parent_id = 4;
   optional string meta_key = 5;
   optional string meta_value = 6;
+  optional string lifecycle_status = 7;
 }
 
 message ListTicketsResponse {
@@ -123,6 +128,8 @@ message UpdateTicketRequest {
   //   "NONE" → clear parent (set to NULL)
   //   any other value → re-parent to that ticket ID
   optional string parent_id = 8;
+  optional string lifecycle_status = 9;
+  optional string branch = 10;
 }
 
 message UpdateTicketResponse {}

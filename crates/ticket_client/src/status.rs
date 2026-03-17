@@ -182,6 +182,8 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             project: "test".to_owned(),
+            lifecycle_status: String::new(),
+            branch: String::new(),
         }
     }
 

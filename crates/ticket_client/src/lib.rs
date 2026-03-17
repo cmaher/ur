@@ -146,6 +146,7 @@ mod tests {
                 parent,
                 priority,
                 body,
+                wip,
             } => {
                 assert_eq!(title, "My new ticket");
                 assert!(project.is_none());
@@ -153,6 +154,7 @@ mod tests {
                 assert!(parent.is_none());
                 assert_eq!(priority, 0);
                 assert_eq!(body, "");
+                assert!(!wip);
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -183,6 +185,7 @@ mod tests {
                 parent,
                 priority,
                 body,
+                wip,
             } => {
                 assert_eq!(title, "Epic title");
                 assert_eq!(project.as_deref(), Some("myproj"));
@@ -190,6 +193,7 @@ mod tests {
                 assert_eq!(parent.as_deref(), Some("ur-abc12"));
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
+                assert!(!wip);
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -205,12 +209,14 @@ mod tests {
                 epic,
                 ticket_type,
                 status,
+                lifecycle,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
                 assert!(epic.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
+                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -229,12 +235,14 @@ mod tests {
                 epic,
                 ticket_type,
                 status,
+                lifecycle,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
                 assert_eq!(epic.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
+                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -274,6 +282,9 @@ mod tests {
                 parent,
                 no_parent,
                 force,
+                lifecycle,
+                branch,
+                no_branch,
             } => {
                 assert_eq!(id, "ur-abc12");
                 assert!(title.is_none());
@@ -284,6 +295,9 @@ mod tests {
                 assert!(parent.is_none());
                 assert!(!no_parent);
                 assert!(!force);
+                assert!(lifecycle.is_none());
+                assert!(branch.is_none());
+                assert!(!no_branch);
             }
             other => panic!("expected Update, got {other:?}"),
         }

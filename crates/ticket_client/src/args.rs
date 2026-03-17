@@ -27,6 +27,10 @@ pub enum TicketArgs {
         /// Ticket body text
         #[arg(long, default_value = "")]
         body: String,
+
+        /// Create as work-in-progress (sets lifecycle_status to design)
+        #[arg(long)]
+        wip: bool,
     },
 
     /// List tickets with optional filters
@@ -50,6 +54,10 @@ pub enum TicketArgs {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
+
+        /// Filter by lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        #[arg(long)]
+        lifecycle: Option<String>,
     },
 
     /// Show a ticket's full detail
@@ -95,6 +103,18 @@ pub enum TicketArgs {
         /// Force the update (e.g. close an epic with open children)
         #[arg(long)]
         force: bool,
+
+        /// New lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        #[arg(long)]
+        lifecycle: Option<String>,
+
+        /// New branch name (use --no-branch to clear)
+        #[arg(long, conflicts_with = "no_branch")]
+        branch: Option<String>,
+
+        /// Clear the branch
+        #[arg(long, conflicts_with = "branch")]
+        no_branch: bool,
     },
 
     /// Set a metadata key-value pair on a ticket

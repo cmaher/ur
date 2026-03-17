@@ -18,9 +18,15 @@ pub fn format_ticket_detail(
     writeln!(out, "Title:    {}", ticket.title).unwrap();
     writeln!(out, "Type:     {}", ticket.ticket_type).unwrap();
     writeln!(out, "Status:   {}", ticket.status).unwrap();
+    if !ticket.lifecycle_status.is_empty() {
+        writeln!(out, "Lifecycle: {}", ticket.lifecycle_status).unwrap();
+    }
     writeln!(out, "Priority: {}", ticket.priority).unwrap();
     if !ticket.parent_id.is_empty() {
         writeln!(out, "Parent:   {}", ticket.parent_id).unwrap();
+    }
+    if !ticket.branch.is_empty() {
+        writeln!(out, "Branch:   {}", ticket.branch).unwrap();
     }
     writeln!(out, "Created:  {}", ticket.created_at).unwrap();
     writeln!(out, "Updated:  {}", ticket.updated_at).unwrap();

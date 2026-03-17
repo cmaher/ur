@@ -445,6 +445,7 @@ async fn list_tickets_no_filter() {
             status: None,
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -465,6 +466,7 @@ async fn list_tickets_filter_by_status() {
             status: Some("closed".into()),
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -485,6 +487,7 @@ async fn list_tickets_filter_by_type() {
             status: None,
             type_: Some("epic".into()),
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -504,6 +507,7 @@ async fn list_tickets_filter_by_parent() {
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -528,6 +532,7 @@ async fn list_tickets_combined_filters() {
             status: Some("open".into()),
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -550,6 +555,7 @@ async fn list_tickets_ordered_by_priority() {
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -1114,6 +1120,7 @@ async fn hierarchy_children_of_epic() {
             status: None,
             type_: None,
             parent_id: Some("epic-2".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -1138,6 +1145,7 @@ async fn hierarchy_top_level_tickets() {
             status: None,
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();

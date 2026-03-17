@@ -210,6 +210,10 @@ impl TicketRepo {
             query.push_str(" AND parent_id = ?");
             binds.push(parent_id.clone());
         }
+        if let Some(ref lifecycle_status) = filter.lifecycle_status {
+            query.push_str(" AND lifecycle_status = ?");
+            binds.push(lifecycle_status.as_str().to_owned());
+        }
 
         query.push_str(" ORDER BY priority ASC, created_at ASC");
 

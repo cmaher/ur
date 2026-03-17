@@ -35,6 +35,7 @@ where
             parent,
             priority,
             body,
+            wip,
         } => {
             let resp = client
                 .create_ticket(CreateTicketRequest {
@@ -47,6 +48,7 @@ where
                     body,
                     id: None,
                     created_at: None,
+                    wip,
                 })
                 .await
                 .with_status_context("create ticket")?;
@@ -60,6 +62,7 @@ where
             epic,
             ticket_type,
             status,
+            lifecycle,
         } => {
             let project_filter = if all { None } else { project };
             let resp = client
@@ -70,6 +73,7 @@ where
                     parent_id: epic,
                     meta_key: None,
                     meta_value: None,
+                    lifecycle_status: lifecycle,
                 })
                 .await
                 .with_status_context("list tickets")?;
@@ -101,11 +105,19 @@ where
             parent,
             no_parent,
             force,
+            lifecycle,
+            branch,
+            no_branch,
         } => {
             let parent_id = if no_parent {
                 Some("NONE".to_owned())
             } else {
                 parent
+            };
+            let branch_value = if no_branch {
+                Some("NONE".to_owned())
+            } else {
+                branch
             };
             client
                 .update_ticket(UpdateTicketRequest {
@@ -117,6 +129,8 @@ where
                     force,
                     ticket_type,
                     parent_id,
+                    lifecycle_status: lifecycle,
+                    branch: branch_value,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -228,6 +242,8 @@ where
                     force,
                     ticket_type: None,
                     parent_id: None,
+                    lifecycle_status: None,
+                    branch: None,
                 })
                 .await
                 .with_status_context("close ticket")?;
@@ -245,6 +261,8 @@ where
                     force: false,
                     ticket_type: None,
                     parent_id: None,
+                    lifecycle_status: None,
+                    branch: None,
                 })
                 .await
                 .with_status_context("open ticket")?;
@@ -272,6 +290,7 @@ where
                     parent_id: None,
                     meta_key: None,
                     meta_value: None,
+                    lifecycle_status: None,
                 })
                 .await
                 .with_status_context("list tickets")?;

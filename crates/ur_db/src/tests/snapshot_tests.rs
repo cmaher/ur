@@ -307,6 +307,7 @@ async fn snapshot_data_integrity_full_round_trip() {
             status: None,
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();

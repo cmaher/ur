@@ -109,6 +109,7 @@ pub struct TicketFilter {
     pub status: Option<String>,
     pub type_: Option<String>,
     pub parent_id: Option<String>,
+    pub lifecycle_status: Option<LifecycleStatus>,
 }
 
 pub struct Activity {
