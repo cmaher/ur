@@ -291,18 +291,25 @@ impl TicketService for TicketServiceHandler {
             parent_id,
         };
 
-        if update.status.as_deref() == Some("closed") && !req.force {
-            let all_closed = self
-                .ticket_repo
-                .epic_all_children_closed(&req.id)
-                .await
-                .map_err(|e| TicketError::Db(e.to_string()))?;
-            if !all_closed {
-                return Err(TicketError::HasOpenChildren {
-                    id: req.id.clone(),
-                    children: Vec::new(),
+        if update.status.as_deref() == Some("closed") {
+            if req.force {
+                self.ticket_repo
+                    .close_open_children(&req.id)
+                    .await
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
+            } else {
+                let all_closed = self
+                    .ticket_repo
+                    .epic_all_children_closed(&req.id)
+                    .await
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
+                if !all_closed {
+                    return Err(TicketError::HasOpenChildren {
+                        id: req.id.clone(),
+                        children: Vec::new(),
+                    }
+                    .into());
                 }
-                .into());
             }
         }
 

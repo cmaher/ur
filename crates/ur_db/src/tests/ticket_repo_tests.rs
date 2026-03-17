@@ -1043,6 +1043,50 @@ async fn epic_all_children_closed_true_for_no_children() {
 }
 
 // ============================================================
+// close_open_children
+// ============================================================
+
+#[tokio::test]
+async fn close_open_children_closes_all_open() {
+    let (db, repo) = populated_db().await;
+
+    // Verify children start open
+    assert!(!repo.epic_all_children_closed("epic-1").await.unwrap());
+
+    let closed = repo.close_open_children("epic-1").await.unwrap();
+    assert_eq!(closed, 2);
+
+    // Now all children should be closed
+    assert!(repo.epic_all_children_closed("epic-1").await.unwrap());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn close_open_children_returns_zero_when_already_closed() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "epic-no-kids".into(),
+        type_: "epic".into(),
+        priority: 1,
+        parent_id: None,
+        title: "No kids".into(),
+        body: "".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let closed = repo.close_open_children("epic-no-kids").await.unwrap();
+    assert_eq!(closed, 0);
+
+    db.cleanup().await;
+}
+
+// ============================================================
 // Hierarchy queries (parent/children via list_tickets)
 // ============================================================
 
