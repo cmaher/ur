@@ -230,7 +230,7 @@ fn write_test_config(
     std::fs::create_dir_all(&squid_dir).expect("failed to create squid dir");
     std::fs::write(
         squid_dir.join("allowlist.txt"),
-        "api.anthropic.com\nplatform.claude.com\nraw.githubusercontent.com\n",
+        "api.anthropic.com\nplatform.claude.com\nmcp-proxy.anthropic.com\n",
     )
     .expect("failed to write allowlist.txt");
 
