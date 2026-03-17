@@ -561,6 +561,18 @@ impl TicketRepo {
 
         Ok(count == 0)
     }
+
+    /// Close all open children of the given epic.
+    pub async fn close_open_children(&self, epic_id: &str) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE ticket SET status = 'closed' WHERE parent_id = ? AND status != 'closed'",
+        )
+        .bind(epic_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {
