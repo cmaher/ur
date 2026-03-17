@@ -206,6 +206,7 @@ pub struct WorkerSummary {
     pub container_id: String,
     pub project_key: String,
     pub mode: String,
+    pub directory: String,
 }
 
 /// Configuration for launching a container process.
@@ -595,6 +596,7 @@ impl WorkerManager {
                 container_id: worker.container_id,
                 project_key: worker.project_key,
                 mode: worker.strategy,
+                directory: worker.workspace_path.unwrap_or_default(),
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));

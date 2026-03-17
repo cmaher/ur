@@ -514,8 +514,8 @@ async fn process_list(
     }
     output.print_items(&workers, |workers| {
         let mut out = format!(
-            "{:<20} {:<12} {:<16} {:<8}\n",
-            "WORKER", "PROJECT", "CONTAINER", "MODE"
+            "{:<20} {:<12} {:<16} {:<8} {}\n",
+            "WORKER", "PROJECT", "CONTAINER", "MODE", "DIRECTORY"
         );
         for w in workers {
             let container_short = if w.container_id.len() > 12 {
@@ -528,9 +528,14 @@ async fn process_list(
             } else {
                 &w.project_key
             };
+            let directory = if w.directory.is_empty() {
+                "-"
+            } else {
+                &w.directory
+            };
             out.push_str(&format!(
-                "{:<20} {:<12} {:<16} {:<8}\n",
-                w.worker_id, project, container_short, w.mode
+                "{:<20} {:<12} {:<16} {:<8} {}\n",
+                w.worker_id, project, container_short, w.mode, directory
             ));
         }
         if out.ends_with('\n') {
