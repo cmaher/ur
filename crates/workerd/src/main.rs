@@ -85,9 +85,16 @@ async fn run_init() -> Result<()> {
     Ok(())
 }
 
-/// Background daemon: creates tmux session, launches Claude Code, serves healthz + gRPC.
+/// Background daemon: runs init, creates tmux session, launches Claude Code, serves healthz + gRPC.
 async fn run_daemon() -> Result<()> {
     info!("workerd daemon starting");
+
+    // 0. Run initialization (skills, git hooks, hostexec shims)
+    run_init().await.context("init phase failed")?;
+
+    // 0b. Launch optional background processes (e.g., bacon, cargo sweep)
+    // These depend on hostexec shims created by init, so must run after.
+    launch_background_processes().await;
 
     // 1. Create tmux session `agent` (220x55)
     let status = tokio::process::Command::new("tmux")
@@ -139,6 +146,53 @@ async fn run_daemon() -> Result<()> {
         .context("gRPC server exited")?;
 
     Ok(())
+}
+
+/// Launch optional background processes that depend on hostexec shims.
+///
+/// In rust variant containers, bacon and cargo-sweep shims exist; in base
+/// containers they don't. We detect by checking the shim directory.
+async fn launch_background_processes() {
+    let shim_dir = resolve_shim_dir();
+
+    // cargo sweep: clean stale build artifacts from persistent /workspace/target
+    let cargo_shim = shim_dir.join("cargo");
+    let workspace_cargo = Path::new("/workspace/Cargo.toml");
+    if cargo_shim.exists() && workspace_cargo.exists() {
+        info!("launching cargo sweep in background");
+        tokio::spawn(async move {
+            match tokio::process::Command::new(cargo_shim)
+                .args(["sweep", "--time", "1"])
+                .current_dir("/workspace")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+            {
+                Ok(status) => info!(success = status.success(), "cargo sweep finished"),
+                Err(e) => warn!(error = %e, "cargo sweep failed to run"),
+            }
+        });
+    }
+
+    // bacon: headless watcher exporting diagnostics to .bacon-locations
+    let bacon_shim = shim_dir.join("bacon");
+    if bacon_shim.exists() && workspace_cargo.exists() {
+        info!("launching bacon in background");
+        tokio::spawn(async move {
+            match tokio::process::Command::new(bacon_shim)
+                .args(["--headless", "ai"])
+                .current_dir("/workspace")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+            {
+                Ok(status) => info!(success = status.success(), "bacon exited"),
+                Err(e) => warn!(error = %e, "bacon failed to start"),
+            }
+        });
+    }
 }
 
 /// Serve /healthz on port 9119 for Docker HEALTHCHECK.
