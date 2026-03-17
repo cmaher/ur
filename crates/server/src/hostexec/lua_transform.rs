@@ -525,6 +525,64 @@ mod tests {
         assert_eq!(result.args, args);
     }
 
+    #[test]
+    fn test_gh_blocks_pr_merge() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "merge".into(), "123".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked gh command: pr merge")
+        );
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_merge_with_flags() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "-R".into(),
+            "owner/repo".into(),
+            "pr".into(),
+            "merge".into(),
+            "--squash".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked gh command: pr merge")
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_pr_create() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "create".into(), "--title".into(), "foo".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_pr_view() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "view".into(), "123".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
     // --- cargo.lua tests ---
 
     #[test]
