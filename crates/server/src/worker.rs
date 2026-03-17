@@ -701,6 +701,7 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
             worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+            git_branch_prefix: String::new(),
             projects: std::collections::HashMap::new(),
         }
     }

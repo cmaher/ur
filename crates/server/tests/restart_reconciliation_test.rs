@@ -62,6 +62,7 @@ async fn make_components_with_db(
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         },
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+        git_branch_prefix: String::new(),
         projects: HashMap::new(),
     };
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());

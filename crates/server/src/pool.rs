@@ -32,6 +32,8 @@ pub struct RepoPoolManager {
     builderd_client: BuilderdClient,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
+    /// Prefix prepended to worker-ID branch names.
+    git_branch_prefix: String,
     /// Database-backed slot repository for tracking slot availability.
     worker_repo: WorkerRepo,
 }
@@ -49,6 +51,7 @@ impl RepoPoolManager {
             host_workspace,
             builderd_client,
             projects: config.projects.clone(),
+            git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
         }
     }
@@ -352,20 +355,22 @@ impl RepoPoolManager {
 
     /// Checkout a new branch in a slot via builderd.
     ///
-    /// Runs `git checkout -b <branch_name>` in the slot directory on the host.
+    /// Runs `git checkout -b <prefix><branch_name>` in the slot directory on the host.
+    /// The prefix comes from `git_branch_prefix` in `ur.toml` (empty by default).
     /// Called after acquire to give each worker its own branch.
     pub async fn checkout_branch(
         &self,
         host_slot_path: &Path,
         branch_name: &str,
     ) -> Result<(), String> {
+        let full_branch = format!("{}{branch_name}", self.git_branch_prefix);
         let cwd = self.to_builderd_path(host_slot_path);
         self.builderd_client
-            .exec_and_check("git", &["checkout", "-b", branch_name], &cwd)
+            .exec_and_check("git", &["checkout", "-b", &full_branch], &cwd)
             .await
             .map_err(|e| {
                 format!(
-                    "git checkout -b {branch_name} failed in {}: {e}",
+                    "git checkout -b {full_branch} failed in {}: {e}",
                     host_slot_path.display()
                 )
             })
@@ -462,6 +467,7 @@ mod tests {
             host_workspace: workspace.clone(),
             builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
+            git_branch_prefix: String::new(),
             worker_repo,
         };
         (mgr, workspace)
@@ -702,6 +708,7 @@ mod tests {
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
             builderd_client: BuilderdClient::new("http://localhost:42070".into()),
             projects,
+            git_branch_prefix: String::new(),
             worker_repo,
         };
 

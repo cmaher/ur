@@ -263,6 +263,7 @@ struct RawConfig {
     worker_port: Option<u16>,
     builderd_port: Option<u16>,
     compose_file: Option<PathBuf>,
+    git_branch_prefix: Option<String>,
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
     hostexec: Option<RawHostExecConfig>,
@@ -477,6 +478,9 @@ pub struct Config {
     pub rag: RagConfig,
     /// Periodic backup settings for the database.
     pub backup: BackupConfig,
+    /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
+    /// Empty string means no prefix.
+    pub git_branch_prefix: String,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -626,6 +630,8 @@ impl Config {
             })
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
+        let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -638,6 +644,7 @@ impl Config {
             hostexec,
             rag,
             backup,
+            git_branch_prefix,
             projects,
         })
     }

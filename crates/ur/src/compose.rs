@@ -402,6 +402,7 @@ mod tests {
                 enabled: true,
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
+            git_branch_prefix: String::new(),
             projects: std::collections::HashMap::new(),
         };
 
