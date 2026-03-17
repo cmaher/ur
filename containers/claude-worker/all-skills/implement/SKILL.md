@@ -11,13 +11,13 @@ Implement one or more tickets. For a **single ticket**, work on it directly. For
 
 When given a single non-epic ticket:
 
-1. `ur ticket show <id>` — read the ticket
-2. `ur ticket update <id> --status in_progress` — claim it
+1. `ur ticket --output json show <id>` — read the ticket
+2. `ur ticket --output json update <id> --status in_progress` — claim it
 @/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
 3. Implement the work directly in this context
 @/home/worker/.claude/skill-hooks/implement/before-commit.md
 @/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
-4. Commit, close: `ur ticket update <id> --status closed`
+4. Commit, close: `ur ticket --output json update <id> --status closed`
 
 No subagents needed. Just do the work.
 
@@ -29,7 +29,7 @@ No subagents needed. Just do the work.
 
 1. `git fetch origin` — pull latest from remote
 2. `git checkout -B <branch-name> origin/master`
-3. Record the branch on the epic: `ur ticket add-activity <epic-id> "branch: <branch-name>"`
+3. Record the branch on the epic: `ur ticket --output json add-activity <epic-id> "branch: <branch-name>"`
 
 ### VCS: Sequential Stacking (Critical)
 
@@ -66,7 +66,7 @@ digraph implement {
 
 ### Sequential (Default)
 
-- Re-query `ur ticket dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
+- Re-query `ur ticket --output json dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
 - Pass only 1-2 sentence summaries between tasks
 - Parent never reads files or explores code inline — if it takes more than a glance, delegate
 
@@ -74,7 +74,7 @@ digraph implement {
 
 Use only when explicitly requested or when tickets are clearly independent:
 
-1. Each subagent claims its ticket: `ur ticket update <id> --status in_progress`
+1. Each subagent claims its ticket: `ur ticket --output json update <id> --status in_progress`
 2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
 3. Each subagent closes its ticket when done
 
@@ -90,9 +90,9 @@ Use only when explicitly requested or when tickets are clearly independent:
 ```
 Implement ticket <id>.
 
-`ur ticket show <id>` to read the full ticket.
+`ur ticket --output json show <id>` to read the full ticket.
 
-Claim: `ur ticket update <id> --status in_progress`
+Claim: `ur ticket --output json update <id> --status in_progress`
 
 [If relevant: "Previous ticket accomplished: <1-2 sentences>"]
 
@@ -112,7 +112,7 @@ Testing:
 @/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
 
 When done:
-1. Close the ticket: `ur ticket update <id> --status closed`
+1. Close the ticket: `ur ticket --output json update <id> --status closed`
 2. Do NOT add ticket IDs to commit messages
 3. Return ONLY a 1-2 sentence summary of what you did and any key values/paths the next task might need
 ```
@@ -124,7 +124,7 @@ When done:
 | Switching branches mid-work | **Never.** Stack via `git commit` on the working branch — next agent inherits automatically |
 | Parent reads full subagent output | Ask for "1-2 sentence summary" in every prompt |
 | Parent explores code inline | Delegate to subagent |
-| Re-query skipped after completion | Always `ur ticket dispatchable <epic>` again — deps may have unblocked |
+| Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
 
 $ARGUMENTS
