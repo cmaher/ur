@@ -145,6 +145,21 @@ impl HostExecConfigManager {
         names.sort();
         names
     }
+
+    pub fn command_entries(&self) -> Vec<ur_rpc::proto::hostexec::HostExecCommandEntry> {
+        let mut entries: Vec<_> = self
+            .commands
+            .iter()
+            .map(
+                |(name, cfg)| ur_rpc::proto::hostexec::HostExecCommandEntry {
+                    name: name.clone(),
+                    bidi: cfg.bidi,
+                },
+            )
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
 }
 
 #[cfg(test)]

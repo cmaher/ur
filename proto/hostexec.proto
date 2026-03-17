@@ -24,6 +24,12 @@ message HostExecRequest {
 
 message ListHostExecCommandsRequest {}
 
+message HostExecCommandEntry {
+  string name = 1;
+  bool bidi = 2;
+}
+
 message ListHostExecCommandsResponse {
   repeated string commands = 1;
+  repeated HostExecCommandEntry entries = 2;
 }

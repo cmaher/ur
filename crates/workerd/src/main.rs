@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use tonic::transport::Endpoint;
 use tracing::{debug, info, warn};
 
+use ur_rpc::proto::hostexec::HostExecCommandEntry;
 use ur_rpc::proto::hostexec::ListHostExecCommandsRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 
@@ -69,13 +70,14 @@ async fn run_init() -> Result<()> {
         .await
         .with_context(|| format!("creating shim dir {}", shim_dir.display()))?;
 
-    let commands = fetch_commands_with_retry().await?;
+    let entries = fetch_commands_with_retry().await?;
 
-    for command in &commands {
-        create_shim(&shim_dir, command).await?;
+    for entry in &entries {
+        create_shim(&shim_dir, entry).await?;
     }
 
-    info!(count = commands.len(), ?commands, "init complete");
+    let command_names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    info!(count = entries.len(), ?command_names, "init complete");
     Ok(())
 }
 
@@ -111,7 +113,7 @@ fn resolve_shim_dir() -> PathBuf {
     PathBuf::from(home).join(SHIM_DIR)
 }
 
-async fn fetch_commands_with_retry() -> Result<Vec<String>> {
+async fn fetch_commands_with_retry() -> Result<Vec<HostExecCommandEntry>> {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).context("UR_SERVER_ADDR must be set")?;
     let addr = format!("http://{server_addr}");
@@ -151,7 +153,7 @@ async fn fetch_commands_with_retry() -> Result<Vec<String>> {
     unreachable!()
 }
 
-async fn try_fetch_commands(addr: &str) -> Result<Vec<String>> {
+async fn try_fetch_commands(addr: &str) -> Result<Vec<HostExecCommandEntry>> {
     let channel = Endpoint::try_from(addr.to_string())?.connect().await?;
     let mut client = HostExecServiceClient::new(channel);
 
@@ -175,14 +177,16 @@ async fn try_fetch_commands(addr: &str) -> Result<Vec<String>> {
     }
 
     let resp = client.list_commands(request).await?;
-    Ok(resp.into_inner().commands)
+    Ok(resp.into_inner().entries)
 }
 
-async fn create_shim(shim_dir: &Path, command: &str) -> Result<()> {
+async fn create_shim(shim_dir: &Path, entry: &HostExecCommandEntry) -> Result<()> {
+    let command = &entry.name;
     let shim_path = shim_dir.join(command);
-    let content = format!("#!/bin/sh\nexec workertools host-exec {command} \"$@\"\n");
+    let bidi_flag = if entry.bidi { " --bidi" } else { "" };
+    let content = format!("#!/bin/sh\nexec workertools host-exec{bidi_flag} {command} \"$@\"\n");
 
-    debug!(command, path = %shim_path.display(), "writing shim");
+    debug!(command, bidi = entry.bidi, path = %shim_path.display(), "writing shim");
 
     tokio::fs::write(&shim_path, &content)
         .await

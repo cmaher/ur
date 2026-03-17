@@ -303,12 +303,16 @@ impl HostExecService for HostExecServiceHandler {
         let (process_id, _worker_context, config) = self.resolve_request_context(&req).await?;
 
         let commands = config.command_names();
+        let entries = config.command_entries();
         info!(
             process_id,
             command_count = commands.len(),
             "list_commands request"
         );
-        Ok(Response::new(ListHostExecCommandsResponse { commands }))
+        Ok(Response::new(ListHostExecCommandsResponse {
+            commands,
+            entries,
+        }))
     }
 }
 
