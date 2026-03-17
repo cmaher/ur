@@ -10,7 +10,7 @@ Parse `$ARGUMENTS` for an optional sleep interval in seconds (default: 60).
 
 Run `gh pr view --json number,url,headRefName` to get the PR for the current branch.
 
-- If no PR exists, invoke `/ship` to create one, then re-run `gh pr view`.
+- If no PR exists, invoke `/push` to create one, then re-run `gh pr view`.
 
 ### 2. Check CI status
 

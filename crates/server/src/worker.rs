@@ -911,7 +911,7 @@ mod tests {
     fn prompt_modes_default_has_code_and_design() {
         let cfg = PromptModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"ship".to_string()));
+        assert!(code.contains(&"push".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
         assert!(design.contains(&"design".to_string()));
     }
@@ -958,7 +958,7 @@ skills = ["a", "b"]
         let toml = "daemon_port = 5000\n";
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"ship".to_string()));
+        assert!(code.contains(&"push".to_string()));
     }
 
     #[test]
