@@ -90,10 +90,10 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
-        network_config,
+        network_config.clone(),
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
-        worker_repo,
+        worker_repo.clone(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
@@ -106,6 +106,8 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: std::collections::HashMap::new(),
+        worker_repo,
+        network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     }

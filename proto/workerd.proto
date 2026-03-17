@@ -1,0 +1,20 @@
+syntax = "proto3";
+package ur.workerd;
+
+service WorkerDaemonService {
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc NotifyIdle(NotifyIdleRequest) returns (NotifyIdleResponse);
+}
+
+message SendMessageRequest {
+  string message = 1;
+}
+
+message SendMessageResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message NotifyIdleRequest {}
+
+message NotifyIdleResponse {}

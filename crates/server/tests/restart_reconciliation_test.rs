@@ -81,7 +81,7 @@ async fn make_components_with_db(
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
-        network_config,
+        network_config.clone(),
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
@@ -97,6 +97,8 @@ async fn make_components_with_db(
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),
+        worker_repo: worker_repo.clone(),
+        network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
@@ -184,7 +186,8 @@ async fn restart_reclaims_worker_with_live_container() {
         container_id: "live-container-abc".to_owned(),
         worker_secret: secret.to_owned(),
         strategy: "code".to_owned(),
-        status: "running".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: Some(slot_path.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
@@ -201,7 +204,7 @@ async fn restart_reclaims_worker_with_live_container() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(pre.status, "running");
+    assert_eq!(pre.container_status, "running");
 
     // --- Phase 2: "Server restart" — rebuild components with the same DB ---
     let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
@@ -221,7 +224,7 @@ async fn restart_reclaims_worker_with_live_container() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(post.status, "running");
+    assert_eq!(post.container_status, "running");
 
     // Verify worker_slot link stays (slot is still in use by the reclaimed worker).
     let ws_post = worker_repo2.get_worker_slot(worker_id_str).await.unwrap();
@@ -240,7 +243,7 @@ async fn restart_reclaims_worker_with_live_container() {
 
     // --- Phase 4: Stop worker, verify slot released ---
     worker_repo2
-        .update_worker_status(worker_id_str, "stopped")
+        .update_worker_container_status(worker_id_str, "stopped")
         .await
         .unwrap();
     worker_repo2
@@ -253,7 +256,7 @@ async fn restart_reclaims_worker_with_live_container() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stopped.status, "stopped");
+    assert_eq!(stopped.container_status, "stopped");
 
     // Verify the worker_slot link is gone (slot is now available).
     let ws_released = worker_repo2.get_worker_slot(worker_id_str).await.unwrap();
@@ -299,7 +302,8 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         container_id: "dead-container-xyz".to_owned(),
         worker_secret: "secret-deleted".to_owned(),
         strategy: "code".to_owned(),
-        status: "running".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: Some(slot_dir.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
@@ -410,7 +414,8 @@ async fn restart_mixed_live_and_dead_workers() {
         container_id: "container-alive".to_owned(),
         worker_secret: live_secret.to_owned(),
         strategy: "code".to_owned(),
-        status: "running".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
@@ -431,7 +436,8 @@ async fn restart_mixed_live_and_dead_workers() {
         container_id: "container-dead".to_owned(),
         worker_secret: dead_secret.to_owned(),
         strategy: "code".to_owned(),
-        status: "running".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
@@ -459,7 +465,7 @@ async fn restart_mixed_live_and_dead_workers() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(live.status, "running");
+    assert_eq!(live.container_status, "running");
     let ws1 = worker_repo2.get_worker_slot(live_worker_id).await.unwrap();
     assert!(ws1.is_some(), "live worker should keep worker_slot link");
 
@@ -469,7 +475,7 @@ async fn restart_mixed_live_and_dead_workers() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(dead.status, "stopped");
+    assert_eq!(dead.container_status, "stopped");
     let ws2 = worker_repo2.get_worker_slot(dead_worker_id).await.unwrap();
     assert!(
         ws2.is_none(),

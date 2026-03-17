@@ -1,0 +1,9 @@
+[package]
+name = "tmux"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+tokio = { workspace = true }
+tracing = { workspace = true }

@@ -162,6 +162,9 @@ pub const SQUID_PORT: u16 = 3128;
 /// Port for workerd healthz HTTP endpoint inside worker containers.
 pub const WORKERD_HEALTHZ_PORT: u16 = 9119;
 
+/// Port for workerd gRPC server inside worker containers.
+pub const WORKERD_GRPC_PORT: u16 = 9120;
+
 /// Default Docker network name for infrastructure (server + squid, internet-connected).
 pub const DEFAULT_NETWORK_NAME: &str = "ur";
 

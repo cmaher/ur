@@ -1,11 +1,22 @@
 # workerd
 
-Worker daemon running inside containers. Handles all container initialization
-and creates bash shims for host-executed commands.
+Worker daemon running inside containers. The container entrypoint calls `exec workerd`,
+making workerd PID 1 — the container lifecycle is tied to workerd.
 
-Two modes:
-- `workerd init` — synchronous initialization: skills, git hooks, hostexec shims. Run by entrypoint before anything else.
-- `workerd` (no args) — background daemon serving `/healthz` on port 9119. Starts after init, so healthy = ready. Used as Docker HEALTHCHECK.
+Three modes:
+- `workerd` (no args) — runs init, then daemon. Used by the base container entrypoint.
+- `workerd init` — synchronous initialization only (skills, git hooks, hostexec shims). Used by image-specific entrypoints that need to launch background processes between init and daemon.
+- `workerd daemon` — daemon without init (expects `workerd init` to have been called already). Used by image-specific entrypoints after init + background processes.
+
+Startup sequence (daemon mode):
+1. Creates tmux session `agent` (220x55), sets status line with worker ID
+2. Launches Claude Code via `tmux send-keys`
+3. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK)
+4. Starts gRPC server on port 9120 (long-lived, keeps the process alive)
+
+Image-specific background processes (e.g., bacon, cargo sweep for rust variant) are launched
+by the image's entrypoint.sh between `workerd init` and `exec workerd daemon` — NOT by workerd
+itself. This keeps workerd image-agnostic.
 
 Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var

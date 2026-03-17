@@ -31,6 +31,37 @@ pub struct WorkerRepo {
     pool: SqlitePool,
 }
 
+/// Column tuple type returned by worker SELECT queries.
+type WorkerRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+);
+
+fn worker_from_row(row: WorkerRow) -> Worker {
+    Worker {
+        worker_id: row.0,
+        process_id: row.1,
+        project_key: row.2,
+        container_id: row.3,
+        worker_secret: row.4,
+        strategy: row.5,
+        container_status: row.6,
+        agent_status: row.7,
+        workspace_path: row.8,
+        created_at: row.9,
+        updated_at: row.10,
+    }
+}
+
 impl WorkerRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -40,8 +71,8 @@ impl WorkerRepo {
 
     pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&worker.worker_id)
         .bind(&worker.process_id)
@@ -49,7 +80,8 @@ impl WorkerRepo {
         .bind(&worker.container_id)
         .bind(&worker.worker_secret)
         .bind(&worker.strategy)
-        .bind(&worker.status)
+        .bind(&worker.container_status)
+        .bind(&worker.agent_status)
         .bind(&worker.workspace_path)
         .bind(&worker.created_at)
         .bind(&worker.updated_at)
@@ -60,66 +92,26 @@ impl WorkerRepo {
     }
 
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+        let row = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
              FROM worker WHERE worker_id = ?",
         )
         .bind(worker_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(
-                worker_id,
-                process_id,
-                project_key,
-                container_id,
-                worker_secret,
-                strategy,
-                status,
-                workspace_path,
-                created_at,
-                updated_at,
-            )| {
-                Worker {
-                    worker_id,
-                    process_id,
-                    project_key,
-                    container_id,
-                    worker_secret,
-                    strategy,
-                    status,
-                    workspace_path,
-                    created_at,
-                    updated_at,
-                }
-            },
-        ))
+        Ok(row.map(worker_from_row))
     }
 
-    pub async fn update_worker_status(
+    pub async fn update_worker_container_status(
         &self,
         worker_id: &str,
-        status: &str,
+        container_status: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 
-        sqlx::query("UPDATE worker SET status = ?, updated_at = ? WHERE worker_id = ?")
-            .bind(status)
+        sqlx::query("UPDATE worker SET container_status = ?, updated_at = ? WHERE worker_id = ?")
+            .bind(container_status)
             .bind(&now)
             .bind(worker_id)
             .execute(&self.pool)
@@ -128,59 +120,36 @@ impl WorkerRepo {
         Ok(())
     }
 
-    pub async fn list_workers_by_status(&self, status: &str) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM worker WHERE status = ? ORDER BY created_at ASC",
+    pub async fn update_worker_agent_status(
+        &self,
+        worker_id: &str,
+        agent_status: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query("UPDATE worker SET agent_status = ?, updated_at = ? WHERE worker_id = ?")
+            .bind(agent_status)
+            .bind(&now)
+            .bind(worker_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn list_workers_by_container_status(
+        &self,
+        container_status: &str,
+    ) -> Result<Vec<Worker>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+             FROM worker WHERE container_status = ? ORDER BY created_at ASC",
         )
-        .bind(status)
+        .bind(container_status)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    worker_id,
-                    process_id,
-                    project_key,
-                    container_id,
-                    worker_secret,
-                    strategy,
-                    status,
-                    workspace_path,
-                    created_at,
-                    updated_at,
-                )| {
-                    Worker {
-                        worker_id,
-                        process_id,
-                        project_key,
-                        container_id,
-                        worker_secret,
-                        strategy,
-                        status,
-                        workspace_path,
-                        created_at,
-                        updated_at,
-                    }
-                },
-            )
-            .collect())
+        Ok(rows.into_iter().map(worker_from_row).collect())
     }
 
     pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
@@ -200,22 +169,8 @@ impl WorkerRepo {
         project_key: &str,
         workspace_path: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
+        let row = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
              FROM worker WHERE project_key = ? AND workspace_path = ?",
         )
         .bind(project_key)
@@ -223,33 +178,7 @@ impl WorkerRepo {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(
-                worker_id,
-                process_id,
-                project_key,
-                container_id,
-                worker_secret,
-                strategy,
-                status,
-                workspace_path,
-                created_at,
-                updated_at,
-            )| {
-                Worker {
-                    worker_id,
-                    process_id,
-                    project_key,
-                    container_id,
-                    worker_secret,
-                    strategy,
-                    status,
-                    workspace_path,
-                    created_at,
-                    updated_at,
-                }
-            },
-        ))
+        Ok(row.map(worker_from_row))
     }
 
     // --- Slot methods ---
@@ -352,7 +281,7 @@ impl WorkerRepo {
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
                  INNER JOIN worker w ON w.worker_id = ws.worker_id
-                 WHERE w.status IN ('provisioning', 'running', 'stopping')
+                 WHERE w.container_status IN ('provisioning', 'running', 'stopping')
                )
              ORDER BY s.created_at ASC
              LIMIT 1",
@@ -380,7 +309,7 @@ impl WorkerRepo {
              INNER JOIN worker_slot ws ON ws.slot_id = s.id
              INNER JOIN worker w ON w.worker_id = ws.worker_id
              WHERE s.project_key = ?
-               AND w.status IN ('provisioning', 'running', 'stopping')",
+               AND w.container_status IN ('provisioning', 'running', 'stopping')",
         )
         .bind(project_key)
         .fetch_one(&self.pool)
@@ -472,60 +401,17 @@ impl WorkerRepo {
             .collect())
     }
 
-    /// List workers whose status is one of the active lifecycle states
+    /// List workers whose container_status is one of the active lifecycle states
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, status, workspace_path, created_at, updated_at
-             FROM worker WHERE status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
+        let rows = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+             FROM worker WHERE container_status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    worker_id,
-                    process_id,
-                    project_key,
-                    container_id,
-                    worker_secret,
-                    strategy,
-                    status,
-                    workspace_path,
-                    created_at,
-                    updated_at,
-                )| {
-                    Worker {
-                        worker_id,
-                        process_id,
-                        project_key,
-                        container_id,
-                        worker_secret,
-                        strategy,
-                        status,
-                        workspace_path,
-                        created_at,
-                        updated_at,
-                    }
-                },
-            )
-            .collect())
+        Ok(rows.into_iter().map(worker_from_row).collect())
     }
 
     /// Delete all workers that are linked to a given slot_id via worker_slot.
@@ -660,8 +546,8 @@ impl WorkerRepo {
     /// and returns whether the container is still running.
     ///
     /// For each worker in an active state (provisioning, running, stopping):
-    /// - Container alive: update status to "running" (reclaim).
-    /// - Container dead: update status to "stopped" and unlink its slot.
+    /// - Container alive: update container_status to "running" (reclaim).
+    /// - Container dead: update container_status to "stopped" and unlink its slot.
     pub async fn reconcile_workers<F, Fut>(
         &self,
         is_container_alive: F,
@@ -694,11 +580,11 @@ impl WorkerRepo {
         result: &mut WorkerReconcileResult,
     ) -> Result<(), sqlx::Error> {
         if alive {
-            self.update_worker_status(&worker.worker_id, "running")
+            self.update_worker_container_status(&worker.worker_id, "running")
                 .await?;
             result.reclaimed.push(worker.worker_id);
         } else {
-            self.update_worker_status(&worker.worker_id, "stopped")
+            self.update_worker_container_status(&worker.worker_id, "stopped")
                 .await?;
             self.unlink_worker_slot(&worker.worker_id).await?;
             result.marked_stopped.push(worker.worker_id);

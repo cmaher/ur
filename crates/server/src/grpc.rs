@@ -7,10 +7,13 @@ use tracing::info;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
-    WorkerLaunchResponse, WorkerListRequest, WorkerListResponse, WorkerStopRequest,
-    WorkerStopResponse, WorkerSummary,
+    PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
+    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
+    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
+    WorkerStopRequest, WorkerStopResponse, WorkerSummary,
 };
+
+use ur_db::WorkerRepo;
 
 use crate::{RepoPoolManager, WorkerManager};
 
@@ -33,6 +36,12 @@ pub enum CoreError {
 
     #[error("workspace not found for process: {process_id}")]
     WorkspaceNotFound { process_id: String },
+
+    #[error("worker not found: {worker_id}")]
+    WorkerNotFound { worker_id: String },
+
+    #[error("send message failed: {reason}")]
+    SendMessageFailed { reason: String },
 
     #[error("operation not implemented on worker server")]
     Unimplemented,
@@ -76,6 +85,24 @@ impl From<CoreError> for Status {
                 INTERNAL,
                 HashMap::new(),
             ),
+            CoreError::WorkerNotFound { worker_id } => {
+                let mut meta = HashMap::new();
+                meta.insert("worker_id".into(), worker_id.clone());
+                error::status_with_info(
+                    Code::NotFound,
+                    err.to_string(),
+                    DOMAIN_CORE,
+                    NOT_FOUND,
+                    meta,
+                )
+            }
+            CoreError::SendMessageFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
             CoreError::WorkspaceNotFound { process_id } => {
                 let mut meta = HashMap::new();
                 meta.insert("process_id".into(), process_id.clone());
@@ -100,6 +127,8 @@ pub struct CoreServiceHandler {
     pub workspace: PathBuf,
     pub proxy_hostname: String,
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
+    pub worker_repo: WorkerRepo,
+    pub network_config: ur_config::NetworkConfig,
     #[cfg(feature = "hostexec")]
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     #[cfg(feature = "hostexec")]
@@ -289,18 +318,81 @@ impl CoreService for CoreServiceHandler {
                 mode: s.mode,
                 grpc_port: 0,
                 directory: s.directory,
+                container_status: s.container_status,
+                agent_status: s.agent_status,
             })
             .collect();
         Ok(Response::new(WorkerListResponse { workers }))
+    }
+
+    async fn send_worker_message(
+        &self,
+        req: Request<SendWorkerMessageRequest>,
+    ) -> Result<Response<SendWorkerMessageResponse>, Status> {
+        let req = req.into_inner();
+        info!(
+            worker_id = req.worker_id,
+            "send_worker_message request received"
+        );
+
+        // Look up the worker by process_id (the CLI-facing ID).
+        let workers = self
+            .worker_repo
+            .list_workers_by_container_status("running")
+            .await
+            .map_err(|e| CoreError::SendMessageFailed {
+                reason: format!("db error: {e}"),
+            })?;
+        let worker = workers
+            .into_iter()
+            .find(|w| w.process_id == req.worker_id)
+            .ok_or_else(|| CoreError::WorkerNotFound {
+                worker_id: req.worker_id.clone(),
+            })?;
+
+        // Derive the workerd gRPC address from container name + fixed port.
+        // Container name = worker_prefix + process_id (same as at creation time).
+        let container_name = format!("{}{}", self.network_config.worker_prefix, worker.process_id);
+        let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
+
+        // Forward the message to workerd.
+        let workerd_client = crate::WorkerdClient::new(workerd_addr);
+        workerd_client
+            .send_message(&req.message)
+            .await
+            .map_err(|e| CoreError::SendMessageFailed { reason: e })?;
+
+        // On success, update agent_status to 'working' in DB.
+        self.worker_repo
+            .update_worker_agent_status(&worker.worker_id, "working")
+            .await
+            .map_err(|e| CoreError::SendMessageFailed {
+                reason: format!("failed to update agent status: {e}"),
+            })?;
+
+        Ok(Response::new(SendWorkerMessageResponse {
+            success: true,
+            error: String::new(),
+        }))
+    }
+
+    async fn update_agent_status(
+        &self,
+        _req: Request<UpdateAgentStatusRequest>,
+    ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
     }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
 ///
-/// Only implements `Ping` (health check for workers); worker management RPCs
-/// return `Unimplemented` because they are host-only operations.
+/// Implements `Ping` (health check) and `UpdateAgentStatus` (worker status
+/// updates); worker management RPCs return `Unimplemented` because they are
+/// host-only operations.
 #[derive(Clone)]
-pub struct WorkerCoreServiceHandler;
+pub struct WorkerCoreServiceHandler {
+    pub worker_repo: WorkerRepo,
+}
 
 #[tonic::async_trait]
 impl CoreService for WorkerCoreServiceHandler {
@@ -336,5 +428,39 @@ impl CoreService for WorkerCoreServiceHandler {
         _req: Request<WorkerListRequest>,
     ) -> Result<Response<WorkerListResponse>, Status> {
         Err(CoreError::Unimplemented.into())
+    }
+
+    async fn send_worker_message(
+        &self,
+        _req: Request<SendWorkerMessageRequest>,
+    ) -> Result<Response<SendWorkerMessageResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn update_agent_status(
+        &self,
+        req: Request<UpdateAgentStatusRequest>,
+    ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
+        let metadata = req.metadata();
+        let worker_id = metadata
+            .get(ur_config::WORKER_ID_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
+            .to_str()
+            .map_err(|_| Status::invalid_argument("invalid ur-worker-id header encoding"))?
+            .to_owned();
+
+        let inner = req.into_inner();
+        info!(
+            worker_id = worker_id,
+            status = inner.status,
+            "update_agent_status request received"
+        );
+
+        self.worker_repo
+            .update_worker_agent_status(&worker_id, &inner.status)
+            .await
+            .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
+
+        Ok(Response::new(UpdateAgentStatusResponse {}))
     }
 }

@@ -258,6 +258,8 @@ enum WorkerCommands {
     SaveCredentials { worker_id: String },
     /// Show process status
     Status { worker_id: Option<String> },
+    /// Send a message to a running worker's agent
+    Send { worker_id: String, message: String },
     /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
@@ -541,19 +543,12 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
 fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("{worker_prefix}{worker_id}"));
-    info!(container = %id.0, "attaching to process");
-    // Create an independent tmux session instead of attaching to the worker.
-    // `tmux attach -t worker` kills the session if the user exits the shell,
-    // preventing reconnection. A separate session survives worker-session death
-    // and vice versa. `-A` reattaches if the session already exists.
-    let command: Vec<String> = vec![
-        "tmux".into(),
-        "-u".into(),
-        "new-session".into(),
-        "-A".into(),
-        "-s".into(),
-        "attach".into(),
-    ];
+    info!(container = %id.0, "attaching to agent session");
+    // Attach to the `agent` tmux session managed by workerd. This lets the user
+    // see the live Claude Code session. Multiple clients can attach simultaneously
+    // and send-keys works regardless of attached clients.
+    let session = tmux::Session::from_name("agent");
+    let command = session.attach_command();
     let status = runtime.exec_interactive(&id, &command)?;
     Ok(status.code().unwrap_or(1))
 }
@@ -572,8 +567,8 @@ async fn process_list(
     }
     output.print_items(&workers, |workers| {
         let mut out = format!(
-            "{:<20} {:<12} {:<16} {:<8} {}\n",
-            "WORKER", "PROJECT", "CONTAINER", "MODE", "DIRECTORY"
+            "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
+            "WORKER", "PROJECT", "CONTAINER", "MODE", "STATUS", "AGENT", "DIRECTORY"
         );
         for w in workers {
             let container_short = if w.container_id.len() > 12 {
@@ -591,9 +586,83 @@ async fn process_list(
             } else {
                 &w.directory
             };
+            let container_status = if w.container_status.is_empty() {
+                "-"
+            } else {
+                &w.container_status
+            };
+            let agent_status = if w.agent_status.is_empty() {
+                "-"
+            } else {
+                &w.agent_status
+            };
             out.push_str(&format!(
-                "{:<20} {:<12} {:<16} {:<8} {}\n",
-                w.worker_id, project, container_short, w.mode, directory
+                "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
+                w.worker_id,
+                project,
+                container_short,
+                w.mode,
+                container_status,
+                agent_status,
+                directory
+            ));
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    });
+    Ok(())
+}
+
+#[instrument(skip(client, output))]
+async fn process_status(
+    client: &mut CoreServiceClient<Channel>,
+    worker_id: Option<&str>,
+    output: &OutputManager,
+) -> Result<()> {
+    info!("querying process status");
+    let resp = client.worker_list(WorkerListRequest {}).await?;
+    let workers = resp.into_inner().workers;
+
+    let filtered: Vec<_> = if let Some(id) = worker_id {
+        workers.into_iter().filter(|w| w.worker_id == id).collect()
+    } else {
+        workers
+    };
+
+    if filtered.is_empty() {
+        if let Some(id) = worker_id {
+            bail!("unknown process: {id}");
+        }
+        output.print_text("No running workers.");
+        return Ok(());
+    }
+
+    output.print_items(&filtered, |workers| {
+        let mut out = format!(
+            "{:<20} {:<12} {:<14} {:<8} {}\n",
+            "WORKER", "STATUS", "AGENT", "MODE", "DIRECTORY"
+        );
+        for w in workers {
+            let container_status = if w.container_status.is_empty() {
+                "-"
+            } else {
+                &w.container_status
+            };
+            let agent_status = if w.agent_status.is_empty() {
+                "-"
+            } else {
+                &w.agent_status
+            };
+            let directory = if w.directory.is_empty() {
+                "-"
+            } else {
+                &w.directory
+            };
+            out.push_str(&format!(
+                "{:<20} {:<12} {:<14} {:<8} {}\n",
+                w.worker_id, container_status, agent_status, w.mode, directory
             ));
         }
         if out.ends_with('\n') {
@@ -852,7 +921,26 @@ async fn handle_worker(
         }
         WorkerCommands::Status { worker_id } => {
             debug!(worker_id = ?worker_id, "querying process status");
-            output.print_text(&format!("Status: {worker_id:?}"));
+            let mut client = connect(port).await?;
+            process_status(&mut client, worker_id.as_deref(), output).await
+        }
+        WorkerCommands::Send { worker_id, message } => {
+            input::validate_id(&worker_id, "worker_id")?;
+            let mut client = connect(port).await?;
+            info!(worker_id = %worker_id, "sending message to worker");
+            client
+                .send_worker_message(SendWorkerMessageRequest {
+                    worker_id: worker_id.clone(),
+                    message,
+                })
+                .await?;
+            if output.is_json() {
+                output.print_text(&format!(
+                    "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
+                ));
+            } else {
+                println!("Message sent to {worker_id}.");
+            }
             Ok(())
         }
         WorkerCommands::Stop { worker_id } => {
@@ -907,6 +995,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Kill { .. } => "kill",
         WorkerCommands::List => "list",
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
+        WorkerCommands::Send { .. } => "send",
         WorkerCommands::Launch { .. } => "launch",
         WorkerCommands::Status { .. } => "status",
         WorkerCommands::Stop { .. } => "stop",

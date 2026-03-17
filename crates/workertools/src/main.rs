@@ -11,6 +11,8 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
+use ur_rpc::proto::workerd::NotifyIdleRequest;
+use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 
 #[derive(Parser)]
 #[command(name = "workertools", about = "Ur worker toolkit")]
@@ -37,6 +39,8 @@ enum Commands {
         #[command(subcommand)]
         command: RagCommands,
     },
+    /// Notify workerd that Claude Code is idle (waiting for user input)
+    NotifyIdle,
 }
 
 #[derive(Subcommand)]
@@ -75,6 +79,9 @@ async fn main() {
                 std::process::exit(run_rag_search(&query, &language, top_k).await);
             }
         },
+        Commands::NotifyIdle => {
+            run_notify_idle().await;
+        }
     }
 }
 
@@ -262,4 +269,16 @@ async fn run_rag_search(query: &str, language: &str, top_k: u32) -> i32 {
     }
 
     0
+}
+
+const WORKERD_PORT: u16 = 9120;
+
+async fn run_notify_idle() {
+    let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
+    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
+        Ok(ch) => ch,
+        Err(_) => return,
+    };
+    let mut client = WorkerDaemonServiceClient::new(channel);
+    let _ = client.notify_idle(NotifyIdleRequest {}).await;
 }

@@ -13,4 +13,4 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "rag"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "rag", "workerd"] }

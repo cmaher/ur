@@ -19,6 +19,8 @@ pub mod run_opts_builder;
 pub mod strategy;
 pub mod stream;
 pub mod worker;
+#[cfg(feature = "workerd")]
+pub mod workerd_client;
 
 pub use backup::BackupTaskManager;
 pub use builderd_client::BuilderdClient;
@@ -27,3 +29,5 @@ pub use pool::RepoPoolManager;
 pub use proxy::SquidManager;
 pub use strategy::WorkerStrategy;
 pub use worker::{WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary};
+#[cfg(feature = "workerd")]
+pub use workerd_client::WorkerdClient;

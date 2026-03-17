@@ -21,6 +21,8 @@ service CoreService {
   rpc WorkerStop(WorkerStopRequest) returns (WorkerStopResponse);
   rpc WorkerInfo(WorkerInfoRequest) returns (WorkerInfoResponse);
   rpc WorkerList(WorkerListRequest) returns (WorkerListResponse);
+  rpc SendWorkerMessage(SendWorkerMessageRequest) returns (SendWorkerMessageResponse);
+  rpc UpdateAgentStatus(UpdateAgentStatusRequest) returns (UpdateAgentStatusResponse);
 }
 
 message PingRequest {}
@@ -68,6 +70,23 @@ message WorkerListResponse {
   repeated WorkerSummary workers = 1;
 }
 
+message SendWorkerMessageRequest {
+  string worker_id = 1;
+  string message = 2;
+}
+
+message SendWorkerMessageResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message UpdateAgentStatusRequest {
+  string worker_id = 1;
+  string status = 2;
+}
+
+message UpdateAgentStatusResponse {}
+
 message WorkerSummary {
   string worker_id = 1;
   string worker_id_full = 2;
@@ -76,4 +95,6 @@ message WorkerSummary {
   string mode = 5;
   uint32 grpc_port = 6;
   string directory = 7;
+  string container_status = 8;
+  string agent_status = 9;
 }
