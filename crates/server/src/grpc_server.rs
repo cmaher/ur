@@ -59,14 +59,17 @@ pub async fn serve_worker_grpc(
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
 
+    let worker_core_handler = crate::grpc::WorkerCoreServiceHandler {
+        worker_repo: worker_repo.clone(),
+    };
     let interceptor = crate::auth::worker_auth_interceptor(worker_repo);
 
     // Build the Routes collection, wrapping each service with the auth interceptor.
     let mut routes = tonic::service::Routes::builder();
 
-    // Register CoreService (ping health check) for worker containers.
+    // Register CoreService (ping + agent status updates) for worker containers.
     routes.add_service(CoreServiceServer::with_interceptor(
-        crate::grpc::WorkerCoreServiceHandler,
+        worker_core_handler,
         interceptor.clone(),
     ));
 

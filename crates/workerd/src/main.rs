@@ -136,7 +136,16 @@ async fn run_daemon() -> Result<()> {
 
     // 5. Start gRPC server on port 9120 (this is the long-lived process)
     let addr: SocketAddr = ([0, 0, 0, 0], WORKERD_GRPC_PORT).into();
-    let service = grpc_service::WorkerDaemonServiceImpl;
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).unwrap_or_else(|_| "localhost:50051".into());
+    let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
+    let worker_secret =
+        std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_else(|_| String::new());
+    let service = grpc_service::WorkerDaemonServiceImpl {
+        server_addr,
+        worker_id,
+        worker_secret,
+    };
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 
     tonic::transport::Server::builder()

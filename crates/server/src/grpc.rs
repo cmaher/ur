@@ -8,8 +8,9 @@ use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
-    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
-    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
+    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
+    WorkerStopRequest, WorkerStopResponse, WorkerSummary,
 };
 
 use ur_db::WorkerRepo;
@@ -374,14 +375,24 @@ impl CoreService for CoreServiceHandler {
             error: String::new(),
         }))
     }
+
+    async fn update_agent_status(
+        &self,
+        _req: Request<UpdateAgentStatusRequest>,
+    ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
 ///
-/// Only implements `Ping` (health check for workers); worker management RPCs
-/// return `Unimplemented` because they are host-only operations.
+/// Implements `Ping` (health check) and `UpdateAgentStatus` (worker status
+/// updates); worker management RPCs return `Unimplemented` because they are
+/// host-only operations.
 #[derive(Clone)]
-pub struct WorkerCoreServiceHandler;
+pub struct WorkerCoreServiceHandler {
+    pub worker_repo: WorkerRepo,
+}
 
 #[tonic::async_trait]
 impl CoreService for WorkerCoreServiceHandler {
@@ -424,5 +435,32 @@ impl CoreService for WorkerCoreServiceHandler {
         _req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
         Err(CoreError::Unimplemented.into())
+    }
+
+    async fn update_agent_status(
+        &self,
+        req: Request<UpdateAgentStatusRequest>,
+    ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
+        let metadata = req.metadata();
+        let worker_id = metadata
+            .get(ur_config::WORKER_ID_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
+            .to_str()
+            .map_err(|_| Status::invalid_argument("invalid ur-worker-id header encoding"))?
+            .to_owned();
+
+        let inner = req.into_inner();
+        info!(
+            worker_id = worker_id,
+            status = inner.status,
+            "update_agent_status request received"
+        );
+
+        self.worker_repo
+            .update_worker_agent_status(&worker_id, &inner.status)
+            .await
+            .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
+
+        Ok(Response::new(UpdateAgentStatusResponse {}))
     }
 }
