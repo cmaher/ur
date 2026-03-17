@@ -166,6 +166,22 @@ impl CoreService for CoreServiceHandler {
             "generated worker ID"
         );
 
+        // Checkout a worker-specific branch in pool slots so each worker
+        // has its own branch for commits.
+        if let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some()) {
+            self.repo_pool_manager
+                .checkout_branch(slot_path, &worker_id.to_string())
+                .await
+                .map_err(|e| CoreError::PoolSlotFailed {
+                    reason: e.to_string(),
+                })?;
+            info!(
+                worker_id = %worker_id,
+                branch = %worker_id,
+                "checked out worker branch in pool slot"
+            );
+        }
+
         // Phase 1: prepare (create repo, git init, register)
         // prepare() returns the resolved workspace path — for the default case this
         // is the newly created git-init'd directory that must be mounted into the

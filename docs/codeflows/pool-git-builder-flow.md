@@ -40,6 +40,15 @@ are routed through builderd, which runs on the host with full credential access.
 4. If `.gitmodules` exists, runs `git submodule update --init --recursive` via builderd
 5. Slot marked in-use on success
 
+### Worker Branch Checkout
+
+After acquiring a slot (new clone or reuse) and generating the worker ID, the gRPC
+handler calls `RepoPoolManager::checkout_branch()` to create a worker-specific branch:
+
+1. `git checkout -b <worker_id>` via builderd in the slot directory
+2. Each worker gets its own branch named after its worker ID (e.g., `myproc-a1b2`)
+3. This runs only for pool slots (project-key launches), not workspace mounts
+
 ### Release Slot
 
 1. Process stops -> `RepoPoolManager::release(slot_path)`

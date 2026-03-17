@@ -50,6 +50,7 @@ async fn make_test_components(
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         },
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+        git_branch_prefix: String::new(),
         projects: HashMap::new(),
     };
     let db = ur_db::DatabaseManager::open(":memory:")
