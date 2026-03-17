@@ -256,13 +256,12 @@ impl WorkerRepo {
 
     pub async fn insert_slot(&self, slot: &Slot) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO slot (id, project_key, slot_name, slot_type, host_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO slot (id, project_key, slot_name, host_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&slot.id)
         .bind(&slot.project_key)
         .bind(&slot.slot_name)
-        .bind(&slot.slot_type)
         .bind(&slot.host_path)
         .bind(&slot.created_at)
         .bind(&slot.updated_at)
@@ -273,8 +272,8 @@ impl WorkerRepo {
     }
 
     pub async fn get_slot(&self, id: &str) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, slot_type, host_path, created_at, updated_at
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
              FROM slot WHERE id = ?",
         )
         .bind(id)
@@ -282,11 +281,10 @@ impl WorkerRepo {
         .await?;
 
         Ok(row.map(
-            |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+            |(id, project_key, slot_name, host_path, created_at, updated_at)| Slot {
                 id,
                 project_key,
                 slot_name,
-                slot_type,
                 host_path,
                 created_at,
                 updated_at,
@@ -298,8 +296,8 @@ impl WorkerRepo {
         &self,
         host_path: &str,
     ) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, slot_type, host_path, created_at, updated_at
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
              FROM slot WHERE host_path = ?",
         )
         .bind(host_path)
@@ -307,11 +305,10 @@ impl WorkerRepo {
         .await?;
 
         Ok(row.map(
-            |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+            |(id, project_key, slot_name, host_path, created_at, updated_at)| Slot {
                 id,
                 project_key,
                 slot_name,
-                slot_type,
                 host_path,
                 created_at,
                 updated_at,
@@ -320,8 +317,8 @@ impl WorkerRepo {
     }
 
     pub async fn list_slots_by_project(&self, project_key: &str) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, slot_type, host_path, created_at, updated_at
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
              FROM slot WHERE project_key = ? ORDER BY created_at ASC",
         )
         .bind(project_key)
@@ -331,11 +328,10 @@ impl WorkerRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+                |(id, project_key, slot_name, host_path, created_at, updated_at)| Slot {
                     id,
                     project_key,
                     slot_name,
-                    slot_type,
                     host_path,
                     created_at,
                     updated_at,
@@ -344,15 +340,15 @@ impl WorkerRepo {
             .collect())
     }
 
-    /// Find the first available exclusive slot for a project (not linked to an active worker).
-    pub async fn find_available_exclusive_slot(
+    /// Find the first available slot for a project (not linked to an active worker).
+    pub async fn find_available_slot(
         &self,
         project_key: &str,
     ) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT s.id, s.project_key, s.slot_name, s.slot_type, s.host_path, s.created_at, s.updated_at
+        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at
              FROM slot s
-             WHERE s.project_key = ? AND s.slot_type = 'exclusive'
+             WHERE s.project_key = ?
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
                  INNER JOIN worker w ON w.worker_id = ws.worker_id
@@ -366,11 +362,10 @@ impl WorkerRepo {
         .await?;
 
         Ok(row.map(
-            |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+            |(id, project_key, slot_name, host_path, created_at, updated_at)| Slot {
                 id,
                 project_key,
                 slot_name,
-                slot_type,
                 host_path,
                 created_at,
                 updated_at,
@@ -378,13 +373,13 @@ impl WorkerRepo {
         ))
     }
 
-    /// Count exclusive slots that have a running worker linked via worker_slot.
-    pub async fn exclusive_slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
+    /// Count slots that have an active worker linked via worker_slot.
+    pub async fn slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
             "SELECT COUNT(*) FROM slot s
              INNER JOIN worker_slot ws ON ws.slot_id = s.id
              INNER JOIN worker w ON w.worker_id = ws.worker_id
-             WHERE s.project_key = ? AND s.slot_type = 'exclusive'
+             WHERE s.project_key = ?
                AND w.status IN ('provisioning', 'running', 'stopping')",
         )
         .bind(project_key)
@@ -455,8 +450,8 @@ impl WorkerRepo {
 
     /// List all slots across all projects.
     pub async fn list_all_slots(&self) -> Result<Vec<Slot>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, project_key, slot_name, slot_type, host_path, created_at, updated_at
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+            "SELECT id, project_key, slot_name, host_path, created_at, updated_at
              FROM slot ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -465,11 +460,10 @@ impl WorkerRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(id, project_key, slot_name, slot_type, host_path, created_at, updated_at)| Slot {
+                |(id, project_key, slot_name, host_path, created_at, updated_at)| Slot {
                     id,
                     project_key,
                     slot_name,
-                    slot_type,
                     host_path,
                     created_at,
                     updated_at,
@@ -644,17 +638,11 @@ impl WorkerRepo {
                 continue;
             }
             let now = Utc::now().to_rfc3339();
-            let slot_type = if slot_name.parse::<u32>().is_ok() {
-                "exclusive"
-            } else {
-                "shared"
-            };
             let host_path = project_pool_dir.join(slot_name);
             let slot = Slot {
                 id: Uuid::new_v4().to_string(),
                 project_key: project_key.to_owned(),
                 slot_name: slot_name.clone(),
-                slot_type: slot_type.to_owned(),
                 host_path: host_path.display().to_string(),
                 created_at: now.clone(),
                 updated_at: now,

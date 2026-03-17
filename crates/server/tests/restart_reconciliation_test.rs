@@ -168,7 +168,7 @@ async fn restart_reclaims_worker_with_live_container() {
         id: "slot-restart-1".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: slot_path.display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -284,7 +284,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         id: "slot-deleted-1".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: slot_dir.display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -382,7 +382,7 @@ async fn restart_mixed_live_and_dead_workers() {
         id: "slot-mix-1".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_name: "0".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: "/tmp/mix/0".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -391,7 +391,7 @@ async fn restart_mixed_live_and_dead_workers() {
         id: "slot-mix-2".to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_name: "1".to_owned(),
-        slot_type: "exclusive".to_owned(),
+
         host_path: "/tmp/mix/1".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),

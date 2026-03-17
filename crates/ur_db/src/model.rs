@@ -83,7 +83,6 @@ pub struct Slot {
     pub id: String,
     pub project_key: String,
     pub slot_name: String,
-    pub slot_type: String,
     pub host_path: String,
     pub created_at: String,
     pub updated_at: String,
