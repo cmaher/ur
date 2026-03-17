@@ -411,9 +411,14 @@ mod tests {
     fn test_add_link() {
         let cmd = parse(&["ticket", "add-link", "ur-abc12", "ur-def34"]);
         match cmd.command {
-            super::TicketArgs::AddLink { id, linked_id } => {
+            super::TicketArgs::AddLink {
+                id,
+                linked_id,
+                edge,
+            } => {
                 assert_eq!(id, "ur-abc12");
                 assert_eq!(linked_id, "ur-def34");
+                assert_eq!(edge, "relates_to");
             }
             other => panic!("expected AddLink, got {other:?}"),
         }

@@ -209,11 +209,16 @@ where
             Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
         }
 
-        TicketArgs::AddLink { id, linked_id } => {
+        TicketArgs::AddLink {
+            id,
+            linked_id,
+            edge,
+        } => {
             client
                 .add_link(AddLinkRequest {
                     left_id: id.clone(),
                     right_id: linked_id.clone(),
+                    edge_kind: Some(edge),
                 })
                 .await
                 .with_status_context("link tickets")?;

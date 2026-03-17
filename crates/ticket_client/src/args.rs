@@ -182,6 +182,10 @@ pub enum TicketArgs {
 
         /// Second ticket ID
         linked_id: String,
+
+        /// Edge kind: relates_to (default), follow_up
+        #[arg(long, default_value = "relates_to")]
+        edge: String,
     },
 
     /// Remove a bidirectional link between tickets

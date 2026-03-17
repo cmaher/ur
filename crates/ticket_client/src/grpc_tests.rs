@@ -255,11 +255,11 @@ impl TicketService for MockTicketStore {
         req: Request<AddLinkRequest>,
     ) -> Result<Response<AddLinkResponse>, Status> {
         let req = req.into_inner();
-        self.inner
-            .lock()
-            .unwrap()
-            .edges
-            .push((req.left_id, req.right_id, "relates_to".into()));
+        self.inner.lock().unwrap().edges.push((
+            req.left_id,
+            req.right_id,
+            req.edge_kind.unwrap_or_else(|| "relates_to".into()),
+        ));
         Ok(Response::new(AddLinkResponse {}))
     }
 
@@ -766,6 +766,7 @@ async fn execute_add_and_remove_link() {
         TicketArgs::AddLink {
             id: id_a.clone(),
             linked_id: id_b.clone(),
+            edge: "relates_to".into(),
         },
         &mut client,
     )
