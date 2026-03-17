@@ -352,7 +352,8 @@ impl WorkerManager {
             container_id,
             worker_secret,
             strategy: strategy.name().to_owned(),
-            status: "running".to_owned(),
+            container_status: "running".to_owned(),
+            agent_status: "starting".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
@@ -377,12 +378,12 @@ impl WorkerManager {
         // Check for duplicate process ID via database
         let running = self
             .worker_repo
-            .list_workers_by_status("running")
+            .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let provisioning = self
             .worker_repo
-            .list_workers_by_status("provisioning")
+            .list_workers_by_container_status("provisioning")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let has_duplicate = running
@@ -508,7 +509,8 @@ impl WorkerManager {
             container_id: cid.0.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
-            status: "running".to_owned(),
+            container_status: "running".to_owned(),
+            agent_status: "starting".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
@@ -574,7 +576,7 @@ impl WorkerManager {
 
         // 3. Update status to stopped in database
         self.worker_repo
-            .update_worker_status(&worker_id.0, "stopped")
+            .update_worker_container_status(&worker_id.0, "stopped")
             .await
             .map_err(|e| format!("failed to update worker status: {e}"))?;
 
@@ -591,7 +593,7 @@ impl WorkerManager {
     pub async fn list(&self) -> Vec<WorkerSummary> {
         let workers = self
             .worker_repo
-            .list_workers_by_status("running")
+            .list_workers_by_container_status("running")
             .await
             .unwrap_or_default();
         let mut result: Vec<WorkerSummary> = workers
@@ -613,7 +615,7 @@ impl WorkerManager {
     pub async fn get_workspace_dir(&self, process_id: &str) -> Result<Option<PathBuf>, String> {
         let workers = self
             .worker_repo
-            .list_workers_by_status("running")
+            .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let worker = workers
@@ -628,7 +630,7 @@ impl WorkerManager {
     pub async fn stop(&self, process_id: &str) -> Result<(), String> {
         let workers = self
             .worker_repo
-            .list_workers_by_status("running")
+            .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
         let worker = workers

@@ -30,7 +30,8 @@ fn test_worker(worker_id: &str, project_key: &str) -> Worker {
         container_id: format!("container-{worker_id}"),
         worker_secret: format!("secret-{worker_id}"),
         strategy: "default".to_owned(),
-        status: "provisioning".to_owned(),
+        container_status: "provisioning".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: Some(format!("/workspace/{worker_id}")),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -94,14 +95,14 @@ async fn slots_in_use_count() {
 
     // Link a running worker to s1.
     let mut w1 = test_worker("w1", "proj-a");
-    w1.status = "running".to_owned();
+    w1.container_status = "running".to_owned();
     r.insert_worker(&w1).await.unwrap();
     r.link_worker_slot("w1", "s1").await.unwrap();
     assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 1);
 
     // Link a running worker to s2.
     let mut w2 = test_worker("w2", "proj-a");
-    w2.status = "running".to_owned();
+    w2.container_status = "running".to_owned();
     r.insert_worker(&w2).await.unwrap();
     r.link_worker_slot("w2", "s2").await.unwrap();
     assert_eq!(r.slots_in_use("proj-a").await.unwrap(), 2);
@@ -140,7 +141,7 @@ async fn insert_and_get_worker() {
     assert_eq!(fetched.project_key, "proj-a");
     assert_eq!(fetched.container_id, "container-a1");
     assert_eq!(fetched.strategy, "default");
-    assert_eq!(fetched.status, "provisioning");
+    assert_eq!(fetched.container_status, "provisioning");
     assert_eq!(fetched.workspace_path.as_deref(), Some("/workspace/a1"));
 
     // Verify link exists.
@@ -162,22 +163,24 @@ async fn get_nonexistent_worker_returns_none() {
 }
 
 #[tokio::test]
-async fn update_worker_status() {
+async fn update_worker_container_status() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
     let worker = test_worker("a1", "proj-a");
     r.insert_worker(&worker).await.unwrap();
-    r.update_worker_status("a1", "running").await.unwrap();
+    r.update_worker_container_status("a1", "running")
+        .await
+        .unwrap();
 
     let fetched = r.get_worker("a1").await.unwrap().unwrap();
-    assert_eq!(fetched.status, "running");
+    assert_eq!(fetched.container_status, "running");
 
     db.cleanup().await;
 }
 
 #[tokio::test]
-async fn list_workers_by_status() {
+async fn list_workers_by_container_status() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
@@ -185,12 +188,17 @@ async fn list_workers_by_status() {
     r.insert_worker(&test_worker("a2", "proj-a")).await.unwrap();
     r.insert_worker(&test_worker("a3", "proj-b")).await.unwrap();
 
-    r.update_worker_status("a2", "running").await.unwrap();
+    r.update_worker_container_status("a2", "running")
+        .await
+        .unwrap();
 
-    let provisioning = r.list_workers_by_status("provisioning").await.unwrap();
+    let provisioning = r
+        .list_workers_by_container_status("provisioning")
+        .await
+        .unwrap();
     assert_eq!(provisioning.len(), 2);
 
-    let running = r.list_workers_by_status("running").await.unwrap();
+    let running = r.list_workers_by_container_status("running").await.unwrap();
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].worker_id, "a2");
 
@@ -242,7 +250,7 @@ async fn verify_worker_stopped_still_verifies() {
     let r = repo(&db);
 
     let mut worker = test_worker("a1", "proj-a");
-    worker.status = "stopped".to_owned();
+    worker.container_status = "stopped".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
     assert!(r.verify_worker("a1", "secret-a1").await.unwrap());
@@ -290,19 +298,19 @@ async fn list_active_workers_filters_by_status() {
 
     // Insert workers in various statuses.
     let mut a1 = test_worker("a1", "proj-a");
-    a1.status = "running".to_owned();
+    a1.container_status = "running".to_owned();
     r.insert_worker(&a1).await.unwrap();
 
     let mut a2 = test_worker("a2", "proj-a");
-    a2.status = "provisioning".to_owned();
+    a2.container_status = "provisioning".to_owned();
     r.insert_worker(&a2).await.unwrap();
 
     let mut a3 = test_worker("a3", "proj-a");
-    a3.status = "stopped".to_owned();
+    a3.container_status = "stopped".to_owned();
     r.insert_worker(&a3).await.unwrap();
 
     let mut a4 = test_worker("a4", "proj-a");
-    a4.status = "stopping".to_owned();
+    a4.container_status = "stopping".to_owned();
     r.insert_worker(&a4).await.unwrap();
 
     let active = r.list_active_workers().await.unwrap();
@@ -355,7 +363,7 @@ async fn slots_in_use_ignores_stopped_workers() {
 
     // Link a stopped worker to s1 — should not count.
     let mut w1 = test_worker("w1", "proj-a");
-    w1.status = "stopped".to_owned();
+    w1.container_status = "stopped".to_owned();
     r.insert_worker(&w1).await.unwrap();
     r.link_worker_slot("w1", "s1").await.unwrap();
 
@@ -418,7 +426,8 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         container_id: "ctr-dead".to_owned(),
         worker_secret: "secret".to_owned(),
         strategy: "default".to_owned(),
-        status: "stopped".to_owned(),
+        container_status: "stopped".to_owned(),
+        agent_status: "starting".to_owned(),
         workspace_path: None,
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -528,7 +537,7 @@ async fn reconcile_workers_reclaims_live_containers() {
     r.insert_slot(&slot).await.unwrap();
 
     let mut worker = test_worker("a1", "proj-a");
-    worker.status = "running".to_owned();
+    worker.container_status = "running".to_owned();
     r.insert_worker(&worker).await.unwrap();
     r.link_worker_slot("a1", "s1").await.unwrap();
 
@@ -542,7 +551,7 @@ async fn reconcile_workers_reclaims_live_containers() {
     assert!(result.marked_stopped.is_empty());
 
     let fetched = r.get_worker("a1").await.unwrap().unwrap();
-    assert_eq!(fetched.status, "running");
+    assert_eq!(fetched.container_status, "running");
 
     db.cleanup().await;
 }
@@ -556,7 +565,7 @@ async fn reconcile_workers_marks_dead_containers_stopped() {
     r.insert_slot(&slot).await.unwrap();
 
     let mut worker = test_worker("a1", "proj-a");
-    worker.status = "running".to_owned();
+    worker.container_status = "running".to_owned();
     r.insert_worker(&worker).await.unwrap();
     r.link_worker_slot("a1", "s1").await.unwrap();
 
@@ -570,7 +579,7 @@ async fn reconcile_workers_marks_dead_containers_stopped() {
     assert_eq!(result.marked_stopped, vec!["a1"]);
 
     let fetched = r.get_worker("a1").await.unwrap().unwrap();
-    assert_eq!(fetched.status, "stopped");
+    assert_eq!(fetched.container_status, "stopped");
 
     // Worker-slot link should be removed.
     let link = r.get_worker_slot("a1").await.unwrap();
@@ -590,13 +599,13 @@ async fn reconcile_workers_mixed_live_and_dead() {
     r.insert_slot(&s2).await.unwrap();
 
     let mut a1 = test_worker("a1", "proj-a");
-    a1.status = "running".to_owned();
+    a1.container_status = "running".to_owned();
     a1.container_id = "live-container".to_owned();
     r.insert_worker(&a1).await.unwrap();
     r.link_worker_slot("a1", "s1").await.unwrap();
 
     let mut a2 = test_worker("a2", "proj-a");
-    a2.status = "provisioning".to_owned();
+    a2.container_status = "provisioning".to_owned();
     a2.container_id = "dead-container".to_owned();
     r.insert_worker(&a2).await.unwrap();
     r.link_worker_slot("a2", "s2").await.unwrap();
@@ -626,7 +635,7 @@ async fn reconcile_workers_skips_already_stopped() {
     let r = repo(&db);
 
     let mut worker = test_worker("a1", "proj-a");
-    worker.status = "stopped".to_owned();
+    worker.container_status = "stopped".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
     // Nothing should happen -- stopped workers are not active.
