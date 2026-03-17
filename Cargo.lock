@@ -4993,6 +4993,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "tempfile",
  "tokio",
  "tonic 0.13.1",
  "tracing",
