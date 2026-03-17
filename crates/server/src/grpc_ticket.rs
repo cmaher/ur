@@ -106,6 +106,8 @@ impl TicketService for TicketServiceHandler {
             title: req.title,
             body: req.body,
             status,
+            lifecycle_status: None,
+            branch: None,
             created_at,
         };
 
@@ -284,10 +286,12 @@ impl TicketService for TicketServiceHandler {
 
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
+            lifecycle_status: None,
             type_: req.ticket_type.filter(|s| !s.is_empty()),
             priority: req.priority.map(|p| p as i32),
             title: req.title.filter(|s| !s.is_empty()),
             body: req.body.filter(|s| !s.is_empty()),
+            branch: None,
             parent_id,
         };
 

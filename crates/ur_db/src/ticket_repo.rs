@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::graph::GraphManager;
 use crate::model::{
-    Activity, DispatchableTicket, Edge, EdgeKind, MetadataMatchTicket, NewTicket, Ticket,
-    TicketFilter, TicketUpdate,
+    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
+    Ticket, TicketFilter, TicketUpdate,
 };
 
 #[derive(Clone)]
@@ -32,19 +32,22 @@ impl TicketRepo {
             .clone()
             .unwrap_or_else(|| Utc::now().to_rfc3339());
         let status = ticket.status.as_deref().unwrap_or("open");
+        let lifecycle_status = ticket.lifecycle_status.unwrap_or_default();
 
         sqlx::query(
-            "INSERT INTO ticket (id, project, type, status, priority, parent_id, title, body, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ticket (id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&ticket.id)
         .bind(&ticket.project)
         .bind(&ticket.type_)
         .bind(status)
+        .bind(lifecycle_status.as_str())
         .bind(ticket.priority)
         .bind(&ticket.parent_id)
         .bind(&ticket.title)
         .bind(&ticket.body)
+        .bind(&ticket.branch)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -55,10 +58,12 @@ impl TicketRepo {
             project: ticket.project.clone(),
             type_: ticket.type_.clone(),
             status: status.to_owned(),
+            lifecycle_status,
             priority: ticket.priority,
             parent_id: ticket.parent_id.clone(),
             title: ticket.title.clone(),
             body: ticket.body.clone(),
+            branch: ticket.branch.clone(),
             created_at: now.clone(),
             updated_at: now,
         })
@@ -72,15 +77,17 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                String,
                 i32,
                 Option<String>,
                 String,
                 String,
+                Option<String>,
                 String,
                 String,
             ),
         >(
-            "SELECT id, project, type, status, priority, parent_id, title, body, created_at, updated_at
+            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at
              FROM ticket WHERE id = ?",
         )
         .bind(id)
@@ -93,10 +100,12 @@ impl TicketRepo {
                 project,
                 type_,
                 status,
+                lifecycle_status_str,
                 priority,
                 parent_id,
                 title,
                 body,
+                branch,
                 created_at,
                 updated_at,
             )| {
@@ -105,10 +114,14 @@ impl TicketRepo {
                     project,
                     type_,
                     status,
+                    lifecycle_status: lifecycle_status_str
+                        .parse::<LifecycleStatus>()
+                        .unwrap_or_default(),
                     priority,
                     parent_id,
                     title,
                     body,
+                    branch,
                     created_at,
                     updated_at,
                 }
@@ -127,6 +140,7 @@ impl TicketRepo {
             .ok_or_else(|| sqlx::Error::RowNotFound)?;
 
         let status = update.status.as_deref().unwrap_or(&existing.status);
+        let lifecycle_status = update.lifecycle_status.unwrap_or(existing.lifecycle_status);
         let type_ = update.type_.as_deref().unwrap_or(&existing.type_);
         let priority = update.priority.unwrap_or(existing.priority);
         let title = update.title.as_deref().unwrap_or(&existing.title);
@@ -135,18 +149,24 @@ impl TicketRepo {
             Some(p) => p.as_deref(),
             None => existing.parent_id.as_deref(),
         };
+        let branch = match &update.branch {
+            Some(b) => b.as_deref(),
+            None => existing.branch.as_deref(),
+        };
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE ticket SET type = ?, status = ?, priority = ?, title = ?, body = ?, parent_id = ?, updated_at = ?
+            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(type_)
         .bind(status)
+        .bind(lifecycle_status.as_str())
         .bind(priority)
         .bind(title)
         .bind(body)
         .bind(parent_id)
+        .bind(branch)
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
@@ -157,10 +177,12 @@ impl TicketRepo {
             project: existing.project,
             type_: type_.to_owned(),
             status: status.to_owned(),
+            lifecycle_status,
             priority,
             parent_id: parent_id.map(|s| s.to_owned()),
             title: title.to_owned(),
             body: body.to_owned(),
+            branch: branch.map(|s| s.to_owned()),
             created_at: existing.created_at,
             updated_at: now,
         })
@@ -168,7 +190,7 @@ impl TicketRepo {
 
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = String::from(
-            "SELECT id, project, type, status, priority, parent_id, title, body, created_at, updated_at FROM ticket WHERE 1=1",
+            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at FROM ticket WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
 
@@ -198,10 +220,12 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                String,
                 i32,
                 Option<String>,
                 String,
                 String,
+                Option<String>,
                 String,
                 String,
             ),
@@ -220,10 +244,12 @@ impl TicketRepo {
                     project,
                     type_,
                     status,
+                    lifecycle_status_str,
                     priority,
                     parent_id,
                     title,
                     body,
+                    branch,
                     created_at,
                     updated_at,
                 )| {
@@ -232,10 +258,14 @@ impl TicketRepo {
                         project,
                         type_,
                         status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
                         priority,
                         parent_id,
                         title,
                         body,
+                        branch,
                         created_at,
                         updated_at,
                     }
@@ -579,12 +609,14 @@ fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {
     match kind {
         EdgeKind::Blocks => "blocks",
         EdgeKind::RelatesTo => "relates_to",
+        EdgeKind::FollowUp => "follow_up",
     }
 }
 
 fn edge_kind_from_str(s: &str) -> EdgeKind {
     match s {
         "blocks" => EdgeKind::Blocks,
+        "follow_up" => EdgeKind::FollowUp,
         _ => EdgeKind::RelatesTo,
     }
 }
