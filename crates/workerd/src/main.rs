@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,7 +10,9 @@ use tracing::{debug, info, warn};
 use ur_rpc::proto::hostexec::HostExecCommandEntry;
 use ur_rpc::proto::hostexec::ListHostExecCommandsRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
+use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
+mod grpc_service;
 mod init_git_hooks;
 mod init_skills;
 mod logging;
@@ -18,6 +21,7 @@ const SHIM_DIR: &str = ".local/bin";
 const MAX_RETRIES: u32 = 30;
 const INITIAL_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 5000;
+const WORKERD_GRPC_PORT: u16 = 9120;
 
 #[derive(Parser)]
 #[command(name = "workerd", about = "Ur worker daemon")]
@@ -81,10 +85,64 @@ async fn run_init() -> Result<()> {
     Ok(())
 }
 
-/// Background daemon serving /healthz. Reaching this point means init succeeded.
+/// Background daemon: creates tmux session, launches Claude Code, serves healthz + gRPC.
 async fn run_daemon() -> Result<()> {
     info!("workerd daemon starting");
 
+    // 1. Create tmux session `agent` (220x55)
+    let status = tokio::process::Command::new("tmux")
+        .args(["new-session", "-d", "-s", "agent", "-x", "220", "-y", "55"])
+        .status()
+        .await
+        .context("failed to spawn tmux")?;
+    if !status.success() {
+        anyhow::bail!("tmux new-session failed with {status}");
+    }
+    info!("tmux session 'agent' created (220x55)");
+
+    // 2. Set tmux status line with worker ID
+    let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
+    let status_left = format!("[{worker_id}] ");
+    let status = tokio::process::Command::new("tmux")
+        .args(["set-option", "-t", "agent", "status-left", &status_left])
+        .status()
+        .await
+        .context("failed to set tmux status")?;
+    if !status.success() {
+        warn!("tmux set-option status-left failed with {status}");
+    }
+    info!(worker_id, "tmux status line set");
+
+    // 3. Launch Claude Code via send-keys
+    let status = tokio::process::Command::new("tmux")
+        .args(["send-keys", "-t", "agent", "claude", "Enter"])
+        .status()
+        .await
+        .context("failed to launch claude via tmux")?;
+    if !status.success() {
+        anyhow::bail!("tmux send-keys claude failed with {status}");
+    }
+    info!("claude launched in tmux session");
+
+    // 4. Spawn healthz HTTP server (port 9119) in background
+    tokio::spawn(serve_healthz());
+
+    // 5. Start gRPC server on port 9120 (this is the long-lived process)
+    let addr: SocketAddr = ([0, 0, 0, 0], WORKERD_GRPC_PORT).into();
+    let service = grpc_service::WorkerDaemonServiceImpl;
+    info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
+
+    tonic::transport::Server::builder()
+        .add_service(WorkerDaemonServiceServer::new(service))
+        .serve(addr)
+        .await
+        .context("gRPC server exited")?;
+
+    Ok(())
+}
+
+/// Serve /healthz on port 9119 for Docker HEALTHCHECK.
+async fn serve_healthz() -> Result<()> {
     let listener =
         tokio::net::TcpListener::bind(("0.0.0.0", ur_config::WORKERD_HEALTHZ_PORT)).await?;
     info!(
