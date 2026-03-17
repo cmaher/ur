@@ -82,7 +82,14 @@ Builderd has two clients in the server, serving different use cases:
 package ur.builder;
 
 service BuilderDaemonService {
-  rpc Exec(BuilderExecRequest) returns (stream ur.core.CommandOutput);
+  rpc Exec(stream BuilderExecMessage) returns (stream ur.core.CommandOutput);
+}
+
+message BuilderExecMessage {
+  oneof payload {
+    BuilderExecRequest start = 1;
+    bytes stdin = 2;
+  }
 }
 
 message BuilderExecRequest {
@@ -90,6 +97,7 @@ message BuilderExecRequest {
   repeated string args = 2;
   string working_dir = 3;    // Accepts %WORKSPACE% templates
   map<string, string> env = 4;
+  bool long_lived = 5;
 }
 ```
 

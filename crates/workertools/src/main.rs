@@ -135,6 +135,7 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
                 let _ = std::io::stderr().flush();
             }
             Payload::ExitCode(code) => exit_code = code,
+            Payload::AlreadyRunning(_) => {}
         }
     }
 

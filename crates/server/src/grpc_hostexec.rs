@@ -10,8 +10,9 @@ use ur_rpc::error::{
     self, BUILDERD_UNAVAILABLE, COMMAND_NOT_ALLOWED, DOMAIN_HOSTEXEC, INTERNAL, INVALID_ARGUMENT,
     NOT_FOUND, TRANSFORM_REJECTED,
 };
-use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
+use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
+use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
@@ -195,15 +196,19 @@ impl HostExecService for HostExecServiceHandler {
             args: transform_result.args,
             working_dir: transform_result.working_dir,
             env: transform_result.env,
+            long_lived: false,
         };
 
-        let response =
-            client
-                .exec(builder_req)
-                .await
-                .map_err(|e| HostExecError::BuilderdExecFailed {
-                    message: e.to_string(),
-                })?;
+        let start_msg = BuilderExecMessage {
+            payload: Some(ExecPayload::Start(builder_req)),
+        };
+
+        let response = client
+            .exec(tokio_stream::once(start_msg))
+            .await
+            .map_err(|e| HostExecError::BuilderdExecFailed {
+                message: e.to_string(),
+            })?;
 
         // Stream builderd response back to worker
         let mut inbound = response.into_inner();

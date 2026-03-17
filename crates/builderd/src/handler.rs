@@ -7,8 +7,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
-use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonService;
+use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
+use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
 
 const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
@@ -31,18 +32,13 @@ impl BuilderDaemonHandler {
         }
         working_dir.to_string()
     }
-}
 
-#[tonic::async_trait]
-impl BuilderDaemonService for BuilderDaemonHandler {
-    type ExecStream = CommandOutputStream;
-
-    async fn exec(
+    /// Spawn a command from a `BuilderExecRequest` and return the output stream.
+    /// Extracted from the gRPC `exec` handler so it can be called directly in tests.
+    fn spawn_command(
         &self,
-        req: Request<BuilderExecRequest>,
-    ) -> Result<Response<Self::ExecStream>, Status> {
-        let req = req.into_inner();
-
+        req: &BuilderExecRequest,
+    ) -> Result<Response<CommandOutputStream>, Status> {
         let resolved_dir = self.resolve_working_dir(&req.working_dir);
         let arg_count = req.args.len();
 
@@ -52,6 +48,7 @@ impl BuilderDaemonService for BuilderDaemonHandler {
             resolved_dir = %resolved_dir,
             arg_count,
             args = ?req.args,
+            long_lived = req.long_lived,
             "host exec request received"
         );
 
@@ -77,7 +74,37 @@ impl BuilderDaemonService for BuilderDaemonHandler {
         ur_rpc::stream::spawn_child_output_stream(child, tx);
 
         let stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(stream) as Self::ExecStream))
+        Ok(Response::new(Box::pin(stream) as CommandOutputStream))
+    }
+}
+
+#[tonic::async_trait]
+impl BuilderDaemonService for BuilderDaemonHandler {
+    type ExecStream = CommandOutputStream;
+
+    async fn exec(
+        &self,
+        req: Request<tonic::Streaming<BuilderExecMessage>>,
+    ) -> Result<Response<Self::ExecStream>, Status> {
+        let mut in_stream = req.into_inner();
+
+        // First message must be a start frame.
+        let first = in_stream
+            .message()
+            .await
+            .map_err(|e| Status::internal(format!("failed to read start frame: {e}")))?
+            .ok_or_else(|| Status::invalid_argument("empty request stream"))?;
+
+        let req = match first.payload {
+            Some(ExecPayload::Start(start)) => start,
+            _ => {
+                return Err(Status::invalid_argument(
+                    "first message must be a start frame",
+                ));
+            }
+        };
+
+        self.spawn_command(&req)
     }
 }
 
@@ -153,14 +180,15 @@ mod tests {
     #[tokio::test]
     async fn test_exec_echo() {
         let handler = handler_with_workspace(None);
-        let req = Request::new(BuilderExecRequest {
+        let req = BuilderExecRequest {
             command: "echo".into(),
             args: vec!["hello".into()],
             working_dir: "/tmp".into(),
             env: std::collections::HashMap::new(),
-        });
+            long_lived: false,
+        };
 
-        let resp = handler.exec(req).await.unwrap();
+        let resp = handler.spawn_command(&req).unwrap();
         let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
 
         assert_eq!(String::from_utf8_lossy(&stdout_data).trim(), "hello");
@@ -170,14 +198,15 @@ mod tests {
     #[tokio::test]
     async fn test_exec_nonexistent_command() {
         let handler = handler_with_workspace(None);
-        let req = Request::new(BuilderExecRequest {
+        let req = BuilderExecRequest {
             command: "nonexistent_command_xyz".into(),
             args: vec![],
             working_dir: "/tmp".into(),
             env: std::collections::HashMap::new(),
-        });
+            long_lived: false,
+        };
 
-        let result = handler.exec(req).await;
+        let result = handler.spawn_command(&req);
         assert!(result.is_err());
     }
 }
