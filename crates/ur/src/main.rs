@@ -541,18 +541,16 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
 fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
     let id = ContainerId(format!("{worker_prefix}{worker_id}"));
-    info!(container = %id.0, "attaching to process");
-    // Create an independent tmux session instead of attaching to the worker.
-    // `tmux attach -t worker` kills the session if the user exits the shell,
-    // preventing reconnection. A separate session survives worker-session death
-    // and vice versa. `-A` reattaches if the session already exists.
+    info!(container = %id.0, "attaching to agent session");
+    // Attach to the `agent` tmux session managed by workerd. This lets the user
+    // see the live Claude Code session. Multiple clients can attach simultaneously
+    // and send-keys works regardless of attached clients.
     let command: Vec<String> = vec![
         "tmux".into(),
         "-u".into(),
-        "new-session".into(),
-        "-A".into(),
-        "-s".into(),
-        "attach".into(),
+        "attach-session".into(),
+        "-t".into(),
+        "agent".into(),
     ];
     let status = runtime.exec_interactive(&id, &command)?;
     Ok(status.code().unwrap_or(1))
