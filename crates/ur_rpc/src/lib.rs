@@ -30,4 +30,9 @@ pub mod proto {
     pub mod ticket {
         tonic::include_proto!("ur.ticket");
     }
+    #[cfg(feature = "workerd")]
+    #[allow(clippy::excessive_nesting)]
+    pub mod workerd {
+        tonic::include_proto!("ur.workerd");
+    }
 }
