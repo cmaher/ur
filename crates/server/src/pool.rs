@@ -350,6 +350,27 @@ impl RepoPoolManager {
         Ok(())
     }
 
+    /// Checkout a new branch in a slot via builderd.
+    ///
+    /// Runs `git checkout -b <branch_name>` in the slot directory on the host.
+    /// Called after acquire to give each worker its own branch.
+    pub async fn checkout_branch(
+        &self,
+        host_slot_path: &Path,
+        branch_name: &str,
+    ) -> Result<(), String> {
+        let cwd = self.to_builderd_path(host_slot_path);
+        self.builderd_client
+            .exec_and_check("git", &["checkout", "-b", branch_name], &cwd)
+            .await
+            .map_err(|e| {
+                format!(
+                    "git checkout -b {branch_name} failed in {}: {e}",
+                    host_slot_path.display()
+                )
+            })
+    }
+
     /// Initialize/update git submodules recursively if the repo has a `.gitmodules` file.
     ///
     /// Uses the local (container-side) path to check for `.gitmodules` existence,
