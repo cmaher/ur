@@ -152,11 +152,11 @@ async fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) -> Result<(), std::io:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     // Serialize tests that modify env vars
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
     fn setup_claude_dir(tmp: &TempDir, name: &str, content: &str) {
         let potential_dir = tmp.path().join(POTENTIAL_CLAUDES_DIR);
@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn init_claude_md_copies_strategy_file() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         setup_claude_dir(&tmp, "code", "# Code Worker\nBe a coder.");
 
@@ -186,7 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn init_claude_md_missing_file_warns_but_succeeds() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
@@ -203,7 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn init_claude_md_unset_env_skips() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
