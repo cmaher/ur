@@ -29,6 +29,7 @@ COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
 COPY all-skills/ /home/worker/.claude/potential-skills/
 RUN mkdir -p /home/worker/.claude/skills
 COPY all-claudes/ /home/worker/.claude/potential-claudes/
+COPY shared-claudes/ /home/worker/.claude/shared-claudes/
 RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /home/worker/.claude
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.

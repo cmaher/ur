@@ -1,8 +1,3 @@
----
-name: tickets
-description: Use when creating, listing, updating, closing, or searching tickets/tasks/bugs/TODOs, managing dependencies between tickets, or when the user mentions tracking work items — uses ur ticket (gRPC)
----
-
 # Ticket Tracker
 
 Tickets are managed via `ur ticket`, which communicates with the ur-server over gRPC. All ticket data lives in the server's SQLite database.
@@ -65,5 +60,3 @@ Tickets are managed via `ur ticket`, which communicates with the ur-server over 
 2. **Add dependencies proactively** — if a ticket clearly depends on another, use `add-block`.
 3. **Use full ticket IDs** — e.g., `ur-abc12`, not `abc12`.
 4. **Ticket IDs are prefixed** — all IDs follow the `{project}-{hash}` convention (e.g., `ur-f49c`).
-
-$ARGUMENTS
