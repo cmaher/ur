@@ -6,6 +6,8 @@ use anyhow::{Context as _, Result};
 #[derive(Debug, Clone)]
 pub struct CommandConfig {
     pub lua_source: Option<String>,
+    pub long_lived: bool,
+    pub bidi: bool,
 }
 
 #[derive(Clone)]
@@ -25,7 +27,14 @@ impl HostExecConfigManager {
 
         for (name, cmd_cfg) in &hostexec_cfg.commands {
             let lua_source = Self::resolve_lua_source(name, cmd_cfg, &hostexec_dir)?;
-            commands.insert(name.clone(), CommandConfig { lua_source });
+            commands.insert(
+                name.clone(),
+                CommandConfig {
+                    lua_source,
+                    long_lived: cmd_cfg.long_lived,
+                    bidi: cmd_cfg.bidi,
+                },
+            );
         }
 
         Ok(Self { commands })
@@ -41,9 +50,11 @@ impl HostExecConfigManager {
         }
         let mut commands = self.commands.clone();
         for name in extra_commands {
-            commands
-                .entry(name.clone())
-                .or_insert(CommandConfig { lua_source: None });
+            commands.entry(name.clone()).or_insert(CommandConfig {
+                lua_source: None,
+                long_lived: false,
+                bidi: false,
+            });
         }
         Self { commands }
     }
@@ -71,30 +82,40 @@ impl HostExecConfigManager {
             "git".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/git.lua").into()),
+                long_lived: false,
+                bidi: false,
             },
         );
         commands.insert(
             "gh".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/gh.lua").into()),
+                long_lived: false,
+                bidi: false,
             },
         );
         commands.insert(
             "cargo".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/cargo.lua").into()),
+                long_lived: false,
+                bidi: false,
             },
         );
         commands.insert(
             "docker".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/docker.lua").into()),
+                long_lived: false,
+                bidi: false,
             },
         );
         commands.insert(
             "ur".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/ur.lua").into()),
+                long_lived: false,
+                bidi: false,
             },
         );
         commands
@@ -160,6 +181,8 @@ mod tests {
             HostExecCommandConfig {
                 lua: None,
                 default_script: false,
+                long_lived: false,
+                bidi: false,
             },
         );
 
@@ -188,6 +211,8 @@ mod tests {
             HostExecCommandConfig {
                 lua: Some("my-git.lua".into()),
                 default_script: false,
+                long_lived: false,
+                bidi: false,
             },
         );
 
@@ -206,6 +231,8 @@ mod tests {
             HostExecCommandConfig {
                 lua: None,
                 default_script: true,
+                long_lived: false,
+                bidi: false,
             },
         );
 
@@ -273,6 +300,8 @@ mod tests {
             HostExecCommandConfig {
                 lua: None,
                 default_script: false,
+                long_lived: false,
+                bidi: false,
             },
         );
 
@@ -284,5 +313,44 @@ mod tests {
         assert!(merged.is_allowed("gh"));
         assert!(merged.is_allowed("jq"));
         assert!(merged.is_allowed("rg"));
+    }
+
+    #[test]
+    fn test_long_lived_and_bidi_threaded_from_config() {
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "daemon".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+                long_lived: true,
+                bidi: true,
+            },
+        );
+
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
+        let daemon_cfg = mgr.get("daemon").unwrap();
+        assert!(daemon_cfg.long_lived);
+        assert!(daemon_cfg.bidi);
+    }
+
+    #[test]
+    fn test_defaults_have_long_lived_and_bidi_false() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+        let git_cfg = mgr.get("git").unwrap();
+        assert!(!git_cfg.long_lived);
+        assert!(!git_cfg.bidi);
+    }
+
+    #[test]
+    fn test_passthrough_commands_have_long_lived_and_bidi_false() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+        let merged = mgr.with_passthrough_commands(&["rg".into()]);
+        let rg_cfg = merged.get("rg").unwrap();
+        assert!(!rg_cfg.long_lived);
+        assert!(!rg_cfg.bidi);
     }
 }

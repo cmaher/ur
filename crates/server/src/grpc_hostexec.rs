@@ -196,7 +196,7 @@ impl HostExecService for HostExecServiceHandler {
             args: transform_result.args,
             working_dir: transform_result.working_dir,
             env: transform_result.env,
-            long_lived: false,
+            long_lived: cmd_config.long_lived,
         };
 
         let start_msg = BuilderExecMessage {
