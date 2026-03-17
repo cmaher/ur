@@ -81,12 +81,12 @@ impl ProcessRegistry {
         new_tx: mpsc::Sender<Result<CommandOutput, Status>>,
     ) -> Option<OutputSink> {
         let map = self.inner.lock().expect("registry lock poisoned");
-        if let Some(entry) = map.get(key) {
-            if entry.alive.load(Ordering::Relaxed) {
-                let mut sink = entry.output_sink.lock().expect("output sink lock poisoned");
-                *sink = Some(new_tx);
-                return Some(entry.output_sink.clone());
-            }
+        if let Some(entry) = map.get(key)
+            && entry.alive.load(Ordering::Relaxed)
+        {
+            let mut sink = entry.output_sink.lock().expect("output sink lock poisoned");
+            *sink = Some(new_tx);
+            return Some(entry.output_sink.clone());
         }
         None
     }

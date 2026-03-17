@@ -562,26 +562,7 @@ impl Config {
         };
 
         let hostexec = match raw.hostexec {
-            Some(h) => {
-                let mut commands = HashMap::new();
-                for (name, raw_cmd) in h.commands {
-                    let long_lived = raw_cmd.long_lived.unwrap_or(false);
-                    let bidi = raw_cmd.bidi.unwrap_or(false);
-                    if bidi && !long_lived {
-                        anyhow::bail!(
-                            "hostexec command '{name}': bidi = true requires long_lived = true"
-                        );
-                    }
-                    let cmd = HostExecCommandConfig {
-                        lua: raw_cmd.lua,
-                        default_script: raw_cmd.default_script.unwrap_or(false),
-                        long_lived,
-                        bidi,
-                    };
-                    commands.insert(name, cmd);
-                }
-                HostExecConfig { commands }
-            }
+            Some(h) => resolve_hostexec_config(h)?,
             None => HostExecConfig::default(),
         };
 
@@ -664,6 +645,25 @@ impl Config {
 
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
+
+fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecConfig> {
+    let mut commands = HashMap::new();
+    for (name, raw_cmd) in raw.commands {
+        let long_lived = raw_cmd.long_lived.unwrap_or(false);
+        let bidi = raw_cmd.bidi.unwrap_or(false);
+        if bidi && !long_lived {
+            anyhow::bail!("hostexec command '{name}': bidi = true requires long_lived = true");
+        }
+        let cmd = HostExecCommandConfig {
+            lua: raw_cmd.lua,
+            default_script: raw_cmd.default_script.unwrap_or(false),
+            long_lived,
+            bidi,
+        };
+        commands.insert(name, cmd);
+    }
+    Ok(HostExecConfig { commands })
+}
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
 fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {

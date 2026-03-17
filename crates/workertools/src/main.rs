@@ -78,6 +78,24 @@ async fn main() {
     }
 }
 
+async fn forward_stdin_to_stream(tx: mpsc::Sender<HostExecMessage>) {
+    use tokio::io::AsyncReadExt;
+    let mut stdin = tokio::io::stdin();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = match stdin.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        let msg = HostExecMessage {
+            payload: Some(HostExecPayload::Stdin(buf[..n].to_vec())),
+        };
+        if tx.send(msg).await.is_err() {
+            break;
+        }
+    }
+}
+
 async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
@@ -110,27 +128,7 @@ async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     tx.send(start_msg).await.unwrap();
 
     if bidi {
-        // Spawn a task to read stdin and forward as stdin frames.
-        // This allows bidi commands to receive input from the worker's stdin.
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut stdin = tokio::io::stdin();
-            let mut buf = [0u8; 4096];
-            loop {
-                match stdin.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => {
-                        let msg = HostExecMessage {
-                            payload: Some(HostExecPayload::Stdin(buf[..n].to_vec())),
-                        };
-                        if tx.send(msg).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+        tokio::spawn(forward_stdin_to_stream(tx));
     }
     // For non-bidi commands, `tx` is dropped here, closing the outbound stream
     // after the start frame. The server will not expect any stdin frames.

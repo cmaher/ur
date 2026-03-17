@@ -47,6 +47,7 @@ impl BuilderDaemonHandler {
     }
 
     /// Spawn a short-lived command and return the output stream.
+    #[allow(clippy::result_large_err)]
     fn spawn_command(
         &self,
         req: &BuilderExecRequest,
@@ -91,6 +92,7 @@ impl BuilderDaemonHandler {
 
     /// Handle a long-lived process request: check registry for deduplication,
     /// return already_running ack or spawn new process and register it.
+    #[allow(clippy::result_large_err)]
     fn spawn_long_lived(
         &self,
         req: &BuilderExecRequest,
@@ -227,12 +229,12 @@ impl BuilderDaemonHandler {
                 let guard = sink.lock().expect("output sink lock poisoned");
                 guard.clone()
             };
-            if let Some(tx) = maybe_tx {
-                if tx.send(msg).await.is_err() {
-                    // Caller disconnected — clear the sink so future messages are dropped
-                    let mut guard = sink.lock().expect("output sink lock poisoned");
-                    *guard = None;
-                }
+            if let Some(tx) = maybe_tx
+                && tx.send(msg).await.is_err()
+            {
+                // Caller disconnected — clear the sink so future messages are dropped
+                let mut guard = sink.lock().expect("output sink lock poisoned");
+                *guard = None;
             }
             // If no sender, silently drop the message
         }
@@ -305,6 +307,20 @@ mod tests {
     use super::*;
     use tokio_stream::StreamExt;
     use ur_rpc::proto::core::command_output::Payload;
+
+    async fn has_stdout_in_next(
+        stream: &mut (impl tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Unpin),
+        attempts: usize,
+    ) -> bool {
+        for _ in 0..attempts {
+            if let Some(Ok(msg)) = stream.next().await
+                && matches!(msg.payload, Some(Payload::Stdout(_)))
+            {
+                return true;
+            }
+        }
+        false
+    }
 
     async fn collect_stream(
         mut stream: impl tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Unpin,
@@ -452,16 +468,10 @@ mod tests {
         let mut stream1 = resp1.into_inner();
 
         // Read a few messages from stream1 to confirm it's working
-        let mut got_stdout = false;
-        for _ in 0..3 {
-            if let Some(Ok(msg)) = stream1.next().await {
-                if matches!(msg.payload, Some(Payload::Stdout(_))) {
-                    got_stdout = true;
-                    break;
-                }
-            }
-        }
-        assert!(got_stdout, "first caller should receive stdout");
+        assert!(
+            has_stdout_in_next(&mut stream1, 3).await,
+            "first caller should receive stdout"
+        );
 
         // Drop stream1 to simulate disconnect
         drop(stream1);
@@ -486,17 +496,8 @@ mod tests {
         );
 
         // Should receive subsequent output on the new stream
-        let mut got_output_on_reconnect = false;
-        for _ in 0..20 {
-            if let Some(Ok(msg)) = stream2.next().await {
-                if matches!(msg.payload, Some(Payload::Stdout(_))) {
-                    got_output_on_reconnect = true;
-                    break;
-                }
-            }
-        }
         assert!(
-            got_output_on_reconnect,
+            has_stdout_in_next(&mut stream2, 20).await,
             "reconnected caller should receive output"
         );
     }
