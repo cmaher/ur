@@ -258,6 +258,8 @@ enum WorkerCommands {
     SaveCredentials { worker_id: String },
     /// Show process status
     Status { worker_id: Option<String> },
+    /// Send a message to a running worker's agent
+    Send { worker_id: String, message: String },
     /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
@@ -927,6 +929,25 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             process_status(&mut client, worker_id.as_deref(), output).await
         }
+        WorkerCommands::Send { worker_id, message } => {
+            input::validate_id(&worker_id, "worker_id")?;
+            let mut client = connect(port).await?;
+            info!(worker_id = %worker_id, "sending message to worker");
+            client
+                .send_worker_message(SendWorkerMessageRequest {
+                    worker_id: worker_id.clone(),
+                    message,
+                })
+                .await?;
+            if output.is_json() {
+                output.print_text(&format!(
+                    "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
+                ));
+            } else {
+                println!("Message sent to {worker_id}.");
+            }
+            Ok(())
+        }
         WorkerCommands::Stop { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
@@ -979,6 +1000,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Kill { .. } => "kill",
         WorkerCommands::List => "list",
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
+        WorkerCommands::Send { .. } => "send",
         WorkerCommands::Launch { .. } => "launch",
         WorkerCommands::Status { .. } => "status",
         WorkerCommands::Stop { .. } => "stop",
