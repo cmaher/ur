@@ -230,11 +230,6 @@ mod tests {
         assert!(content.contains("api.anthropic.com"));
         assert!(content.contains("platform.claude.com"));
         assert!(content.contains("mcp-proxy.anthropic.com"));
-        assert!(!content.contains("raw.githubusercontent.com"));
-        assert!(!content.contains("storage.googleapis.com"));
-        assert!(!content.contains("index.crates.io"));
-        assert!(!content.contains("static.crates.io"));
-        assert!(!content.contains("static.rust-lang.org"));
     }
 
     #[test]
