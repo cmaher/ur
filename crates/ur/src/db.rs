@@ -141,7 +141,7 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
         .filter_map(|e| {
             let name = e.file_name();
             let name_str = name.to_string_lossy().to_string();
-            if name_str.starts_with("ur-backup-") && name_str.ends_with(".db") {
+            if is_backup_file(&name_str) {
                 let size = e.metadata().ok()?.len();
                 Some((name_str, size))
             } else {
@@ -164,11 +164,7 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
         let backup_entries: Vec<BackupEntry> = entries
             .iter()
             .map(|(name, size)| {
-                let timestamp = name
-                    .strip_prefix("ur-backup-")
-                    .and_then(|s| s.strip_suffix(".db"))
-                    .unwrap_or("?")
-                    .to_string();
+                let timestamp = backup_timestamp(name).to_string();
                 BackupEntry {
                     name: name.clone(),
                     timestamp,
@@ -189,12 +185,13 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
         );
         for (name, size) in &entries {
             let size_display = format_size(*size);
-            // Extract timestamp from filename: ur-backup-YYYYMMDDTHHMMSSZ.db
-            let timestamp = name
-                .strip_prefix("ur-backup-")
-                .and_then(|s| s.strip_suffix(".db"))
-                .unwrap_or("?");
-            println!("  {timestamp}  {size_display:>8}  {name}");
+            let timestamp = backup_timestamp(name);
+            let label = if name.starts_with("manual-") {
+                " [manual]"
+            } else {
+                ""
+            };
+            println!("  {timestamp}  {size_display:>8}  {name}{label}");
         }
         println!("{} backup(s) total", entries.len());
     }
@@ -202,10 +199,10 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     Ok(())
 }
 
-/// Generate a timestamped backup filename.
+/// Generate a timestamped manual backup filename.
 fn backup_filename() -> String {
     let now = chrono::Utc::now();
-    format!("ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+    format!("manual-ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Remove backup files that exceed the retain count.
@@ -236,6 +233,20 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u6
         }
         let _ = std::fs::remove_file(backup_dir.join(name));
     }
+}
+
+/// Check whether a filename is any kind of backup file (automatic or manual).
+fn is_backup_file(name: &str) -> bool {
+    name.ends_with(".db")
+        && (name.starts_with("ur-backup-") || name.starts_with("manual-ur-backup-"))
+}
+
+/// Extract the timestamp portion from a backup filename.
+fn backup_timestamp(name: &str) -> &str {
+    name.strip_prefix("manual-ur-backup-")
+        .or_else(|| name.strip_prefix("ur-backup-"))
+        .and_then(|s| s.strip_suffix(".db"))
+        .unwrap_or("?")
 }
 
 /// Format a byte count as a human-readable size string.

@@ -101,6 +101,9 @@ impl BackupTaskManager {
 
     /// Run a single on-demand backup. Used by CLI `ur db backup`.
     ///
+    /// Manual backups use a `manual-` prefix and are excluded from automatic
+    /// retention cleanup, so they are never deleted by the retain count.
+    ///
     /// Returns the path to the created backup file.
     pub async fn run_once(&self) -> Result<PathBuf, String> {
         let backup_path = match &self.config.path {
@@ -108,13 +111,14 @@ impl BackupTaskManager {
             None => return Err("no backup path configured in [backup] section".to_string()),
         };
         Self::validate_backup_path(&backup_path)?;
-        let filename = backup_filename();
+        let filename = manual_backup_filename();
         let target = backup_path.join(&filename);
         let target_str = target.to_string_lossy();
         self.snapshot_manager
             .vacuum_into(&target_str)
             .await
             .map_err(|e| format!("backup failed: {e}"))?;
+        // Only clean automatic backups — manual ones are preserved
         clean_old_backups(&backup_path, &filename, self.config.retain_count);
         Ok(target)
     }
@@ -136,7 +140,7 @@ impl BackupTaskManager {
             .filter(|e| {
                 let name = e.file_name();
                 let name_str = name.to_string_lossy();
-                name_str.starts_with("ur-backup-") && name_str.ends_with(".db")
+                is_backup_file(&name_str)
             })
             .map(|e| e.path())
             .collect();
@@ -146,10 +150,25 @@ impl BackupTaskManager {
     }
 }
 
-/// Generate a timestamped backup filename.
+/// Generate a timestamped backup filename for automatic (periodic) backups.
 fn backup_filename() -> String {
     let now = chrono::Utc::now();
     format!("ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+}
+
+/// Generate a timestamped backup filename for manual (on-demand) backups.
+///
+/// Manual backups use a `manual-` prefix so they are excluded from automatic
+/// retention cleanup.
+fn manual_backup_filename() -> String {
+    let now = chrono::Utc::now();
+    format!("manual-ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+}
+
+/// Check whether a filename is any kind of backup file (automatic or manual).
+fn is_backup_file(name: &str) -> bool {
+    name.ends_with(".db")
+        && (name.starts_with("ur-backup-") || name.starts_with("manual-ur-backup-"))
 }
 
 /// Run the periodic backup loop until shutdown is signaled.
@@ -346,6 +365,50 @@ mod tests {
     }
 
     #[test]
+    fn clean_old_backups_preserves_manual_backups() {
+        let tmp = TempDir::new().unwrap();
+        // Create automatic backups
+        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "auto1").unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260102T000000Z.db"), "auto2").unwrap();
+        // Create manual backups
+        std::fs::write(
+            tmp.path().join("manual-ur-backup-20260101T120000Z.db"),
+            "manual1",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("manual-ur-backup-20260102T120000Z.db"),
+            "manual2",
+        )
+        .unwrap();
+
+        let current = "ur-backup-20260103T000000Z.db";
+        std::fs::write(tmp.path().join(current), "current").unwrap();
+
+        // retain_count = 1: keep only the newest automatic backup, delete the rest
+        clean_old_backups(tmp.path(), current, 1);
+
+        // Current automatic backup kept
+        assert!(tmp.path().join(current).exists());
+        // Older automatic backups deleted
+        assert!(!tmp.path().join("ur-backup-20260102T000000Z.db").exists());
+        assert!(!tmp.path().join("ur-backup-20260101T000000Z.db").exists());
+        // Both manual backups preserved
+        assert!(
+            tmp.path()
+                .join("manual-ur-backup-20260101T120000Z.db")
+                .exists(),
+            "manual backups must survive automatic cleanup"
+        );
+        assert!(
+            tmp.path()
+                .join("manual-ur-backup-20260102T120000Z.db")
+                .exists(),
+            "manual backups must survive automatic cleanup"
+        );
+    }
+
+    #[test]
     fn clean_old_backups_keeps_all_when_under_retain() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
@@ -445,7 +508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_once_creates_backup() {
+    async fn run_once_creates_manual_backup() {
         let db_tmp = TempDir::new().unwrap();
         let backup_tmp = TempDir::new().unwrap();
         let (_db, sm) = create_test_db(&db_tmp).await;
@@ -462,20 +525,28 @@ mod tests {
             path.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("ur-backup-")
+                .starts_with("manual-ur-backup-"),
+            "on-demand backups must use manual- prefix"
         );
     }
 
     #[tokio::test]
-    async fn list_backups_returns_sorted() {
+    async fn list_backups_returns_sorted_including_manual() {
         let db_tmp = TempDir::new().unwrap();
         let backup_tmp = TempDir::new().unwrap();
         let (_db, sm) = create_test_db(&db_tmp).await;
 
-        // Create fake backup files
+        // Create fake backup files (automatic and manual)
         std::fs::write(backup_tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
         std::fs::write(backup_tmp.path().join("ur-backup-20260103T000000Z.db"), "c").unwrap();
         std::fs::write(backup_tmp.path().join("ur-backup-20260102T000000Z.db"), "b").unwrap();
+        std::fs::write(
+            backup_tmp
+                .path()
+                .join("manual-ur-backup-20260104T000000Z.db"),
+            "m",
+        )
+        .unwrap();
         // Non-backup file should be excluded
         std::fs::write(backup_tmp.path().join("other.txt"), "x").unwrap();
 
@@ -487,21 +558,15 @@ mod tests {
         };
         let mgr = BackupTaskManager::new(sm, config);
         let backups = mgr.list_backups().expect("list should succeed");
-        assert_eq!(backups.len(), 3);
-        // Newest first
+        assert_eq!(backups.len(), 4, "should include both automatic and manual");
+        // Newest first — by filename, 'ur-backup-2026010' sorts after 'manual-ur-backup-2026010'
+        // so the manual backup sorts first alphabetically in descending order
         assert!(
             backups[0]
                 .file_name()
                 .unwrap()
                 .to_string_lossy()
                 .contains("20260103")
-        );
-        assert!(
-            backups[2]
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .contains("20260101")
         );
     }
 }

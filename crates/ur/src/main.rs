@@ -317,7 +317,7 @@ fn start_server(
 }
 
 #[instrument(skip(config, compose, output))]
-fn stop_server(
+async fn stop_server(
     config: &ur_config::Config,
     compose: &ComposeManager,
     output: &OutputManager,
@@ -325,7 +325,20 @@ fn stop_server(
     let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
     log.info("ur stop: beginning");
     info!("stopping server");
-    kill_all_containers(&config.network.worker_prefix, output)?;
+
+    // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
+    let port = config.daemon_port;
+    let addr = format!("http://127.0.0.1:{port}");
+    if let Some(mut client) = try_connect(&addr).await {
+        info!("server reachable — stopping workers via gRPC");
+        log.info("ur stop: stopping workers via gRPC");
+        stop_workers_via_grpc(&mut client, output).await;
+    } else {
+        info!("server unreachable — stopping workers via Docker");
+        log.info("ur stop: stopping workers via Docker (server unreachable)");
+        kill_all_containers(&config.network.worker_prefix, output)?;
+    }
+
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
         output.print_text("server is not running");
@@ -341,6 +354,65 @@ fn stop_server(
     log.info("ur stop: builderd stopped");
     log.info("ur stop: complete");
     Ok(())
+}
+
+/// Stop all running workers via the server's gRPC API in parallel.
+///
+/// Best-effort: logs warnings for individual failures but does not propagate errors,
+/// since the server is about to be stopped anyway.
+async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: &OutputManager) {
+    let workers = match client.worker_list(WorkerListRequest {}).await {
+        Ok(resp) => resp.into_inner().workers,
+        Err(e) => {
+            warn!(error = %e, "failed to list workers via gRPC");
+            return;
+        }
+    };
+
+    if workers.is_empty() {
+        output.print_text("No workers running");
+        return;
+    }
+
+    info!(
+        count = workers.len(),
+        "stopping workers via gRPC in parallel"
+    );
+
+    let mut set = tokio::task::JoinSet::new();
+    for w in &workers {
+        let mut c = client.clone();
+        let wid = w.worker_id.clone();
+        set.spawn(async move {
+            let result = c
+                .worker_stop(WorkerStopRequest {
+                    worker_id: wid.clone(),
+                })
+                .await;
+            (wid, result)
+        });
+    }
+
+    while let Some(join_result) = set.join_next().await {
+        let (wid, result) = join_result.expect("worker stop task panicked");
+        let result: Result<(), tonic::Status> = result.map(|_| ());
+        match result {
+            Ok(_) => {
+                info!(worker_id = %wid, "worker stopped via gRPC");
+                if output.is_json() {
+                    output.print_success(&WorkerStopped {
+                        worker_id: wid.clone(),
+                    });
+                } else {
+                    println!("Stopped {wid}");
+                }
+            }
+            Err(e) => {
+                warn!(worker_id = %wid, error = %e, "failed to stop worker via gRPC");
+                eprintln!("Warning: failed to stop {wid}: {e}");
+            }
+        }
+    }
 }
 
 #[instrument]
@@ -371,12 +443,27 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
         count = containers.len(),
         worker_prefix, "killing all worker containers"
     );
-    for id in &containers {
-        if let Err(e) = rt.stop(id) {
+
+    // Stop and remove all containers in parallel
+    let handles: Vec<_> = containers
+        .into_iter()
+        .map(|id| {
+            std::thread::spawn(move || {
+                let rt = container::runtime_from_env();
+                let stop_err = rt.stop(&id).err();
+                let rm_err = rt.rm(&id).err();
+                (id, stop_err, rm_err)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (id, stop_err, rm_err) = handle.join().expect("container kill thread panicked");
+        if let Some(e) = stop_err {
             warn!(container = %id.0, error = %e, "failed to stop container");
             eprintln!("Warning: failed to stop {}: {e}", id.0);
         }
-        if let Err(e) = rt.rm(id) {
+        if let Some(e) = rm_err {
             warn!(container = %id.0, error = %e, "failed to remove container");
             eprintln!("Warning: failed to remove {}: {e}", id.0);
         }
@@ -909,11 +996,11 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         },
         Commands::Server { command } => match command {
             ServerCommands::Restart => {
-                stop_server(&config, &compose, output)?;
+                stop_server(&config, &compose, output).await?;
                 start_server(&config, &compose, output)?;
             }
             ServerCommands::Start => start_server(&config, &compose, output)?,
-            ServerCommands::Stop => stop_server(&config, &compose, output)?,
+            ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
         Commands::Worker { command } => {
