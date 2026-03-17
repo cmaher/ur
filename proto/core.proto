@@ -76,4 +76,6 @@ message WorkerSummary {
   string mode = 5;
   uint32 grpc_port = 6;
   string directory = 7;
+  string container_status = 8;
+  string agent_status = 9;
 }

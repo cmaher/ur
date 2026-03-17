@@ -289,6 +289,8 @@ impl CoreService for CoreServiceHandler {
                 mode: s.mode,
                 grpc_port: 0,
                 directory: s.directory,
+                container_status: s.container_status,
+                agent_status: s.agent_status,
             })
             .collect();
         Ok(Response::new(WorkerListResponse { workers }))
