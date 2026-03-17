@@ -547,13 +547,8 @@ fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     // Attach to the `agent` tmux session managed by workerd. This lets the user
     // see the live Claude Code session. Multiple clients can attach simultaneously
     // and send-keys works regardless of attached clients.
-    let command: Vec<String> = vec![
-        "tmux".into(),
-        "-u".into(),
-        "attach-session".into(),
-        "-t".into(),
-        "agent".into(),
-    ];
+    let session = tmux::Session::from_name("agent");
+    let command = session.attach_command();
     let status = runtime.exec_interactive(&id, &command)?;
     Ok(status.code().unwrap_or(1))
 }

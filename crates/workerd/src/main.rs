@@ -102,38 +102,21 @@ async fn run_daemon() -> Result<()> {
 /// Used by image-specific entrypoints that need to launch background processes between init and daemon.
 async fn run_daemon_only() -> Result<()> {
     // 1. Create tmux session `agent` (220x55)
-    let status = tokio::process::Command::new("tmux")
-        .args(["new-session", "-d", "-s", "agent", "-x", "220", "-y", "55"])
-        .status()
-        .await
-        .context("failed to spawn tmux")?;
-    if !status.success() {
-        anyhow::bail!("tmux new-session failed with {status}");
-    }
-    info!("tmux session 'agent' created (220x55)");
+    let session = tmux::Session::create(tmux::CreateOptions {
+        name: "agent".into(),
+        width: Some(220),
+        height: Some(55),
+        detached: true,
+    })
+    .await?;
 
     // 2. Set tmux status line with worker ID
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
     let status_left = format!("[{worker_id}] ");
-    let status = tokio::process::Command::new("tmux")
-        .args(["set-option", "-t", "agent", "status-left", &status_left])
-        .status()
-        .await
-        .context("failed to set tmux status")?;
-    if !status.success() {
-        warn!("tmux set-option status-left failed with {status}");
-    }
-    info!(worker_id, "tmux status line set");
+    session.set_status_left(&status_left).await?;
 
     // 3. Launch Claude Code via send-keys
-    let status = tokio::process::Command::new("tmux")
-        .args(["send-keys", "-t", "agent", "claude", "Enter"])
-        .status()
-        .await
-        .context("failed to launch claude via tmux")?;
-    if !status.success() {
-        anyhow::bail!("tmux send-keys claude failed with {status}");
-    }
+    session.send_keys("claude").await?;
     info!("claude launched in tmux session");
 
     // 4. Spawn healthz HTTP server (port 9119) in background

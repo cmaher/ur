@@ -12,6 +12,7 @@ members = [
     "crates/ur_rpc",
     "crates/ur_utils",
     "crates/server",
+    "crates/tmux",
     "crates/ur-ping",
     "crates/workerd",
     "crates/workertools",
