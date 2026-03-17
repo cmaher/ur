@@ -24,7 +24,7 @@ Forward proxy (Squid) configuration for restricting container network access.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hostname` | string | `"ur-squid"` | Proxy hostname on Docker network |
-| `allowlist` | string[] | `["api.anthropic.com", "platform.claude.com", "raw.githubusercontent.com"]` | Domains containers may reach |
+| `allowlist` | string[] | `["api.anthropic.com", "platform.claude.com"]` | Domains containers may reach (GCS bucket for Claude Code dist is allowed via URL regex in squid.conf) |
 
 ## `[network]` Section
 

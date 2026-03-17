@@ -44,12 +44,7 @@ end
 const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
 platform.claude.com
-raw.githubusercontent.com
 mcp-proxy.anthropic.com
-storage.googleapis.com
-index.crates.io
-static.crates.io
-static.rust-lang.org
 ";
 
 pub struct InitFlags {
@@ -234,12 +229,7 @@ mod tests {
         let content = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
         assert!(content.contains("api.anthropic.com"));
         assert!(content.contains("platform.claude.com"));
-        assert!(content.contains("raw.githubusercontent.com"));
         assert!(content.contains("mcp-proxy.anthropic.com"));
-        assert!(content.contains("storage.googleapis.com"));
-        assert!(content.contains("index.crates.io"));
-        assert!(content.contains("static.crates.io"));
-        assert!(content.contains("static.rust-lang.org"));
     }
 
     #[test]
