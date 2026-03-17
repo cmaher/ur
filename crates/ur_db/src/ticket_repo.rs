@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::graph::GraphManager;
 use crate::model::{
     Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Ticket, TicketFilter, TicketUpdate,
+    Ticket, TicketFilter, TicketUpdate, WorkflowEvent,
 };
 
 #[derive(Clone)]
@@ -602,6 +602,124 @@ impl TicketRepo {
         .await?;
 
         Ok(result.rows_affected())
+    }
+
+    /// Poll the oldest unprocessed workflow event.
+    /// Returns `None` if no events are pending.
+    pub async fn poll_workflow_event(&self) -> Result<Option<WorkflowEvent>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String, String, String, String, i32, String)>(
+            "SELECT id, ticket_id, old_lifecycle_status, new_lifecycle_status, attempts, created_at
+             FROM workflow_event
+             ORDER BY id ASC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, ticket_id, old_status_str, new_status_str, attempts, created_at)| WorkflowEvent {
+                id,
+                ticket_id,
+                old_lifecycle_status: old_status_str
+                    .parse::<LifecycleStatus>()
+                    .unwrap_or_default(),
+                new_lifecycle_status: new_status_str
+                    .parse::<LifecycleStatus>()
+                    .unwrap_or_default(),
+                attempts,
+                created_at,
+            },
+        ))
+    }
+
+    /// Delete a workflow event by ID (after successful processing).
+    pub async fn delete_workflow_event(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow_event WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Increment the attempts counter on a workflow event (after a failed processing attempt).
+    pub async fn increment_workflow_event_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow_event SET attempts = attempts + 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Return all tickets with the given lifecycle status.
+    /// Used by GithubPoller to find tickets in pushing/in_review states.
+    pub async fn tickets_by_lifecycle_status(
+        &self,
+        status: LifecycleStatus,
+    ) -> Result<Vec<Ticket>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at
+             FROM ticket
+             WHERE lifecycle_status = ?
+             ORDER BY priority ASC, created_at ASC",
+        )
+        .bind(status.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ticket {
+                        id,
+                        project,
+                        type_,
+                        status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        branch,
+                        created_at,
+                        updated_at,
+                    }
+                },
+            )
+            .collect())
     }
 }
 
