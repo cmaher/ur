@@ -17,7 +17,7 @@ use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::core::command_output::Payload;
 
-use crate::registry::{ProcessKey, ProcessRegistry, RegisteredProcess};
+use crate::registry::{OutputSink, ProcessKey, ProcessRegistry, RegisteredProcess};
 
 const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
 
@@ -98,12 +98,12 @@ impl BuilderDaemonHandler {
         let resolved_dir = self.resolve_working_dir(&req.working_dir);
         let key = self.process_key(req);
 
-        // Check if already running
+        // Check if already running — reconnect scenario
         if self.registry.is_running(&key) {
             info!(
                 command = %req.command,
                 working_dir = %resolved_dir,
-                "long-lived process already running, sending ack"
+                "long-lived process already running, reconnecting"
             );
 
             let stdin_tx = self
@@ -111,16 +111,25 @@ impl BuilderDaemonHandler {
                 .get_stdin_tx(&key)
                 .ok_or_else(|| Status::internal("process was running but stdin_tx disappeared"))?;
 
-            let (tx, rx) = mpsc::channel(1);
+            // Create a new output channel and wire it into the existing process
+            let (out_tx, out_rx) = mpsc::channel(32);
+
+            // Send already_running ack on the new channel first
             let ack = CommandOutput {
                 payload: Some(Payload::AlreadyRunning(true)),
             };
-            tx.try_send(Ok(ack)).map_err(|e| {
+            out_tx.try_send(Ok(ack)).map_err(|e| {
                 Status::internal(format!("failed to send already_running ack: {e}"))
             })?;
-            drop(tx);
 
-            let stream = ReceiverStream::new(rx);
+            // Replace the output sink so the forwarder starts sending to this caller
+            self.registry
+                .replace_output_sink(&key, out_tx)
+                .ok_or_else(|| {
+                    Status::internal("process was running but output sink disappeared")
+                })?;
+
+            let stream = ReceiverStream::new(out_rx);
             return Ok((
                 Response::new(Box::pin(stream) as CommandOutputStream),
                 stdin_tx,
@@ -172,15 +181,16 @@ impl BuilderDaemonHandler {
 
         ur_rpc::stream::spawn_child_output_stream(child, intermediate_tx);
 
-        // Forward from intermediate channel to the output channel, then mark dead.
-        let out_tx_fwd = out_tx.clone();
-        tokio::spawn(Self::forward_output(
+        // Create the replaceable output sink with the initial caller's sender
+        let output_sink: OutputSink = Arc::new(std::sync::Mutex::new(Some(out_tx)));
+
+        // Forward from intermediate channel through the output sink, then mark dead.
+        let sink_clone = output_sink.clone();
+        tokio::spawn(Self::forward_output_via_sink(
             intermediate_rx,
-            out_tx_fwd,
+            sink_clone,
             alive_clone,
         ));
-        // Drop our clone so the receiver closes when the forwarder finishes.
-        drop(out_tx);
 
         // Spawn stdin forwarder
         tokio::spawn(Self::forward_stdin(child_stdin, stdin_rx));
@@ -191,6 +201,7 @@ impl BuilderDaemonHandler {
             RegisteredProcess {
                 alive,
                 stdin_tx: stdin_tx.clone(),
+                output_sink,
             },
         );
 
@@ -201,15 +212,29 @@ impl BuilderDaemonHandler {
         ))
     }
 
-    async fn forward_output(
+    /// Forward child output through a replaceable output sink.
+    ///
+    /// On each message, locks the sink to get the current sender. If no sender
+    /// is present (caller disconnected), the message is silently dropped — no
+    /// buffering between disconnections.
+    async fn forward_output_via_sink(
         mut rx: mpsc::Receiver<Result<CommandOutput, Status>>,
-        tx: mpsc::Sender<Result<CommandOutput, Status>>,
+        sink: OutputSink,
         alive: Arc<AtomicBool>,
     ) {
         while let Some(msg) = rx.recv().await {
-            if tx.send(msg).await.is_err() {
-                break;
+            let maybe_tx = {
+                let guard = sink.lock().expect("output sink lock poisoned");
+                guard.clone()
+            };
+            if let Some(tx) = maybe_tx {
+                if tx.send(msg).await.is_err() {
+                    // Caller disconnected — clear the sink so future messages are dropped
+                    let mut guard = sink.lock().expect("output sink lock poisoned");
+                    *guard = None;
+                }
             }
+            // If no sender, silently drop the message
         }
         alive.store(false, Ordering::Relaxed);
     }
@@ -406,5 +431,73 @@ mod tests {
         } else {
             panic!("expected already_running message");
         }
+    }
+
+    #[tokio::test]
+    async fn test_long_lived_reconnect_receives_output() {
+        let handler = handler_with_workspace(None);
+        let req = BuilderExecRequest {
+            command: "bash".into(),
+            args: vec![
+                "-c".into(),
+                "for i in $(seq 1 100); do echo line$i; sleep 0.05; done".into(),
+            ],
+            working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
+            long_lived: true,
+        };
+
+        // First call spawns the process
+        let (resp1, _stdin1) = handler.spawn_long_lived(&req).unwrap();
+        let mut stream1 = resp1.into_inner();
+
+        // Read a few messages from stream1 to confirm it's working
+        let mut got_stdout = false;
+        for _ in 0..3 {
+            if let Some(Ok(msg)) = stream1.next().await {
+                if matches!(msg.payload, Some(Payload::Stdout(_))) {
+                    got_stdout = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_stdout, "first caller should receive stdout");
+
+        // Drop stream1 to simulate disconnect
+        drop(stream1);
+
+        // Small delay to let some output be dropped
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Reconnect — second call should get already_running ack, then new output
+        let (resp2, _stdin2) = handler.spawn_long_lived(&req).unwrap();
+        let mut stream2 = resp2.into_inner();
+
+        // First message should be already_running ack
+        let first = stream2.next().await;
+        assert!(
+            matches!(
+                first,
+                Some(Ok(CommandOutput {
+                    payload: Some(Payload::AlreadyRunning(true))
+                }))
+            ),
+            "expected already_running ack on reconnect"
+        );
+
+        // Should receive subsequent output on the new stream
+        let mut got_output_on_reconnect = false;
+        for _ in 0..20 {
+            if let Some(Ok(msg)) = stream2.next().await {
+                if matches!(msg.payload, Some(Payload::Stdout(_))) {
+                    got_output_on_reconnect = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            got_output_on_reconnect,
+            "reconnected caller should receive output"
+        );
     }
 }
