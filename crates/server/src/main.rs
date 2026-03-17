@@ -233,6 +233,8 @@ async fn main() -> anyhow::Result<()> {
         workspace: cfg.workspace,
         proxy_hostname: cfg.proxy.hostname,
         projects: cfg.projects.clone(),
+        worker_repo: worker_repo.clone(),
+        network_config: cfg.network.clone(),
         #[cfg(feature = "hostexec")]
         hostexec_config: hostexec_config.clone(),
         #[cfg(feature = "hostexec")]

@@ -21,6 +21,7 @@ service CoreService {
   rpc WorkerStop(WorkerStopRequest) returns (WorkerStopResponse);
   rpc WorkerInfo(WorkerInfoRequest) returns (WorkerInfoResponse);
   rpc WorkerList(WorkerListRequest) returns (WorkerListResponse);
+  rpc SendWorkerMessage(SendWorkerMessageRequest) returns (SendWorkerMessageResponse);
 }
 
 message PingRequest {}
@@ -66,6 +67,16 @@ message WorkerListRequest {}
 
 message WorkerListResponse {
   repeated WorkerSummary workers = 1;
+}
+
+message SendWorkerMessageRequest {
+  string worker_id = 1;
+  string message = 2;
+}
+
+message SendWorkerMessageResponse {
+  bool success = 1;
+  string error = 2;
 }
 
 message WorkerSummary {

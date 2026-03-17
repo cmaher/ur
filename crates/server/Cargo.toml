@@ -29,15 +29,16 @@ ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 ur_utils = { path = "../ur_utils" }
 
 [features]
-default = ["core", "hostexec", "builder", "rag", "ticket"]
+default = ["core", "hostexec", "builder", "rag", "ticket", "workerd"]
 core = ["ur_rpc/core"]
 hostexec = ["ur_rpc/hostexec", "builder"]
 builder = ["ur_rpc/builder"]
 rag = ["ur_rpc/rag"]
 ticket = ["ur_rpc/ticket"]
+workerd = ["ur_rpc/workerd"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "builder", "ticket"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "builder", "ticket", "workerd"] }

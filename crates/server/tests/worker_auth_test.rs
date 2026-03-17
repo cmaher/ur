@@ -72,7 +72,7 @@ async fn make_test_components(
         workspace.clone(),
         repo_pool_manager.clone(),
         network_manager,
-        network_config,
+        network_config.clone(),
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
@@ -88,6 +88,8 @@ async fn make_test_components(
         workspace,
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),
+        worker_repo: worker_repo.clone(),
+        network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
     };
