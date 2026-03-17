@@ -1,16 +1,23 @@
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonService;
 use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
 use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
+use ur_rpc::proto::core::command_output::Payload;
+
+use crate::registry::{ProcessKey, ProcessRegistry, RegisteredProcess};
 
 const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
 
@@ -20,6 +27,7 @@ type CommandOutputStream =
 #[derive(Clone)]
 pub struct BuilderDaemonHandler {
     pub workspace: Option<PathBuf>,
+    pub registry: ProcessRegistry,
 }
 
 impl BuilderDaemonHandler {
@@ -33,8 +41,12 @@ impl BuilderDaemonHandler {
         working_dir.to_string()
     }
 
-    /// Spawn a command from a `BuilderExecRequest` and return the output stream.
-    /// Extracted from the gRPC `exec` handler so it can be called directly in tests.
+    fn process_key(&self, req: &BuilderExecRequest) -> ProcessKey {
+        let resolved_dir = self.resolve_working_dir(&req.working_dir);
+        (req.command.clone(), resolved_dir)
+    }
+
+    /// Spawn a short-lived command and return the output stream.
     fn spawn_command(
         &self,
         req: &BuilderExecRequest,
@@ -76,6 +88,144 @@ impl BuilderDaemonHandler {
         let stream = ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(stream) as CommandOutputStream))
     }
+
+    /// Handle a long-lived process request: check registry for deduplication,
+    /// return already_running ack or spawn new process and register it.
+    fn spawn_long_lived(
+        &self,
+        req: &BuilderExecRequest,
+    ) -> Result<(Response<CommandOutputStream>, mpsc::Sender<Vec<u8>>), Status> {
+        let resolved_dir = self.resolve_working_dir(&req.working_dir);
+        let key = self.process_key(req);
+
+        // Check if already running
+        if self.registry.is_running(&key) {
+            info!(
+                command = %req.command,
+                working_dir = %resolved_dir,
+                "long-lived process already running, sending ack"
+            );
+
+            let stdin_tx = self
+                .registry
+                .get_stdin_tx(&key)
+                .ok_or_else(|| Status::internal("process was running but stdin_tx disappeared"))?;
+
+            let (tx, rx) = mpsc::channel(1);
+            let ack = CommandOutput {
+                payload: Some(Payload::AlreadyRunning(true)),
+            };
+            tx.try_send(Ok(ack)).map_err(|e| {
+                Status::internal(format!("failed to send already_running ack: {e}"))
+            })?;
+            drop(tx);
+
+            let stream = ReceiverStream::new(rx);
+            return Ok((
+                Response::new(Box::pin(stream) as CommandOutputStream),
+                stdin_tx,
+            ));
+        }
+
+        let arg_count = req.args.len();
+        info!(
+            command = %req.command,
+            working_dir = %req.working_dir,
+            resolved_dir = %resolved_dir,
+            arg_count,
+            args = ?req.args,
+            long_lived = true,
+            "spawning new long-lived process"
+        );
+
+        let mut cmd = tokio::process::Command::new(&req.command);
+        cmd.args(&req.args)
+            .current_dir(&resolved_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in &req.env {
+            cmd.env(k, v);
+        }
+
+        let mut child = cmd.spawn().map_err(|e| {
+            error!(
+                command = %req.command,
+                working_dir = %resolved_dir,
+                error = %e,
+                "failed to spawn long-lived process"
+            );
+            Status::internal(format!("failed to spawn {}: {e}", req.command))
+        })?;
+
+        let child_stdin = child.stdin.take().expect("stdin piped for long_lived");
+        let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(32);
+        let (out_tx, out_rx) = mpsc::channel(32);
+
+        // Track whether the child is still alive via an intermediate channel.
+        // spawn_child_output_stream takes ownership of its tx; when it finishes
+        // (child exits), it drops that tx, closing the intermediate channel.
+        // A watcher task detects the close and flips the alive flag.
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_clone = alive.clone();
+        let (intermediate_tx, intermediate_rx) = mpsc::channel::<Result<CommandOutput, Status>>(32);
+
+        ur_rpc::stream::spawn_child_output_stream(child, intermediate_tx);
+
+        // Forward from intermediate channel to the output channel, then mark dead.
+        let out_tx_fwd = out_tx.clone();
+        tokio::spawn(Self::forward_output(
+            intermediate_rx,
+            out_tx_fwd,
+            alive_clone,
+        ));
+        // Drop our clone so the receiver closes when the forwarder finishes.
+        drop(out_tx);
+
+        // Spawn stdin forwarder
+        tokio::spawn(Self::forward_stdin(child_stdin, stdin_rx));
+
+        // Register the process
+        self.registry.register(
+            key,
+            RegisteredProcess {
+                alive,
+                stdin_tx: stdin_tx.clone(),
+            },
+        );
+
+        let stream = ReceiverStream::new(out_rx);
+        Ok((
+            Response::new(Box::pin(stream) as CommandOutputStream),
+            stdin_tx,
+        ))
+    }
+
+    async fn forward_output(
+        mut rx: mpsc::Receiver<Result<CommandOutput, Status>>,
+        tx: mpsc::Sender<Result<CommandOutput, Status>>,
+        alive: Arc<AtomicBool>,
+    ) {
+        while let Some(msg) = rx.recv().await {
+            if tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+        alive.store(false, Ordering::Relaxed);
+    }
+
+    async fn forward_stdin(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::Receiver<Vec<u8>>) {
+        while let Some(data) = rx.recv().await {
+            if let Err(e) = stdin.write_all(&data).await {
+                warn!(error = %e, "failed to write to child stdin");
+                break;
+            }
+            if let Err(e) = stdin.flush().await {
+                warn!(error = %e, "failed to flush child stdin");
+                break;
+            }
+        }
+    }
 }
 
 #[tonic::async_trait]
@@ -104,7 +254,24 @@ impl BuilderDaemonService for BuilderDaemonHandler {
             }
         };
 
-        self.spawn_command(&req)
+        if req.long_lived {
+            let (resp, stdin_tx) = self.spawn_long_lived(&req)?;
+
+            // Forward subsequent stdin messages from the bidi stream to the process
+            tokio::spawn(async move {
+                while let Some(Ok(msg)) = in_stream.next().await {
+                    if let Some(ExecPayload::Stdin(data)) = msg.payload
+                        && stdin_tx.send(data).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+
+            Ok(resp)
+        } else {
+            self.spawn_command(&req)
+        }
     }
 }
 
@@ -132,6 +299,7 @@ mod tests {
     fn handler_with_workspace(workspace: Option<&str>) -> BuilderDaemonHandler {
         BuilderDaemonHandler {
             workspace: workspace.map(PathBuf::from),
+            registry: ProcessRegistry::new(),
         }
     }
 
@@ -208,5 +376,35 @@ mod tests {
 
         let result = handler.spawn_command(&req);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_long_lived_already_running() {
+        let handler = handler_with_workspace(None);
+        let req = BuilderExecRequest {
+            command: "sleep".into(),
+            args: vec!["60".into()],
+            working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
+            long_lived: true,
+        };
+
+        // First call should spawn
+        let (resp1, _stdin1) = handler.spawn_long_lived(&req).unwrap();
+        // Don't consume the stream — just check the second call returns already_running
+        let _ = resp1;
+
+        // Second call should return already_running
+        let (resp2, _stdin2) = handler.spawn_long_lived(&req).unwrap();
+        let mut stream = resp2.into_inner();
+        if let Some(Ok(msg)) = stream.next().await {
+            assert!(
+                matches!(msg.payload, Some(Payload::AlreadyRunning(true))),
+                "expected already_running, got {:?}",
+                msg.payload
+            );
+        } else {
+            panic!("expected already_running message");
+        }
     }
 }
