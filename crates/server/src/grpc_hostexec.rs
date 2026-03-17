@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Code, Request, Response, Status};
+use tonic::{Code, Request, Response, Status, Streaming};
 use tracing::{info, warn};
 
 use ur_rpc::error::{
@@ -11,12 +12,13 @@ use ur_rpc::error::{
     NOT_FOUND, TRANSFORM_REJECTED,
 };
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
-use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
+use ur_rpc::proto::builder::builder_exec_message::Payload as BuilderPayload;
 use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
+use ur_rpc::proto::hostexec::host_exec_message::Payload as HostExecPayload;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecService;
 use ur_rpc::proto::hostexec::{
-    HostExecRequest, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
+    HostExecMessage, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
 };
 
 use crate::WorkerManager;
@@ -44,6 +46,9 @@ pub enum HostExecError {
 
     #[error("invalid working directory {path}: {reason}")]
     InvalidWorkingDir { path: String, reason: String },
+
+    #[error("missing start frame")]
+    MissingStartFrame,
 }
 
 impl From<HostExecError> for Status {
@@ -110,6 +115,13 @@ impl From<HostExecError> for Status {
                     meta,
                 )
             }
+            HostExecError::MissingStartFrame => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_HOSTEXEC,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
         }
     }
 }
@@ -133,36 +145,54 @@ impl HostExecService for HostExecServiceHandler {
 
     async fn exec(
         &self,
-        req: Request<HostExecRequest>,
+        req: Request<Streaming<HostExecMessage>>,
     ) -> Result<Response<Self::ExecStream>, Status> {
-        // Extract worker context from metadata (if present)
-        let (process_id, worker_context, config) = self.resolve_request_context(&req).await?;
+        // Extract worker context from metadata before consuming the request.
+        // Streaming<T> is not Sync, so we extract metadata first.
+        let metadata = req.metadata().clone();
+        let (process_id, worker_context, config) = self
+            .resolve_request_context_from_metadata(&metadata)
+            .await?;
 
-        let req = req.into_inner();
+        let mut inbound = req.into_inner();
+
+        // Read the first message — must be a start frame.
+        let first_msg = inbound
+            .next()
+            .await
+            .ok_or(HostExecError::MissingStartFrame)?
+            .map_err(|e| HostExecError::BuilderdExecFailed {
+                message: format!("stream error reading start frame: {e}"),
+            })?;
+
+        let host_exec_req = match first_msg.payload {
+            Some(HostExecPayload::Start(start)) => start,
+            _ => return Err(HostExecError::MissingStartFrame.into()),
+        };
 
         // 1. Allowlist check
-        let cmd_config = config.get(&req.command).ok_or_else(|| {
+        let cmd_config = config.get(&host_exec_req.command).ok_or_else(|| {
             warn!(
-                command = req.command,
+                command = host_exec_req.command,
                 process_id, "host exec command denied: not in allowlist"
             );
             HostExecError::CommandNotAllowed {
-                command: req.command.clone(),
+                command: host_exec_req.command.clone(),
             }
         })?;
 
         // 2. CWD mapping: /workspace prefix -> %WORKSPACE% template for builderd resolution.
         // For pool workers, /workspace maps to a specific slot subdirectory, not the root.
         let slot_path = worker_context.as_ref().map(|ctx| ctx.slot_path.as_path());
-        let host_working_dir = self.map_working_dir(&req.working_dir, slot_path)?;
+        let host_working_dir = self.map_working_dir(&host_exec_req.working_dir, slot_path)?;
 
         // 3. Lua transform (if configured)
         let transform_result = if let Some(lua_source) = &cmd_config.lua_source {
             self.lua
                 .run_transform(
                     lua_source,
-                    &req.command,
-                    &req.args,
+                    &host_exec_req.command,
+                    &host_exec_req.args,
                     &host_working_dir,
                     worker_context.as_ref(),
                 )
@@ -171,18 +201,22 @@ impl HostExecService for HostExecServiceHandler {
                 })?
         } else {
             crate::hostexec::lua_transform::TransformResult {
-                command: req.command.clone(),
-                args: req.args,
+                command: host_exec_req.command.clone(),
+                args: host_exec_req.args,
                 working_dir: host_working_dir,
                 env: std::collections::HashMap::new(),
             }
         };
+
+        let is_bidi = cmd_config.bidi;
 
         info!(
             command = transform_result.command,
             process_id,
             working_dir = transform_result.working_dir,
             args_count = transform_result.args.len(),
+            bidi = is_bidi,
+            long_lived = cmd_config.long_lived,
             "host exec forwarding to builderd"
         );
 
@@ -200,22 +234,57 @@ impl HostExecService for HostExecServiceHandler {
         };
 
         let start_msg = BuilderExecMessage {
-            payload: Some(ExecPayload::Start(builder_req)),
+            payload: Some(BuilderPayload::Start(builder_req)),
         };
 
-        let response = client
-            .exec(tokio_stream::once(start_msg))
+        // Create a channel for sending messages to builderd. The start frame goes
+        // first; if the command is bidi, subsequent stdin frames from the worker
+        // stream are forwarded through the same channel.
+        let (builder_tx, builder_rx) = mpsc::channel::<BuilderExecMessage>(32);
+        builder_tx
+            .send(start_msg)
             .await
-            .map_err(|e| HostExecError::BuilderdExecFailed {
-                message: e.to_string(),
+            .map_err(|_| HostExecError::BuilderdExecFailed {
+                message: "failed to enqueue start frame".into(),
             })?;
 
+        // Spawn a task to forward stdin frames from the worker to builderd.
+        if is_bidi {
+            let tx = builder_tx.clone();
+            tokio::spawn(async move {
+                while let Some(Ok(msg)) = inbound.next().await {
+                    if let Some(HostExecPayload::Stdin(data)) = msg.payload {
+                        let builder_msg = BuilderExecMessage {
+                            payload: Some(BuilderPayload::Stdin(data)),
+                        };
+                        if tx.send(builder_msg).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        // Drop the original sender so the stream closes when the forwarding task
+        // (if any) finishes and drops its clone.
+        drop(builder_tx);
+
+        let builder_stream = ReceiverStream::new(builder_rx);
+
+        let response =
+            client
+                .exec(builder_stream)
+                .await
+                .map_err(|e| HostExecError::BuilderdExecFailed {
+                    message: e.to_string(),
+                })?;
+
         // Stream builderd response back to worker
-        let mut inbound = response.into_inner();
+        let mut builderd_inbound = response.into_inner();
         let (tx, rx) = mpsc::channel(32);
 
         tokio::spawn(async move {
-            while let Ok(Some(msg)) = inbound.message().await {
+            while let Ok(Some(msg)) = builderd_inbound.message().await {
                 if tx.send(Ok(msg)).await.is_err() {
                     break;
                 }
@@ -262,7 +331,27 @@ impl HostExecServiceHandler {
         ),
         HostExecError,
     > {
-        let Some(worker_id_val) = req.metadata().get(ur_config::WORKER_ID_HEADER) else {
+        self.resolve_request_context_from_metadata(req.metadata())
+            .await
+    }
+
+    /// Resolve request context from pre-extracted metadata.
+    ///
+    /// This variant is needed when the request body type is not `Sync`
+    /// (e.g., `Streaming<T>`), so metadata must be cloned before consumption.
+    #[allow(clippy::result_large_err)]
+    async fn resolve_request_context_from_metadata(
+        &self,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> Result<
+        (
+            String,
+            Option<crate::hostexec::WorkerContext>,
+            HostExecConfigManager,
+        ),
+        HostExecError,
+    > {
+        let Some(worker_id_val) = metadata.get(ur_config::WORKER_ID_HEADER) else {
             // No worker ID header — host-server request (e.g., from `ur` CLI).
             return Ok((String::new(), None, self.config.clone()));
         };

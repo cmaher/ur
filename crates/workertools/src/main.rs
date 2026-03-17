@@ -1,11 +1,14 @@
 use std::io::Write;
 
 use clap::{Parser, Subcommand};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Endpoint;
 
 use ur_rpc::proto::core::command_output::Payload;
-use ur_rpc::proto::hostexec::HostExecRequest;
+use ur_rpc::proto::hostexec::host_exec_message::Payload as HostExecPayload;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
+use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
 
@@ -87,11 +90,46 @@ async fn run_host_exec(command: &str, args: Vec<String>) -> i32 {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/workspace".into());
 
-    let mut request = tonic::Request::new(HostExecRequest {
-        command: command.into(),
-        args,
-        working_dir,
+    let start_msg = HostExecMessage {
+        payload: Some(HostExecPayload::Start(HostExecRequest {
+            command: command.into(),
+            args,
+            working_dir,
+        })),
+    };
+
+    // Build the outbound stream: start frame first, then stdin forwarding.
+    // For now, stdin forwarding is wired up but only activates when the server-side
+    // command is configured as bidi. We always send the start frame and keep the
+    // channel open for potential stdin data.
+    let (tx, rx) = mpsc::channel::<HostExecMessage>(32);
+    tx.send(start_msg).await.unwrap();
+
+    // Spawn a task to read stdin and forward as stdin frames.
+    // This allows bidi commands to receive input from the worker's stdin.
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut stdin = tokio::io::stdin();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdin.read(&mut buf).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let msg = HostExecMessage {
+                        payload: Some(HostExecPayload::Stdin(buf[..n].to_vec())),
+                    };
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
     });
+
+    let outbound = ReceiverStream::new(rx);
+
+    let mut request = tonic::Request::new(outbound);
 
     // Inject worker ID and secret metadata headers if available
     if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
