@@ -157,13 +157,45 @@ impl GithubPollerManager {
                 // Still running — do nothing, will check again next scan.
             }
             Ok(CiStatus::Failed) => {
-                // CI failed — the push handler's worker should fix it.
-                // Leave in pushing state for now.
+                // CI failed — collect failing check names and transition to fixing.
+                let failing_checks = collect_failing_checks(&backend, pr_number).await;
+
                 warn!(
                     ticket_id = %ticket.id,
                     pr_number = %pr_number,
-                    "CI has failures — staying in pushing"
+                    failing_checks = %failing_checks,
+                    "CI has failures — transitioning to fixing"
                 );
+
+                // Set fix_phase=ci metadata so FixDispatchHandler knows the context.
+                if let Err(e) = self
+                    .ticket_repo
+                    .set_meta(&ticket.id, "ticket", "fix_phase", "ci")
+                    .await
+                {
+                    error!(ticket_id = %ticket.id, error = %e, "failed to set fix_phase metadata");
+                    return;
+                }
+
+                // Add activity with failing check details.
+                let message = format!(
+                    "[workflow] CI failure detected\n\
+                     source: workflow\n\
+                     result: fail\n\
+                     ---\n\
+                     {failing_checks}"
+                );
+                if let Err(e) = self
+                    .ticket_repo
+                    .add_activity(&ticket.id, "workflow", &message)
+                    .await
+                {
+                    error!(ticket_id = %ticket.id, error = %e, "failed to add CI failure activity");
+                    return;
+                }
+
+                self.transition_lifecycle(&ticket.id, LifecycleStatus::Fixing)
+                    .await;
             }
             Ok(CiStatus::NoChecks) => {
                 // No checks configured — treat as green.
@@ -412,6 +444,35 @@ async fn check_ci_status(backend: &GhBackend, pr_number: i64) -> Result<CiStatus
         Ok(CiStatus::AllGreen)
     } else {
         Ok(CiStatus::Pending)
+    }
+}
+
+/// Collect a summary string of failing check runs for activity recording.
+async fn collect_failing_checks(backend: &GhBackend, pr_number: i64) -> String {
+    let runs = match backend.check_runs(pr_number).await {
+        Ok(r) => r,
+        Err(e) => return format!("(failed to fetch check runs: {e})"),
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    for run in &runs {
+        let conclusion = run.conclusion.as_str();
+        if !conclusion.is_empty()
+            && conclusion != "success"
+            && conclusion != "SUCCESS"
+            && conclusion != "skipped"
+            && conclusion != "SKIPPED"
+            && conclusion != "neutral"
+            && conclusion != "NEUTRAL"
+        {
+            failures.push(format!("{}: {}", run.name, conclusion));
+        }
+    }
+
+    if failures.is_empty() {
+        "CI failed (no specific failing checks identified)".to_string()
+    } else {
+        format!("Failing checks:\n{}", failures.join("\n"))
     }
 }
 

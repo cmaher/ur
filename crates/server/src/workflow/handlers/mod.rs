@@ -69,6 +69,18 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::FeedbackResolving,
             Arc::new(FeedbackResolveHandler),
         ),
+        // Pushing → Fixing: CI failure detected by GitHub poller
+        (
+            LifecycleStatus::Pushing,
+            LifecycleStatus::Fixing,
+            Arc::new(FixDispatchHandler),
+        ),
+        // FeedbackResolving → Fixing: merge conflict during PR merge
+        (
+            LifecycleStatus::FeedbackResolving,
+            LifecycleStatus::Fixing,
+            Arc::new(FixDispatchHandler),
+        ),
         // Pushing → InReview: no-op signal handler
         (
             LifecycleStatus::Pushing,
