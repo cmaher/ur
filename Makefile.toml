@@ -87,7 +87,7 @@ dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
-[tasks.install-force-base]
+[tasks.install-nocache]
 description = "Same as install but force-rebuilds the base image (no Docker cache)"
 dependencies = ["image-force-base"]
 script_runner = "@shell"
