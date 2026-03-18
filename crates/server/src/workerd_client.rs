@@ -1,6 +1,6 @@
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{
-    CreateFeedbackRequest, ImplementRequest, PushRequest, SendMessageRequest,
+    CreateFeedbackRequest, FixRequest, ImplementRequest, PushRequest, SendMessageRequest,
 };
 
 /// Thin client for sending messages to a workerd instance inside a worker container.
@@ -74,6 +74,25 @@ impl WorkerdClient {
             .push(req)
             .await
             .map_err(|e| format!("workerd Push failed: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Fire-and-forget: send a /fix skill invocation to the worker.
+    pub async fn fix(&self, ticket_id: &str, fix_phase: &str) -> Result<(), String> {
+        let mut client = WorkerDaemonServiceClient::connect(self.addr.clone())
+            .await
+            .map_err(|e| format!("workerd unavailable at {}: {e}", self.addr))?;
+
+        let req = FixRequest {
+            ticket_id: ticket_id.to_string(),
+            fix_phase: fix_phase.to_string(),
+        };
+
+        client
+            .fix(req)
+            .await
+            .map_err(|e| format!("workerd Fix failed: {e}"))?;
 
         Ok(())
     }

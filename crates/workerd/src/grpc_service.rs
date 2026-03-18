@@ -5,9 +5,9 @@ use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    CreateFeedbackRequest, CreateFeedbackResponse, ImplementRequest, ImplementResponse,
-    NotifyIdleRequest, NotifyIdleResponse, PushRequest, PushResponse, SendMessageRequest,
-    SendMessageResponse,
+    CreateFeedbackRequest, CreateFeedbackResponse, FixRequest, FixResponse, ImplementRequest,
+    ImplementResponse, NotifyIdleRequest, NotifyIdleResponse, PushRequest, PushResponse,
+    SendMessageRequest, SendMessageResponse,
 };
 
 #[derive(Clone)]
@@ -155,5 +155,25 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         }
 
         Ok(Response::new(CreateFeedbackResponse {}))
+    }
+
+    async fn fix(&self, request: Request<FixRequest>) -> Result<Response<FixResponse>, Status> {
+        let inner = request.into_inner();
+        let skill_command = format!("/fix {}", inner.ticket_id);
+        info!(
+            ticket_id = inner.ticket_id,
+            fix_phase = inner.fix_phase,
+            "Fix received, sending skill invocation to tmux"
+        );
+
+        let session = tmux::Session::agent();
+        if let Err(e) = session.send_keys("/clear").await {
+            error!(error = %e, "tmux send-keys failed for /clear before /fix");
+        }
+        if let Err(e) = session.send_keys(&skill_command).await {
+            error!(error = %e, "tmux send-keys failed for /fix");
+        }
+
+        Ok(Response::new(FixResponse {}))
     }
 }
