@@ -297,6 +297,7 @@ impl GithubPollerManager {
     async fn transition_lifecycle(&self, ticket_id: &str, to: LifecycleStatus) {
         let update = TicketUpdate {
             lifecycle_status: Some(to),
+            lifecycle_managed: None,
             status: None,
             type_: None,
             priority: None,

@@ -65,6 +65,7 @@ pub struct Ticket {
     pub type_: String,
     pub status: String,
     pub lifecycle_status: LifecycleStatus,
+    pub lifecycle_managed: bool,
     pub priority: i32,
     pub parent_id: Option<String>,
     pub title: String,
@@ -96,6 +97,7 @@ pub struct NewTicket {
 pub struct TicketUpdate {
     pub status: Option<String>,
     pub lifecycle_status: Option<LifecycleStatus>,
+    pub lifecycle_managed: Option<bool>,
     pub type_: Option<String>,
     pub priority: Option<i32>,
     pub title: Option<String>,

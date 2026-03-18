@@ -562,6 +562,7 @@ async fn handle_idle_redispatch(
         );
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_managed: None,
             status: None,
             type_: None,
             priority: None,

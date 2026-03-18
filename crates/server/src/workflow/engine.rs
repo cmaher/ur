@@ -110,6 +110,17 @@ impl WorkflowEngine {
             }
         };
 
+        // If the ticket is not lifecycle-managed, delete the event and skip.
+        if !ticket.lifecycle_managed {
+            info!(
+                event_id = %event.id,
+                ticket_id = %event.ticket_id,
+                "ticket is not lifecycle-managed — deleting workflow event"
+            );
+            self.delete_event(&event.id).await;
+            return;
+        }
+
         // If the ticket's lifecycle_status doesn't match the transition's
         // target status, a newer transition has superseded this one — skip it.
         if ticket.lifecycle_status != event.new_lifecycle_status {
@@ -210,6 +221,7 @@ impl WorkflowEngine {
     async fn mark_ticket_stalled(&self, ticket_id: &str) {
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_managed: None,
             status: None,
             type_: None,
             priority: None,
@@ -288,6 +300,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -348,6 +361,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -400,6 +414,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -454,6 +469,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,

@@ -135,6 +135,7 @@ where
                     lifecycle_status: lifecycle,
                     branch: branch_value,
                     project,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -278,6 +279,7 @@ where
                     lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("transition lifecycle to feedback_creating")?;
@@ -299,6 +301,7 @@ where
                     lifecycle_status: None,
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("close ticket")?;
@@ -319,6 +322,7 @@ where
                     lifecycle_status: None,
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("open ticket")?;
