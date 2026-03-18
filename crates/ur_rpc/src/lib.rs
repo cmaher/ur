@@ -38,4 +38,9 @@ pub mod proto {
     pub mod workerd {
         tonic::include_proto!("ur.workerd");
     }
+    #[cfg(feature = "remote_repo")]
+    #[allow(clippy::excessive_nesting)]
+    pub mod remote_repo {
+        tonic::include_proto!("ur.remote_repo");
+    }
 }

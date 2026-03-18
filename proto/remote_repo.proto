@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package ur.remote_repo;
+
+// Typed abstraction over remote git hosting APIs (GitHub today, Gitea later).
+// Each request carries gh_repo (owner/repo) for stateless operation.
+service RemoteRepoService {
+  rpc GetPr(GetPrRequest) returns (GetPrResponse);
+  rpc CreatePr(CreatePrRequest) returns (CreatePrResponse);
+  rpc MergePr(MergePrRequest) returns (MergePrResponse);
+  rpc GetCheckRuns(GetCheckRunsRequest) returns (GetCheckRunsResponse);
+  rpc GetFailedRunLogs(GetFailedRunLogsRequest) returns (GetFailedRunLogsResponse);
+  rpc GetReviewComments(GetReviewCommentsRequest) returns (GetReviewCommentsResponse);
+  rpc GetConversationComments(GetConversationCommentsRequest) returns (GetConversationCommentsResponse);
+  rpc ReplyToComment(ReplyToCommentRequest) returns (ReplyToCommentResponse);
+}
+
+// --- Shared messages ---
+
+message PullRequest {
+  int64 number = 1;
+  string url = 2;
+  string state = 3;
+  string head_ref = 4;
+  string base_ref = 5;
+  string title = 6;
+  string body = 7;
+}
+
+message Reactions {
+  int64 plus_one = 1;
+  int64 minus_one = 2;
+  int64 laugh = 3;
+  int64 confused = 4;
+  int64 heart = 5;
+  int64 hooray = 6;
+  int64 rocket = 7;
+  int64 eyes = 8;
+}
+
+message CheckRun {
+  string name = 1;
+  string status = 2;
+  string conclusion = 3;
+  string details_url = 4;
+}
+
+message ReviewComment {
+  int64 id = 1;
+  string user = 2;
+  bool is_bot = 3;
+  string path = 4;
+  int64 line = 5;
+  string diff_hunk = 6;
+  string body = 7;
+  Reactions reactions = 8;
+  int64 in_reply_to_id = 9;
+  string created_at = 10;
+}
+
+message ConversationComment {
+  int64 id = 1;
+  string user = 2;
+  bool is_bot = 3;
+  string body = 4;
+  Reactions reactions = 5;
+  string created_at = 6;
+}
+
+enum MergeStrategy {
+  MERGE_STRATEGY_UNSPECIFIED = 0;
+  MERGE_STRATEGY_SQUASH = 1;
+  MERGE_STRATEGY_MERGE = 2;
+  MERGE_STRATEGY_REBASE = 3;
+}
+
+message MergeResult {
+  bool success = 1;
+  string sha = 2;
+  string error_message = 3;
+}
+
+// --- GetPr ---
+
+message GetPrRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+}
+
+message GetPrResponse {
+  PullRequest pull_request = 1;
+}
+
+// --- CreatePr ---
+
+message CreatePrRequest {
+  string gh_repo = 1;
+  string title = 2;
+  string body = 3;
+  string head = 4;
+  string base = 5;
+  bool draft = 6;
+}
+
+message CreatePrResponse {
+  PullRequest pull_request = 1;
+}
+
+// --- MergePr ---
+
+message MergePrRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+  MergeStrategy strategy = 3;
+}
+
+message MergePrResponse {
+  MergeResult result = 1;
+}
+
+// --- GetCheckRuns ---
+
+message GetCheckRunsRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+}
+
+message GetCheckRunsResponse {
+  repeated CheckRun check_runs = 1;
+}
+
+// --- GetFailedRunLogs ---
+
+message GetFailedRunLogsRequest {
+  string gh_repo = 1;
+  int64 run_id = 2;
+}
+
+message GetFailedRunLogsResponse {
+  string logs = 1;
+}
+
+// --- GetReviewComments ---
+
+message GetReviewCommentsRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+}
+
+message GetReviewCommentsResponse {
+  repeated ReviewComment comments = 1;
+}
+
+// --- GetConversationComments ---
+
+message GetConversationCommentsRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+}
+
+message GetConversationCommentsResponse {
+  repeated ConversationComment comments = 1;
+}
+
+// --- ReplyToComment ---
+
+message ReplyToCommentRequest {
+  string gh_repo = 1;
+  int64 pr_number = 2;
+  int64 comment_id = 3;
+  string body = 4;
+}
+
+message ReplyToCommentResponse {
+  int64 comment_id = 1;
+}
