@@ -7,10 +7,15 @@ pub use args::TicketArgs;
 pub use execute::execute;
 pub use format::{format_ticket_detail, format_ticket_list};
 
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use tonic::transport::{Channel, Endpoint};
+use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
 };
+
+use crate::output::OutputManager;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -76,7 +81,7 @@ pub enum TicketOutput {
     },
 }
 
-/// Format a `TicketOutput` as human-readable text (same output as the pre-refactor CLI).
+/// Format a `TicketOutput` as human-readable text.
 pub fn format_output(output: &TicketOutput) -> String {
     match output {
         TicketOutput::Created { id } => format!("Created {id}"),
@@ -127,6 +132,131 @@ pub fn format_output(output: &TicketOutput) -> String {
     }
 }
 
+// --- Connection and project resolution (host CLI specific) ---
+
+async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
+    let addr = format!("http://127.0.0.1:{port}");
+    let channel = Endpoint::try_from(addr)?
+        .connect()
+        .await
+        .context("server is not running — run 'ur server start' first")?;
+    Ok(TicketServiceClient::new(channel))
+}
+
+/// Extract the project prefix from a ticket ID (format: `{project}-{hash}`).
+fn project_from_ticket_id(ticket_id: &str) -> Option<String> {
+    let dash = ticket_id.find('-')?;
+    let project = &ticket_id[..dash];
+    if project.is_empty() {
+        None
+    } else {
+        Some(project.to_owned())
+    }
+}
+
+/// Resolve the project key for commands that require it.
+///
+/// Resolution order: explicit `--project/-p` flag → `UR_PROJECT` env → current directory name.
+/// Returns an error if none resolves.
+fn resolve_project(explicit: Option<String>) -> Result<String> {
+    if let Some(p) = explicit {
+        return Ok(p);
+    }
+    if let Ok(env_val) = std::env::var("UR_PROJECT")
+        && !env_val.is_empty()
+    {
+        return Ok(env_val);
+    }
+    let cwd = std::env::current_dir().context("failed to get current working directory")?;
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+        .to_owned();
+    if dir_name.is_empty() {
+        bail!("could not resolve project: no --project flag, UR_PROJECT env, or directory name");
+    }
+    Ok(dir_name)
+}
+
+/// Inject resolved project into ticket args that require it.
+fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
+    match args {
+        TicketArgs::Create {
+            title,
+            project,
+            ticket_type,
+            parent,
+            priority,
+            body,
+            wip,
+            follow_up,
+        } => {
+            let resolved = resolve_project(project)?;
+            Ok(TicketArgs::Create {
+                title,
+                project: Some(resolved),
+                ticket_type,
+                parent,
+                priority,
+                body,
+                wip,
+                follow_up,
+            })
+        }
+        TicketArgs::List {
+            project,
+            all,
+            epic,
+            ticket_type,
+            status,
+            lifecycle,
+        } => {
+            let resolved = if all {
+                None
+            } else if project.is_none() && epic.is_some() {
+                epic.as_deref().and_then(project_from_ticket_id)
+            } else {
+                Some(resolve_project(project)?)
+            };
+            Ok(TicketArgs::List {
+                project: resolved,
+                all,
+                epic,
+                ticket_type,
+                status,
+                lifecycle,
+            })
+        }
+        TicketArgs::Dispatchable { epic_id, project } => {
+            let resolved = if let Some(p) = project {
+                p
+            } else if let Some(p) = project_from_ticket_id(&epic_id) {
+                p
+            } else {
+                resolve_project(None)?
+            };
+            Ok(TicketArgs::Dispatchable {
+                epic_id,
+                project: Some(resolved),
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+pub async fn handle(port: u16, args: TicketArgs, output: &OutputManager) -> Result<()> {
+    let args = resolve_args_project(args)?;
+    let mut client = connect_ticket(port).await?;
+    let result = execute(args, &mut client).await?;
+    if output.is_json() {
+        output.print_success(&result);
+    } else {
+        println!("{}", format_output(&result));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod format_tests;
 #[cfg(test)]
@@ -136,7 +266,7 @@ mod grpc_tests;
 mod tests {
     use clap::Parser;
 
-    use crate::args::TicketCommand;
+    use crate::ticket::args::TicketCommand;
 
     fn parse(args: &[&str]) -> TicketCommand {
         TicketCommand::parse_from(args)

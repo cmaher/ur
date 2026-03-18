@@ -7,9 +7,9 @@ use ur_rpc::proto::ticket::*;
 
 use ur_rpc::lifecycle;
 
-use crate::TicketOutput;
-use crate::args::TicketArgs;
-use crate::status::build_status_report;
+use super::TicketOutput;
+use super::args::TicketArgs;
+use super::status::build_status_report;
 
 /// Execute a ticket subcommand against the given gRPC client.
 ///

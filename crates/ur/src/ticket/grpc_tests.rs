@@ -13,7 +13,7 @@ use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::ticket_service_server::{TicketService, TicketServiceServer};
 use ur_rpc::proto::ticket::*;
 
-use crate::args::TicketArgs;
+use super::args::TicketArgs;
 
 // --- Mock TicketService ---
 
@@ -375,7 +375,7 @@ async fn execute_create_and_show() {
     let mut client = connect(addr).await;
 
     // Create a ticket
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Test ticket".into(),
             project: Some("test".into()),
@@ -392,7 +392,7 @@ async fn execute_create_and_show() {
     .expect("create should succeed");
 
     // List tickets and verify the created ticket appears
-    crate::execute(
+    super::execute(
         TicketArgs::List {
             project: None,
             all: true,
@@ -413,7 +413,7 @@ async fn execute_create_and_list_filtered() {
     let mut client = connect(addr).await;
 
     // Create two tickets with different statuses
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Open ticket".into(),
             project: Some("test".into()),
@@ -436,7 +436,7 @@ async fn execute_create_and_list_filtered() {
         state.tickets.get_mut(&id).unwrap().status = "closed".into();
     }
 
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Another open ticket".into(),
             project: Some("test".into()),
@@ -453,7 +453,7 @@ async fn execute_create_and_list_filtered() {
     .unwrap();
 
     // List with status filter
-    crate::execute(
+    super::execute(
         TicketArgs::List {
             project: None,
             all: true,
@@ -473,7 +473,7 @@ async fn execute_show_nonexistent_returns_error() {
     let (addr, _store) = start_mock_server().await;
     let mut client = connect(addr).await;
 
-    let result = crate::execute(
+    let result = super::execute(
         TicketArgs::Show {
             id: "ur-nonexistent".into(),
         },
@@ -502,7 +502,7 @@ async fn execute_update_nonexistent_returns_error() {
     let (addr, _store) = start_mock_server().await;
     let mut client = connect(addr).await;
 
-    let result = crate::execute(
+    let result = super::execute(
         TicketArgs::Update {
             id: "ur-nonexistent".into(),
             title: Some("new title".into()),
@@ -534,7 +534,7 @@ async fn execute_set_and_delete_meta() {
     let mut client = connect(addr).await;
 
     // Create a ticket first
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Meta test".into(),
             project: Some("test".into()),
@@ -556,7 +556,7 @@ async fn execute_set_and_delete_meta() {
     };
 
     // Set metadata
-    crate::execute(
+    super::execute(
         TicketArgs::SetMeta {
             id: ticket_id.clone(),
             key: "env".into(),
@@ -575,7 +575,7 @@ async fn execute_set_and_delete_meta() {
     }
 
     // Delete metadata
-    crate::execute(
+    super::execute(
         TicketArgs::DeleteMeta {
             id: ticket_id.clone(),
             key: "env".into(),
@@ -599,7 +599,7 @@ async fn execute_add_and_list_activities() {
     let mut client = connect(addr).await;
 
     // Create ticket
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Activity test".into(),
             project: Some("test".into()),
@@ -621,7 +621,7 @@ async fn execute_add_and_list_activities() {
     };
 
     // Add activity
-    crate::execute(
+    super::execute(
         TicketArgs::AddActivity {
             id: ticket_id.clone(),
             message: "did some work".into(),
@@ -633,7 +633,7 @@ async fn execute_add_and_list_activities() {
     .expect("add-activity should succeed");
 
     // List activities
-    crate::execute(
+    super::execute(
         TicketArgs::ListActivities {
             id: ticket_id.clone(),
         },
@@ -657,7 +657,7 @@ async fn execute_add_and_remove_block() {
     let mut client = connect(addr).await;
 
     // Create two tickets
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Blocker".into(),
             project: Some("test".into()),
@@ -673,7 +673,7 @@ async fn execute_add_and_remove_block() {
     .await
     .unwrap();
 
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Blocked".into(),
             project: Some("test".into()),
@@ -696,7 +696,7 @@ async fn execute_add_and_remove_block() {
     };
 
     // Add block
-    crate::execute(
+    super::execute(
         TicketArgs::AddBlock {
             id: id_b.clone(),
             blocked_by_id: id_a.clone(),
@@ -713,7 +713,7 @@ async fn execute_add_and_remove_block() {
     }
 
     // Remove block
-    crate::execute(
+    super::execute(
         TicketArgs::RemoveBlock {
             id: id_b.clone(),
             blocked_by_id: id_a.clone(),
@@ -735,7 +735,7 @@ async fn execute_add_and_remove_link() {
     let mut client = connect(addr).await;
 
     // Create two tickets
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Ticket A".into(),
             project: Some("test".into()),
@@ -751,7 +751,7 @@ async fn execute_add_and_remove_link() {
     .await
     .unwrap();
 
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Ticket B".into(),
             project: Some("test".into()),
@@ -774,7 +774,7 @@ async fn execute_add_and_remove_link() {
     };
 
     // Add link
-    crate::execute(
+    super::execute(
         TicketArgs::AddLink {
             id: id_a.clone(),
             linked_id: id_b.clone(),
@@ -792,7 +792,7 @@ async fn execute_add_and_remove_link() {
     }
 
     // Remove link
-    crate::execute(
+    super::execute(
         TicketArgs::RemoveLink {
             id: id_a.clone(),
             linked_id: id_b.clone(),
@@ -814,7 +814,7 @@ async fn execute_create_with_follow_up() {
     let mut client = connect(addr).await;
 
     // Create a ticket to be the follow-up target
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Original ticket".into(),
             project: Some("test".into()),
@@ -836,7 +836,7 @@ async fn execute_create_with_follow_up() {
     };
 
     // Create a follow-up epic linked to the original ticket
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Follow-up epic".into(),
             project: Some("test".into()),
@@ -870,7 +870,7 @@ async fn execute_update_existing_ticket() {
     let (addr, store) = start_mock_server().await;
     let mut client = connect(addr).await;
 
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Original title".into(),
             project: Some("test".into()),
@@ -891,7 +891,7 @@ async fn execute_update_existing_ticket() {
         state.tickets.keys().next().unwrap().clone()
     };
 
-    crate::execute(
+    super::execute(
         TicketArgs::Update {
             id: ticket_id.clone(),
             title: Some("Updated title".into()),
@@ -927,7 +927,7 @@ async fn execute_dispatchable() {
     let mut client = connect(addr).await;
 
     // Create an epic
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "My Epic".into(),
             project: Some("test".into()),
@@ -949,8 +949,7 @@ async fn execute_dispatchable() {
     };
 
     // Create a child task with the epic as parent
-    // We need to set parent_id directly since the mock uses parent_id from the request
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "Child task".into(),
             project: Some("test".into()),
@@ -967,7 +966,7 @@ async fn execute_dispatchable() {
     .unwrap();
 
     // Dispatchable should return the child task
-    crate::execute(
+    super::execute(
         TicketArgs::Dispatchable {
             epic_id: epic_id.clone(),
             project: None,
@@ -996,7 +995,7 @@ async fn execute_list_activities_empty() {
     let mut client = connect(addr).await;
 
     // Create a ticket
-    crate::execute(
+    super::execute(
         TicketArgs::Create {
             title: "No activities".into(),
             project: Some("test".into()),
@@ -1013,7 +1012,7 @@ async fn execute_list_activities_empty() {
     .unwrap();
 
     // List activities on a ticket with none — should succeed (print "No activities")
-    crate::execute(
+    super::execute(
         TicketArgs::ListActivities {
             id: "ur-t0001".into(),
         },
@@ -1029,7 +1028,7 @@ async fn execute_list_empty() {
     let mut client = connect(addr).await;
 
     // List tickets on empty store — should succeed (print "No tickets found.")
-    crate::execute(
+    super::execute(
         TicketArgs::List {
             project: None,
             all: true,
@@ -1078,7 +1077,7 @@ async fn auth_rejection_propagates_error() {
 
     let mut client = connect(addr).await;
 
-    let result = crate::execute(
+    let result = super::execute(
         TicketArgs::Create {
             title: "Should fail".into(),
             project: Some("test".into()),

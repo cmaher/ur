@@ -48,7 +48,7 @@ pub enum TicketArgs {
         all: bool,
 
         /// Filter by parent epic ID
-        #[arg(long)]
+        #[arg(long, short = 'e')]
         epic: Option<String>,
 
         /// Filter by ticket type
