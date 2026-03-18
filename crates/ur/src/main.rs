@@ -38,10 +38,6 @@ use output::{
 #[derive(Parser)]
 #[command(name = "ur", about = "Coding LLM coordination framework")]
 struct Cli {
-    /// TCP port of the server gRPC server (overrides ur.toml)
-    #[arg(long)]
-    port: Option<u16>,
-
     /// Output format: text or json (also: OUTPUT_FORMAT env var)
     #[arg(long, global = true)]
     output: Option<String>,
@@ -283,12 +279,6 @@ enum WorkerCommands {
 fn load_config() -> Result<ur_config::Config> {
     debug!("loading ur config");
     ur_config::Config::load().context("failed to load config")
-}
-
-fn resolve_server_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
-    let port = cli_port.unwrap_or(config.server_port);
-    debug!(cli_port = ?cli_port, config_port = config.server_port, resolved_port = port, "resolved server port");
-    port
 }
 
 #[instrument(skip_all, fields(addr))]
@@ -1167,7 +1157,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         "ur CLI started"
     );
 
-    let port = resolve_server_port(cli.port, &config);
+    let port = config.server_port;
     let compose = compose_manager_from_config(&config);
 
     match cli.command {

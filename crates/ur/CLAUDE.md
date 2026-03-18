@@ -1,8 +1,8 @@
 # ur (Host CLI)
 
-Runs on the host macOS system. Connects to `ur-server` via tonic gRPC over TCP at `127.0.0.1:42069` (default). Use `--port` to override, or set `server_port` in `ur.toml`.
+Runs on the host macOS system. Connects to `ur-server` via tonic gRPC over TCP at `127.0.0.1:42069` (default). Set `server_port` in `ur.toml` to override.
 
-- Daemon port resolution: `--port` CLI flag > `ur.toml` > default (42069)
+- Server port: read from `config.server_port` (defaults to 42069)
 - Auto-starts `ur-server` via Docker Compose if not running — uses `compose_file` from `ur.toml` (default: `~/.ur/docker-compose.yml`)
 - `ComposeManager` in `src/compose.rs` wraps `docker compose` CLI for up/down/status. Compose YAML is generated programmatically at `ur start` time (no static template) via `generate_compose()`.
 - Container images are built separately via `scripts/build/image.sh`, not by `ur` itself
