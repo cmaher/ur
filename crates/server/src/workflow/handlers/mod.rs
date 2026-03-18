@@ -4,6 +4,8 @@
 mod dispatch_implement;
 #[cfg(feature = "workerd")]
 mod dispatch_push;
+#[cfg(feature = "workerd")]
+mod feedback_create;
 mod review_start;
 mod stall;
 
@@ -11,6 +13,8 @@ mod stall;
 pub use dispatch_implement::DispatchImplementHandler;
 #[cfg(feature = "workerd")]
 pub use dispatch_push::DispatchPushHandler;
+#[cfg(feature = "workerd")]
+pub use feedback_create::FeedbackCreateHandler;
 pub use review_start::ReviewStartHandler;
 pub use stall::StallHandler;
 
@@ -38,6 +42,14 @@ pub fn register_all(engine: &mut WorkflowEngine) {
         LifecycleStatus::Implementing,
         LifecycleStatus::Pushing,
         Arc::new(DispatchPushHandler),
+    );
+
+    // InReview → FeedbackCreating: dispatch feedback create RPC to worker
+    #[cfg(feature = "workerd")]
+    engine.register_handler(
+        LifecycleStatus::InReview,
+        LifecycleStatus::FeedbackCreating,
+        Arc::new(FeedbackCreateHandler),
     );
 
     // Pushing → InReview: no-op signal handler
