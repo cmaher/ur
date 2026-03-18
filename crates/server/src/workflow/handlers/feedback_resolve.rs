@@ -174,7 +174,7 @@ async fn resolve_feedback_later(
     );
 
     let backend = GhBackend {
-        builderd_addr: ctx.builderd_addr.clone(),
+        client: ctx.builderd_client.clone(),
         gh_repo: gh_repo.clone(),
     };
     let pr_num: i64 = pr_number

@@ -22,6 +22,10 @@ pub mod proto {
     #[allow(clippy::excessive_nesting)]
     pub mod builder {
         tonic::include_proto!("ur.builder");
+
+        /// Pre-connected builderd gRPC client (cheap to clone).
+        pub type BuilderdClient =
+            builder_daemon_service_client::BuilderDaemonServiceClient<tonic::transport::Channel>;
     }
     #[cfg(feature = "rag")]
     #[allow(clippy::excessive_nesting)]

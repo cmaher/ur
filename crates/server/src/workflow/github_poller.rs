@@ -6,8 +6,11 @@ use tracing::{error, info, warn};
 use remote_repo::{GhBackend, RemoteRepo};
 use ur_db::TicketRepo;
 use ur_db::model::{LifecycleStatus, Ticket, TicketUpdate};
-
-use crate::builderd_client::BuilderdClient;
+use ur_rpc::proto::builder::{
+    BuilderExecMessage, BuilderExecRequest, BuilderdClient,
+    builder_exec_message::Payload as ExecPayload,
+};
+use ur_rpc::stream::CompletedExec;
 
 /// Delay between individual GitHub API calls to avoid rate limiting.
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
@@ -24,14 +27,14 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
-    builderd_addr: String,
+    builderd_client: BuilderdClient,
 }
 
 impl GithubPollerManager {
-    pub fn new(ticket_repo: TicketRepo, builderd_addr: String) -> Self {
+    pub fn new(ticket_repo: TicketRepo, builderd_client: BuilderdClient) -> Self {
         Self {
             ticket_repo,
-            builderd_addr,
+            builderd_client,
         }
     }
 
@@ -139,7 +142,7 @@ impl GithubPollerManager {
         );
 
         let backend = GhBackend {
-            builderd_addr: self.builderd_addr.clone(),
+            client: self.builderd_client.clone(),
             gh_repo,
         };
 
@@ -250,12 +253,10 @@ impl GithubPollerManager {
         );
 
         let backend = GhBackend {
-            builderd_addr: self.builderd_addr.clone(),
+            client: self.builderd_client.clone(),
             gh_repo: gh_repo.clone(),
         };
-        let builderd_client = BuilderdClient::new(self.builderd_addr.clone());
-
-        match check_review_signal(&backend, &builderd_client, &gh_repo, pr_number).await {
+        match check_review_signal(&backend, &self.builderd_client, &gh_repo, pr_number).await {
             Ok(ReviewSignal::Approve) => {
                 info!(
                     ticket_id = %ticket.id,
@@ -451,10 +452,7 @@ async fn check_review_signal(
         }
         // Use REST API to distinguish merged vs closed-without-merge.
         let endpoint = format!("repos/{gh_repo}/pulls/{pr_number}");
-        let completed = builderd_client
-            .exec_and_collect("gh", &["api", &endpoint], "/tmp")
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to get PR state via builderd: {e}"))?;
+        let completed = exec_gh_via_builderd(builderd_client, &["api", &endpoint]).await?;
         let completed = completed
             .check()
             .map_err(|e| anyhow::anyhow!("gh api PR state failed: {e}"))?;
@@ -483,12 +481,9 @@ async fn check_review_signal(
     let comment_created_at = &latest_comment.created_at;
 
     // Check if there are commits after the latest comment.
-    // Use BuilderdClient to run the commits endpoint directly.
     let commits_endpoint =
         format!("repos/{gh_repo}/pulls/{pr_number}/commits?per_page=1&sort=created&direction=desc");
-    let commits_result = builderd_client
-        .exec_and_collect("gh", &["api", &commits_endpoint], "/tmp")
-        .await;
+    let commits_result = exec_gh_via_builderd(builderd_client, &["api", &commits_endpoint]).await;
 
     if let Ok(completed) = commits_result
         && completed.exit_code == 0
@@ -543,6 +538,32 @@ fn contains_approval_signal(text: &str) -> bool {
 fn contains_changes_requested_signal(text: &str) -> bool {
     // Construction emoji: 🚧
     text.contains('\u{1F6A7}')
+}
+
+/// Execute a `gh` command via a pre-connected builderd client.
+async fn exec_gh_via_builderd(
+    client: &BuilderdClient,
+    args: &[&str],
+) -> Result<CompletedExec, anyhow::Error> {
+    let mut client = client.clone();
+    let req = BuilderExecRequest {
+        command: "gh".into(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        working_dir: "/tmp".into(),
+        env: std::collections::HashMap::new(),
+        long_lived: false,
+    };
+    let start_msg = BuilderExecMessage {
+        payload: Some(ExecPayload::Start(req)),
+    };
+    let response = client
+        .exec(tokio_stream::once(start_msg))
+        .await
+        .map_err(|e| anyhow::anyhow!("builderd exec failed: {e}"))?;
+    let completed = CompletedExec::collect(response.into_inner())
+        .await
+        .map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
+    Ok(completed)
 }
 
 #[cfg(test)]

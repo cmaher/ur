@@ -13,6 +13,7 @@ use std::sync::Arc;
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
+use ur_rpc::proto::builder::BuilderdClient;
 
 /// Result future returned by `WorkflowHandler::handle()`.
 pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
@@ -26,9 +27,9 @@ pub struct WorkflowContext {
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     /// Used to derive workerd gRPC addresses from process IDs.
     pub worker_prefix: String,
-    /// Address of the builderd gRPC server, used for delegating operations
+    /// Pre-connected builderd gRPC client for delegating operations
     /// (e.g., `gh` commands) that require host-side credentials.
-    pub builderd_addr: String,
+    pub builderd_client: BuilderdClient,
 }
 
 /// Key identifying a specific lifecycle transition.
