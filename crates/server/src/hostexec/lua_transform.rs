@@ -1554,7 +1554,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, args, "args should be unchanged");
         assert!(
-            result.env.get("UR_PROJECT").is_none(),
+            !result.env.contains_key("UR_PROJECT"),
             "no UR_PROJECT without worker_context"
         );
     }
