@@ -3,8 +3,11 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
+use remote_repo::{GhBackend, RemoteRepo};
 use ur_db::TicketRepo;
 use ur_db::model::{LifecycleStatus, Ticket, TicketUpdate};
+
+use crate::builderd_client::BuilderdClient;
 
 /// Delay between individual GitHub API calls to avoid rate limiting.
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
@@ -21,11 +24,15 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
+    builderd_addr: String,
 }
 
 impl GithubPollerManager {
-    pub fn new(ticket_repo: TicketRepo) -> Self {
-        Self { ticket_repo }
+    pub fn new(ticket_repo: TicketRepo, builderd_addr: String) -> Self {
+        Self {
+            ticket_repo,
+            builderd_addr,
+        }
     }
 
     /// Spawn the polling loop as a background tokio task.
@@ -97,8 +104,21 @@ impl GithubPollerManager {
             }
         };
 
-        let Some(pr_number) = meta.get("pr_number") else {
+        let Some(pr_number_str) = meta.get("pr_number") else {
             return;
+        };
+
+        let pr_number: i64 = match pr_number_str.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(
+                    ticket_id = %ticket.id,
+                    pr_number = %pr_number_str,
+                    error = %e,
+                    "invalid pr_number metadata — cannot parse as integer"
+                );
+                return;
+            }
         };
 
         let gh_repo = match meta.get("gh_repo") {
@@ -112,21 +132,18 @@ impl GithubPollerManager {
             }
         };
 
-        let branch = match &ticket.branch {
-            Some(b) => b.clone(),
-            None => {
-                warn!(ticket_id = %ticket.id, "pushing ticket has no branch");
-                return;
-            }
-        };
-
         info!(
             ticket_id = %ticket.id,
-            pr_number = %pr_number,
+            pr_number = pr_number,
             "checking CI status for pushing ticket"
         );
 
-        match check_ci_status(&gh_repo, &branch).await {
+        let backend = GhBackend {
+            builderd_addr: self.builderd_addr.clone(),
+            gh_repo,
+        };
+
+        match check_ci_status(&backend, pr_number).await {
             Ok(CiStatus::AllGreen) => {
                 info!(
                     ticket_id = %ticket.id,
@@ -178,8 +195,21 @@ impl GithubPollerManager {
             }
         };
 
-        let Some(pr_number) = meta.get("pr_number") else {
+        let Some(pr_number_str) = meta.get("pr_number") else {
             return;
+        };
+
+        let pr_number: i64 = match pr_number_str.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(
+                    ticket_id = %ticket.id,
+                    pr_number = %pr_number_str,
+                    error = %e,
+                    "invalid pr_number metadata — cannot parse as integer"
+                );
+                return;
+            }
         };
 
         let gh_repo = match meta.get("gh_repo") {
@@ -197,7 +227,7 @@ impl GithubPollerManager {
         if meta.contains_key("autoapprove") {
             info!(
                 ticket_id = %ticket.id,
-                pr_number = %pr_number,
+                pr_number = pr_number,
                 "autoapprove set — transitioning to feedback_creating with feedback_mode=later"
             );
             if let Err(e) = self
@@ -215,11 +245,17 @@ impl GithubPollerManager {
 
         info!(
             ticket_id = %ticket.id,
-            pr_number = %pr_number,
+            pr_number = pr_number,
             "checking review status for in_review ticket"
         );
 
-        match check_review_signal(&gh_repo, pr_number).await {
+        let backend = GhBackend {
+            builderd_addr: self.builderd_addr.clone(),
+            gh_repo: gh_repo.clone(),
+        };
+        let builderd_client = BuilderdClient::new(self.builderd_addr.clone());
+
+        match check_review_signal(&backend, &builderd_client, &gh_repo, pr_number).await {
             Ok(ReviewSignal::Approve) => {
                 info!(
                     ticket_id = %ticket.id,
@@ -318,7 +354,7 @@ impl GithubPollerManager {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API helpers (via `gh api` subprocess)
+// GitHub API helpers (via GhBackend through builderd)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Eq)]
@@ -329,32 +365,9 @@ enum CiStatus {
     NoChecks,
 }
 
-/// Check CI status for a branch via `gh api repos/{owner}/{repo}/commits/{ref}/check-runs`.
-async fn check_ci_status(gh_repo: &str, git_ref: &str) -> Result<CiStatus, anyhow::Error> {
-    let endpoint = format!("repos/{gh_repo}/commits/{git_ref}/check-runs");
-
-    let output = tokio::process::Command::new("gh")
-        .args(["api", &endpoint, "--jq", ".check_runs"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn gh api: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!(
-            "gh api check-runs failed: {}",
-            stderr.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let check_runs: serde_json::Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| anyhow::anyhow!("failed to parse check-runs JSON: {e}"))?;
-
-    let runs = match check_runs.as_array() {
-        Some(arr) => arr,
-        None => return Ok(CiStatus::NoChecks),
-    };
+/// Check CI status for a PR via `GhBackend::check_runs`.
+async fn check_ci_status(backend: &GhBackend, pr_number: i64) -> Result<CiStatus, anyhow::Error> {
+    let runs = backend.check_runs(pr_number).await?;
 
     if runs.is_empty() {
         return Ok(CiStatus::NoChecks);
@@ -363,13 +376,33 @@ async fn check_ci_status(gh_repo: &str, git_ref: &str) -> Result<CiStatus, anyho
     let mut all_completed = true;
     let mut any_failed = false;
 
-    for run in runs {
-        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        let conclusion = run.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
+    for run in &runs {
+        // GhBackend uses `gh pr checks --json state,conclusion` where "state"
+        // maps to the check status. Completed checks have state="" or
+        // conclusion set; pending checks have state that isn't empty/completed.
+        let status = run.status.as_str();
+        let conclusion = run.conclusion.as_str();
 
-        if status != "completed" {
+        // gh pr checks returns state as "" when completed, or status strings
+        // like "pending", "queued", "in_progress" when not.
+        let is_completed = status.is_empty()
+            || status == "completed"
+            || status == "SUCCESS"
+            || status == "FAILURE"
+            || status == "NEUTRAL"
+            || status == "SKIPPED"
+            || !conclusion.is_empty();
+
+        if !is_completed {
             all_completed = false;
-        } else if conclusion != "success" && conclusion != "skipped" && conclusion != "neutral" {
+        } else if !conclusion.is_empty()
+            && conclusion != "success"
+            && conclusion != "SUCCESS"
+            && conclusion != "skipped"
+            && conclusion != "SKIPPED"
+            && conclusion != "neutral"
+            && conclusion != "NEUTRAL"
+        {
             any_failed = true;
         }
     }
@@ -399,89 +432,66 @@ enum ReviewSignal {
 
 /// Check for review signals on a PR: latest comment emoji, merge status, close status.
 async fn check_review_signal(
+    backend: &GhBackend,
+    builderd_client: &BuilderdClient,
     gh_repo: &str,
-    pr_number: &str,
+    pr_number: i64,
 ) -> Result<ReviewSignal, anyhow::Error> {
     // First, check PR state (merged/closed).
-    let pr_endpoint = format!("repos/{gh_repo}/pulls/{pr_number}");
-    let pr_output = tokio::process::Command::new("gh")
-        .args(["api", &pr_endpoint])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn gh api for PR state: {e}"))?;
+    let pr = backend.get_pr(pr_number).await?;
 
-    if !pr_output.status.success() {
-        let stderr = String::from_utf8_lossy(&pr_output.stderr);
-        return Err(anyhow::anyhow!("gh api PR state failed: {}", stderr.trim()));
-    }
-
-    let pr_json: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&pr_output.stdout))
+    if pr.state == "closed" || pr.state == "CLOSED" {
+        // Check if merged by looking at the raw API response (PullRequest
+        // type doesn't carry a "merged" boolean, so a closed PR that was
+        // merged has state "MERGED" in GraphQL or we fall back to the REST
+        // API check).
+        if pr.state == "MERGED" {
+            return Ok(ReviewSignal::Merged);
+        }
+        // Use REST API to distinguish merged vs closed-without-merge.
+        let endpoint = format!("repos/{gh_repo}/pulls/{pr_number}");
+        let completed = builderd_client
+            .exec_and_collect("gh", &["api", &endpoint], "/tmp")
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to get PR state via builderd: {e}"))?;
+        let completed = completed
+            .check()
+            .map_err(|e| anyhow::anyhow!("gh api PR state failed: {e}"))?;
+        let pr_json: serde_json::Value = serde_json::from_str(&completed.stdout_text())
             .map_err(|e| anyhow::anyhow!("failed to parse PR JSON: {e}"))?;
-
-    let merged = pr_json
-        .get("merged")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let state = pr_json
-        .get("state")
-        .and_then(|v| v.as_str())
-        .unwrap_or("open");
-
-    if merged {
-        return Ok(ReviewSignal::Merged);
-    }
-    if state == "closed" {
+        let merged = pr_json
+            .get("merged")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if merged {
+            return Ok(ReviewSignal::Merged);
+        }
         return Ok(ReviewSignal::Closed);
     }
 
     // PR is still open — check latest comment for emoji signal.
     // Only the latest comment counts, and only if no commits since that comment.
-    let comments_endpoint = format!(
-        "repos/{gh_repo}/issues/{pr_number}/comments?per_page=1&sort=created&direction=desc"
-    );
-    let comments_output = tokio::process::Command::new("gh")
-        .args(["api", &comments_endpoint])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn gh api for comments: {e}"))?;
+    let comments = backend.get_conversation_comments(pr_number).await?;
 
-    if !comments_output.status.success() {
-        let stderr = String::from_utf8_lossy(&comments_output.stderr);
-        return Err(anyhow::anyhow!("gh api comments failed: {}", stderr.trim()));
-    }
-
-    let comments: serde_json::Value =
-        serde_json::from_str(&String::from_utf8_lossy(&comments_output.stdout))
-            .map_err(|e| anyhow::anyhow!("failed to parse comments JSON: {e}"))?;
-
-    let comments_arr = match comments.as_array() {
-        Some(arr) if !arr.is_empty() => arr,
-        _ => return Ok(ReviewSignal::Pending),
+    let latest_comment = match comments.last() {
+        Some(c) => c,
+        None => return Ok(ReviewSignal::Pending),
     };
 
-    let latest_comment = &comments_arr[0];
-    let comment_body = latest_comment
-        .get("body")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let comment_created_at = latest_comment
-        .get("created_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let comment_body = &latest_comment.body;
+    let comment_created_at = &latest_comment.created_at;
 
     // Check if there are commits after the latest comment.
-    // Use the commits endpoint to get the most recent commit date.
+    // Use BuilderdClient to run the commits endpoint directly.
     let commits_endpoint =
         format!("repos/{gh_repo}/pulls/{pr_number}/commits?per_page=1&sort=created&direction=desc");
-    let commits_output = tokio::process::Command::new("gh")
-        .args(["api", &commits_endpoint])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn gh api for commits: {e}"))?;
+    let commits_result = builderd_client
+        .exec_and_collect("gh", &["api", &commits_endpoint], "/tmp")
+        .await;
 
-    if commits_output.status.success()
-        && has_commits_after_comment(&commits_output.stdout, comment_created_at)
+    if let Ok(completed) = commits_result
+        && completed.exit_code == 0
+        && has_commits_after_comment(completed.stdout_text().as_bytes(), comment_created_at)
     {
         return Ok(ReviewSignal::Pending);
     }
