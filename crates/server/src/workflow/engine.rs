@@ -272,9 +272,9 @@ mod tests {
         Arc::new(ur_config::Config {
             config_dir: std::path::PathBuf::from("/tmp/test"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
-            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-            builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
-            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+            server_port: ur_config::DEFAULT_SERVER_PORT,
+            builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
+            worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
             compose_file: std::path::PathBuf::from("/tmp/test/docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
                 hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
