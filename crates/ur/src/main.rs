@@ -285,9 +285,9 @@ fn load_config() -> Result<ur_config::Config> {
     ur_config::Config::load().context("failed to load config")
 }
 
-fn resolve_daemon_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
-    let port = cli_port.unwrap_or(config.daemon_port);
-    debug!(cli_port = ?cli_port, config_port = config.daemon_port, resolved_port = port, "resolved daemon port");
+fn resolve_server_port(cli_port: Option<u16>, config: &ur_config::Config) -> u16 {
+    let port = cli_port.unwrap_or(config.server_port);
+    debug!(cli_port = ?cli_port, config_port = config.server_port, resolved_port = port, "resolved server port");
     port
 }
 
@@ -361,7 +361,7 @@ async fn stop_server(
     info!("stopping server");
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
-    let port = config.daemon_port;
+    let port = config.server_port;
     let addr = format!("http://127.0.0.1:{port}");
     if let Some(mut client) = try_connect(&addr).await {
         info!("server reachable — stopping workers via gRPC");
@@ -1162,12 +1162,12 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
 
     info!(
         config_dir = %config.config_dir.display(),
-        daemon_port = config.daemon_port,
+        server_port = config.server_port,
         builderd_port = config.builderd_port,
         "ur CLI started"
     );
 
-    let port = resolve_daemon_port(cli.port, &config);
+    let port = resolve_server_port(cli.port, &config);
     let compose = compose_manager_from_config(&config);
 
     match cli.command {

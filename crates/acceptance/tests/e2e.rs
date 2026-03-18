@@ -205,7 +205,7 @@ fn test_names(label: &str) -> TestNames {
 /// with a real running ur stack or other test stacks.
 fn write_test_config(
     config_dir: &Path,
-    daemon_port: u16,
+    server_port: u16,
     names: &TestNames,
     projects: &[ProjectEntry],
 ) {
@@ -246,7 +246,7 @@ fn write_test_config(
     }
 
     let toml_content = format!(
-        "daemon_port = {daemon_port}\n\
+        "server_port = {server_port}\n\
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
          \n\
@@ -395,7 +395,7 @@ impl TestEnv {
 fn e2e_all() {
     let runtime = detect_container_runtime();
     let names = test_names("e2e");
-    let daemon_port = 19870u16;
+    let server_port = 19870u16;
     let project_key = "poolproj";
 
     // ---- (0) Clean up stale resources from ANY prior e2e run ----
@@ -404,8 +404,8 @@ fn e2e_all() {
     force_remove_by_prefix(&runtime, "-e2e-");
     // Kill any orphaned builderd processes from prior failed runs. Builderd runs
     // in its own process group (detached from the test), so it survives test crashes.
-    // We identify stale test builderds by their port (builderd_port = daemon_port + 2).
-    kill_process_on_port(daemon_port + 2);
+    // We identify stale test builderds by their port (builderd_port = server_port + 2).
+    kill_process_on_port(server_port + 2);
 
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
@@ -437,7 +437,7 @@ fn e2e_all() {
     // Write config with the pool project
     write_test_config(
         &config_path,
-        daemon_port,
+        server_port,
         &names,
         &[ProjectEntry {
             key: project_key.into(),

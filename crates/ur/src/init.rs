@@ -238,11 +238,11 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         // Modify a file to prove it won't be overwritten
-        fs::write(tmp.path().join("ur.toml"), "daemon_port = 9999\n").unwrap();
+        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert_eq!(content, "daemon_port = 9999\n");
+        assert_eq!(content, "server_port = 9999\n");
     }
 
     #[test]
@@ -250,13 +250,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
-        fs::write(tmp.path().join("ur.toml"), "daemon_port = 9999\n").unwrap();
+        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
         run_with_dir(tmp.path(), flags(true, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert!(content.contains("[backup]"), "should be reset to default");
         assert!(
-            !content.contains("daemon_port"),
+            !content.contains("server_port"),
             "custom config should be gone"
         );
     }
@@ -266,7 +266,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
-        fs::write(tmp.path().join("ur.toml"), "daemon_port = 9999\n").unwrap();
+        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
         run_with_dir(tmp.path(), flags(false, true, false)).unwrap();
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
@@ -275,7 +275,7 @@ mod tests {
             "ur.toml should be overwritten with default"
         );
         assert!(
-            !toml_content.contains("daemon_port"),
+            !toml_content.contains("server_port"),
             "custom config should be gone"
         );
     }
@@ -286,7 +286,7 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         fs::write(tmp.path().join("squid/allowlist.txt"), "custom.com\n").unwrap();
-        fs::write(tmp.path().join("ur.toml"), "daemon_port = 9999\n").unwrap();
+        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
         run_with_dir(tmp.path(), flags(false, false, true)).unwrap();
 
         let allowlist = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
@@ -301,7 +301,7 @@ mod tests {
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert_eq!(
-            toml_content, "daemon_port = 9999\n",
+            toml_content, "server_port = 9999\n",
             "toml should be untouched"
         );
     }
@@ -322,6 +322,6 @@ mod tests {
 
         let cfg = ur_config::Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.config_dir, tmp.path());
-        assert_eq!(cfg.daemon_port, ur_config::DEFAULT_DAEMON_PORT);
+        assert_eq!(cfg.server_port, ur_config::DEFAULT_SERVER_PORT);
     }
 }

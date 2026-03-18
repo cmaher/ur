@@ -48,12 +48,12 @@ ur stop
 
 | Service | Default Port | Config Field | Derivation |
 |---------|-------------|-------------|------------|
-| ur-server (gRPC) | 42069 | `daemon_port` | Explicit or default |
-| Worker gRPC | 42070 | `worker_port` | `daemon_port + 1` |
-| builderd (gRPC) | 42071 | `builderd_port` | `daemon_port + 2` |
+| ur-server (gRPC) | 42069 | `server_port` | Explicit or default |
+| Worker gRPC | 42070 | `worker_port` | `server_port + 1` |
+| builderd (gRPC) | 42071 | `builderd_port` | `server_port + 2` |
 
-All ports derive from `daemon_port` when not explicitly set, ensuring test isolation
-when using a custom `daemon_port`.
+All ports derive from `server_port` when not explicitly set, ensuring test isolation
+when using a custom `server_port`.
 
 ## Compose Generation
 

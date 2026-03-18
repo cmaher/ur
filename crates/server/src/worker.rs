@@ -695,8 +695,8 @@ mod tests {
         ur_config::Config {
             config_dir: workspace_path.to_path_buf(),
             workspace: workspace_path.to_path_buf(),
-            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-            builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
+            server_port: ur_config::DEFAULT_SERVER_PORT,
+            builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
             compose_file: workspace_path.join("docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
                 hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
@@ -720,7 +720,7 @@ mod tests {
                 enabled: true,
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
-            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+            worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
             git_branch_prefix: String::new(),
             workflow: ur_config::WorkflowConfig::default(),
             projects: std::collections::HashMap::new(),
@@ -768,7 +768,7 @@ mod tests {
             repo_pool_manager,
             network_manager,
             network_config,
-            ur_config::DEFAULT_DAEMON_PORT + 1,
+            ur_config::DEFAULT_SERVER_PORT + 1,
             PromptModesConfig::default(),
             worker_repo,
             Vec::new(),
@@ -978,7 +978,7 @@ skills = ["a", "b"]
 
     #[test]
     fn prompt_modes_from_toml_no_section_uses_defaults() {
-        let toml = "daemon_port = 5000\n";
+        let toml = "server_port = 5000\n";
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
         assert!(code.contains(&"push".to_string()));

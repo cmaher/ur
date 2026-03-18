@@ -368,7 +368,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
             "UR_WORKSPACE".to_string(),
             config.workspace.to_string_lossy().into_owned(),
         ),
-        ("UR_SERVER_PORT".to_string(), config.daemon_port.to_string()),
+        ("UR_SERVER_PORT".to_string(), config.server_port.to_string()),
         (
             "UR_BUILDERD_PORT".to_string(),
             config.builderd_port.to_string(),
@@ -406,7 +406,7 @@ mod tests {
         let config = ur_config::Config {
             config_dir: PathBuf::from("/test/config"),
             workspace: PathBuf::from("/test/workspace"),
-            daemon_port: 9999,
+            server_port: 9999,
             compose_file: PathBuf::from("/test/docker-compose.yml"),
             proxy: ur_config::ProxyConfig {
                 hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
