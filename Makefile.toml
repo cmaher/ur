@@ -87,6 +87,19 @@ dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
+[tasks.install-force-base]
+description = "Same as install but force-rebuilds the base image (no Docker cache)"
+dependencies = ["image-force-base"]
+script_runner = "@shell"
+script = ["scripts/build/install.sh"]
+
+[tasks.image-force-base]
+description = "Build all container images, force-rebuilding the base image (no Docker cache)"
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+env = { "UR_FORCE_REBUILD_BASE" = "1" }
+script_runner = "@shell"
+script = ["scripts/build/image.sh"]
+
 [tasks.install-debug]
 description = "Same as install but with debug builds"
 dependencies = ["image"]
