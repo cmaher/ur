@@ -260,8 +260,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     #[cfg(feature = "remote_repo")]
-    let remote_repo_handler = ur_server::grpc_remote_repo::RemoteRepoServiceHandler {
-        builderd_addr: builderd_addr.clone(),
+    let remote_repo_handler = {
+        use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
+        let builderd_client = BuilderDaemonServiceClient::connect(builderd_addr.clone())
+            .await
+            .expect("failed to connect to builderd for remote_repo service");
+        ur_server::grpc_remote_repo::RemoteRepoServiceHandler { builderd_client }
     };
 
     let worker_server = ur_server::grpc_server::serve_worker_grpc(

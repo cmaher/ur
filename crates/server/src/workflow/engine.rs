@@ -33,14 +33,14 @@ impl WorkflowEngine {
         ticket_repo: TicketRepo,
         worker_repo: WorkerRepo,
         worker_prefix: String,
-        builderd_addr: String,
+        builderd_client: ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient<tonic::transport::Channel>,
         handler_entries: Vec<HandlerEntry>,
     ) -> Self {
         let ctx = WorkflowContext {
             ticket_repo,
             worker_repo,
             worker_prefix,
-            builderd_addr,
+            builderd_client,
         };
         let mut handlers = HashMap::new();
         for (from, to, handler) in handler_entries {
@@ -260,6 +260,18 @@ mod tests {
         (tmp, repo, worker_repo)
     }
 
+    /// Create a dummy builderd client for tests (lazy connection, never actually used).
+    fn dummy_builderd_client()
+    -> ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient<
+        tonic::transport::Channel,
+    > {
+        let channel =
+            tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
+        ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient::new(
+            channel,
+        )
+    }
+
     struct CountingHandler {
         call_count: Arc<AtomicU32>,
         should_fail: bool,
@@ -323,7 +335,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
-            "http://localhost:50051".to_string(),
+            dummy_builderd_client(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -381,7 +393,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
-            "http://localhost:50051".to_string(),
+            dummy_builderd_client(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -435,7 +447,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
-            "http://localhost:50051".to_string(),
+            dummy_builderd_client(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -490,7 +502,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
-            "http://localhost:50051".to_string(),
+            dummy_builderd_client(),
             vec![],
         );
 

@@ -16,7 +16,7 @@ use crate::types::{
 /// Implements `RemoteRepo` by routing `gh` CLI commands through a builderd daemon.
 #[derive(Clone)]
 pub struct GhBackend {
-    pub builderd_addr: String,
+    pub client: BuilderDaemonServiceClient<tonic::transport::Channel>,
     pub gh_repo: String,
 }
 
@@ -25,9 +25,7 @@ impl GhBackend {
     async fn exec_gh(&self, args: &[&str]) -> Result<CompletedExec> {
         debug!(repo = %self.gh_repo, args = ?args, "executing gh command via builderd");
 
-        let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
-            .await
-            .context("builderd unavailable")?;
+        let mut client = self.client.clone();
 
         let req = BuilderExecRequest {
             command: "gh".into(),

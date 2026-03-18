@@ -5,6 +5,7 @@ use tracing::info;
 
 use remote_repo::{CreatePrOpts, GhBackend, MergeStrategy as BackendMergeStrategy, RemoteRepo};
 use ur_rpc::error::{self, DOMAIN_REMOTE_REPO, INTERNAL, INVALID_ARGUMENT};
+use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoService;
 use ur_rpc::proto::remote_repo::{
     CreatePrRequest, CreatePrResponse, GetCheckRunsRequest, GetCheckRunsResponse,
@@ -47,7 +48,7 @@ impl From<RemoteRepoError> for Status {
 /// gRPC implementation of the RemoteRepoService, delegating to `GhBackend`.
 #[derive(Clone)]
 pub struct RemoteRepoServiceHandler {
-    pub builderd_addr: String,
+    pub builderd_client: BuilderDaemonServiceClient<tonic::transport::Channel>,
 }
 
 impl RemoteRepoServiceHandler {
@@ -58,7 +59,7 @@ impl RemoteRepoServiceHandler {
             ));
         }
         Ok(GhBackend {
-            builderd_addr: self.builderd_addr.clone(),
+            client: self.builderd_client.clone(),
             gh_repo: gh_repo.to_string(),
         })
     }
