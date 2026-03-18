@@ -1,9 +1,11 @@
 mod engine;
 pub mod github_poller;
 pub mod handlers;
+mod step_router;
 
 pub use engine::WorkflowEngine;
 pub use github_poller::GithubPollerManager;
+pub use step_router::{LifecycleStepRouter, StepAction};
 
 use std::fmt;
 use std::future::Future;

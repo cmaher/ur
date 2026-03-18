@@ -398,6 +398,7 @@ pub struct WorkerCoreServiceHandler {
     pub ticket_repo: TicketRepo,
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     pub worker_prefix: String,
+    pub step_router: crate::workflow::LifecycleStepRouter,
 }
 
 #[tonic::async_trait]
@@ -468,21 +469,29 @@ impl CoreService for WorkerCoreServiceHandler {
             .await
             .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
 
-        // When a worker goes idle, check if it has an assigned ticket that
-        // still needs work and re-dispatch the appropriate RPC.
-        if inner.status == "idle" {
+        // Delegate routing to LifecycleStepRouter for lifecycle-aware actions.
+        {
+            let step_router = self.step_router.clone();
             let worker_prefix = self.worker_prefix.clone();
             let worker_repo = self.worker_repo.clone();
             let ticket_repo = self.ticket_repo.clone();
+            let agent_status = inner.status.clone();
             let wid = worker_id.clone();
             tokio::spawn(async move {
-                if let Err(e) =
-                    handle_idle_redispatch(&wid, &worker_repo, &ticket_repo, &worker_prefix).await
+                if let Err(e) = handle_agent_status_routed(
+                    &wid,
+                    &agent_status,
+                    &step_router,
+                    &worker_repo,
+                    &ticket_repo,
+                    &worker_prefix,
+                )
+                .await
                 {
                     warn!(
                         worker_id = %wid,
                         error = %e,
-                        "idle re-dispatch failed"
+                        "agent status routing failed"
                     );
                 }
             });
@@ -508,16 +517,25 @@ impl CoreService for WorkerCoreServiceHandler {
     }
 }
 
-/// When a worker reports idle, look up its assigned ticket and re-send the
-/// appropriate workerd RPC if the ticket's lifecycle_status still matches
-/// the phase that worker was dispatched for. Tracks re-dispatch count and
-/// stalls the ticket after MAX_IDLE_REDISPATCH failures.
-async fn handle_idle_redispatch(
+/// Route an agent status update through the `LifecycleStepRouter` and execute
+/// the resulting `StepAction`.
+///
+/// Looks up the worker's assigned ticket, consults the router for the
+/// `(lifecycle_status, agent_status)` pair, and performs the action:
+/// - `Advance`: emits a workflow event to transition the ticket.
+/// - `Redispatch`: re-sends the phase-appropriate workerd RPC (with idle
+///   re-dispatch counting and threshold enforcement).
+/// - `Ignore`: no-op.
+async fn handle_agent_status_routed(
     worker_id: &str,
+    agent_status: &str,
+    step_router: &crate::workflow::LifecycleStepRouter,
     worker_repo: &WorkerRepo,
     ticket_repo: &TicketRepo,
     worker_prefix: &str,
 ) -> Result<(), anyhow::Error> {
+    use crate::workflow::StepAction;
+
     // 1. Find the ticket assigned to this worker via metadata.
     let matched = ticket_repo
         .tickets_by_metadata("worker_id", worker_id)
@@ -526,10 +544,22 @@ async fn handle_idle_redispatch(
     // Filter to non-closed tickets only.
     let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
-    if assigned.is_empty() {
+    let has_ticket = !assigned.is_empty();
+
+    if !has_ticket {
+        // Consult router even with no ticket — it returns Ignore for cold starts.
+        let action = step_router.route(LifecycleStatus::Open, agent_status, false);
+        if action != StepAction::Ignore {
+            warn!(
+                worker_id = %worker_id,
+                agent_status = %agent_status,
+                ?action,
+                "unexpected non-ignore action for worker with no ticket"
+            );
+        }
         info!(
             worker_id = %worker_id,
-            "idle worker has no assigned ticket — no-op"
+            "worker has no assigned ticket — no-op"
         );
         return Ok(());
     }
@@ -543,53 +573,119 @@ async fn handle_idle_redispatch(
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
 
-    // 3. Determine if lifecycle_status requires a re-dispatch.
-    let rpc_kind = match ticket.lifecycle_status {
-        LifecycleStatus::Implementing => Some("implement"),
-        LifecycleStatus::Pushing => Some("push"),
-        LifecycleStatus::FeedbackCreating => Some("create_feedback_tickets"),
-        _ => None,
+    // 3. Consult the router.
+    let action = step_router.route(ticket.lifecycle_status, agent_status, true);
+
+    match action {
+        StepAction::Ignore => {
+            info!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                lifecycle_status = %ticket.lifecycle_status,
+                agent_status = %agent_status,
+                "step router returned Ignore — no action"
+            );
+            Ok(())
+        }
+        StepAction::Advance { to } => {
+            info!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                from = %ticket.lifecycle_status,
+                to = %to,
+                "step router: advancing lifecycle"
+            );
+            let update = ur_db::model::TicketUpdate {
+                lifecycle_status: Some(to),
+                lifecycle_managed: None,
+                status: None,
+                type_: None,
+                priority: None,
+                title: None,
+                body: None,
+                branch: None,
+                parent_id: None,
+                project: None,
+            };
+            ticket_repo.update_ticket(ticket_id, &update).await?;
+            Ok(())
+        }
+        StepAction::Redispatch { reminder } => {
+            handle_redispatch(
+                worker_id,
+                ticket_id,
+                &ticket.lifecycle_status,
+                reminder,
+                worker_repo,
+                ticket_repo,
+                worker_prefix,
+            )
+            .await
+        }
+    }
+}
+
+/// Execute a redispatch: re-send the phase-appropriate workerd RPC.
+///
+/// Tracks re-dispatch count and reverts the ticket to open after
+/// `MAX_IDLE_REDISPATCH` failures.
+async fn handle_redispatch(
+    worker_id: &str,
+    ticket_id: &str,
+    lifecycle_status: &LifecycleStatus,
+    reminder: bool,
+    worker_repo: &WorkerRepo,
+    ticket_repo: &TicketRepo,
+    worker_prefix: &str,
+) -> Result<(), anyhow::Error> {
+    // Determine the RPC kind from the lifecycle status.
+    let rpc_kind = match lifecycle_status {
+        LifecycleStatus::Implementing => "implement",
+        LifecycleStatus::Pushing => "push",
+        LifecycleStatus::FeedbackCreating => "create_feedback_tickets",
+        _ => {
+            info!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                lifecycle_status = %lifecycle_status,
+                reminder = reminder,
+                "redispatch requested but no RPC mapping for lifecycle status — skipping"
+            );
+            return Ok(());
+        }
     };
 
-    let Some(rpc_kind) = rpc_kind else {
-        info!(
-            worker_id = %worker_id,
-            ticket_id = %ticket_id,
-            lifecycle_status = %ticket.lifecycle_status,
-            "ticket lifecycle has moved past dispatch phase — no re-dispatch"
-        );
-        return Ok(());
-    };
+    // Increment re-dispatch count and check threshold (only for non-reminder redispatches).
+    if !reminder {
+        let count = worker_repo
+            .increment_idle_redispatch_count(worker_id)
+            .await?;
 
-    // 4. Increment re-dispatch count and check threshold.
-    let count = worker_repo
-        .increment_idle_redispatch_count(worker_id)
-        .await?;
-
-    if count > MAX_IDLE_REDISPATCH {
-        warn!(
-            worker_id = %worker_id,
-            ticket_id = %ticket_id,
-            count = count,
-            "idle re-dispatch count exceeded threshold — reverting ticket to open"
-        );
-        let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Open),
-            lifecycle_managed: None,
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        ticket_repo.update_ticket(ticket_id, &update).await?;
-        return Ok(());
+        if count > MAX_IDLE_REDISPATCH {
+            warn!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                count = count,
+                "idle re-dispatch count exceeded threshold — reverting ticket to open"
+            );
+            let update = ur_db::model::TicketUpdate {
+                lifecycle_status: Some(LifecycleStatus::Open),
+                lifecycle_managed: None,
+                status: None,
+                type_: None,
+                priority: None,
+                title: None,
+                body: None,
+                branch: None,
+                parent_id: None,
+                project: None,
+            };
+            ticket_repo.update_ticket(ticket_id, &update).await?;
+            return Ok(());
+        }
     }
 
-    // 5. Look up worker to derive workerd address.
+    // Look up worker to derive workerd address.
     let worker = worker_repo
         .get_worker(worker_id)
         .await?
@@ -607,11 +703,11 @@ async fn handle_idle_redispatch(
         worker_id = %worker_id,
         ticket_id = %ticket_id,
         rpc_kind = %rpc_kind,
-        count = count,
-        "re-dispatching workerd RPC for idle worker"
+        reminder = reminder,
+        "re-dispatching workerd RPC"
     );
 
-    // 6. Re-send the appropriate RPC.
+    // Re-send the appropriate RPC.
     match rpc_kind {
         "implement" => {
             workerd_client
