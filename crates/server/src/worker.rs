@@ -250,8 +250,6 @@ pub struct WorkerManager {
     worker_port: u16,
     prompt_modes: PromptModesConfig,
     worker_repo: WorkerRepo,
-    /// Pre-push verification scripts from `[workflow]` config.
-    verification_scripts: Vec<String>,
 }
 
 impl WorkerManager {
@@ -265,7 +263,6 @@ impl WorkerManager {
         worker_port: u16,
         prompt_modes: PromptModesConfig,
         worker_repo: WorkerRepo,
-        verification_scripts: Vec<String>,
     ) -> Self {
         Self {
             workspace,
@@ -276,7 +273,6 @@ impl WorkerManager {
             worker_port,
             prompt_modes,
             worker_repo,
-            verification_scripts,
         }
     }
 
@@ -477,14 +473,6 @@ impl WorkerManager {
             env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
         }
 
-        // Inject pre-push verification scripts (newline-separated)
-        if !self.verification_scripts.is_empty() {
-            env_vars.push((
-                ur_config::UR_VERIFICATION_SCRIPTS_ENV.into(),
-                self.verification_scripts.join("\n"),
-            ));
-        }
-
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
@@ -639,7 +627,7 @@ impl WorkerManager {
         let worker = workers
             .iter()
             .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         Ok(worker.workspace_path.as_ref().map(PathBuf::from))
     }
 
@@ -654,7 +642,7 @@ impl WorkerManager {
         let worker = workers
             .iter()
             .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
@@ -722,7 +710,7 @@ mod tests {
             },
             worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
             git_branch_prefix: String::new(),
-            workflow: ur_config::WorkflowConfig::default(),
+
             projects: std::collections::HashMap::new(),
         }
     }
@@ -771,7 +759,6 @@ mod tests {
             ur_config::DEFAULT_SERVER_PORT + 1,
             PromptModesConfig::default(),
             worker_repo,
-            Vec::new(),
         );
         (mgr, workspace)
     }
@@ -840,7 +827,7 @@ mod tests {
         let (mgr, _workspace) = test_manager().await;
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown process"));
+        assert!(result.unwrap_err().contains("unknown worker"));
     }
 
     #[test]

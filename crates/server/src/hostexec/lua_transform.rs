@@ -536,7 +536,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("blocked gh command: pr merge")
+                .contains("not allowed (read-only access only)")
         );
     }
 
@@ -557,15 +557,168 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("blocked gh command: pr merge")
+                .contains("not allowed (read-only access only)")
         );
     }
 
     #[test]
-    fn test_gh_allows_pr_create() {
+    fn test_gh_blocks_pr_create() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec!["pr".into(), "create".into(), "--title".into(), "foo".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_close() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "close".into(), "123".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_pr_checks() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "checks".into(), "123".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_run_view() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["run".into(), "view".into(), "12345".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_run_view_log_failed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "run".into(),
+            "view".into(),
+            "12345".into(),
+            "--log-failed".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_get() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["api".into(), "/repos/owner/repo/pulls".into()];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_blocks_api_post() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/pulls".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_blocks_api_delete() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "--method".into(),
+            "DELETE".into(),
+            "/repos/owner/repo/pulls/1".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_blocks_api_method_equals_form() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "--method=PATCH".into(),
+            "/repos/owner/repo/pulls/1".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_blocks_unknown_top_level_command() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["issue".into(), "create".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not allowed (read-only access only)")
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_run_list() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["run".into(), "list".into()];
         let result = mgr
             .run_transform(script, "gh", &args, "/workspace", None)
             .unwrap();

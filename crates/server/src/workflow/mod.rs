@@ -1,15 +1,18 @@
 mod engine;
 pub mod github_poller;
 pub mod handlers;
+mod step_router;
 
 pub use engine::WorkflowEngine;
 pub use github_poller::GithubPollerManager;
+pub use step_router::{LifecycleStepRouter, StepAction};
 
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ur_config::Config;
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
@@ -30,6 +33,9 @@ pub struct WorkflowContext {
     /// Pre-connected builderd gRPC client for delegating operations
     /// (e.g., `gh` commands) that require host-side credentials.
     pub builderd_client: BuilderdClient,
+    /// Resolved server configuration, providing access to per-project
+    /// settings (workflow hooks, fix attempt limits, etc.).
+    pub config: Arc<Config>,
 }
 
 /// Key identifying a specific lifecycle transition.

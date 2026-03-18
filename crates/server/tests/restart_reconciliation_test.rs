@@ -63,7 +63,7 @@ async fn make_components_with_db(
         },
         worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
         git_branch_prefix: String::new(),
-        workflow: ur_config::WorkflowConfig::default(),
+
         projects: HashMap::new(),
     };
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
@@ -89,7 +89,6 @@ async fn make_components_with_db(
         ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
-        Vec::new(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),

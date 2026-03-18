@@ -1,6 +1,6 @@
 use anyhow::bail;
 use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use ur_db::model::{EdgeKind, LifecycleStatus, TicketFilter, TicketUpdate};
 
 use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
@@ -185,8 +185,9 @@ async fn resolve_feedback_later(
     if !result.success {
         let error_lower = result.error_message.to_lowercase();
 
-        // Merge conflicts are recoverable: transition back to pushing so a
-        // worker can resolve conflicts, push, and re-enter the review cycle.
+        // Merge conflicts are recoverable: set fix_phase=merge metadata,
+        // record activity, and transition to fixing so the worker can resolve
+        // conflicts. After fix, the ticket re-enters verifying → push → CI.
         if error_lower.contains("merge conflict")
             || error_lower.contains("not mergeable")
             || error_lower.contains("conflicts")
@@ -195,11 +196,37 @@ async fn resolve_feedback_later(
                 ticket_id = %ticket_id,
                 pr_number = %pr_number,
                 error = %result.error_message,
-                "merge failed due to conflicts — transitioning back to pushing for worker resolution"
+                "merge failed due to conflicts — transitioning to fixing"
             );
 
+            // Set fix_phase=merge so FixDispatchHandler knows the context.
+            if let Err(e) = ctx
+                .ticket_repo
+                .set_meta(ticket_id, "ticket", "fix_phase", "merge")
+                .await
+            {
+                error!(ticket_id = %ticket_id, error = %e, "failed to set fix_phase metadata");
+            }
+
+            // Add activity with conflict details.
+            let message = format!(
+                "[workflow] merge conflict detected\n\
+                 source: workflow\n\
+                 result: fail\n\
+                 ---\n\
+                 PR #{pr_number} merge failed: {error}",
+                error = result.error_message
+            );
+            if let Err(e) = ctx
+                .ticket_repo
+                .add_activity(ticket_id, "workflow", &message)
+                .await
+            {
+                error!(ticket_id = %ticket_id, error = %e, "failed to add merge conflict activity");
+            }
+
             let update = TicketUpdate {
-                lifecycle_status: Some(LifecycleStatus::Pushing),
+                lifecycle_status: Some(LifecycleStatus::Fixing),
                 lifecycle_managed: None,
                 status: None,
                 type_: None,

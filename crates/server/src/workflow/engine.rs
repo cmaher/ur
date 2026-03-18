@@ -11,7 +11,7 @@ use ur_db::model::LifecycleStatus;
 
 use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Maximum number of processing attempts before an event is stalled.
+/// Maximum number of processing attempts before an event is reverted to open.
 const MAX_ATTEMPTS: i32 = 3;
 
 /// Polling interval for the workflow event table.
@@ -34,6 +34,7 @@ impl WorkflowEngine {
         worker_repo: WorkerRepo,
         worker_prefix: String,
         builderd_client: ur_rpc::proto::builder::BuilderdClient,
+        config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
     ) -> Self {
         let ctx = WorkflowContext {
@@ -41,6 +42,7 @@ impl WorkflowEngine {
             worker_repo,
             worker_prefix,
             builderd_client,
+            config,
         };
         let mut handlers = HashMap::new();
         for (from, to, handler) in handler_entries {
@@ -189,9 +191,9 @@ impl WorkflowEngine {
                 transition = %transition,
                 attempts = new_attempts,
                 error = %handler_err,
-                "workflow transition stalled after max attempts"
+                "workflow transition failed after max attempts — reverting to open"
             );
-            self.mark_ticket_stalled(&event.ticket_id).await;
+            self.revert_ticket_to_open(&event.ticket_id).await;
         } else {
             warn!(
                 event_id = %event.id,
@@ -219,10 +221,10 @@ impl WorkflowEngine {
         }
     }
 
-    /// Set a ticket's lifecycle status to Stalled.
-    async fn mark_ticket_stalled(&self, ticket_id: &str) {
+    /// Revert a ticket's lifecycle status to Open after max retry attempts.
+    async fn revert_ticket_to_open(&self, ticket_id: &str) {
         let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_status: Some(LifecycleStatus::Open),
             lifecycle_managed: None,
             status: None,
             type_: None,
@@ -234,7 +236,7 @@ impl WorkflowEngine {
             project: None,
         };
         if let Err(e) = self.ctx.ticket_repo.update_ticket(ticket_id, &update).await {
-            error!(error = %e, "failed to set ticket to stalled");
+            error!(error = %e, "failed to revert ticket to open");
         }
     }
 }
@@ -264,6 +266,41 @@ mod tests {
         let channel =
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
         ur_rpc::proto::builder::BuilderdClient::new(channel)
+    }
+
+    fn dummy_config() -> Arc<ur_config::Config> {
+        Arc::new(ur_config::Config {
+            config_dir: std::path::PathBuf::from("/tmp/test"),
+            workspace: std::path::PathBuf::from("/tmp/test/workspace"),
+            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
+            builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
+            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+            compose_file: std::path::PathBuf::from("/tmp/test/docker-compose.yml"),
+            proxy: ur_config::ProxyConfig {
+                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
+                allowlist: vec![],
+            },
+            network: ur_config::NetworkConfig {
+                name: ur_config::DEFAULT_NETWORK_NAME.into(),
+                worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+            },
+            hostexec: ur_config::HostExecConfig::default(),
+            rag: ur_config::RagConfig {
+                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
+                docs: ur_config::RagDocsConfig::default(),
+            },
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+            git_branch_prefix: String::new(),
+            projects: std::collections::HashMap::new(),
+        })
     }
 
     struct CountingHandler {
@@ -330,6 +367,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -388,6 +426,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -442,6 +481,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -459,7 +499,7 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), MAX_ATTEMPTS as u32);
 
         let t = repo.get_ticket("ur-test3").await.unwrap().unwrap();
-        assert_eq!(t.lifecycle_status, LifecycleStatus::Stalled);
+        assert_eq!(t.lifecycle_status, LifecycleStatus::Open);
     }
 
     #[tokio::test]
@@ -497,6 +537,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![],
         );
 
