@@ -21,13 +21,32 @@ build_image() {
     fi
 }
 
+build_image_no_cache() {
+    local tag="$1"
+    local dockerfile="$2"
+    local context="$3"
+    echo "Building $tag (no cache)..."
+    if command -v docker >/dev/null 2>&1; then
+        docker build --no-cache -t "$tag" -f "$dockerfile" "$context"
+    elif command -v nerdctl >/dev/null 2>&1; then
+        nerdctl build --no-cache -t "$tag" -f "$dockerfile" "$context"
+    else
+        echo "Warning: no container runtime found, skipping image build" >&2
+        exit 1
+    fi
+}
+
 WORKER_CONTEXT=containers/claude-worker
 RUST_WORKER_CONTEXT=containers/claude-worker-rust
 
 # Stage vendored mise installer into rust worker build context
 cp "$WORKER_CONTEXT/vendor/mise/install.sh" "$RUST_WORKER_CONTEXT/install-mise.sh"
 
-build_image ur-worker-base:latest "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
+if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
+    build_image_no_cache ur-worker-base:latest "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
+else
+    build_image ur-worker-base:latest "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
+fi
 echo "Base image built: ur-worker-base:latest"
 
 build_image ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
