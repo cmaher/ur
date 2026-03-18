@@ -388,26 +388,26 @@ impl HostExecServiceHandler {
                     slot_path: ctx.slot_path.clone(),
                 };
 
-                // Merge per-project passthrough commands
+                // Grant only defaults + project-granted commands
                 let extra = self
                     .projects
                     .get(project_key)
                     .map(|p| p.hostexec.as_slice())
                     .unwrap_or_default();
-                let merged_config = self.config.with_passthrough_commands(extra);
+                let merged_config = self.config.with_project_commands(extra);
 
                 (Some(lua_ctx), merged_config)
             }
             Some(ref ctx) => {
-                // Worker has a slot but no project — raw workspace mount
+                // Worker has a slot but no project — raw workspace mount, defaults only
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                 };
-                (Some(lua_ctx), self.config.clone())
+                (Some(lua_ctx), self.config.defaults_only())
             }
-            None => (None, self.config.clone()),
+            None => (None, self.config.defaults_only()),
         };
 
         Ok((process_id, worker_context, config))
