@@ -21,6 +21,22 @@ build_image() {
     fi
 }
 
+build_image_arg() {
+    local tag="$1"
+    local dockerfile="$2"
+    local context="$3"
+    local build_arg="$4"
+    echo "Building $tag..."
+    if command -v docker >/dev/null 2>&1; then
+        docker build --build-arg "$build_arg" -t "$tag" -f "$dockerfile" "$context"
+    elif command -v nerdctl >/dev/null 2>&1; then
+        nerdctl build --build-arg "$build_arg" -t "$tag" -f "$dockerfile" "$context"
+    else
+        echo "Warning: no container runtime found, skipping image build" >&2
+        exit 1
+    fi
+}
+
 build_image_no_cache() {
     local tag="$1"
     local dockerfile="$2"
@@ -49,7 +65,11 @@ else
 fi
 echo "Base image built: ur-worker-base:latest"
 
-build_image ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
+if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
+    build_image_arg ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT" "CACHEBUST=$(date +%s)"
+else
+    build_image ur-worker:latest "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
+fi
 echo "Worker image built: ur-worker:latest"
 
 build_image ur-worker-rust:latest "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
