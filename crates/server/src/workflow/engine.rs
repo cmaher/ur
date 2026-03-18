@@ -29,11 +29,17 @@ pub struct WorkflowEngine {
 }
 
 impl WorkflowEngine {
-    pub fn new(ticket_repo: TicketRepo, worker_repo: WorkerRepo, worker_prefix: String) -> Self {
+    pub fn new(
+        ticket_repo: TicketRepo,
+        worker_repo: WorkerRepo,
+        worker_prefix: String,
+        builderd_addr: String,
+    ) -> Self {
         let ctx = WorkflowContext {
             ticket_repo,
             worker_repo,
             worker_prefix,
+            builderd_addr,
         };
         Self {
             ctx,
@@ -308,8 +314,12 @@ mod tests {
         assert!(event.is_some(), "workflow event should exist");
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
+        let mut engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
+        );
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -361,8 +371,12 @@ mod tests {
         repo.update_ticket("ur-test2", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
+        let mut engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
+        );
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -410,8 +424,12 @@ mod tests {
         repo.update_ticket("ur-test3", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
+        let mut engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
+        );
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -460,8 +478,12 @@ mod tests {
         };
         repo.update_ticket("ur-test4", &update).await.unwrap();
 
-        let engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
+        );
 
         engine.poll_once().await;
 

@@ -25,6 +25,9 @@ pub struct WorkflowContext {
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     /// Used to derive workerd gRPC addresses from process IDs.
     pub worker_prefix: String,
+    /// Address of the builderd gRPC server, used for delegating operations
+    /// (e.g., `gh` commands) that require host-side credentials.
+    pub builderd_addr: String,
 }
 
 /// Key identifying a specific lifecycle transition.
