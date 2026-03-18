@@ -97,12 +97,12 @@ pub enum TicketArgs {
         ticket_type: Option<String>,
 
         /// New parent ticket ID
-        #[arg(long, conflicts_with = "no_parent")]
+        #[arg(long, conflicts_with = "unparent")]
         parent: Option<String>,
 
         /// Clear the parent (remove from epic)
         #[arg(long, conflicts_with = "parent")]
-        no_parent: bool,
+        unparent: bool,
 
         /// Force the update (e.g. close an epic with open children)
         #[arg(long)]
