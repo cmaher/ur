@@ -101,6 +101,7 @@ pub async fn handle(port: u16, command: AdminCommands, output: &OutputManager) -
                     parent_id: None,
                     lifecycle_status: Some(to.clone()),
                     branch: None,
+                    project: None,
                 })
                 .await
                 .with_status_context("update lifecycle status")?;

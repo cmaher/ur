@@ -55,6 +55,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                     body: None,
                     branch: None,
                     parent_id: None,
+                    project: None,
                 };
                 ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
                 return Ok(());

@@ -115,6 +115,10 @@ pub enum TicketArgs {
         /// Clear the branch
         #[arg(long, conflicts_with = "branch")]
         no_branch: bool,
+
+        /// New project key
+        #[arg(short, long)]
+        project: Option<String>,
     },
 
     /// Set a metadata key-value pair on a ticket

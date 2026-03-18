@@ -761,6 +761,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
             parent_id: None,
             lifecycle_status: Some(lifecycle::IMPLEMENTING.to_owned()),
             branch: None,
+            project: None,
         })
         .await
         .with_status_context("transition ticket to implementing")?;

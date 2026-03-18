@@ -221,6 +221,7 @@ impl WorkflowEngine {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         if let Err(e) = self.ctx.ticket_repo.update_ticket(ticket_id, &update).await {
             error!(error = %e, "failed to set ticket to stalled");
@@ -298,6 +299,7 @@ mod tests {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         repo.update_ticket("ur-test1", &update).await.unwrap();
 
@@ -354,6 +356,7 @@ mod tests {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         repo.update_ticket("ur-test2", &update).await.unwrap();
 
@@ -402,6 +405,7 @@ mod tests {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         repo.update_ticket("ur-test3", &update).await.unwrap();
 
@@ -452,6 +456,7 @@ mod tests {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         repo.update_ticket("ur-test4", &update).await.unwrap();
 

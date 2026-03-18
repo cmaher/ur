@@ -229,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
     let ticket_handler = {
         ur_server::grpc_ticket::TicketServiceHandler {
             ticket_repo: ticket_repo.clone(),
+            valid_projects: cfg.projects.keys().cloned().collect(),
         }
     };
 

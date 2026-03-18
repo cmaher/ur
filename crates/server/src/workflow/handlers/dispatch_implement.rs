@@ -54,6 +54,7 @@ impl WorkflowHandler for DispatchImplementHandler {
                     title: None,
                     body: None,
                     parent_id: None,
+                    project: None,
                 };
                 ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
                 new_branch

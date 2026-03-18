@@ -130,6 +130,7 @@ message UpdateTicketRequest {
   optional string parent_id = 8;
   optional string lifecycle_status = 9;
   optional string branch = 10;
+  optional string project = 11;
 }
 
 message UpdateTicketResponse {}

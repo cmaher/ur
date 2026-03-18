@@ -137,6 +137,7 @@ async fn close_ticket(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), anyh
         body: None,
         branch: None,
         parent_id: None,
+        project: None,
     };
     ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
     info!(ticket_id = %ticket_id, "ticket closed (lifecycle_status=done)");
@@ -197,6 +198,7 @@ async fn resolve_feedback_later(
                 body: None,
                 branch: None,
                 parent_id: None,
+                project: None,
             };
             ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
             return Ok(());
@@ -247,6 +249,7 @@ async fn resolve_feedback_later(
                 title: None,
                 body: None,
                 parent_id: None,
+                project: None,
             };
             ctx.ticket_repo.update_ticket(&child.id, &update).await?;
             info!(
@@ -292,6 +295,7 @@ async fn resolve_feedback_now(
             title: None,
             body: None,
             parent_id: None,
+            project: None,
         };
         ctx.ticket_repo
             .update_ticket(follow_up_epic_id, &update)
@@ -318,6 +322,7 @@ async fn resolve_feedback_now(
             title: None,
             body: None,
             parent_id: None,
+            project: None,
         };
         ctx.ticket_repo
             .update_ticket(follow_up_epic_id, &update)
@@ -334,6 +339,7 @@ async fn resolve_feedback_now(
         body: None,
         branch: None,
         parent_id: None,
+        project: None,
     };
     ctx.ticket_repo
         .update_ticket(follow_up_epic_id, &update)
