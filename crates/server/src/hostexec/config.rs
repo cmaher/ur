@@ -40,21 +40,32 @@ impl HostExecConfigManager {
         Ok(Self { commands })
     }
 
-    /// Create a new config manager with additional passthrough commands merged in.
-    ///
-    /// Per-project passthrough commands (from `ur.toml` `[projects.<key>]` `hostexec` list)
-    /// are added as passthrough (no Lua transform). Existing commands are not overridden.
-    pub fn with_passthrough_commands(&self, extra_commands: &[String]) -> Self {
-        if extra_commands.is_empty() {
-            return self.clone();
+    /// Create a new config manager containing only the built-in default commands.
+    pub fn defaults_only(&self) -> Self {
+        Self {
+            commands: Self::defaults(),
         }
-        let mut commands = self.commands.clone();
-        for name in extra_commands {
-            commands.entry(name.clone()).or_insert(CommandConfig {
-                lua_source: None,
-                long_lived: false,
-                bidi: false,
-            });
+    }
+
+    /// Create a new config with only default commands plus project-granted commands.
+    ///
+    /// Per-project `hostexec` arrays in `ur.toml` grant workers access to commands.
+    /// Granted commands that exist in the registry (from `[hostexec.commands]`) use
+    /// their configured settings (lua, long_lived, bidi). Granted commands not in the
+    /// registry are added as passthrough (no Lua, not long_lived, not bidi).
+    /// Default commands (git, gh, cargo, docker, ur) are always included.
+    pub fn with_project_commands(&self, granted: &[String]) -> Self {
+        let mut commands = Self::defaults();
+        for name in granted {
+            if let Some(cfg) = self.commands.get(name) {
+                commands.insert(name.clone(), cfg.clone());
+            } else {
+                commands.entry(name.clone()).or_insert(CommandConfig {
+                    lua_source: None,
+                    long_lived: false,
+                    bidi: false,
+                });
+            }
         }
         Self { commands }
     }
@@ -269,15 +280,17 @@ mod tests {
     }
 
     #[test]
-    fn test_with_passthrough_commands_adds_new() {
+    fn test_project_commands_grants_access() {
         let tmp = TempDir::new().unwrap();
         let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
 
-        let extra = vec!["rg".into(), "jq".into()];
-        let merged = mgr.with_passthrough_commands(&extra);
+        let granted = vec!["rg".into(), "jq".into()];
+        let merged = mgr.with_project_commands(&granted);
 
+        // Defaults always present
         assert!(merged.is_allowed("git"));
         assert!(merged.is_allowed("gh"));
+        // Granted commands added as passthrough
         assert!(merged.is_allowed("rg"));
         assert!(merged.is_allowed("jq"));
         assert!(merged.get("rg").unwrap().lua_source.is_none());
@@ -285,29 +298,31 @@ mod tests {
     }
 
     #[test]
-    fn test_with_passthrough_commands_does_not_override_existing() {
+    fn test_project_commands_uses_registry_config() {
         let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "daemon".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+                long_lived: true,
+                bidi: true,
+            },
+        );
 
-        // git already exists with a Lua script — passthrough should not replace it
-        let extra = vec!["git".into(), "rg".into()];
-        let merged = mgr.with_passthrough_commands(&extra);
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
+        // Grant "daemon" — should pick up long_lived/bidi from registry
+        let merged = mgr.with_project_commands(&["daemon".into()]);
 
-        assert!(merged.get("git").unwrap().lua_source.is_some());
-        assert!(merged.get("rg").unwrap().lua_source.is_none());
+        assert!(merged.is_allowed("daemon"));
+        let daemon_cfg = merged.get("daemon").unwrap();
+        assert!(daemon_cfg.long_lived);
+        assert!(daemon_cfg.bidi);
     }
 
     #[test]
-    fn test_with_passthrough_commands_empty_is_noop() {
-        let tmp = TempDir::new().unwrap();
-        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
-        let merged = mgr.with_passthrough_commands(&[]);
-
-        assert_eq!(merged.command_names(), mgr.command_names());
-    }
-
-    #[test]
-    fn test_with_passthrough_commands_preserves_global_user_config() {
+    fn test_project_commands_does_not_expose_ungrated_registry_entries() {
         let tmp = TempDir::new().unwrap();
         let mut cfg = empty_config();
         cfg.commands.insert(
@@ -321,17 +336,70 @@ mod tests {
         );
 
         let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
-        let extra = vec!["rg".into()];
-        let merged = mgr.with_passthrough_commands(&extra);
+        // jq is in the registry but NOT granted to this project
+        let merged = mgr.with_project_commands(&["rg".into()]);
 
-        assert!(merged.is_allowed("git"));
-        assert!(merged.is_allowed("gh"));
-        assert!(merged.is_allowed("jq"));
-        assert!(merged.is_allowed("rg"));
+        assert!(merged.is_allowed("git")); // default
+        assert!(merged.is_allowed("rg")); // granted
+        assert!(!merged.is_allowed("jq")); // not granted, not a default
     }
 
     #[test]
-    fn test_long_lived_and_bidi_threaded_from_config() {
+    fn test_project_commands_empty_returns_defaults_only() {
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "jq".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+                long_lived: false,
+                bidi: false,
+            },
+        );
+
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
+        let merged = mgr.with_project_commands(&[]);
+
+        assert_eq!(
+            merged.command_names(),
+            vec!["cargo", "docker", "gh", "git", "ur"]
+        );
+    }
+
+    #[test]
+    fn test_project_commands_preserves_default_lua() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+
+        // Granting "git" doesn't replace the default lua script
+        let merged = mgr.with_project_commands(&["git".into()]);
+        assert!(merged.get("git").unwrap().lua_source.is_some());
+    }
+
+    #[test]
+    fn test_defaults_only_excludes_user_config() {
+        let tmp = TempDir::new().unwrap();
+        let mut cfg = empty_config();
+        cfg.commands.insert(
+            "jq".into(),
+            HostExecCommandConfig {
+                lua: None,
+                default_script: false,
+                long_lived: false,
+                bidi: false,
+            },
+        );
+
+        let mgr = HostExecConfigManager::load(tmp.path(), &cfg).unwrap();
+        let defaults = mgr.defaults_only();
+
+        assert!(defaults.is_allowed("git"));
+        assert!(!defaults.is_allowed("jq"));
+    }
+
+    #[test]
+    fn test_long_lived_and_bidi_in_registry() {
         let tmp = TempDir::new().unwrap();
         let mut cfg = empty_config();
         cfg.commands.insert(
@@ -360,10 +428,10 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_commands_have_long_lived_and_bidi_false() {
+    fn test_project_granted_passthrough_has_long_lived_and_bidi_false() {
         let tmp = TempDir::new().unwrap();
         let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
-        let merged = mgr.with_passthrough_commands(&["rg".into()]);
+        let merged = mgr.with_project_commands(&["rg".into()]);
         let rg_cfg = merged.get("rg").unwrap();
         assert!(!rg_cfg.long_lived);
         assert!(!rg_cfg.bidi);
