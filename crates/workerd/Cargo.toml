@@ -16,7 +16,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tmux = { path = "../tmux" }
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "workerd"] }
+ur_rpc = { path = "../ur_rpc" }
 
 [dev-dependencies]
 tempfile = "3"

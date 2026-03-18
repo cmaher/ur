@@ -131,9 +131,7 @@ pub struct CoreServiceHandler {
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     pub worker_repo: WorkerRepo,
     pub network_config: ur_config::NetworkConfig,
-    #[cfg(feature = "hostexec")]
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
-    #[cfg(feature = "hostexec")]
     pub builderd_addr: String,
 }
 
@@ -471,7 +469,6 @@ impl CoreService for WorkerCoreServiceHandler {
 
         // When a worker goes idle, check if it has an assigned ticket that
         // still needs work and re-dispatch the appropriate RPC.
-        #[cfg(feature = "workerd")]
         if inner.status == "idle" {
             let worker_prefix = self.worker_prefix.clone();
             let worker_repo = self.worker_repo.clone();
@@ -494,7 +491,6 @@ impl CoreService for WorkerCoreServiceHandler {
     }
 }
 
-#[cfg(feature = "workerd")]
 /// When a worker reports idle, look up its assigned ticket and re-send the
 /// appropriate workerd RPC if the ticket's lifecycle_status still matches
 /// the phase that worker was dispatched for. Tracks re-dispatch count and

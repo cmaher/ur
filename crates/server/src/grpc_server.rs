@@ -5,6 +5,10 @@ use tonic::transport::Server;
 use ur_db::{TicketRepo, WorkerRepo};
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
+use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
+use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
+use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoServiceServer;
+use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
 
 use crate::WorkerManager;
 use crate::grpc::CoreServiceHandler;
@@ -16,24 +20,15 @@ use crate::grpc::CoreServiceHandler;
 pub async fn serve_grpc(
     addr: SocketAddr,
     handler: CoreServiceHandler,
-    #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
-    #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+    rag_handler: crate::rag::RagServiceHandler,
+    ticket_handler: crate::grpc_ticket::TicketServiceHandler,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "host gRPC server listening");
 
-    let mut router = Server::builder().add_service(CoreServiceServer::new(handler));
-
-    #[cfg(feature = "rag")]
-    {
-        use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
-        router = router.add_service(RagServiceServer::new(rag_handler));
-    }
-
-    #[cfg(feature = "ticket")]
-    {
-        use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
-        router = router.add_service(TicketServiceServer::new(ticket_handler));
-    }
+    let router = Server::builder()
+        .add_service(CoreServiceServer::new(handler))
+        .add_service(RagServiceServer::new(rag_handler))
+        .add_service(TicketServiceServer::new(ticket_handler));
 
     router.serve(addr).await?;
 
@@ -45,7 +40,7 @@ pub async fn serve_grpc(
 /// Serves all container workers. Registers HostExec, RAG, and Ticket services,
 /// all wrapped with the worker auth interceptor that validates `ur-worker-id` and
 /// `ur-worker-secret` metadata headers via `WorkerRepo`.
-#[allow(unused_variables, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_worker_grpc(
     addr: SocketAddr,
     worker_manager: WorkerManager,
@@ -53,12 +48,11 @@ pub async fn serve_worker_grpc(
     ticket_repo: TicketRepo,
     worker_prefix: String,
     projects: HashMap<String, ur_config::ProjectConfig>,
-    #[cfg(feature = "hostexec")] hostexec_config: crate::hostexec::HostExecConfigManager,
-    #[cfg(feature = "hostexec")] builderd_addr: String,
-    #[cfg(feature = "hostexec")] host_workspace: std::path::PathBuf,
-    #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
-    #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
-    #[cfg(feature = "remote_repo")]
+    hostexec_config: crate::hostexec::HostExecConfigManager,
+    builderd_addr: String,
+    host_workspace: std::path::PathBuf,
+    rag_handler: crate::rag::RagServiceHandler,
+    ticket_handler: crate::grpc_ticket::TicketServiceHandler,
     remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
@@ -79,10 +73,7 @@ pub async fn serve_worker_grpc(
         interceptor.clone(),
     ));
 
-    #[cfg(feature = "hostexec")]
     {
-        use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
-
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             config: hostexec_config,
             lua: crate::hostexec::LuaTransformManager::new(),
@@ -98,32 +89,20 @@ pub async fn serve_worker_grpc(
         ));
     }
 
-    #[cfg(feature = "rag")]
-    {
-        use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
-        routes.add_service(RagServiceServer::with_interceptor(
-            rag_handler,
-            interceptor.clone(),
-        ));
-    }
+    routes.add_service(RagServiceServer::with_interceptor(
+        rag_handler,
+        interceptor.clone(),
+    ));
 
-    #[cfg(feature = "ticket")]
-    {
-        use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
-        routes.add_service(TicketServiceServer::with_interceptor(
-            ticket_handler,
-            interceptor.clone(),
-        ));
-    }
+    routes.add_service(TicketServiceServer::with_interceptor(
+        ticket_handler,
+        interceptor.clone(),
+    ));
 
-    #[cfg(feature = "remote_repo")]
-    {
-        use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoServiceServer;
-        routes.add_service(RemoteRepoServiceServer::with_interceptor(
-            remote_repo_handler,
-            interceptor.clone(),
-        ));
-    }
+    routes.add_service(RemoteRepoServiceServer::with_interceptor(
+        remote_repo_handler,
+        interceptor.clone(),
+    ));
 
     Server::builder()
         .add_routes(routes.routes())

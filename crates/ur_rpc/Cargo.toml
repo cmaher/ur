@@ -14,14 +14,6 @@ tonic-types = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
 [features]
-default = ["core"]
-core = []
-hostexec = []
-builder = []
-rag = []
-ticket = []
-workerd = []
-remote_repo = []
 stream = ["dep:tokio", "dep:tracing"]
 error = ["dep:tonic-types", "dep:anyhow"]
 temporal = []

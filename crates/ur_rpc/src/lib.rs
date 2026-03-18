@@ -1,13 +1,12 @@
 #[cfg(feature = "error")]
 pub mod error;
 
-#[cfg(feature = "ticket")]
 pub mod lifecycle;
 
 #[cfg(feature = "stream")]
 pub mod stream;
 
-#[cfg(all(feature = "builder", feature = "stream"))]
+#[cfg(feature = "stream")]
 mod builderd;
 
 pub mod proto {
@@ -16,12 +15,10 @@ pub mod proto {
     pub mod core {
         tonic::include_proto!("ur.core");
     }
-    #[cfg(feature = "hostexec")]
     #[allow(clippy::excessive_nesting)]
     pub mod hostexec {
         tonic::include_proto!("ur.hostexec");
     }
-    #[cfg(feature = "builder")]
     #[allow(clippy::excessive_nesting)]
     pub mod builder {
         tonic::include_proto!("ur.builder");
@@ -30,22 +27,18 @@ pub mod proto {
         pub type BuilderdClient =
             builder_daemon_service_client::BuilderDaemonServiceClient<tonic::transport::Channel>;
     }
-    #[cfg(feature = "rag")]
     #[allow(clippy::excessive_nesting)]
     pub mod rag {
         tonic::include_proto!("ur.rag");
     }
-    #[cfg(feature = "ticket")]
     #[allow(clippy::excessive_nesting)]
     pub mod ticket {
         tonic::include_proto!("ur.ticket");
     }
-    #[cfg(feature = "workerd")]
     #[allow(clippy::excessive_nesting)]
     pub mod workerd {
         tonic::include_proto!("ur.workerd");
     }
-    #[cfg(feature = "remote_repo")]
     #[allow(clippy::excessive_nesting)]
     pub mod remote_repo {
         tonic::include_proto!("ur.remote_repo");

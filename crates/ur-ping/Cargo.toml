@@ -12,4 +12,4 @@ anyhow = "1"
 tokio = { workspace = true }
 tonic = { workspace = true }
 ur_config = { path = "../ur_config" }
-ur_rpc = { path = "../ur_rpc", features = ["core"] }
+ur_rpc = { path = "../ur_rpc" }
