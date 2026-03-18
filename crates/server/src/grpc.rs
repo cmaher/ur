@@ -459,6 +459,7 @@ impl CoreService for WorkerCoreServiceHandler {
         info!(
             worker_id = worker_id,
             status = inner.status,
+            message = inner.message,
             "update_agent_status request received"
         );
 
@@ -482,6 +483,22 @@ impl CoreService for WorkerCoreServiceHandler {
                         worker_id = %wid,
                         error = %e,
                         "idle re-dispatch failed"
+                    );
+                }
+            });
+        }
+
+        // When a worker requests human attention, add activity to the assigned ticket.
+        if inner.status == "stalled" && !inner.message.is_empty() {
+            let ticket_repo = self.ticket_repo.clone();
+            let wid = worker_id.clone();
+            let message = inner.message.clone();
+            tokio::spawn(async move {
+                if let Err(e) = handle_request_human_activity(&wid, &ticket_repo, &message).await {
+                    warn!(
+                        worker_id = %wid,
+                        error = %e,
+                        "request-human activity recording failed"
                     );
                 }
             });
@@ -631,6 +648,50 @@ async fn handle_idle_redispatch(
     worker_repo
         .update_worker_agent_status(worker_id, "working")
         .await?;
+
+    Ok(())
+}
+
+/// When a worker requests human attention, find its assigned ticket and add
+/// an activity entry with `source: agent, kind: request-human` metadata.
+async fn handle_request_human_activity(
+    worker_id: &str,
+    ticket_repo: &TicketRepo,
+    message: &str,
+) -> Result<(), anyhow::Error> {
+    let matched = ticket_repo
+        .tickets_by_metadata("worker_id", worker_id)
+        .await?;
+
+    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
+
+    if assigned.is_empty() {
+        warn!(
+            worker_id = %worker_id,
+            "request-human: worker has no assigned ticket — cannot record activity"
+        );
+        return Ok(());
+    }
+
+    let ticket_id = &assigned[0].id;
+
+    let activity = ticket_repo
+        .add_activity(ticket_id, "agent", message)
+        .await?;
+
+    ticket_repo
+        .set_meta(&activity.id, "activity", "source", "agent")
+        .await?;
+    ticket_repo
+        .set_meta(&activity.id, "activity", "kind", "request-human")
+        .await?;
+
+    info!(
+        worker_id = %worker_id,
+        ticket_id = %ticket_id,
+        activity_id = %activity.id,
+        "recorded request-human activity on ticket"
+    );
 
     Ok(())
 }

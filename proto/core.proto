@@ -83,6 +83,8 @@ message SendWorkerMessageResponse {
 message UpdateAgentStatusRequest {
   string worker_id = 1;
   string status = 2;
+  // Optional human-readable message (used by request-human to surface to the user).
+  string message = 3;
 }
 
 message UpdateAgentStatusResponse {}

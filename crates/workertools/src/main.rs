@@ -1,3 +1,4 @@
+mod agent;
 mod repo;
 
 use std::io::Write;
@@ -48,6 +49,11 @@ enum Commands {
     },
     /// Notify workerd that Claude Code is idle (waiting for user input)
     NotifyIdle,
+    /// Agent lifecycle commands
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,6 +97,9 @@ async fn main() {
         }
         Commands::NotifyIdle => {
             run_notify_idle().await;
+        }
+        Commands::Agent { command } => {
+            std::process::exit(agent::run(command).await);
         }
     }
 }
