@@ -12,7 +12,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 /// epic to the original ticket via a `follow_up` edge, and transitions
 /// `lifecycle_status` to `feedback_resolving` when done.
 ///
-/// `pr_number` is expected as metadata on the ticket (set by the `/push` skill).
+/// `pr_number` is expected as metadata on the ticket (set by the push workflow handler).
 pub struct FeedbackCreateHandler;
 
 impl WorkflowHandler for FeedbackCreateHandler {

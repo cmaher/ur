@@ -62,7 +62,7 @@ impl WorkerdClient {
         Ok(())
     }
 
-    /// Fire-and-forget: send a /push skill invocation to the worker.
+    /// Fire-and-forget: send a push command to the worker (legacy, kept for RPC compat).
     pub async fn push(&self) -> Result<(), String> {
         let mut client = WorkerDaemonServiceClient::connect(self.addr.clone())
             .await

@@ -16,7 +16,7 @@ Run `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate` to fetch
 - Parse the JSON array of review comment objects.
 - Extract the `body`, `path`, `line`, and `user.login` fields from each comment.
 - Skip bot comments (users ending in `[bot]`).
-- If there are no actionable review comments, skip to step 6.
+- If there are no actionable review comments, skip to step 5.
 
 Also fetch top-level PR comments (conversation comments, not inline reviews):
 
@@ -69,5 +69,21 @@ ur ticket update <ticket_id> --lifecycle feedback_resolving --output json
 ```
 
 This signals that the original ticket now has feedback being addressed.
+
+## 6. Signal completion
+
+When you have finished creating feedback tickets (or determined there are none):
+
+```
+workertools agent done
+```
+
+If you cannot complete the task and need human intervention:
+
+```
+workertools agent request-human "description of why human help is needed"
+```
+
+You MUST run one of these two commands before stopping. Do not stop without signaling.
 
 $ARGUMENTS

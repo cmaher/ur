@@ -18,6 +18,20 @@ When given a single non-epic ticket:
 @/home/worker/.claude/skill-hooks/implement/before-commit.md
 @/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
 4. Commit, close: `ur ticket --output json update <id> --status closed`
+5. Set a summary of the work done as ticket metadata:
+   ```
+   ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
+   ```
+6. Signal completion — you MUST run exactly one of these before stopping:
+   ```
+   workertools agent done
+   ```
+   If you cannot complete the work and need human intervention:
+   ```
+   workertools agent request-human "description of why human help is needed"
+   ```
+
+**Important**: Do NOT attempt to push, create PRs, or advance lifecycle status directly. The workflow engine handles verification, push, and PR creation automatically after you signal done.
 
 No subagents needed. Just do the work.
 
@@ -117,6 +131,25 @@ When done:
 3. Return ONLY a 1-2 sentence summary of what you did and any key values/paths the next task might need
 ```
 
+### After All Subagents Complete (Epic Only)
+
+After all dispatchable tickets are done and CI passes:
+
+1. Set `pr_summary` metadata on the epic with a summary of all work done:
+   ```
+   ur ticket set-meta <epic-id> pr_summary "Summary of all changes across subagents" --output json
+   ```
+2. Signal completion:
+   ```
+   workertools agent done
+   ```
+   If you cannot complete all work and need human intervention:
+   ```
+   workertools agent request-human "description of why human help is needed"
+   ```
+
+**Important**: Do NOT attempt to push, create PRs, or advance lifecycle status directly. The workflow engine handles verification, push, and PR creation automatically after you signal done.
+
 ### Common Mistakes
 
 | Mistake | Fix |
@@ -126,5 +159,6 @@ When done:
 | Parent explores code inline | Delegate to subagent |
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
+| Calling /push or advancing lifecycle | **Never.** The workflow engine handles push/PR/lifecycle after `workertools agent done` |
 
 $ARGUMENTS
