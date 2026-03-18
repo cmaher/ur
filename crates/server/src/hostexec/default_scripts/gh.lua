@@ -1,15 +1,24 @@
 -- crates/server/src/hostexec/default_scripts/gh.lua
--- Default gh argument transform: rewrites -C for workers, blocks destructive commands
+-- Default gh argument transform: whitelist read-only operations, block writes.
+-- Write operations (PR create, merge) are workflow-only via remote_repo through builderd.
 
--- Subcommands that workers must never run (keyed by top-level gh command).
--- Merging is deterministic and server-side only.
-local blocked_subcommands = {
-    ["pr"] = { ["merge"] = true },
+-- Allowed subcommand pairs: top-level command -> set of allowed subcommands
+local allowed_subcommands = {
+    ["pr"]  = { ["view"] = true, ["checks"] = true, ["list"] = true, ["status"] = true, ["diff"] = true },
+    ["run"] = { ["view"] = true, ["list"] = true },
+    ["api"] = true,  -- special: allowed but only GET requests
+}
+
+-- HTTP methods that imply a write operation for "gh api"
+local write_methods = {
+    ["POST"]   = true,
+    ["PUT"]    = true,
+    ["PATCH"]  = true,
+    ["DELETE"] = true,
 }
 
 function transform(command, args, working_dir, worker_context)
-    -- Scan for blocked subcommand patterns (e.g. "gh pr merge")
-    -- Find the first two positional arguments, skipping global flags.
+    -- Extract positional arguments, skipping global flags
     local positionals = {}
     local j = 1
     while j <= #args and #positionals < 2 do
@@ -18,7 +27,7 @@ function transform(command, args, working_dir, worker_context)
             break
         elseif a:sub(1, 1) == "-" then
             -- Global flags that consume the next argument
-            if a == "-R" or a == "--repo" then
+            if a == "-R" or a == "--repo" or a == "-C" then
                 j = j + 2
             else
                 j = j + 1
@@ -29,20 +38,54 @@ function transform(command, args, working_dir, worker_context)
         end
     end
 
-    if #positionals >= 2 then
-        local top = positionals[1]
+    if #positionals == 0 then
+        error("blocked: gh requires a subcommand")
+    end
+
+    local top = positionals[1]
+    local allowed = allowed_subcommands[top]
+
+    if allowed == nil then
+        error("blocked: gh " .. top .. " is not allowed (read-only access only)")
+    end
+
+    -- Special handling for "gh api": block write HTTP methods
+    if top == "api" then
+        for i = 1, #args do
+            local a = args[i]
+            if a == "-X" or a == "--method" then
+                if i + 1 <= #args then
+                    local method = args[i + 1]:upper()
+                    if write_methods[method] then
+                        error("blocked: gh api with -X " .. method .. " is not allowed (read-only access only)")
+                    end
+                end
+            end
+            -- Also check --method=VALUE form
+            if a:sub(1, 9) == "--method=" then
+                local method = a:sub(10):upper()
+                if write_methods[method] then
+                    error("blocked: gh api with method " .. method .. " is not allowed (read-only access only)")
+                end
+            end
+        end
+        -- GET (default) is allowed, fall through
+    elseif type(allowed) == "table" then
+        -- Check that the subcommand is in the allowed set
+        if #positionals < 2 then
+            error("blocked: gh " .. top .. " requires a subcommand")
+        end
         local sub = positionals[2]
-        local blocked_subs = blocked_subcommands[top]
-        if blocked_subs and blocked_subs[sub] then
-            error("blocked gh command: " .. top .. " " .. sub)
+        if not allowed[sub] then
+            error("blocked: gh " .. top .. " " .. sub .. " is not allowed (read-only access only)")
         end
     end
 
+    -- Handle -C flag: rewrite if worker_context allows, block otherwise
     local i = 1
     while i <= #args do
         local arg = args[i]
 
-        -- Handle -C: rewrite if worker_context allows, block otherwise
         if arg == "-C" then
             if worker_context == nil then
                 error("blocked flag: -C")
