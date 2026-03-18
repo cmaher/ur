@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use tracing::debug;
-use ur_rpc::proto::builder::BuilderExecMessage;
-use ur_rpc::proto::builder::BuilderExecRequest;
-use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
-use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
+use ur_rpc::proto::builder::{
+    BuilderExecMessage, BuilderExecRequest, BuilderdClient,
+    builder_exec_message::Payload as ExecPayload,
+};
 use ur_rpc::stream::CompletedExec;
 
 use crate::r#trait::RemoteRepo;
@@ -16,7 +16,7 @@ use crate::types::{
 /// Implements `RemoteRepo` by routing `gh` CLI commands through a builderd daemon.
 #[derive(Clone)]
 pub struct GhBackend {
-    pub builderd_addr: String,
+    pub client: BuilderdClient,
     pub gh_repo: String,
 }
 
@@ -25,9 +25,7 @@ impl GhBackend {
     async fn exec_gh(&self, args: &[&str]) -> Result<CompletedExec> {
         debug!(repo = %self.gh_repo, args = ?args, "executing gh command via builderd");
 
-        let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
-            .await
-            .context("builderd unavailable")?;
+        let mut client = self.client.clone();
 
         let req = BuilderExecRequest {
             command: "gh".into(),
