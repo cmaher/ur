@@ -1,8 +1,12 @@
 // Handler registry for workflow transitions.
 
+#[cfg(feature = "workerd")]
+mod dispatch_implement;
 mod review_start;
 mod stall;
 
+#[cfg(feature = "workerd")]
+pub use dispatch_implement::DispatchImplementHandler;
 pub use review_start::ReviewStartHandler;
 pub use stall::StallHandler;
 
@@ -16,6 +20,14 @@ use super::WorkflowEngine;
 ///
 /// Called once during engine setup to wire transitions to their handlers.
 pub fn register_all(engine: &mut WorkflowEngine) {
+    // Open → Implementing: dispatch worker with implement RPC
+    #[cfg(feature = "workerd")]
+    engine.register_handler(
+        LifecycleStatus::Open,
+        LifecycleStatus::Implementing,
+        Arc::new(DispatchImplementHandler),
+    );
+
     // Pushing → InReview: no-op signal handler
     engine.register_handler(
         LifecycleStatus::Pushing,

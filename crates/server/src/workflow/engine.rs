@@ -6,6 +6,7 @@ use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 use ur_db::TicketRepo;
+use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
 
 use super::{TransitionKey, WorkflowContext, WorkflowHandler};
@@ -28,8 +29,12 @@ pub struct WorkflowEngine {
 }
 
 impl WorkflowEngine {
-    pub fn new(ticket_repo: TicketRepo) -> Self {
-        let ctx = WorkflowContext { ticket_repo };
+    pub fn new(ticket_repo: TicketRepo, worker_repo: WorkerRepo, worker_prefix: String) -> Self {
+        let ctx = WorkflowContext {
+            ticket_repo,
+            worker_repo,
+            worker_prefix,
+        };
         Self {
             ctx,
             handlers: HashMap::new(),
@@ -230,9 +235,9 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::TempDir;
     use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo};
+    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo};
 
-    async fn setup_test_db() -> (TempDir, TicketRepo) {
+    async fn setup_test_db() -> (TempDir, TicketRepo, WorkerRepo) {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
         let db = DatabaseManager::open(&db_path.to_string_lossy())
@@ -240,7 +245,8 @@ mod tests {
             .expect("open test db");
         let graph_manager = GraphManager::new(db.pool().clone());
         let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        (tmp, repo)
+        let worker_repo = WorkerRepo::new(db.pool().clone());
+        (tmp, repo, worker_repo)
     }
 
     struct CountingHandler {
@@ -269,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_processes_event_and_deletes_on_success() {
-        let (_tmp, repo) = setup_test_db().await;
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-test1".to_string(),
@@ -300,7 +306,8 @@ mod tests {
         assert!(event.is_some(), "workflow event should exist");
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine = WorkflowEngine::new(repo.clone());
+        let mut engine =
+            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -324,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_increments_attempts_on_failure() {
-        let (_tmp, repo) = setup_test_db().await;
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-test2".to_string(),
@@ -351,7 +358,8 @@ mod tests {
         repo.update_ticket("ur-test2", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine = WorkflowEngine::new(repo.clone());
+        let mut engine =
+            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -371,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_stalls_after_max_attempts() {
-        let (_tmp, repo) = setup_test_db().await;
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-test3".to_string(),
@@ -398,7 +406,8 @@ mod tests {
         repo.update_ticket("ur-test3", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine = WorkflowEngine::new(repo.clone());
+        let mut engine =
+            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
         engine.register_handler(
             LifecycleStatus::Open,
             LifecycleStatus::Implementing,
@@ -420,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_deletes_event_with_no_handler() {
-        let (_tmp, repo) = setup_test_db().await;
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-test4".to_string(),
@@ -446,7 +455,8 @@ mod tests {
         };
         repo.update_ticket("ur-test4", &update).await.unwrap();
 
-        let engine = WorkflowEngine::new(repo.clone());
+        let engine =
+            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
 
         engine.poll_once().await;
 

@@ -8,6 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use ur_db::TicketRepo;
+use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
 
 /// Context passed to every workflow handler, providing access to shared
@@ -15,6 +16,10 @@ use ur_db::model::LifecycleStatus;
 #[derive(Clone)]
 pub struct WorkflowContext {
     pub ticket_repo: TicketRepo,
+    pub worker_repo: WorkerRepo,
+    /// Docker container name prefix for workers (e.g., `ur-worker-`).
+    /// Used to derive workerd gRPC addresses from process IDs.
+    pub worker_prefix: String,
 }
 
 /// Key identifying a specific lifecycle transition.
