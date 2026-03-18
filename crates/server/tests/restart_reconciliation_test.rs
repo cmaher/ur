@@ -191,6 +191,7 @@ async fn restart_reclaims_worker_with_live_container() {
         workspace_path: Some(slot_path.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -307,6 +308,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         workspace_path: Some(slot_dir.display().to_string()),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
     };
     worker_repo1.insert_worker(&worker).await.unwrap();
     worker_repo1
@@ -419,6 +421,7 @@ async fn restart_mixed_live_and_dead_workers() {
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
     };
     worker_repo1.insert_worker(&worker_live).await.unwrap();
     worker_repo1
@@ -441,6 +444,7 @@ async fn restart_mixed_live_and_dead_workers() {
         workspace_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
     };
     worker_repo1.insert_worker(&worker_dead).await.unwrap();
     worker_repo1

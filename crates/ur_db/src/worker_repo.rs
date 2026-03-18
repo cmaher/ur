@@ -44,6 +44,7 @@ type WorkerRow = (
     Option<String>,
     String,
     String,
+    i32,
 );
 
 fn worker_from_row(row: WorkerRow) -> Worker {
@@ -59,6 +60,7 @@ fn worker_from_row(row: WorkerRow) -> Worker {
         workspace_path: row.8,
         created_at: row.9,
         updated_at: row.10,
+        idle_redispatch_count: row.11,
     }
 }
 
@@ -93,7 +95,7 @@ impl WorkerRepo {
 
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
              FROM worker WHERE worker_id = ?",
         )
         .bind(worker_id)
@@ -137,12 +139,36 @@ impl WorkerRepo {
         Ok(())
     }
 
+    /// Increment the idle redispatch count for a worker and return the new value.
+    pub async fn increment_idle_redispatch_count(
+        &self,
+        worker_id: &str,
+    ) -> Result<i32, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE worker SET idle_redispatch_count = idle_redispatch_count + 1, updated_at = ? WHERE worker_id = ?",
+        )
+        .bind(&now)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
+
+        let count = sqlx::query_scalar::<_, i32>(
+            "SELECT idle_redispatch_count FROM worker WHERE worker_id = ?",
+        )
+        .bind(worker_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
     pub async fn list_workers_by_container_status(
         &self,
         container_status: &str,
     ) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
              FROM worker WHERE container_status = ? ORDER BY created_at ASC",
         )
         .bind(container_status)
@@ -170,7 +196,7 @@ impl WorkerRepo {
         workspace_path: &str,
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
              FROM worker WHERE project_key = ? AND workspace_path = ?",
         )
         .bind(project_key)
@@ -405,7 +431,7 @@ impl WorkerRepo {
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
-            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
              FROM worker WHERE container_status IN ('provisioning', 'running', 'stopping') ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)

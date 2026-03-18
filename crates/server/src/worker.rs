@@ -359,6 +359,7 @@ impl WorkerManager {
             workspace_path: slot_path.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -516,6 +517,7 @@ impl WorkerManager {
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         self.worker_repo
             .insert_worker(&worker)

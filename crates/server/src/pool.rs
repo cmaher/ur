@@ -517,6 +517,7 @@ mod tests {
             workspace_path: Some(host_path.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         worker_repo.insert_worker(&worker).await.unwrap();
         worker_repo
@@ -638,6 +639,7 @@ mod tests {
             workspace_path: None,
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         mgr.worker_repo.insert_worker(&worker).await.unwrap();
         mgr.worker_repo

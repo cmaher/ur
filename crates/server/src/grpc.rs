@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tonic::{Code, Request, Response, Status};
-use tracing::info;
+use tracing::{info, warn};
 
+use ur_db::TicketRepo;
+use ur_db::model::LifecycleStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
@@ -384,6 +386,9 @@ impl CoreService for CoreServiceHandler {
     }
 }
 
+/// Maximum number of idle re-dispatches before a ticket is stalled.
+const MAX_IDLE_REDISPATCH: i32 = 3;
+
 /// Lightweight CoreService for the worker gRPC server.
 ///
 /// Implements `Ping` (health check) and `UpdateAgentStatus` (worker status
@@ -392,6 +397,9 @@ impl CoreService for CoreServiceHandler {
 #[derive(Clone)]
 pub struct WorkerCoreServiceHandler {
     pub worker_repo: WorkerRepo,
+    pub ticket_repo: TicketRepo,
+    /// Docker container name prefix for workers (e.g., `ur-worker-`).
+    pub worker_prefix: String,
 }
 
 #[tonic::async_trait]
@@ -461,6 +469,170 @@ impl CoreService for WorkerCoreServiceHandler {
             .await
             .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
 
+        // When a worker goes idle, check if it has an assigned ticket that
+        // still needs work and re-dispatch the appropriate RPC.
+        #[cfg(feature = "workerd")]
+        if inner.status == "idle" {
+            let worker_prefix = self.worker_prefix.clone();
+            let worker_repo = self.worker_repo.clone();
+            let ticket_repo = self.ticket_repo.clone();
+            let wid = worker_id.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    handle_idle_redispatch(&wid, &worker_repo, &ticket_repo, &worker_prefix).await
+                {
+                    warn!(
+                        worker_id = %wid,
+                        error = %e,
+                        "idle re-dispatch failed"
+                    );
+                }
+            });
+        }
+
         Ok(Response::new(UpdateAgentStatusResponse {}))
     }
+}
+
+#[cfg(feature = "workerd")]
+/// When a worker reports idle, look up its assigned ticket and re-send the
+/// appropriate workerd RPC if the ticket's lifecycle_status still matches
+/// the phase that worker was dispatched for. Tracks re-dispatch count and
+/// stalls the ticket after MAX_IDLE_REDISPATCH failures.
+async fn handle_idle_redispatch(
+    worker_id: &str,
+    worker_repo: &WorkerRepo,
+    ticket_repo: &TicketRepo,
+    worker_prefix: &str,
+) -> Result<(), anyhow::Error> {
+    // 1. Find the ticket assigned to this worker via metadata.
+    let matched = ticket_repo
+        .tickets_by_metadata("worker_id", worker_id)
+        .await?;
+
+    // Filter to non-closed tickets only.
+    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
+
+    if assigned.is_empty() {
+        info!(
+            worker_id = %worker_id,
+            "idle worker has no assigned ticket — no-op"
+        );
+        return Ok(());
+    }
+
+    // Use the first (highest-priority) assigned ticket.
+    let ticket_id = &assigned[0].id;
+
+    // 2. Load the full ticket to get lifecycle_status.
+    let ticket = ticket_repo
+        .get_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+
+    // 3. Determine if lifecycle_status requires a re-dispatch.
+    let rpc_kind = match ticket.lifecycle_status {
+        LifecycleStatus::Implementing => Some("implement"),
+        LifecycleStatus::Pushing => Some("push"),
+        LifecycleStatus::FeedbackCreating => Some("create_feedback_tickets"),
+        _ => None,
+    };
+
+    let Some(rpc_kind) = rpc_kind else {
+        info!(
+            worker_id = %worker_id,
+            ticket_id = %ticket_id,
+            lifecycle_status = %ticket.lifecycle_status,
+            "ticket lifecycle has moved past dispatch phase — no re-dispatch"
+        );
+        return Ok(());
+    };
+
+    // 4. Increment re-dispatch count and check threshold.
+    let count = worker_repo
+        .increment_idle_redispatch_count(worker_id)
+        .await?;
+
+    if count > MAX_IDLE_REDISPATCH {
+        warn!(
+            worker_id = %worker_id,
+            ticket_id = %ticket_id,
+            count = count,
+            "idle re-dispatch count exceeded threshold — stalling ticket"
+        );
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::Stalled),
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+        };
+        ticket_repo.update_ticket(ticket_id, &update).await?;
+        return Ok(());
+    }
+
+    // 5. Look up worker to derive workerd address.
+    let worker = worker_repo
+        .get_worker(worker_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found"))?;
+
+    if worker.container_status != "running" {
+        return Ok(());
+    }
+
+    let container_name = format!("{}{}", worker_prefix, worker.process_id);
+    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
+    let workerd_client = crate::WorkerdClient::new(workerd_addr);
+
+    info!(
+        worker_id = %worker_id,
+        ticket_id = %ticket_id,
+        rpc_kind = %rpc_kind,
+        count = count,
+        "re-dispatching workerd RPC for idle worker"
+    );
+
+    // 6. Re-send the appropriate RPC.
+    match rpc_kind {
+        "implement" => {
+            workerd_client
+                .implement(ticket_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("re-dispatch implement failed: {e}"))?;
+        }
+        "push" => {
+            workerd_client
+                .push()
+                .await
+                .map_err(|e| anyhow::anyhow!("re-dispatch push failed: {e}"))?;
+        }
+        "create_feedback_tickets" => {
+            let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
+            let pr_number: u32 = meta
+                .get("pr_number")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no pr_number metadata on ticket {ticket_id} for feedback re-dispatch"
+                    )
+                })?
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid pr_number: {e}"))?;
+            workerd_client
+                .create_feedback_tickets(ticket_id, pr_number)
+                .await
+                .map_err(|e| anyhow::anyhow!("re-dispatch create_feedback_tickets failed: {e}"))?;
+        }
+        _ => unreachable!(),
+    }
+
+    // Update agent status to working after successful re-dispatch.
+    worker_repo
+        .update_worker_agent_status(worker_id, "working")
+        .await?;
+
+    Ok(())
 }

@@ -35,6 +35,7 @@ fn test_worker(worker_id: &str, project_key: &str) -> Worker {
         workspace_path: Some(format!("/workspace/{worker_id}")),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
+        idle_redispatch_count: 0,
     }
 }
 
@@ -431,6 +432,7 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         workspace_path: None,
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
+        idle_redispatch_count: 0,
     };
     r.insert_worker(&worker).await.unwrap();
     r.link_worker_slot("dead-worker", "stale-slot")

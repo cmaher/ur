@@ -178,6 +178,7 @@ pub struct Worker {
     pub workspace_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub idle_redispatch_count: i32,
 }
 
 pub struct WorkerSlot {
