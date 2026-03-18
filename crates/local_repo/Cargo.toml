@@ -1,0 +1,13 @@
+[package]
+name = "local_repo"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+ur_rpc = { path = "../ur_rpc", features = ["builder", "stream"] }
