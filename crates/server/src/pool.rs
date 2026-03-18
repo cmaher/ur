@@ -10,8 +10,7 @@ use ur_config::{Config, ProjectConfig};
 use ur_db::WorkerRepo;
 
 use local_repo::LocalRepo;
-
-use crate::BuilderdClient;
+use ur_rpc::proto::builder::BuilderdClient;
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
@@ -30,7 +29,7 @@ pub struct RepoPoolManager {
     /// Host-side workspace path for returned slot paths (used in Docker volume
     /// mounts and builderd CWD). e.g., `~/.ur/workspace`.
     host_workspace: PathBuf,
-    /// Client for executing commands on the host via builderd.
+    /// Pre-connected builderd client for non-git host commands (rm, mise).
     builderd_client: BuilderdClient,
     /// Git operations routed through builderd.
     local_repo: local_repo::GitBackend,
@@ -309,7 +308,7 @@ impl RepoPoolManager {
             let parent = &builderd_parent;
             async move {
                 self.builderd_client
-                    .exec_and_check("rm", &["-rf", slot_name], parent)
+                    .exec_check("rm", &["-rf", slot_name], parent)
                     .await
             }
         })
@@ -430,7 +429,7 @@ impl RepoPoolManager {
         let cwd = self.to_builderd_path(host_slot_path);
         if let Err(e) = self
             .builderd_client
-            .exec_and_check("mise", &["trust"], &cwd)
+            .exec_check("mise", &["trust"], &cwd)
             .await
         {
             warn!(
@@ -471,11 +470,11 @@ mod tests {
             },
         );
         let worker_repo = test_worker_repo().await;
-        let builderd_client = BuilderdClient::new("http://localhost:42070".into());
         let channel =
             tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+        let builderd_client = BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: BuilderdClient::new(channel),
         };
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
@@ -725,13 +724,14 @@ mod tests {
         );
         let channel =
             tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+        let builderd_client = BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: BuilderdClient::new(channel),
         };
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
-            builderd_client: BuilderdClient::new("http://localhost:42070".into()),
+            builderd_client,
             local_repo,
             projects,
             git_branch_prefix: String::new(),

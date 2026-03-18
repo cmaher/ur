@@ -740,6 +740,7 @@ mod tests {
         let worker_repo = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
             client: ur_rpc::proto::builder::BuilderdClient::new(channel),
         };
@@ -747,7 +748,7 @@ mod tests {
             &config,
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
-            crate::BuilderdClient::new("http://localhost:42070".into()),
+            builderd_client,
             local_repo,
             worker_repo.clone(),
         );

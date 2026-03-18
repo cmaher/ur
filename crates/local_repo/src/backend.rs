@@ -1,10 +1,7 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use tracing::debug;
-use ur_rpc::proto::builder::{
-    BuilderExecMessage, BuilderExecRequest, BuilderdClient,
-    builder_exec_message::Payload as ExecPayload,
-};
+use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
 
 use crate::r#trait::LocalRepo;
@@ -20,32 +17,10 @@ impl GitBackend {
     /// Execute a `git` command via builderd and return the completed execution.
     async fn exec_git(&self, args: &[&str], working_dir: &str) -> Result<CompletedExec> {
         debug!(args = ?args, working_dir = %working_dir, "executing git command via builderd");
-
-        let mut client = self.client.clone();
-
-        let req = BuilderExecRequest {
-            command: "git".into(),
-            args: args.iter().map(|s| s.to_string()).collect(),
-            working_dir: working_dir.into(),
-            env: std::collections::HashMap::new(),
-            long_lived: false,
-        };
-
-        let start_msg = BuilderExecMessage {
-            payload: Some(ExecPayload::Start(req)),
-        };
-
-        let response = client
-            .exec(tokio_stream::once(start_msg))
+        self.client
+            .exec_collect("git", args, working_dir)
             .await
-            .context("builderd exec failed")?;
-
-        let stream = response.into_inner();
-        let completed = CompletedExec::collect(stream)
-            .await
-            .map_err(|e| anyhow!("stream error: {e}"))?;
-
-        Ok(completed)
+            .map_err(|e| anyhow!(e))
     }
 
     /// Execute a `git` command, check for success, and return stdout as a string.
@@ -157,29 +132,11 @@ impl LocalRepo for GitBackend {
     async fn run_hook(&self, script_path: &str, working_dir: &str) -> Result<HookResult> {
         debug!(script_path = %script_path, working_dir = %working_dir, "executing hook via builderd");
 
-        let mut client = self.client.clone();
-
-        let req = BuilderExecRequest {
-            command: script_path.into(),
-            args: vec![],
-            working_dir: working_dir.into(),
-            env: std::collections::HashMap::new(),
-            long_lived: false,
-        };
-
-        let start_msg = BuilderExecMessage {
-            payload: Some(ExecPayload::Start(req)),
-        };
-
-        let response = client
-            .exec(tokio_stream::once(start_msg))
+        let completed = self
+            .client
+            .exec_collect(script_path, &[], working_dir)
             .await
-            .context("builderd exec failed")?;
-
-        let stream = response.into_inner();
-        let completed = CompletedExec::collect(stream)
-            .await
-            .map_err(|e| anyhow!("stream error: {e}"))?;
+            .map_err(|e| anyhow!(e))?;
 
         Ok(HookResult {
             exit_code: completed.exit_code,

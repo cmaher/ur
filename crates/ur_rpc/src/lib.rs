@@ -7,6 +7,9 @@ pub mod lifecycle;
 #[cfg(feature = "stream")]
 pub mod stream;
 
+#[cfg(all(feature = "builder", feature = "stream"))]
+mod builderd;
+
 pub mod proto {
     // Generated tonic code triggers excessive_nesting in deeply nested impl blocks.
     #[allow(clippy::excessive_nesting)]

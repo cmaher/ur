@@ -59,6 +59,7 @@ async fn make_test_components(
         .expect("failed to open in-memory db");
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
         client: ur_rpc::proto::builder::BuilderdClient::new(channel),
     };
@@ -66,10 +67,7 @@ async fn make_test_components(
         &config,
         workspace.clone(),
         workspace.clone(),
-        ur_server::BuilderdClient::new(format!(
-            "http://127.0.0.1:{}",
-            ur_config::DEFAULT_DAEMON_PORT + 2
-        )),
+        builderd_client,
         local_repo,
         worker_repo.clone(),
     );
