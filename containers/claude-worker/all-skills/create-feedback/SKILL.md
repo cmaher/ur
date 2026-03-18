@@ -37,10 +37,11 @@ ur ticket create "Follow-up: <original_title>" \
   --parent <original_parent_id> \
   --priority 1 \
   --body "Follow-up items from PR #<pr_number> review of <ticket_id>" \
+  --follow-up <ticket_id> \
   --output json
 ```
 
-Record the new epic's ID as `<followup_epic_id>`.
+This creates the epic and automatically adds a `follow_up` edge to the original ticket. Record the new epic's ID as `<followup_epic_id>`.
 
 ## 4. Create child tickets from review comments
 
@@ -59,15 +60,7 @@ Guidelines for grouping:
 - Each ticket title should be a concise, actionable description (e.g., "Add error handling for edge case X", "Rename function Y for clarity").
 - Include the file path and line number in the ticket body for context.
 
-## 5. Link follow-up epic to original ticket
-
-Create a `follow_up` edge between the follow-up epic and the original ticket:
-
-```
-ur ticket add-link <followup_epic_id> <ticket_id> --edge follow_up --output json
-```
-
-## 6. Update lifecycle status
+## 5. Update lifecycle status
 
 Transition the original ticket's lifecycle status to `feedback_resolving`:
 

@@ -54,6 +54,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             priority,
             body,
             wip,
+            follow_up,
         } => {
             let resolved = resolve_project(project)?;
             Ok(TicketArgs::Create {
@@ -64,6 +65,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
                 priority,
                 body,
                 wip,
+                follow_up,
             })
         }
         TicketArgs::List {

@@ -38,6 +38,7 @@ where
             priority,
             body,
             wip,
+            follow_up,
         } => {
             let resp = client
                 .create_ticket(CreateTicketRequest {
@@ -55,6 +56,18 @@ where
                 .await
                 .with_status_context("create ticket")?;
             let id = resp.into_inner().id;
+
+            if let Some(follow_up_id) = follow_up {
+                client
+                    .add_link(AddLinkRequest {
+                        left_id: id.clone(),
+                        right_id: follow_up_id,
+                        edge_kind: Some("follow_up".to_owned()),
+                    })
+                    .await
+                    .with_status_context("add follow_up link")?;
+            }
+
             Ok(TicketOutput::Created { id })
         }
 
