@@ -33,12 +33,14 @@ impl WorkflowEngine {
         ticket_repo: TicketRepo,
         worker_repo: WorkerRepo,
         worker_prefix: String,
+        builderd_addr: String,
         handler_entries: Vec<HandlerEntry>,
     ) -> Self {
         let ctx = WorkflowContext {
             ticket_repo,
             worker_repo,
             worker_prefix,
+            builderd_addr,
         };
         let mut handlers = HashMap::new();
         for (from, to, handler) in handler_entries {
@@ -321,6 +323,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -378,6 +381,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -431,6 +435,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -485,6 +490,7 @@ mod tests {
             repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
+            "http://localhost:50051".to_string(),
             vec![],
         );
 

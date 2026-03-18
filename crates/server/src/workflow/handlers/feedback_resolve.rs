@@ -1,4 +1,5 @@
 use anyhow::bail;
+use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
 use tracing::{info, warn};
 use ur_db::model::{EdgeKind, LifecycleStatus, TicketFilter, TicketUpdate};
 
@@ -160,33 +161,40 @@ async fn resolve_feedback_later(
         anyhow::anyhow!("no pr_number metadata on ticket {ticket_id} — cannot merge PR")
     })?;
 
-    // 1. Merge the PR via gh CLI.
+    let gh_repo = meta.get("gh_repo").ok_or_else(|| {
+        anyhow::anyhow!("no gh_repo metadata on ticket {ticket_id} — cannot merge PR")
+    })?;
+
+    // 1. Merge the PR via GhBackend through builderd.
     info!(
         ticket_id = %ticket_id,
         pr_number = %pr_number,
-        "merging PR via gh pr merge --squash"
+        gh_repo = %gh_repo,
+        "merging PR via GhBackend::merge_pr --squash"
     );
 
-    let output = tokio::process::Command::new("gh")
-        .args(["pr", "merge", pr_number, "--squash"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn gh pr merge: {e}"))?;
+    let backend = GhBackend {
+        builderd_addr: ctx.builderd_addr.clone(),
+        gh_repo: gh_repo.clone(),
+    };
+    let pr_num: i64 = pr_number
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid pr_number '{pr_number}' on ticket {ticket_id}"))?;
+    let result = backend.merge_pr(pr_num, MergeStrategy::Squash).await?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr_lower = stderr.to_lowercase();
+    if !result.success {
+        let error_lower = result.error_message.to_lowercase();
 
         // Merge conflicts are recoverable: transition back to pushing so a
         // worker can resolve conflicts, push, and re-enter the review cycle.
-        if stderr_lower.contains("merge conflict")
-            || stderr_lower.contains("not mergeable")
-            || stderr_lower.contains("conflicts")
+        if error_lower.contains("merge conflict")
+            || error_lower.contains("not mergeable")
+            || error_lower.contains("conflicts")
         {
             warn!(
                 ticket_id = %ticket_id,
                 pr_number = %pr_number,
-                stderr = %stderr.trim(),
+                error = %result.error_message,
                 "merge failed due to conflicts — transitioning back to pushing for worker resolution"
             );
 
@@ -207,16 +215,17 @@ async fn resolve_feedback_later(
         }
 
         bail!(
-            "gh pr merge failed for PR #{} on ticket {}: {}",
+            "merge_pr failed for PR #{} on ticket {}: {}",
             pr_number,
             ticket_id,
-            stderr.trim()
+            result.error_message
         );
     }
 
     info!(
         ticket_id = %ticket_id,
         pr_number = %pr_number,
+        sha = %result.sha,
         "PR merged successfully"
     );
 

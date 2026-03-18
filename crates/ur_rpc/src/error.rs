@@ -31,6 +31,13 @@ pub const BUILDERD_UNAVAILABLE: &str = "BUILDERD_UNAVAILABLE";
 pub const DOCS_NOT_INDEXED: &str = "DOCS_NOT_INDEXED";
 
 // ---------------------------------------------------------------------------
+// RemoteRepo reason codes
+// ---------------------------------------------------------------------------
+pub const PR_NOT_FOUND: &str = "PR_NOT_FOUND";
+pub const MERGE_CONFLICT: &str = "MERGE_CONFLICT";
+pub const COMMENT_NOT_FOUND: &str = "COMMENT_NOT_FOUND";
+
+// ---------------------------------------------------------------------------
 // Domain constants
 // ---------------------------------------------------------------------------
 pub const DOMAIN_CORE: &str = "ur.core";
@@ -38,6 +45,7 @@ pub const DOMAIN_TICKET: &str = "ur.ticket";
 pub const DOMAIN_HOSTEXEC: &str = "ur.hostexec";
 pub const DOMAIN_RAG: &str = "ur.rag";
 pub const DOMAIN_BUILDER: &str = "ur.builder";
+pub const DOMAIN_REMOTE_REPO: &str = "ur.remote_repo";
 
 // ---------------------------------------------------------------------------
 // Server-side helper

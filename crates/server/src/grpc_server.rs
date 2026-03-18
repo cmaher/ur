@@ -58,6 +58,8 @@ pub async fn serve_worker_grpc(
     #[cfg(feature = "hostexec")] host_workspace: std::path::PathBuf,
     #[cfg(feature = "rag")] rag_handler: crate::rag::RagServiceHandler,
     #[cfg(feature = "ticket")] ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+    #[cfg(feature = "remote_repo")]
+    remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
 
@@ -110,6 +112,15 @@ pub async fn serve_worker_grpc(
         use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
         routes.add_service(TicketServiceServer::with_interceptor(
             ticket_handler,
+            interceptor.clone(),
+        ));
+    }
+
+    #[cfg(feature = "remote_repo")]
+    {
+        use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoServiceServer;
+        routes.add_service(RemoteRepoServiceServer::with_interceptor(
+            remote_repo_handler,
             interceptor.clone(),
         ));
     }

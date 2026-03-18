@@ -1,9 +1,8 @@
-use tokio_stream::StreamExt;
 use ur_rpc::proto::builder::BuilderExecMessage;
 use ur_rpc::proto::builder::BuilderExecRequest;
 use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
 use ur_rpc::proto::builder::builder_exec_message::Payload as ExecPayload;
-use ur_rpc::proto::core::command_output::Payload;
+use ur_rpc::stream::CompletedExec;
 
 /// Thin client for executing commands on the host via builderd.
 ///
@@ -25,15 +24,15 @@ impl BuilderdClient {
         &self.builderd_addr
     }
 
-    /// Execute a command on the host via builderd, collecting output and
-    /// checking the exit code. Returns an error if builderd is unreachable, the
-    /// command exits non-zero, or the stream ends without an exit code.
-    pub async fn exec_and_check(
+    /// Execute a command on the host via builderd and return the collected
+    /// output. Returns an error if builderd is unreachable, the stream fails,
+    /// or the stream ends without an exit code.
+    pub async fn exec_and_collect(
         &self,
         command: &str,
         args: &[&str],
         working_dir: &str,
-    ) -> Result<(), String> {
+    ) -> Result<CompletedExec, String> {
         let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
             .await
             .map_err(|e| format!("builderd unavailable: {e}"))?;
@@ -56,26 +55,25 @@ impl BuilderdClient {
             .await
             .map_err(|e| format!("builderd exec failed: {e}"))?;
 
-        let mut stream = response.into_inner();
-        let mut stderr_buf = Vec::new();
-        let mut exit_code: Option<i32> = None;
+        let stream = response.into_inner();
+        CompletedExec::collect(stream)
+            .await
+            .map_err(|e| format!("builderd stream error: {e}"))
+    }
 
-        while let Some(msg) = stream.next().await {
-            let msg = msg.map_err(|e| format!("builderd stream error: {e}"))?;
-            match msg.payload {
-                Some(Payload::Stderr(data)) => stderr_buf.extend(data),
-                Some(Payload::ExitCode(code)) => exit_code = Some(code),
-                _ => {}
-            }
-        }
-
-        match exit_code {
-            Some(0) => Ok(()),
-            Some(code) => {
-                let stderr = String::from_utf8_lossy(&stderr_buf);
-                Err(format!("exit code {code}: {stderr}"))
-            }
-            None => Err("builderd stream ended without exit code".into()),
-        }
+    /// Execute a command on the host via builderd, collecting output and
+    /// checking the exit code. Returns an error if builderd is unreachable, the
+    /// command exits non-zero, or the stream ends without an exit code.
+    pub async fn exec_and_check(
+        &self,
+        command: &str,
+        args: &[&str],
+        working_dir: &str,
+    ) -> Result<(), String> {
+        self.exec_and_collect(command, args, working_dir)
+            .await?
+            .check()
+            .map(|_| ())
+            .map_err(|e| e.message().to_string())
     }
 }

@@ -1,3 +1,5 @@
+mod repo;
+
 use std::io::Write;
 
 use clap::{Parser, Subcommand};
@@ -39,6 +41,11 @@ enum Commands {
         #[command(subcommand)]
         command: RagCommands,
     },
+    /// Interact with remote repositories
+    Repo {
+        #[command(subcommand)]
+        command: repo::RepoCommands,
+    },
     /// Notify workerd that Claude Code is idle (waiting for user input)
     NotifyIdle,
 }
@@ -79,6 +86,9 @@ async fn main() {
                 std::process::exit(run_rag_search(&query, &language, top_k).await);
             }
         },
+        Commands::Repo { command } => {
+            std::process::exit(repo::run(command).await);
+        }
         Commands::NotifyIdle => {
             run_notify_idle().await;
         }
