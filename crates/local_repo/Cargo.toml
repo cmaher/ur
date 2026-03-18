@@ -11,3 +11,6 @@ tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
+
+[lints]
+workspace = true

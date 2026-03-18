@@ -109,6 +109,181 @@ fn check_meta(
     }
 }
 
+fn check_ticket_fields(
+    ticket: &Ticket,
+    parsed: &ParsedTicket,
+    known_ids: &HashSet<&str>,
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let f = &parsed.front;
+
+    if ticket.title != parsed.title {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "title".into(),
+            expected: parsed.title.clone(),
+            actual: ticket.title.clone(),
+        });
+    }
+
+    if ticket.body != parsed.body {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "body".into(),
+            expected: format!("({} chars)", parsed.body.len()),
+            actual: format!("({} chars)", ticket.body.len()),
+        });
+    }
+
+    let exp_status = expected_status(&f.status);
+    if ticket.status != exp_status {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "status".into(),
+            expected: exp_status.to_string(),
+            actual: ticket.status.clone(),
+        });
+    }
+
+    let exp_type = expected_type(&f.type_);
+    if ticket.ticket_type != exp_type {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "ticket_type".into(),
+            expected: exp_type.to_string(),
+            actual: ticket.ticket_type.clone(),
+        });
+    }
+
+    if ticket.priority != f.priority {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "priority".into(),
+            expected: f.priority.to_string(),
+            actual: ticket.priority.to_string(),
+        });
+    }
+
+    let exp_parent = f
+        .parent
+        .as_deref()
+        .filter(|p| known_ids.contains(p))
+        .unwrap_or("");
+    if ticket.parent_id != exp_parent {
+        mismatches.push(Mismatch {
+            ticket_id: f.id.clone(),
+            field: "parent_id".into(),
+            expected: if exp_parent.is_empty() {
+                "<none>".into()
+            } else {
+                exp_parent.to_string()
+            },
+            actual: if ticket.parent_id.is_empty() {
+                "<none>".into()
+            } else {
+                ticket.parent_id.clone()
+            },
+        });
+    }
+}
+
+fn check_ticket_metadata(
+    meta: &[MetadataEntry],
+    front: &TkFrontmatter,
+    mismatches: &mut Vec<Mismatch>,
+) {
+    let exp_tags = if front.tags.is_empty() {
+        None
+    } else {
+        Some(front.tags.join(","))
+    };
+    check_meta(meta, "tags", exp_tags.as_deref(), &front.id, mismatches);
+    check_meta(
+        meta,
+        "assignee",
+        front.assignee.as_deref(),
+        &front.id,
+        mismatches,
+    );
+    check_meta(
+        meta,
+        "branch",
+        front.branch.as_deref(),
+        &front.id,
+        mismatches,
+    );
+    check_meta(
+        meta,
+        "external-ref",
+        front.external_ref.as_deref(),
+        &front.id,
+        mismatches,
+    );
+}
+
+async fn verify_tickets(
+    tickets: &[ParsedTicket],
+    known_ids: &HashSet<&str>,
+    client: &mut TicketServiceClient<Channel>,
+) -> Result<(Vec<Mismatch>, Vec<String>, u32), Box<dyn std::error::Error>> {
+    let mut mismatches: Vec<Mismatch> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut verified = 0u32;
+
+    for t in tickets {
+        let f = &t.front;
+
+        let resp = match client
+            .get_ticket(GetTicketRequest { id: f.id.clone() })
+            .await
+        {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
+                    missing.push(f.id.clone());
+                } else {
+                    return Err(format!("get_ticket {}: {e}", f.id).into());
+                }
+                continue;
+            }
+        };
+
+        let ticket = resp.ticket.as_ref().unwrap();
+        check_ticket_fields(ticket, t, known_ids, &mut mismatches);
+        check_ticket_metadata(&resp.metadata, f, &mut mismatches);
+
+        verified += 1;
+    }
+
+    Ok((mismatches, missing, verified))
+}
+
+fn print_summary(mismatches: &[Mismatch], missing: &[String], verified: u32, total: usize) {
+    println!("Verification complete:");
+    println!("  Verified:   {verified}/{total}");
+
+    if !missing.is_empty() {
+        println!("  Missing:    {} tickets not in ur", missing.len());
+        for id in missing {
+            println!("    - {id}");
+        }
+    }
+
+    if mismatches.is_empty() {
+        println!("  Mismatches: 0");
+        println!("\nAll tickets match.");
+    } else {
+        println!("  Mismatches: {}", mismatches.len());
+        println!();
+        for m in mismatches {
+            println!(
+                "  {} .{}: expected {:?}, got {:?}",
+                m.ticket_id, m.field, m.expected, m.actual
+            );
+        }
+    }
+}
+
 async fn run_verify(
     tickets_dir: &Path,
     client: &mut TicketServiceClient<Channel>,
@@ -144,153 +319,9 @@ async fn run_verify(
         tickets.len()
     );
 
-    let mut mismatches: Vec<Mismatch> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    let mut verified = 0u32;
+    let (mismatches, missing, verified) = verify_tickets(&tickets, &known_ids, client).await?;
 
-    for t in &tickets {
-        let f = &t.front;
-
-        let resp = match client
-            .get_ticket(GetTicketRequest { id: f.id.clone() })
-            .await
-        {
-            Ok(r) => r.into_inner(),
-            Err(e) => {
-                if e.code() == tonic::Code::NotFound || e.message().contains("not found") {
-                    missing.push(f.id.clone());
-                } else {
-                    return Err(format!("get_ticket {}: {e}", f.id).into());
-                }
-                continue;
-            }
-        };
-
-        let ticket = resp.ticket.as_ref().unwrap();
-
-        // Core fields
-        if ticket.title != t.title {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "title".into(),
-                expected: t.title.clone(),
-                actual: ticket.title.clone(),
-            });
-        }
-
-        if ticket.body != t.body {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "body".into(),
-                expected: format!("({} chars)", t.body.len()),
-                actual: format!("({} chars)", ticket.body.len()),
-            });
-        }
-
-        let exp_status = expected_status(&f.status);
-        if ticket.status != exp_status {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "status".into(),
-                expected: exp_status.to_string(),
-                actual: ticket.status.clone(),
-            });
-        }
-
-        let exp_type = expected_type(&f.type_);
-        if ticket.ticket_type != exp_type {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "ticket_type".into(),
-                expected: exp_type.to_string(),
-                actual: ticket.ticket_type.clone(),
-            });
-        }
-
-        if ticket.priority != f.priority {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "priority".into(),
-                expected: f.priority.to_string(),
-                actual: ticket.priority.to_string(),
-            });
-        }
-
-        let exp_parent = f
-            .parent
-            .as_deref()
-            .filter(|p| known_ids.contains(p))
-            .unwrap_or("");
-        if ticket.parent_id != exp_parent {
-            mismatches.push(Mismatch {
-                ticket_id: f.id.clone(),
-                field: "parent_id".into(),
-                expected: if exp_parent.is_empty() {
-                    "<none>".into()
-                } else {
-                    exp_parent.to_string()
-                },
-                actual: if ticket.parent_id.is_empty() {
-                    "<none>".into()
-                } else {
-                    ticket.parent_id.clone()
-                },
-            });
-        }
-
-        // Metadata
-        let meta = &resp.metadata;
-
-        let exp_tags = if f.tags.is_empty() {
-            None
-        } else {
-            Some(f.tags.join(","))
-        };
-        check_meta(meta, "tags", exp_tags.as_deref(), &f.id, &mut mismatches);
-
-        check_meta(
-            meta,
-            "assignee",
-            f.assignee.as_deref(),
-            &f.id,
-            &mut mismatches,
-        );
-        check_meta(meta, "branch", f.branch.as_deref(), &f.id, &mut mismatches);
-        check_meta(
-            meta,
-            "external-ref",
-            f.external_ref.as_deref(),
-            &f.id,
-            &mut mismatches,
-        );
-
-        verified += 1;
-    }
-
-    // Summary
-    println!("Verification complete:");
-    println!("  Verified:   {verified}/{}", tickets.len());
-
-    if !missing.is_empty() {
-        println!("  Missing:    {} tickets not in ur", missing.len());
-        for id in &missing {
-            println!("    - {id}");
-        }
-    }
-
-    if mismatches.is_empty() {
-        println!("  Mismatches: 0");
-        println!("\nAll tickets match.");
-    } else {
-        println!("  Mismatches: {}", mismatches.len());
-        println!();
-        for m in &mismatches {
-            println!(
-                "  {} .{}: expected {:?}, got {:?}",
-                m.ticket_id, m.field, m.expected, m.actual
-            );
-        }
-    }
+    print_summary(&mismatches, &missing, verified, tickets.len());
 
     if !missing.is_empty() || !mismatches.is_empty() {
         std::process::exit(1);

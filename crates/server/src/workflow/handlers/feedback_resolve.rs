@@ -183,62 +183,8 @@ async fn resolve_feedback_later(
     let result = backend.merge_pr(pr_num, MergeStrategy::Squash).await?;
 
     if !result.success {
-        let error_lower = result.error_message.to_lowercase();
-
-        // Merge conflicts are recoverable: set fix_phase=merge metadata,
-        // record activity, and transition to fixing so the worker can resolve
-        // conflicts. After fix, the ticket re-enters verifying → push → CI.
-        if error_lower.contains("merge conflict")
-            || error_lower.contains("not mergeable")
-            || error_lower.contains("conflicts")
-        {
-            warn!(
-                ticket_id = %ticket_id,
-                pr_number = %pr_number,
-                error = %result.error_message,
-                "merge failed due to conflicts — transitioning to fixing"
-            );
-
-            // Set fix_phase=merge so FixDispatchHandler knows the context.
-            if let Err(e) = ctx
-                .ticket_repo
-                .set_meta(ticket_id, "ticket", "fix_phase", "merge")
-                .await
-            {
-                error!(ticket_id = %ticket_id, error = %e, "failed to set fix_phase metadata");
-            }
-
-            // Add activity with conflict details.
-            let message = format!(
-                "[workflow] merge conflict detected\n\
-                 source: workflow\n\
-                 result: fail\n\
-                 ---\n\
-                 PR #{pr_number} merge failed: {error}",
-                error = result.error_message
-            );
-            if let Err(e) = ctx
-                .ticket_repo
-                .add_activity(ticket_id, "workflow", &message)
-                .await
-            {
-                error!(ticket_id = %ticket_id, error = %e, "failed to add merge conflict activity");
-            }
-
-            let update = TicketUpdate {
-                lifecycle_status: Some(LifecycleStatus::Fixing),
-                lifecycle_managed: None,
-                status: None,
-                type_: None,
-                priority: None,
-                title: None,
-                body: None,
-                branch: None,
-                parent_id: None,
-                project: None,
-            };
-            ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
-            return Ok(());
+        if is_merge_conflict(&result.error_message) {
+            return handle_merge_conflict(ctx, ticket_id, pr_number, &result.error_message).await;
         }
 
         bail!(
@@ -306,6 +252,65 @@ async fn resolve_feedback_later(
         "feedback_later resolution complete"
     );
 
+    Ok(())
+}
+
+fn is_merge_conflict(error_message: &str) -> bool {
+    let error_lower = error_message.to_lowercase();
+    error_lower.contains("merge conflict")
+        || error_lower.contains("not mergeable")
+        || error_lower.contains("conflicts")
+}
+
+async fn handle_merge_conflict(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    pr_number: &str,
+    error_message: &str,
+) -> Result<(), anyhow::Error> {
+    warn!(
+        ticket_id = %ticket_id,
+        pr_number = %pr_number,
+        error = %error_message,
+        "merge failed due to conflicts — transitioning to fixing"
+    );
+
+    if let Err(e) = ctx
+        .ticket_repo
+        .set_meta(ticket_id, "ticket", "fix_phase", "merge")
+        .await
+    {
+        error!(ticket_id = %ticket_id, error = %e, "failed to set fix_phase metadata");
+    }
+
+    let message = format!(
+        "[workflow] merge conflict detected\n\
+         source: workflow\n\
+         result: fail\n\
+         ---\n\
+         PR #{pr_number} merge failed: {error_message}"
+    );
+    if let Err(e) = ctx
+        .ticket_repo
+        .add_activity(ticket_id, "workflow", &message)
+        .await
+    {
+        error!(ticket_id = %ticket_id, error = %e, "failed to add merge conflict activity");
+    }
+
+    let update = TicketUpdate {
+        lifecycle_status: Some(LifecycleStatus::Fixing),
+        lifecycle_managed: None,
+        status: None,
+        type_: None,
+        priority: None,
+        title: None,
+        body: None,
+        branch: None,
+        parent_id: None,
+        project: None,
+    };
+    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
     Ok(())
 }
 

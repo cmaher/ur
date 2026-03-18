@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
@@ -17,25 +18,7 @@ use ur_server::{BackupTaskManager, Config, RepoPoolManager, WorkerManager};
 )]
 struct Cli {}
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    ur_server::logging::init();
-
-    let _cli = Cli::parse();
-
-    let cfg = Config::load()?;
-    info!(
-        config_dir = %cfg.config_dir.display(),
-        server_port = cfg.server_port,
-        worker_port = cfg.worker_port,
-        network = cfg.network.name,
-        workers = cfg.network.worker_name,
-        "server config loaded"
-    );
-
-    // When running in a container, the workspace is mounted at /workspace.
-    // Use UR_HOST_WORKSPACE for host-side paths (builderd CWD mapping),
-    // and the mount point for local filesystem operations (mkdir, git init).
+fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
     let host_workspace = std::env::var(ur_config::UR_HOST_WORKSPACE_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| cfg.workspace.clone());
@@ -44,56 +27,82 @@ async fn main() -> anyhow::Result<()> {
     } else {
         cfg.workspace.clone()
     };
-    info!(
-        local_workspace = %local_workspace.display(),
-        host_workspace = %host_workspace.display(),
-        "workspace paths resolved"
+    (host_workspace, local_workspace)
+}
+
+fn init_rag_handler(cfg: &Config) -> ur_server::rag::RagServiceHandler {
+    let model = rag::model::model_info(&cfg.rag.embedding_model).unwrap_or_else(|| {
+        let supported = ur_config::supported_model_names().join(", ");
+        panic!(
+            "unknown embedding model '{}' — supported models: {supported}",
+            cfg.rag.embedding_model,
+        );
+    });
+
+    let qdrant_url = format!(
+        "http://{}:{}",
+        cfg.rag.qdrant_hostname,
+        ur_config::DEFAULT_QDRANT_PORT,
+    );
+    info!(qdrant_url = %qdrant_url, "connecting to Qdrant");
+
+    let qdrant = Arc::new(
+        qdrant_client::Qdrant::from_url(&qdrant_url)
+            .build()
+            .expect("failed to create Qdrant client"),
     );
 
-    tokio::fs::create_dir_all(&local_workspace).await?;
-    tokio::fs::create_dir_all(&cfg.config_dir).await?;
+    let embedding_model = Arc::new(
+        fastembed::TextEmbedding::try_new(
+            fastembed::InitOptions::new(model.fastembed_model.clone())
+                .with_show_download_progress(false),
+        )
+        .expect("failed to load embedding model — run `ur rag model download`"),
+    );
 
-    let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
-    tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
+    let rag_manager = rag::RagManager::new(
+        qdrant,
+        embedding_model,
+        model.download.vector_size,
+        cfg.rag.embedding_model.clone(),
+    );
 
-    // Determine the Docker command from env (docker vs nerdctl)
-    let docker_command = match std::env::var("UR_CONTAINER").as_deref() {
-        Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
-        _ => "docker".to_string(),
-    };
-    let network_manager =
-        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
+    ur_server::rag::RagServiceHandler {
+        rag_manager,
+        config_dir: cfg.config_dir.clone(),
+    }
+}
 
-    // UR_HOST_CONFIG is the host-side config directory path, needed for
-    // constructing volume mounts in worker containers (which use host paths
-    // via the Docker socket). Falls back to the server's own config_dir
-    // (only correct when the server runs directly on the host, not in a container).
-    let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| cfg.config_dir.clone());
-    info!(host_config_dir = %host_config_dir.display(), "host config resolved");
-
-    // Load prompt modes from ur.toml (falls back to hardcoded defaults)
-    let prompt_modes = {
-        let toml_path = cfg.config_dir.join("ur.toml");
-        match std::fs::read_to_string(&toml_path) {
-            Ok(contents) => PromptModesConfig::from_toml(&contents)
-                .map_err(|e| anyhow::anyhow!("failed to parse prompt_modes: {e}"))?,
-            Err(_) => PromptModesConfig::default(),
-        }
-    };
-
-    // Initialize SQLite database
+async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
     let db_path = cfg.config_dir.join("ur.db");
     let db_path_str = db_path.to_string_lossy();
     let db = DatabaseManager::open(&db_path_str)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
     info!(db_path = %db_path.display(), "database initialized");
+    Ok(db)
+}
 
-    // Start periodic backup task (if configured)
-    // UR_BACKUP_PATH overrides the host path from ur.toml — set by compose generation
-    // to map the container-side mount point.
+fn resolve_docker_command() -> String {
+    match std::env::var("UR_CONTAINER").as_deref() {
+        Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
+        _ => "docker".to_string(),
+    }
+}
+
+fn load_prompt_modes(cfg: &Config) -> anyhow::Result<PromptModesConfig> {
+    let toml_path = cfg.config_dir.join("ur.toml");
+    match std::fs::read_to_string(&toml_path) {
+        Ok(contents) => PromptModesConfig::from_toml(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse prompt_modes: {e}")),
+        Err(_) => Ok(PromptModesConfig::default()),
+    }
+}
+
+fn init_backup(
+    db: &DatabaseManager,
+    cfg: &Config,
+) -> anyhow::Result<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)> {
     let mut backup_config = cfg.backup.clone();
     if let Ok(container_path) = std::env::var("UR_BACKUP_PATH") {
         backup_config.path = Some(std::path::PathBuf::from(container_path));
@@ -104,20 +113,15 @@ async fn main() -> anyhow::Result<()> {
     let backup_handle = backup_task_manager
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
+    Ok((shutdown_tx, backup_handle))
+}
 
-    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
-
-    let builderd_client = ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to builderd: {e}"))?;
-    let local_repo = local_repo::GitBackend {
-        client: builderd_client.clone(),
-    };
-    let worker_repo = WorkerRepo::new(db.pool().clone());
-
-    // Reconcile slots: sync DB rows with on-disk pool directories and project configs.
-    // Build project_key -> pool_dir map from the project configs.
+async fn reconcile_slots(
+    worker_repo: &WorkerRepo,
+    cfg: &Config,
+    local_workspace: &std::path::Path,
+    host_workspace: &std::path::Path,
+) -> anyhow::Result<()> {
     let pool_root = local_workspace.join("pool");
     let project_pool_dirs: std::collections::HashMap<String, PathBuf> = cfg
         .projects
@@ -125,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|k| (k.clone(), pool_root.join(k)))
         .collect();
     let slot_result = worker_repo
-        .reconcile_slots(&project_pool_dirs, &local_workspace, &host_workspace)
+        .reconcile_slots(&project_pool_dirs, local_workspace, host_workspace)
         .await
         .map_err(|e| anyhow::anyhow!("slot reconciliation failed: {e}"))?;
     info!(
@@ -133,28 +137,11 @@ async fn main() -> anyhow::Result<()> {
         inserted = ?slot_result.inserted_orphaned,
         "slot reconciliation complete"
     );
+    Ok(())
+}
 
-    let repo_pool_manager = RepoPoolManager::new(
-        &cfg,
-        local_workspace.clone(),
-        host_workspace.clone(),
-        builderd_client,
-        local_repo,
-        worker_repo.clone(),
-    );
-    let worker_manager = WorkerManager::new(
-        local_workspace,
-        host_config_dir,
-        repo_pool_manager.clone(),
-        network_manager,
-        cfg.network.clone(),
-        cfg.worker_port,
-        prompt_modes,
-        worker_repo.clone(),
-    );
-
-    // Reconcile agents: check container liveness for active agents and update status.
-    let docker_cmd = docker_command.clone();
+async fn reconcile_workers(worker_repo: &WorkerRepo, docker_command: &str) -> anyhow::Result<()> {
+    let docker_cmd = docker_command.to_owned();
     let worker_result = worker_repo
         .reconcile_workers(|container_id| {
             let cmd = docker_cmd.clone();
@@ -174,57 +161,25 @@ async fn main() -> anyhow::Result<()> {
         stopped = ?worker_result.marked_stopped,
         "worker reconciliation complete"
     );
+    Ok(())
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn init_and_serve(
+    cfg: &Config,
+    db: &DatabaseManager,
+    worker_manager: WorkerManager,
+    repo_pool_manager: RepoPoolManager,
+    worker_repo: WorkerRepo,
+    builderd_addr: String,
+    host_workspace: PathBuf,
+) -> anyhow::Result<()> {
     let hostexec_config =
         ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
             .expect("failed to load hostexec config");
 
-    let rag_handler = {
-        use std::sync::Arc;
+    let rag_handler = init_rag_handler(cfg);
 
-        let model = rag::model::model_info(&cfg.rag.embedding_model).unwrap_or_else(|| {
-            let supported = ur_config::supported_model_names().join(", ");
-            panic!(
-                "unknown embedding model '{}' — supported models: {supported}",
-                cfg.rag.embedding_model,
-            );
-        });
-
-        let qdrant_url = format!(
-            "http://{}:{}",
-            cfg.rag.qdrant_hostname,
-            ur_config::DEFAULT_QDRANT_PORT,
-        );
-        info!(qdrant_url = %qdrant_url, "connecting to Qdrant");
-
-        let qdrant = Arc::new(
-            qdrant_client::Qdrant::from_url(&qdrant_url)
-                .build()
-                .expect("failed to create Qdrant client"),
-        );
-
-        let embedding_model = Arc::new(
-            fastembed::TextEmbedding::try_new(
-                fastembed::InitOptions::new(model.fastembed_model.clone())
-                    .with_show_download_progress(false),
-            )
-            .expect("failed to load embedding model — run `ur rag model download`"),
-        );
-
-        let rag_manager = rag::RagManager::new(
-            qdrant,
-            embedding_model,
-            model.download.vector_size,
-            cfg.rag.embedding_model.clone(),
-        );
-
-        ur_server::rag::RagServiceHandler {
-            rag_manager,
-            config_dir: cfg.config_dir.clone(),
-        }
-    };
-
-    // Create a TicketRepo for the worker gRPC server (idle re-dispatch logic).
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
 
@@ -236,8 +191,8 @@ async fn main() -> anyhow::Result<()> {
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
         worker_manager: worker_manager.clone(),
         repo_pool_manager,
-        workspace: cfg.workspace,
-        proxy_hostname: cfg.proxy.hostname,
+        workspace: cfg.workspace.clone(),
+        proxy_hostname: cfg.proxy.hostname.clone(),
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
         network_config: cfg.network.clone(),
@@ -245,8 +200,42 @@ async fn main() -> anyhow::Result<()> {
         builderd_addr: builderd_addr.clone(),
     };
 
-    let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.server_port));
-    let worker_addr = SocketAddr::from(([0, 0, 0, 0], cfg.worker_port));
+    serve_grpc_servers(
+        cfg.server_port,
+        cfg.worker_port,
+        cfg.network.worker_prefix.clone(),
+        cfg.projects.clone(),
+        grpc_handler,
+        rag_handler,
+        ticket_handler,
+        worker_manager,
+        worker_repo,
+        ticket_repo,
+        hostexec_config,
+        builderd_addr,
+        host_workspace,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_grpc_servers(
+    server_port: u16,
+    worker_port: u16,
+    network_prefix: String,
+    projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
+    grpc_handler: ur_server::grpc::CoreServiceHandler,
+    rag_handler: ur_server::rag::RagServiceHandler,
+    ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
+    worker_manager: WorkerManager,
+    worker_repo: WorkerRepo,
+    ticket_repo: TicketRepo,
+    hostexec_config: ur_server::hostexec::HostExecConfigManager,
+    builderd_addr: String,
+    host_workspace: PathBuf,
+) -> anyhow::Result<()> {
+    let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
+    let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
 
     let host_server = ur_server::grpc_server::serve_grpc(
         host_addr,
@@ -268,8 +257,8 @@ async fn main() -> anyhow::Result<()> {
         worker_manager,
         worker_repo,
         ticket_repo,
-        cfg.network.worker_prefix.clone(),
-        cfg.projects,
+        network_prefix,
+        projects,
         hostexec_config,
         builderd_addr,
         host_workspace,
@@ -278,7 +267,95 @@ async fn main() -> anyhow::Result<()> {
         remote_repo_handler,
     );
 
-    let result = tokio::try_join!(host_server, worker_server).map(|_| ());
+    tokio::try_join!(host_server, worker_server).map(|_| ())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    ur_server::logging::init();
+
+    let _cli = Cli::parse();
+
+    let cfg = Config::load()?;
+    info!(
+        config_dir = %cfg.config_dir.display(),
+        server_port = cfg.server_port,
+        worker_port = cfg.worker_port,
+        network = cfg.network.name,
+        workers = cfg.network.worker_name,
+        "server config loaded"
+    );
+
+    let (host_workspace, local_workspace) = resolve_workspace_paths(&cfg);
+    info!(
+        local_workspace = %local_workspace.display(),
+        host_workspace = %host_workspace.display(),
+        "workspace paths resolved"
+    );
+
+    tokio::fs::create_dir_all(&local_workspace).await?;
+    tokio::fs::create_dir_all(&cfg.config_dir).await?;
+
+    let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
+    tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
+
+    let docker_command = resolve_docker_command();
+    let network_manager =
+        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
+
+    let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cfg.config_dir.clone());
+    info!(host_config_dir = %host_config_dir.display(), "host config resolved");
+
+    let prompt_modes = load_prompt_modes(&cfg)?;
+    let db = init_database(&cfg).await?;
+    let (shutdown_tx, backup_handle) = init_backup(&db, &cfg)?;
+
+    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
+
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to connect to builderd: {e}"))?;
+    let local_repo = local_repo::GitBackend {
+        client: builderd_client.clone(),
+    };
+    let worker_repo = WorkerRepo::new(db.pool().clone());
+
+    reconcile_slots(&worker_repo, &cfg, &local_workspace, &host_workspace).await?;
+
+    let repo_pool_manager = RepoPoolManager::new(
+        &cfg,
+        local_workspace.clone(),
+        host_workspace.clone(),
+        builderd_client,
+        local_repo,
+        worker_repo.clone(),
+    );
+    let worker_manager = WorkerManager::new(
+        local_workspace,
+        host_config_dir,
+        repo_pool_manager.clone(),
+        network_manager,
+        cfg.network.clone(),
+        cfg.worker_port,
+        prompt_modes,
+        worker_repo.clone(),
+    );
+
+    reconcile_workers(&worker_repo, &docker_command).await?;
+
+    let result = init_and_serve(
+        &cfg,
+        &db,
+        worker_manager,
+        repo_pool_manager,
+        worker_repo,
+        builderd_addr,
+        host_workspace,
+    )
+    .await;
 
     // Signal backup task to stop and wait for it
     let _ = shutdown_tx.send(true);

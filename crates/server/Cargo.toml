@@ -39,3 +39,6 @@ futures = "0.3"
 local_repo = { path = "../local_repo" }
 tempfile = "3"
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
+
+[lints]
+workspace = true

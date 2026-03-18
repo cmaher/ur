@@ -8,6 +8,11 @@ struct Counts {
     closed: usize,
 }
 
+struct ReportData<'a> {
+    children: HashMap<&'a str, Vec<&'a Ticket>>,
+    epics: HashMap<&'a str, &'a Ticket>,
+}
+
 /// Build a project status report matching the repotools `ticket-status` format.
 ///
 /// If `project` is provided, only tickets whose ID starts with `{project}-` are included.
@@ -23,42 +28,67 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
         None => tickets.iter().collect(),
     };
 
-    // parent_id → children
+    let data = build_report_data(&items);
+
+    let total_open = items.iter().filter(|t| t.status != "closed").count();
+    let total = items.len();
+
+    let mut out = String::new();
+    writeln!(
+        out,
+        "Project Status — {today}  ({total_open} open / {total} total)"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    render_epic_tree(&mut out, &items, &data);
+    render_orphans(&mut out, &items, &data);
+
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn build_report_data<'a>(items: &[&'a Ticket]) -> ReportData<'a> {
     let mut children: HashMap<&str, Vec<&Ticket>> = HashMap::new();
-    for t in &items {
+    for t in items {
         if !t.parent_id.is_empty() {
             children.entry(t.parent_id.as_str()).or_default().push(t);
         }
     }
 
-    // Open epics by ID
     let mut epics: HashMap<&str, &Ticket> = HashMap::new();
-    for t in &items {
+    for t in items {
         if t.ticket_type == "epic" && t.status != "closed" {
             epics.insert(t.id.as_str(), t);
         }
     }
 
-    // Find top-level epics (not a child of another open epic)
+    ReportData { children, epics }
+}
+
+fn render_epic_tree(out: &mut String, items: &[&Ticket], data: &ReportData<'_>) {
     let mut child_epic_ids: HashMap<&str, bool> = HashMap::new();
-    for &pid in epics.keys() {
-        let Some(kids) = children.get(pid) else {
+    for &pid in data.epics.keys() {
+        let Some(kids) = data.children.get(pid) else {
             continue;
         };
         for kid in kids.iter().filter(|k| k.ticket_type == "epic") {
             child_epic_ids.insert(kid.id.as_str(), true);
         }
     }
-    let mut top_epics: Vec<&Ticket> = epics
+    let mut top_epics: Vec<&Ticket> = items
         .iter()
-        .filter(|(id, _)| !child_epic_ids.contains_key(*id))
-        .map(|(_, t)| *t)
+        .filter(|t| t.ticket_type == "epic" && t.status != "closed")
+        .filter(|t| !child_epic_ids.contains_key(t.id.as_str()))
+        .copied()
         .collect();
     top_epics.sort_by_key(|t| &t.title);
 
-    // Direct sub-epics of a given epic
     let sub_epics_of = |eid: &str| -> Vec<&Ticket> {
-        let mut subs: Vec<&Ticket> = children
+        let mut subs: Vec<&Ticket> = data
+            .children
             .get(eid)
             .map(|kids| {
                 kids.iter()
@@ -71,38 +101,6 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
         subs
     };
 
-    // Count open/closed non-epic descendants (recursive via stack)
-    let descendant_counts = |eid: &str| -> Counts {
-        let mut c = Counts { open: 0, closed: 0 };
-        let mut stack = vec![eid.to_owned()];
-        while let Some(id) = stack.pop() {
-            let Some(kids) = children.get(id.as_str()) else {
-                continue;
-            };
-            for kid in kids {
-                match kid.ticket_type.as_str() {
-                    "epic" => stack.push(kid.id.clone()),
-                    _ if kid.status == "closed" => c.closed += 1,
-                    _ => c.open += 1,
-                }
-            }
-        }
-        c
-    };
-
-    // Global totals
-    let total_open = items.iter().filter(|t| t.status != "closed").count();
-    let total = items.len();
-
-    let mut out = String::new();
-    writeln!(
-        out,
-        "Project Status — {today}  ({total_open} open / {total} total)"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-
-    // Group top-level epics by priority
     let mut epics_by_pri: HashMap<i64, Vec<&Ticket>> = HashMap::new();
     for t in &top_epics {
         epics_by_pri.entry(t.priority).or_default().push(t);
@@ -118,27 +116,28 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
         writeln!(out, "[P{p}]").unwrap();
 
         for ep in &group {
-            let c = descendant_counts(&ep.id);
+            let c = descendant_counts(&data.children, &ep.id);
             let counts = format!("{}/{}", c.open, c.open + c.closed);
             writeln!(out, "  {:<12} {:<7} {}", ep.id, counts, ep.title).unwrap();
 
             for sub in sub_epics_of(&ep.id) {
-                let sc = descendant_counts(&sub.id);
+                let sc = descendant_counts(&data.children, &sub.id);
                 let sub_counts = format!("{}/{}", sc.open, sc.open + sc.closed);
                 writeln!(out, "    {:<12} {:<7} {}", sub.id, sub_counts, sub.title).unwrap();
             }
         }
         writeln!(out).unwrap();
     }
+}
 
-    // Orphaned tickets: non-epic, non-closed, with no parent or parent not a known open epic
+fn render_orphans(out: &mut String, items: &[&Ticket], data: &ReportData<'_>) {
     let mut orphans: Vec<&Ticket> = items
         .iter()
         .filter(|t| {
             if t.ticket_type == "epic" || t.status == "closed" {
                 return false;
             }
-            t.parent_id.is_empty() || !epics.contains_key(t.parent_id.as_str())
+            t.parent_id.is_empty() || !data.epics.contains_key(t.parent_id.as_str())
         })
         .copied()
         .collect();
@@ -160,12 +159,24 @@ pub fn build_status_report(tickets: &[Ticket], today: &str, project: Option<&str
         }
         writeln!(out).unwrap();
     }
+}
 
-    // Remove trailing newline
-    while out.ends_with('\n') {
-        out.pop();
+fn descendant_counts(children: &HashMap<&str, Vec<&Ticket>>, eid: &str) -> Counts {
+    let mut c = Counts { open: 0, closed: 0 };
+    let mut stack = vec![eid.to_owned()];
+    while let Some(id) = stack.pop() {
+        let Some(kids) = children.get(id.as_str()) else {
+            continue;
+        };
+        for kid in kids {
+            match kid.ticket_type.as_str() {
+                "epic" => stack.push(kid.id.clone()),
+                _ if kid.status == "closed" => c.closed += 1,
+                _ => c.open += 1,
+            }
+        }
     }
-    out
+    c
 }
 
 #[cfg(test)]

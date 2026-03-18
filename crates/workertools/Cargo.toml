@@ -16,3 +16,6 @@ ur_config = { path = "../ur_config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ur_rpc = { path = "../ur_rpc" }
+
+[lints]
+workspace = true

@@ -20,3 +20,6 @@ temporal = []
 
 [build-dependencies]
 tonic-build = { workspace = true }
+
+[lints]
+workspace = true

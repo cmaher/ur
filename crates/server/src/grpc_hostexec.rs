@@ -220,79 +220,14 @@ impl HostExecService for HostExecServiceHandler {
             "host exec forwarding to builderd"
         );
 
-        // 4. Forward to builderd
-        let mut client = BuilderDaemonServiceClient::connect(self.builderd_addr.clone())
-            .await
-            .map_err(|_| HostExecError::BuilderdUnavailable)?;
-
-        let builder_req = BuilderExecRequest {
-            command: transform_result.command,
-            args: transform_result.args,
-            working_dir: transform_result.working_dir,
-            env: transform_result.env,
-            long_lived: cmd_config.long_lived,
-        };
-
-        let start_msg = BuilderExecMessage {
-            payload: Some(BuilderPayload::Start(builder_req)),
-        };
-
-        // Create a channel for sending messages to builderd. The start frame goes
-        // first; if the command is bidi, subsequent stdin frames from the worker
-        // stream are forwarded through the same channel.
-        let (builder_tx, builder_rx) = mpsc::channel::<BuilderExecMessage>(32);
-        builder_tx
-            .send(start_msg)
-            .await
-            .map_err(|_| HostExecError::BuilderdExecFailed {
-                message: "failed to enqueue start frame".into(),
-            })?;
-
-        // Spawn a task to forward stdin frames from the worker to builderd.
-        if is_bidi {
-            let tx = builder_tx.clone();
-            tokio::spawn(async move {
-                while let Some(Ok(msg)) = inbound.next().await {
-                    if let Some(HostExecPayload::Stdin(data)) = msg.payload {
-                        let builder_msg = BuilderExecMessage {
-                            payload: Some(BuilderPayload::Stdin(data)),
-                        };
-                        if tx.send(builder_msg).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-
-        // Drop the original sender so the stream closes when the forwarding task
-        // (if any) finishes and drops its clone.
-        drop(builder_tx);
-
-        let builder_stream = ReceiverStream::new(builder_rx);
-
-        let response =
-            client
-                .exec(builder_stream)
-                .await
-                .map_err(|e| HostExecError::BuilderdExecFailed {
-                    message: e.to_string(),
-                })?;
-
-        // Stream builderd response back to worker
-        let mut builderd_inbound = response.into_inner();
-        let (tx, rx) = mpsc::channel(32);
-
-        tokio::spawn(async move {
-            while let Ok(Some(msg)) = builderd_inbound.message().await {
-                if tx.send(Ok(msg)).await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        let stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(stream) as Self::ExecStream))
+        forward_to_builderd(
+            &self.builderd_addr,
+            transform_result,
+            cmd_config.long_lived,
+            is_bidi,
+            inbound,
+        )
+        .await
     }
 
     async fn list_commands(
@@ -314,6 +249,87 @@ impl HostExecService for HostExecServiceHandler {
             entries,
         }))
     }
+}
+
+/// Forward stdin frames from the client inbound stream to the builder channel.
+async fn forward_stdin_to_builder(
+    mut inbound: Streaming<HostExecMessage>,
+    tx: mpsc::Sender<BuilderExecMessage>,
+) {
+    while let Some(Ok(msg)) = inbound.next().await {
+        let Some(HostExecPayload::Stdin(data)) = msg.payload else {
+            continue;
+        };
+        let builder_msg = BuilderExecMessage {
+            payload: Some(BuilderPayload::Stdin(data)),
+        };
+        if tx.send(builder_msg).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn forward_to_builderd(
+    builderd_addr: &str,
+    transform_result: crate::hostexec::lua_transform::TransformResult,
+    long_lived: bool,
+    is_bidi: bool,
+    inbound: Streaming<HostExecMessage>,
+) -> Result<Response<CommandOutputStream>, Status> {
+    let mut client = BuilderDaemonServiceClient::connect(builderd_addr.to_owned())
+        .await
+        .map_err(|_| HostExecError::BuilderdUnavailable)?;
+
+    let builder_req = BuilderExecRequest {
+        command: transform_result.command,
+        args: transform_result.args,
+        working_dir: transform_result.working_dir,
+        env: transform_result.env,
+        long_lived,
+    };
+
+    let start_msg = BuilderExecMessage {
+        payload: Some(BuilderPayload::Start(builder_req)),
+    };
+
+    let (builder_tx, builder_rx) = mpsc::channel::<BuilderExecMessage>(32);
+    builder_tx
+        .send(start_msg)
+        .await
+        .map_err(|_| HostExecError::BuilderdExecFailed {
+            message: "failed to enqueue start frame".into(),
+        })?;
+
+    if is_bidi {
+        let tx = builder_tx.clone();
+        tokio::spawn(forward_stdin_to_builder(inbound, tx));
+    }
+
+    drop(builder_tx);
+
+    let builder_stream = ReceiverStream::new(builder_rx);
+
+    let response =
+        client
+            .exec(builder_stream)
+            .await
+            .map_err(|e| HostExecError::BuilderdExecFailed {
+                message: e.to_string(),
+            })?;
+
+    let mut builderd_inbound = response.into_inner();
+    let (tx, rx) = mpsc::channel(32);
+
+    tokio::spawn(async move {
+        while let Ok(Some(msg)) = builderd_inbound.message().await {
+            if tx.send(Ok(msg)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(rx);
+    Ok(Response::new(Box::pin(stream) as CommandOutputStream))
 }
 
 impl HostExecServiceHandler {

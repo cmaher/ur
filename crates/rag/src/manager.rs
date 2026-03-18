@@ -128,29 +128,8 @@ impl RagManager {
             current_hashes.insert(file_path.clone(), hash);
         }
 
-        // Determine which files need re-indexing
-        let mut files_to_index: Vec<String> = Vec::new();
-        let mut files_to_delete: Vec<String> = Vec::new();
-
-        // Find changed or new files
-        for file_path in &current_files {
-            let current_hash = &current_hashes[file_path];
-            match prev_manifest.files.get(file_path) {
-                Some(entry) if entry.hash == *current_hash => {
-                    debug!(file = %file_path, "unchanged, skipping");
-                }
-                _ => {
-                    files_to_index.push(file_path.clone());
-                }
-            }
-        }
-
-        // Find removed files (in manifest but not on disk)
-        for file_path in prev_manifest.files.keys() {
-            if !current_files.contains(file_path) {
-                files_to_delete.push(file_path.clone());
-            }
-        }
+        let (files_to_index, files_to_delete) =
+            compute_index_diff(&current_files, &current_hashes, &prev_manifest);
 
         info!(
             collection = %collection,
@@ -161,23 +140,13 @@ impl RagManager {
             "incremental indexing"
         );
 
-        // Delete points for removed files
-        for file_path in &files_to_delete {
-            if let Some(entry) = prev_manifest.files.remove(file_path) {
-                self.delete_points_by_ids(&collection, &entry.chunk_ids)
-                    .await?;
-                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted removed file points");
-            }
-        }
-
-        // Delete old points for changed files (before re-indexing them)
-        for file_path in &files_to_index {
-            if let Some(entry) = prev_manifest.files.remove(file_path) {
-                self.delete_points_by_ids(&collection, &entry.chunk_ids)
-                    .await?;
-                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted stale file points");
-            }
-        }
+        self.delete_stale_points(
+            &collection,
+            &mut prev_manifest,
+            &files_to_delete,
+            &files_to_index,
+        )
+        .await?;
 
         // Group files to index by dependency (first path component)
         let mut files_by_dep: std::collections::BTreeMap<String, Vec<String>> =
@@ -403,6 +372,32 @@ impl RagManager {
         Ok(())
     }
 
+    async fn delete_stale_points(
+        &self,
+        collection: &str,
+        prev_manifest: &mut IndexManifest,
+        files_to_delete: &[String],
+        files_to_index: &[String],
+    ) -> Result<()> {
+        for file_path in files_to_delete {
+            if let Some(entry) = prev_manifest.files.remove(file_path) {
+                self.delete_points_by_ids(collection, &entry.chunk_ids)
+                    .await?;
+                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted removed file points");
+            }
+        }
+
+        for file_path in files_to_index {
+            if let Some(entry) = prev_manifest.files.remove(file_path) {
+                self.delete_points_by_ids(collection, &entry.chunk_ids)
+                    .await?;
+                debug!(file = %file_path, chunks = entry.chunk_ids.len(), "deleted stale file points");
+            }
+        }
+
+        Ok(())
+    }
+
     /// Delete specific points from a collection by their UUIDs.
     async fn delete_points_by_ids(&self, collection_name: &str, chunk_ids: &[Uuid]) -> Result<()> {
         if chunk_ids.is_empty() {
@@ -420,6 +415,34 @@ impl RagManager {
             .context("Failed to delete points from Qdrant")?;
         Ok(())
     }
+}
+
+fn compute_index_diff(
+    current_files: &HashSet<String>,
+    current_hashes: &std::collections::HashMap<String, String>,
+    prev_manifest: &IndexManifest,
+) -> (Vec<String>, Vec<String>) {
+    let mut files_to_index: Vec<String> = Vec::new();
+    for file_path in current_files {
+        let current_hash = &current_hashes[file_path];
+        match prev_manifest.files.get(file_path) {
+            Some(entry) if entry.hash == *current_hash => {
+                debug!(file = %file_path, "unchanged, skipping");
+            }
+            _ => {
+                files_to_index.push(file_path.clone());
+            }
+        }
+    }
+
+    let mut files_to_delete: Vec<String> = Vec::new();
+    for file_path in prev_manifest.files.keys() {
+        if !current_files.contains(file_path) {
+            files_to_delete.push(file_path.clone());
+        }
+    }
+
+    (files_to_index, files_to_delete)
 }
 
 /// Update the manifest with newly indexed file entries.

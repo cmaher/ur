@@ -7,3 +7,6 @@ version.workspace = true
 anyhow = "1"
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

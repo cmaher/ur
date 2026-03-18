@@ -80,12 +80,7 @@ fn parse_ticket_file(path: &Path) -> Result<ParsedTicket, String> {
     Ok(ParsedTicket { front, title, body })
 }
 
-async fn run_migration(
-    tickets_dir: &Path,
-    client: &mut TicketServiceClient<Channel>,
-    dry_run: bool,
-    project_override: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn load_tickets(tickets_dir: &Path) -> Result<Vec<ParsedTicket>, Box<dyn std::error::Error>> {
     let pattern = tickets_dir.join("*.md");
     let paths: Vec<PathBuf> = glob::glob(pattern.to_str().unwrap())?
         .filter_map(|r| r.ok())
@@ -111,10 +106,11 @@ async fn run_migration(
     }
 
     println!("Parsed {} tickets successfully", tickets.len());
+    Ok(tickets)
+}
 
-    let known_ids: HashSet<&str> = tickets.iter().map(|t| t.front.id.as_str()).collect();
-
-    // Topological sort: parents before children
+/// Topological sort: parents before children.
+fn topo_sort(tickets: &[ParsedTicket]) -> Vec<usize> {
     let id_to_idx: HashMap<&str, usize> = tickets
         .iter()
         .enumerate()
@@ -144,31 +140,29 @@ async fn run_migration(
     }
 
     for i in 0..tickets.len() {
-        visit(i, &tickets, &id_to_idx, &mut visited, &mut insert_order);
+        visit(i, tickets, &id_to_idx, &mut visited, &mut insert_order);
     }
 
-    if dry_run {
-        println!("\n[DRY RUN] Would create {} tickets", insert_order.len());
-        for &idx in &insert_order {
-            let t = &tickets[idx];
-            let f = &t.front;
-            let type_ = match f.type_.as_str() {
-                "epic" => "epic",
-                _ => "task",
-            };
-            println!("  {} [{}] {} - {}", f.id, type_, f.status, t.title);
-        }
-        return Ok(());
-    }
+    insert_order
+}
 
-    let mut created = 0u32;
-    let mut updated = 0u32;
-    let mut edge_count = 0u32;
-    let mut meta_count = 0u32;
-    let mut skipped_parents = 0u32;
+struct MigrationCounters {
+    created: u32,
+    updated: u32,
+    edge_count: u32,
+    meta_count: u32,
+    skipped_parents: u32,
+}
 
-    // Phase 1: Create all tickets
-    for &idx in &insert_order {
+async fn create_tickets(
+    client: &mut TicketServiceClient<Channel>,
+    tickets: &[ParsedTicket],
+    insert_order: &[usize],
+    known_ids: &HashSet<&str>,
+    project_override: Option<&str>,
+    counters: &mut MigrationCounters,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for &idx in insert_order {
         let t = &tickets[idx];
         let f = &t.front;
 
@@ -184,7 +178,7 @@ async fn run_migration(
 
         let parent_id = f.parent.as_deref().filter(|p| known_ids.contains(p));
         if f.parent.is_some() && parent_id.is_none() {
-            skipped_parents += 1;
+            counters.skipped_parents += 1;
             eprintln!(
                 "  warn: {} parent {:?} not found, setting to NULL",
                 f.id,
@@ -211,7 +205,7 @@ async fn run_migration(
             })
             .await
         {
-            Ok(_) => created += 1,
+            Ok(_) => counters.created += 1,
             Err(e) if is_duplicate_err(&e) => {
                 // Upsert: update existing ticket to match source
                 client
@@ -231,19 +225,30 @@ async fn run_migration(
                     })
                     .await
                     .map_err(|e| format!("update_ticket {}: {e}", f.id))?;
-                updated += 1;
+                counters.updated += 1;
             }
             Err(e) => return Err(format!("create_ticket {}: {e}", f.id).into()),
         }
-        if created.is_multiple_of(50) {
-            println!("  created {created}/{} tickets...", insert_order.len());
+        if counters.created.is_multiple_of(50) {
+            println!(
+                "  created {}/{} tickets...",
+                counters.created,
+                insert_order.len()
+            );
         }
     }
 
-    println!("Created {created} tickets");
+    println!("Created {} tickets", counters.created);
+    Ok(())
+}
 
-    // Phase 2: Add edges (deps = blocks, links = relates_to)
-    for t in &tickets {
+async fn create_edges(
+    client: &mut TicketServiceClient<Channel>,
+    tickets: &[ParsedTicket],
+    known_ids: &HashSet<&str>,
+    edge_count: &mut u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for t in tickets {
         let f = &t.front;
 
         for dep in &f.deps {
@@ -258,7 +263,7 @@ async fn run_migration(
                 })
                 .await
             {
-                Ok(_) => edge_count += 1,
+                Ok(_) => *edge_count += 1,
                 Err(e) if is_duplicate_err(&e) => {}
                 Err(e) => return Err(format!("add_block {} -> {}: {e}", dep, f.id).into()),
             }
@@ -280,15 +285,21 @@ async fn run_migration(
                 })
                 .await
             {
-                Ok(_) => edge_count += 1,
+                Ok(_) => *edge_count += 1,
                 Err(e) if is_duplicate_err(&e) => {}
                 Err(e) => return Err(format!("add_link {} <-> {}: {e}", f.id, link).into()),
             }
         }
     }
+    Ok(())
+}
 
-    // Phase 3: Add metadata (tags, assignee, branch, external-ref)
-    for t in &tickets {
+async fn create_metadata(
+    client: &mut TicketServiceClient<Channel>,
+    tickets: &[ParsedTicket],
+    meta_count: &mut u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for t in tickets {
         let f = &t.front;
 
         if !f.tags.is_empty() {
@@ -300,7 +311,7 @@ async fn run_migration(
                 })
                 .await
                 .map_err(|e| format!("set_meta tags on {}: {e}", f.id))?;
-            meta_count += 1;
+            *meta_count += 1;
         }
 
         if let Some(ref assignee) = f.assignee {
@@ -312,7 +323,7 @@ async fn run_migration(
                 })
                 .await
                 .map_err(|e| format!("set_meta assignee on {}: {e}", f.id))?;
-            meta_count += 1;
+            *meta_count += 1;
         }
 
         if let Some(ref branch) = f.branch {
@@ -324,7 +335,7 @@ async fn run_migration(
                 })
                 .await
                 .map_err(|e| format!("set_meta branch on {}: {e}", f.id))?;
-            meta_count += 1;
+            *meta_count += 1;
         }
 
         if let Some(ref ext_ref) = f.external_ref {
@@ -336,19 +347,68 @@ async fn run_migration(
                 })
                 .await
                 .map_err(|e| format!("set_meta external-ref on {}: {e}", f.id))?;
-            meta_count += 1;
+            *meta_count += 1;
         }
     }
+    Ok(())
+}
+
+async fn run_migration(
+    tickets_dir: &Path,
+    client: &mut TicketServiceClient<Channel>,
+    dry_run: bool,
+    project_override: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tickets = load_tickets(tickets_dir)?;
+    let known_ids: HashSet<&str> = tickets.iter().map(|t| t.front.id.as_str()).collect();
+    let insert_order = topo_sort(&tickets);
+
+    if dry_run {
+        println!("\n[DRY RUN] Would create {} tickets", insert_order.len());
+        for &idx in &insert_order {
+            let t = &tickets[idx];
+            let f = &t.front;
+            let type_ = match f.type_.as_str() {
+                "epic" => "epic",
+                _ => "task",
+            };
+            println!("  {} [{}] {} - {}", f.id, type_, f.status, t.title);
+        }
+        return Ok(());
+    }
+
+    let mut counters = MigrationCounters {
+        created: 0,
+        updated: 0,
+        edge_count: 0,
+        meta_count: 0,
+        skipped_parents: 0,
+    };
+
+    create_tickets(
+        client,
+        &tickets,
+        &insert_order,
+        &known_ids,
+        project_override,
+        &mut counters,
+    )
+    .await?;
+    create_edges(client, &tickets, &known_ids, &mut counters.edge_count).await?;
+    create_metadata(client, &tickets, &mut counters.meta_count).await?;
 
     println!("\nMigration complete:");
-    println!("  Tickets created:     {created}");
-    if updated > 0 {
-        println!("  Tickets updated:     {updated} (already existed)");
+    println!("  Tickets created:     {}", counters.created);
+    if counters.updated > 0 {
+        println!(
+            "  Tickets updated:     {} (already existed)",
+            counters.updated
+        );
     }
-    println!("  Edges created:       {edge_count}");
-    println!("  Meta entries:        {meta_count}");
-    if skipped_parents > 0 {
-        println!("  Parent refs missing: {skipped_parents}");
+    println!("  Edges created:       {}", counters.edge_count);
+    println!("  Meta entries:        {}", counters.meta_count);
+    if counters.skipped_parents > 0 {
+        println!("  Parent refs missing: {}", counters.skipped_parents);
     }
 
     Ok(())

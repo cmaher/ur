@@ -36,148 +36,155 @@ impl WorkflowHandler for VerifyHandler {
     ) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
-        Box::pin(async move {
-            // 1. Load ticket to get project key.
-            let ticket = ctx
-                .ticket_repo
-                .get_ticket(&ticket_id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
+        Box::pin(async move { run_verification(&ctx, &ticket_id).await })
+    }
+}
 
-            let project_key = &ticket.project;
+/// Core verification logic extracted from the handler.
+async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
+    // 1. Load ticket to get project key.
+    let ticket = ctx
+        .ticket_repo
+        .get_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-            // 2. Look up project config.
-            let project_config = match ctx.config.projects.get(project_key) {
-                Some(pc) => pc,
-                None => {
-                    info!(
-                        ticket_id = %ticket_id,
-                        project_key = %project_key,
-                        "no project config found — skipping verification, advancing to pushing"
-                    );
-                    advance_to_pushing(&ctx, &ticket_id).await?;
-                    return Ok(());
-                }
-            };
+    let project_key = &ticket.project;
 
-            // 3. Read workflow_hooks_dir from project config.
-            let hooks_dir_template = match &project_config.workflow_hooks_dir {
-                Some(dir) => dir,
-                None => {
-                    info!(
-                        ticket_id = %ticket_id,
-                        project_key = %project_key,
-                        "no workflow_hooks_dir configured — skipping verification, advancing to pushing"
-                    );
-                    advance_to_pushing(&ctx, &ticket_id).await?;
-                    return Ok(());
-                }
-            };
-
-            // 4. Resolve the hook path.
-            let resolved = resolve_template_path(hooks_dir_template, &ctx.config.config_dir)?;
-
-            // 5. Resolve worker and slot to get the working directory.
-            let meta = ctx.ticket_repo.get_meta(&ticket_id, "ticket").await?;
-            let worker_id = meta.get("worker_id").ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no worker_id metadata on ticket {ticket_id} — cannot run verification"
-                )
-            })?;
-
-            let worker_slot = ctx
-                .worker_repo
-                .get_worker_slot(worker_id)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("no slot linked to worker {worker_id}"))?;
-
-            let slot = ctx
-                .worker_repo
-                .get_slot(&worker_slot.slot_id)
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("slot {} not found in database", worker_slot.slot_id)
-                })?;
-
-            // The slot's host_path is the working directory for the repo clone.
-            // For builderd, we need to use %WORKSPACE%-templated paths.
-            let working_dir = &slot.host_path;
-
-            // 6. Compute the hook script path based on the resolved template.
-            let hook_script_path = match resolved {
-                ResolvedTemplatePath::ProjectRelative(rel_path) => {
-                    // Path is relative to the project repo root (the slot's working dir).
-                    PathBuf::from(working_dir).join(rel_path).join("pre-push")
-                }
-                ResolvedTemplatePath::HostPath(abs_path) => {
-                    // Absolute path on the host.
-                    abs_path.join("pre-push")
-                }
-            };
-
-            let hook_path_str = hook_script_path.to_string_lossy().to_string();
-
+    // 2. Look up project config.
+    let project_config = match ctx.config.projects.get(project_key) {
+        Some(pc) => pc,
+        None => {
             info!(
                 ticket_id = %ticket_id,
                 project_key = %project_key,
-                hook_path = %hook_path_str,
-                working_dir = %working_dir,
-                "running pre-push verification hook"
+                "no project config found — skipping verification, advancing to pushing"
             );
+            advance_to_pushing(ctx, ticket_id).await?;
+            return Ok(());
+        }
+    };
 
-            // 7. Execute the hook via local_repo (through builderd).
-            let local_repo = local_repo::GitBackend {
-                client: ctx.builderd_client.clone(),
-            };
-            let hook_result = match local_repo.run_hook(&hook_path_str, working_dir).await {
-                Ok(result) => result,
-                Err(e) => {
-                    // If the hook cannot be executed (e.g., file not found),
-                    // treat as "hook doesn't exist" and skip verification.
-                    warn!(
-                        ticket_id = %ticket_id,
-                        error = %e,
-                        hook_path = %hook_path_str,
-                        "hook execution failed (possibly not found) — skipping verification, advancing to pushing"
-                    );
-                    add_hook_activity(
-                        &ctx,
-                        &ticket_id,
-                        "pass",
-                        "hook not found or not executable, skipping verification",
-                    )
-                    .await?;
-                    advance_to_pushing(&ctx, &ticket_id).await?;
-                    return Ok(());
-                }
-            };
-
-            // 8. Build output summary for activity log.
-            let output_summary = build_output_summary(&hook_result.stdout, &hook_result.stderr);
-
-            if hook_result.success() {
-                // Hook passed — add activity and transition to pushing.
-                info!(
-                    ticket_id = %ticket_id,
-                    "pre-push hook passed — advancing to pushing"
-                );
-                add_hook_activity(&ctx, &ticket_id, "pass", &output_summary).await?;
-                advance_to_pushing(&ctx, &ticket_id).await?;
-            } else {
-                // Hook failed — increment fix_attempt_count and decide next step.
-                info!(
-                    ticket_id = %ticket_id,
-                    exit_code = hook_result.exit_code,
-                    "pre-push hook failed"
-                );
-                add_hook_activity(&ctx, &ticket_id, "fail", &output_summary).await?;
-                handle_hook_failure(&ctx, &ticket_id, worker_id, project_config.max_fix_attempts)
-                    .await?;
+    // 3. Resolve the hook path and working directory.
+    let (hook_path_str, working_dir) =
+        match resolve_hook_context(ctx, ticket_id, project_key, project_config).await? {
+            Some(resolved) => resolved,
+            None => {
+                // No hook configured — already advanced to pushing inside resolve_hook_context.
+                return Ok(());
             }
+        };
 
-            Ok(())
-        })
+    info!(
+        ticket_id = %ticket_id,
+        project_key = %project_key,
+        hook_path = %hook_path_str,
+        working_dir = %working_dir,
+        "running pre-push verification hook"
+    );
+
+    // 4. Execute the hook via local_repo (through builderd).
+    let local_repo = local_repo::GitBackend {
+        client: ctx.builderd_client.clone(),
+    };
+    let hook_result = match local_repo.run_hook(&hook_path_str, &working_dir).await {
+        Ok(result) => result,
+        Err(e) => {
+            warn!(
+                ticket_id = %ticket_id,
+                error = %e,
+                hook_path = %hook_path_str,
+                "hook execution failed (possibly not found) — skipping verification, advancing to pushing"
+            );
+            add_hook_activity(
+                ctx,
+                ticket_id,
+                "pass",
+                "hook not found or not executable, skipping verification",
+            )
+            .await?;
+            advance_to_pushing(ctx, ticket_id).await?;
+            return Ok(());
+        }
+    };
+
+    // 5. Process hook result.
+    let output_summary = build_output_summary(&hook_result.stdout, &hook_result.stderr);
+    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
+    let worker_id = meta.get("worker_id").ok_or_else(|| {
+        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run verification")
+    })?;
+
+    if hook_result.success() {
+        info!(ticket_id = %ticket_id, "pre-push hook passed — advancing to pushing");
+        add_hook_activity(ctx, ticket_id, "pass", &output_summary).await?;
+        advance_to_pushing(ctx, ticket_id).await?;
+    } else {
+        info!(ticket_id = %ticket_id, exit_code = hook_result.exit_code, "pre-push hook failed");
+        add_hook_activity(ctx, ticket_id, "fail", &output_summary).await?;
+        handle_hook_failure(ctx, ticket_id, worker_id, project_config.max_fix_attempts).await?;
     }
+
+    Ok(())
+}
+
+/// Resolve the hook script path and working directory for verification.
+///
+/// Returns `None` if no hook is configured (and advances the ticket to Pushing).
+/// Returns `Some((hook_path, working_dir))` if a hook was resolved.
+async fn resolve_hook_context(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    project_key: &str,
+    project_config: &ur_config::ProjectConfig,
+) -> anyhow::Result<Option<(String, String)>> {
+    // Read workflow_hooks_dir from project config.
+    let hooks_dir_template = match &project_config.workflow_hooks_dir {
+        Some(dir) => dir,
+        None => {
+            info!(
+                ticket_id = %ticket_id,
+                project_key = %project_key,
+                "no workflow_hooks_dir configured — skipping verification, advancing to pushing"
+            );
+            advance_to_pushing(ctx, ticket_id).await?;
+            return Ok(None);
+        }
+    };
+
+    // Resolve the template path.
+    let resolved = resolve_template_path(hooks_dir_template, &ctx.config.config_dir)?;
+
+    // Resolve worker and slot to get the working directory.
+    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
+    let worker_id = meta.get("worker_id").ok_or_else(|| {
+        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run verification")
+    })?;
+
+    let worker_slot = ctx
+        .worker_repo
+        .get_worker_slot(worker_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no slot linked to worker {worker_id}"))?;
+
+    let slot = ctx
+        .worker_repo
+        .get_slot(&worker_slot.slot_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("slot {} not found in database", worker_slot.slot_id))?;
+
+    let working_dir = &slot.host_path;
+
+    // Compute the hook script path based on the resolved template.
+    let hook_script_path = match resolved {
+        ResolvedTemplatePath::ProjectRelative(rel_path) => {
+            PathBuf::from(working_dir).join(rel_path).join("pre-push")
+        }
+        ResolvedTemplatePath::HostPath(abs_path) => abs_path.join("pre-push"),
+    };
+
+    let hook_path_str = hook_script_path.to_string_lossy().to_string();
+    Ok(Some((hook_path_str, working_dir.clone())))
 }
 
 /// Handle a failed hook: increment fix attempts, then either transition to
