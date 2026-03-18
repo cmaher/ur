@@ -2871,6 +2871,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "remote_repo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.13.1",
+ "tracing",
+ "ur_rpc",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4282,6 +4297,7 @@ dependencies = [
  "qdrant-client",
  "rag",
  "rand 0.9.2",
+ "remote_repo",
  "serde",
  "serde_json",
  "tempfile",
@@ -5019,6 +5035,8 @@ name = "workertools"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tonic 0.13.1",
