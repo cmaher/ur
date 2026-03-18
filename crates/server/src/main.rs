@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = Config::load()?;
     info!(
         config_dir = %cfg.config_dir.display(),
-        daemon_port = cfg.daemon_port,
+        server_port = cfg.server_port,
         worker_port = cfg.worker_port,
         network = cfg.network.name,
         workers = cfg.network.worker_name,
@@ -246,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
         builderd_addr: builderd_addr.clone(),
     };
 
-    let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.daemon_port));
+    let host_addr = SocketAddr::from(([0, 0, 0, 0], cfg.server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], cfg.worker_port));
 
     let host_server = ur_server::grpc_server::serve_grpc(

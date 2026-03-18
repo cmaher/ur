@@ -133,10 +133,10 @@ pub const BACKUP_CONTAINER_PATH: &str = "/backup";
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
-pub const DEFAULT_DAEMON_PORT: u16 = 42069;
+pub const DEFAULT_SERVER_PORT: u16 = 42069;
 
 /// Default TCP port for the builder daemon (builderd).
-/// Kept for documentation; the actual default is derived as `daemon_port + 2`.
+/// Kept for documentation; the actual default is derived as `server_port + 2`.
 pub const DEFAULT_BUILDERD_PORT: u16 = 42070;
 
 /// PID file for the builderd process, stored in the config directory.
@@ -267,7 +267,7 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     workspace: Option<PathBuf>,
-    daemon_port: Option<u16>,
+    server_port: Option<u16>,
     worker_port: Option<u16>,
     builderd_port: Option<u16>,
     compose_file: Option<PathBuf>,
@@ -488,10 +488,10 @@ pub struct Config {
     /// Worker workspace directory.
     pub workspace: PathBuf,
     /// TCP port the server listens on (default: 42069).
-    pub daemon_port: u16,
-    /// TCP port the shared worker gRPC server listens on (default: `daemon_port + 1`).
+    pub server_port: u16,
+    /// TCP port the shared worker gRPC server listens on (default: `server_port + 1`).
     pub worker_port: u16,
-    /// TCP port the builder daemon listens on (default: `daemon_port + 2`).
+    /// TCP port the builder daemon listens on (default: `server_port + 2`).
     pub builderd_port: u16,
     /// Path to the Docker Compose file for starting the server (default: `<config_dir>/docker-compose.yml`).
     pub compose_file: PathBuf,
@@ -555,9 +555,9 @@ impl Config {
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
-        let daemon_port = raw.daemon_port.unwrap_or(DEFAULT_DAEMON_PORT);
-        let worker_port = raw.worker_port.unwrap_or(daemon_port + 1);
-        let builderd_port = raw.builderd_port.unwrap_or(daemon_port + 2);
+        let server_port = raw.server_port.unwrap_or(DEFAULT_SERVER_PORT);
+        let worker_port = raw.worker_port.unwrap_or(server_port + 1);
+        let builderd_port = raw.builderd_port.unwrap_or(server_port + 2);
         let compose_file = raw
             .compose_file
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
@@ -671,7 +671,7 @@ impl Config {
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
-            daemon_port,
+            server_port,
             worker_port,
             builderd_port,
             compose_file,
@@ -748,7 +748,7 @@ mod tests {
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.daemon_port, DEFAULT_DAEMON_PORT);
+        assert_eq!(cfg.server_port, DEFAULT_SERVER_PORT);
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
     }
 
@@ -772,11 +772,11 @@ mod tests {
     }
 
     #[test]
-    fn reads_daemon_port_from_toml() {
+    fn reads_server_port_from_toml() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 9000\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.daemon_port, 9000);
+        assert_eq!(cfg.server_port, 9000);
     }
 
     #[test]
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn proxy_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, default_proxy_allowlist());
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn network_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn rag_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 5000\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
     }
@@ -1420,17 +1420,17 @@ rg = { lua = "rg-safe.lua" }
     }
 
     #[test]
-    fn worker_port_defaults_to_daemon_port_plus_one() {
+    fn worker_port_defaults_to_server_port_plus_one() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.worker_port, DEFAULT_DAEMON_PORT + 1);
+        assert_eq!(cfg.worker_port, DEFAULT_SERVER_PORT + 1);
     }
 
     #[test]
-    fn worker_port_follows_custom_daemon_port() {
+    fn worker_port_follows_custom_server_port() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "daemon_port = 9000\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, 9001);
     }
@@ -1440,7 +1440,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "daemon_port = 9000\nworker_port = 8000\n",
+            "server_port = 9000\nworker_port = 8000\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();

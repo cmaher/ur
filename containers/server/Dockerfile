@@ -19,7 +19,7 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/libonnxruntime.so
 COPY ur-server /usr/local/bin/ur-server
 RUN chmod +x /usr/local/bin/ur-server
 
-# Default gRPC port (ur_config::DEFAULT_DAEMON_PORT)
+# Default gRPC port (ur_config::DEFAULT_SERVER_PORT)
 EXPOSE 42069
 
 ENTRYPOINT ["tini", "--"]

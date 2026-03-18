@@ -41,8 +41,8 @@ async fn make_components_with_db(
     let config = ur_config::Config {
         config_dir: dir.to_path_buf(),
         workspace: workspace.clone(),
-        daemon_port: ur_config::DEFAULT_DAEMON_PORT,
-        builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
+        server_port: ur_config::DEFAULT_SERVER_PORT,
+        builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
         compose_file: dir.join("docker-compose.yml"),
         proxy: ur_config::ProxyConfig {
             hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
@@ -61,7 +61,7 @@ async fn make_components_with_db(
             enabled: true,
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         },
-        worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+        worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
         git_branch_prefix: String::new(),
         workflow: ur_config::WorkflowConfig::default(),
         projects: HashMap::new(),
@@ -86,7 +86,7 @@ async fn make_components_with_db(
         repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),
-        ur_config::DEFAULT_DAEMON_PORT + 1,
+        ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
         Vec::new(),
@@ -105,7 +105,7 @@ async fn make_components_with_db(
         worker_repo: worker_repo.clone(),
         network_config,
         hostexec_config,
-        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_DAEMON_PORT + 2),
+        builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
     };
     (worker_manager, worker_repo, handler)
 }

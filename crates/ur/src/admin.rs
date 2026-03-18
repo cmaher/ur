@@ -1,11 +1,11 @@
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use tonic::transport::{Channel, Endpoint};
 use tracing::info;
 use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
+use crate::connection;
 use crate::output::OutputManager;
 
 /// Admin subcommands — privileged operations blocked from workers via hostexec.
@@ -42,16 +42,9 @@ pub enum AdminCommands {
     },
 }
 
-async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
-    let addr = format!("http://127.0.0.1:{port}");
-    let channel = Endpoint::try_from(addr)?.connect().await.map_err(|_| {
-        anyhow::anyhow!("server is not running \u{2014} run 'ur server start' first")
-    })?;
-    Ok(TicketServiceClient::new(channel))
-}
-
 pub async fn handle(port: u16, command: AdminCommands, output: &OutputManager) -> Result<()> {
-    let mut client = connect_ticket(port).await?;
+    let channel = connection::connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
 
     match command {
         AdminCommands::Noverify { ticket_id } => {
