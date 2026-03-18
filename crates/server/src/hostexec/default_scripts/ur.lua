@@ -26,6 +26,29 @@ function transform(command, args, working_dir, worker_context)
                 end
             end
         end
+
+        -- Inject -p <project_key> so workers always operate in their project scope.
+        -- Only inject if no explicit -p/--project flag is already present.
+        if worker_context ~= nil and worker_context.project_key ~= nil then
+            local has_project = false
+            for i = 1, #args do
+                if args[i] == "-p" or args[i] == "--project" then
+                    has_project = true
+                    break
+                end
+            end
+            if not has_project then
+                -- Insert -p <project_key> right after "ticket" (args[1])
+                local new_args = { args[1] }
+                new_args[#new_args + 1] = "-p"
+                new_args[#new_args + 1] = worker_context.project_key
+                for i = 2, #args do
+                    new_args[#new_args + 1] = args[i]
+                end
+                args = new_args
+            end
+        end
+
         return { command = command, args = args, working_dir = working_dir }
     end
 
