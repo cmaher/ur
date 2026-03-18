@@ -107,26 +107,9 @@ impl RagManager {
             self.ensure_collection_exists(&collection).await?;
         }
 
-        // Hash all current files and group chunks by source file
-        let mut current_files: HashSet<String> = HashSet::new();
-        let mut chunks_by_file: std::collections::HashMap<String, Vec<&chunking::DocChunk>> =
-            std::collections::HashMap::new();
-        for chunk in &all_chunks {
-            current_files.insert(chunk.source_file.clone());
-            chunks_by_file
-                .entry(chunk.source_file.clone())
-                .or_default()
-                .push(chunk);
-        }
-
-        // Compute hashes for current files
-        let mut current_hashes: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for file_path in &current_files {
-            let full_path = docs_dir.join(file_path);
-            let hash = manifest::sha256_file(&full_path)?;
-            current_hashes.insert(file_path.clone(), hash);
-        }
+        let chunks_by_file = group_chunks_by_file(&all_chunks);
+        let current_files: HashSet<String> = chunks_by_file.keys().cloned().collect();
+        let current_hashes = hash_files(docs_dir, &current_files)?;
 
         let (files_to_index, files_to_delete) =
             compute_index_diff(&current_files, &current_hashes, &prev_manifest);
@@ -415,6 +398,32 @@ impl RagManager {
             .context("Failed to delete points from Qdrant")?;
         Ok(())
     }
+}
+
+fn group_chunks_by_file(
+    chunks: &[chunking::DocChunk],
+) -> std::collections::HashMap<String, Vec<&chunking::DocChunk>> {
+    let mut map: std::collections::HashMap<String, Vec<&chunking::DocChunk>> =
+        std::collections::HashMap::new();
+    for chunk in chunks {
+        map.entry(chunk.source_file.clone())
+            .or_default()
+            .push(chunk);
+    }
+    map
+}
+
+fn hash_files(
+    docs_dir: &Path,
+    files: &HashSet<String>,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut hashes = std::collections::HashMap::new();
+    for file_path in files {
+        let full_path = docs_dir.join(file_path);
+        let hash = manifest::sha256_file(&full_path)?;
+        hashes.insert(file_path.clone(), hash);
+    }
+    Ok(hashes)
 }
 
 fn compute_index_diff(
