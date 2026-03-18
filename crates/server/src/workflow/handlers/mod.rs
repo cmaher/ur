@@ -5,12 +5,14 @@ mod dispatch_push;
 mod feedback_create;
 mod feedback_resolve;
 mod review_start;
+mod verify;
 
 pub use dispatch_implement::DispatchImplementHandler;
 pub use dispatch_push::DispatchPushHandler;
 pub use feedback_create::FeedbackCreateHandler;
 pub use feedback_resolve::FeedbackResolveHandler;
 pub use review_start::ReviewStartHandler;
+pub use verify::VerifyHandler;
 
 use std::sync::Arc;
 
@@ -29,9 +31,21 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::Implementing,
             Arc::new(DispatchImplementHandler),
         ),
-        // Implementing → Pushing: dispatch push RPC to worker
+        // Implementing → Verifying: run pre-push verification hook
         (
             LifecycleStatus::Implementing,
+            LifecycleStatus::Verifying,
+            Arc::new(VerifyHandler),
+        ),
+        // Fixing → Verifying: re-run pre-push verification hook after fix
+        (
+            LifecycleStatus::Fixing,
+            LifecycleStatus::Verifying,
+            Arc::new(VerifyHandler),
+        ),
+        // Verifying → Pushing: dispatch push RPC to worker
+        (
+            LifecycleStatus::Verifying,
             LifecycleStatus::Pushing,
             Arc::new(DispatchPushHandler),
         ),

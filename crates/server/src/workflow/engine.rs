@@ -34,6 +34,7 @@ impl WorkflowEngine {
         worker_repo: WorkerRepo,
         worker_prefix: String,
         builderd_client: ur_rpc::proto::builder::BuilderdClient,
+        config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
     ) -> Self {
         let ctx = WorkflowContext {
@@ -41,6 +42,7 @@ impl WorkflowEngine {
             worker_repo,
             worker_prefix,
             builderd_client,
+            config,
         };
         let mut handlers = HashMap::new();
         for (from, to, handler) in handler_entries {
@@ -266,6 +268,41 @@ mod tests {
         ur_rpc::proto::builder::BuilderdClient::new(channel)
     }
 
+    fn dummy_config() -> Arc<ur_config::Config> {
+        Arc::new(ur_config::Config {
+            config_dir: std::path::PathBuf::from("/tmp/test"),
+            workspace: std::path::PathBuf::from("/tmp/test/workspace"),
+            daemon_port: ur_config::DEFAULT_DAEMON_PORT,
+            builderd_port: ur_config::DEFAULT_DAEMON_PORT + 2,
+            worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
+            compose_file: std::path::PathBuf::from("/tmp/test/docker-compose.yml"),
+            proxy: ur_config::ProxyConfig {
+                hostname: ur_config::DEFAULT_PROXY_HOSTNAME.into(),
+                allowlist: vec![],
+            },
+            network: ur_config::NetworkConfig {
+                name: ur_config::DEFAULT_NETWORK_NAME.into(),
+                worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+                server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+                worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+            },
+            hostexec: ur_config::HostExecConfig::default(),
+            rag: ur_config::RagConfig {
+                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
+                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
+                docs: ur_config::RagDocsConfig::default(),
+            },
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+            git_branch_prefix: String::new(),
+            projects: std::collections::HashMap::new(),
+        })
+    }
+
     struct CountingHandler {
         call_count: Arc<AtomicU32>,
         should_fail: bool,
@@ -330,6 +367,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -388,6 +426,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -442,6 +481,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![(
                 LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
@@ -497,6 +537,7 @@ mod tests {
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
+            dummy_config(),
             vec![],
         );
 
