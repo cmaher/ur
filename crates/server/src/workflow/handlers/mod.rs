@@ -6,6 +6,8 @@ mod dispatch_implement;
 mod dispatch_push;
 #[cfg(feature = "workerd")]
 mod feedback_create;
+#[cfg(feature = "workerd")]
+mod feedback_resolve;
 mod review_start;
 mod stall;
 
@@ -15,6 +17,8 @@ pub use dispatch_implement::DispatchImplementHandler;
 pub use dispatch_push::DispatchPushHandler;
 #[cfg(feature = "workerd")]
 pub use feedback_create::FeedbackCreateHandler;
+#[cfg(feature = "workerd")]
+pub use feedback_resolve::FeedbackResolveHandler;
 pub use review_start::ReviewStartHandler;
 pub use stall::StallHandler;
 
@@ -50,6 +54,14 @@ pub fn register_all(engine: &mut WorkflowEngine) {
         LifecycleStatus::InReview,
         LifecycleStatus::FeedbackCreating,
         Arc::new(FeedbackCreateHandler),
+    );
+
+    // FeedbackCreating → FeedbackResolving: resolve feedback (merge or re-implement)
+    #[cfg(feature = "workerd")]
+    engine.register_handler(
+        LifecycleStatus::FeedbackCreating,
+        LifecycleStatus::FeedbackResolving,
+        Arc::new(FeedbackResolveHandler),
     );
 
     // Pushing → InReview: no-op signal handler
