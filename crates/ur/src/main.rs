@@ -1,7 +1,6 @@
 mod admin;
 mod builderd;
 mod compose;
-#[allow(dead_code)] // consumed after call-site migration (ur-2cc6f)
 pub(crate) mod connection;
 mod credential;
 mod db;
@@ -22,8 +21,8 @@ use std::process;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use container::{ContainerId, ContainerRuntime};
-use tonic::transport::{Channel, Endpoint};
-use tracing::{debug, error, info, instrument, warn};
+use tonic::transport::Channel;
+use tracing::{debug, info, instrument, warn};
 use ur_rpc::error::StatusResultExt;
 use ur_rpc::lifecycle;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
@@ -283,18 +282,6 @@ fn load_config() -> Result<ur_config::Config> {
     ur_config::Config::load().context("failed to load config")
 }
 
-#[instrument(skip_all, fields(addr))]
-async fn try_connect(addr: &str) -> Option<CoreServiceClient<Channel>> {
-    debug!(addr, "attempting gRPC connection");
-    let channel = Endpoint::try_from(addr.to_string())
-        .ok()?
-        .connect()
-        .await
-        .ok()?;
-    info!(addr, "gRPC connection established");
-    Some(CoreServiceClient::new(channel))
-}
-
 #[instrument(skip(config, compose, output))]
 fn start_server(
     config: &ur_config::Config,
@@ -354,8 +341,8 @@ async fn stop_server(
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
     let port = config.server_port;
-    let addr = format!("http://127.0.0.1:{port}");
-    if let Some(mut client) = try_connect(&addr).await {
+    if let Some(channel) = connection::try_connect(port).await {
+        let mut client = CoreServiceClient::new(channel);
         info!("server reachable — stopping workers via gRPC");
         log.info("ur stop: stopping workers via gRPC");
         stop_workers_via_grpc(&mut client, output).await;
@@ -480,17 +467,9 @@ async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: 
     }
 }
 
-#[instrument]
 async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
-    let addr = format!("http://127.0.0.1:{port}");
-
-    match try_connect(&addr).await {
-        Some(client) => Ok(client),
-        None => {
-            error!(port, "server is not running");
-            bail!("server is not running — run 'ur server start' first")
-        }
-    }
+    let channel = connection::connect(port).await?;
+    Ok(CoreServiceClient::new(channel))
 }
 
 #[instrument(skip(output))]
@@ -714,11 +693,7 @@ async fn process_status(
 
 /// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "implementing".
 async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
-    let addr = format!("http://127.0.0.1:{port}");
-    let channel = Endpoint::try_from(addr)?
-        .connect()
-        .await
-        .context("server is not running — run 'ur server start' first")?;
+    let channel = connection::connect(port).await?;
     let mut ticket_client = TicketServiceClient::new(channel);
 
     let resp = ticket_client

@@ -9,6 +9,7 @@ use ur_rpc::error::{DOCS_NOT_INDEXED, StatusResultExt};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagIndexRequest, RagSearchRequest};
 
+use crate::connection;
 use crate::output::{OutputManager, RagIndexComplete, RagIndexProgress};
 
 /// Generate Rust documentation into the RAG docs directory.
@@ -222,10 +223,8 @@ pub async fn index(port: u16, language: &str, output: &OutputManager) -> Result<
 
     let lang = parse_language(language)?;
 
-    let addr = format!("http://127.0.0.1:{port}");
-    let mut client = RagServiceClient::connect(addr)
-        .await
-        .context("failed to connect to ur-server — is it running? Try 'ur server start'")?;
+    let channel = connection::connect(port).await?;
+    let mut client = RagServiceClient::new(channel);
 
     info!(language = %language, "sending RagIndex request");
     if !output.is_json() {
@@ -297,10 +296,8 @@ pub async fn search(
 ) -> Result<()> {
     let lang = parse_language(language)?;
 
-    let addr = format!("http://127.0.0.1:{port}");
-    let mut client = RagServiceClient::connect(addr)
-        .await
-        .context("failed to connect to ur-server — is it running? Try 'ur server start'")?;
+    let channel = connection::connect(port).await?;
+    let mut client = RagServiceClient::new(channel);
 
     info!(query = %query, language = %language, top_k, "sending RagSearch request");
 
