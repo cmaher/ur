@@ -8,7 +8,7 @@ use tracing::info;
 use container::NetworkManager;
 use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
 use ur_server::worker::PromptModesConfig;
-use ur_server::{BackupTaskManager, BuilderdClient, Config, RepoPoolManager, WorkerManager};
+use ur_server::{BackupTaskManager, Config, RepoPoolManager, WorkerManager};
 
 #[derive(Parser)]
 #[command(
@@ -108,7 +108,12 @@ async fn main() -> anyhow::Result<()> {
     let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
-    let builderd_client = BuilderdClient::new(builderd_addr.clone());
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to connect to builderd: {e}"))?;
+    let local_repo = local_repo::GitBackend {
+        client: builderd_client.clone(),
+    };
     let worker_repo = WorkerRepo::new(db.pool().clone());
 
     // Reconcile slots: sync DB rows with on-disk pool directories and project configs.
@@ -134,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         local_workspace.clone(),
         host_workspace.clone(),
         builderd_client,
+        local_repo,
         worker_repo.clone(),
     );
     let worker_manager = WorkerManager::new(

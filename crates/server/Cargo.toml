@@ -19,6 +19,7 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+local_repo = { path = "../local_repo" }
 ur_config = { path = "../ur_config" }
 ur_db = { path = "../ur_db" }
 mlua = { workspace = true }
@@ -43,5 +44,6 @@ temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
+local_repo = { path = "../local_repo" }
 tempfile = "3"
 ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "builder", "ticket", "workerd", "remote_repo"] }

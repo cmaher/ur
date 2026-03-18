@@ -4,6 +4,7 @@ members = [
     "crates/acceptance",
     "crates/container",
     "crates/builderd",
+    "crates/local_repo",
     "crates/rag",
     "crates/remote_repo",
     "crates/ticket_client",
@@ -23,6 +24,7 @@ members = [
 default-members = [
     "crates/container",
     "crates/builderd",
+    "crates/local_repo",
     "crates/remote_repo",
     "crates/ur",
     "crates/ur_config",

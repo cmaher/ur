@@ -1,6 +1,5 @@
 pub mod auth;
 pub mod backup;
-pub mod builderd_client;
 pub mod config;
 pub mod grpc;
 #[cfg(feature = "hostexec")]
@@ -26,7 +25,6 @@ pub mod workerd_client;
 pub mod workflow;
 
 pub use backup::BackupTaskManager;
-pub use builderd_client::BuilderdClient;
 pub use config::Config;
 pub use pool::RepoPoolManager;
 pub use proxy::SquidManager;
