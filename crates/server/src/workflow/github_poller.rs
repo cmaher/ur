@@ -6,10 +6,7 @@ use tracing::{error, info, warn};
 use remote_repo::{GhBackend, RemoteRepo};
 use ur_db::TicketRepo;
 use ur_db::model::{LifecycleStatus, Ticket, TicketUpdate};
-use ur_rpc::proto::builder::{
-    BuilderExecMessage, BuilderExecRequest, BuilderdClient,
-    builder_exec_message::Payload as ExecPayload,
-};
+use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
 
 /// Delay between individual GitHub API calls to avoid rate limiting.
@@ -545,25 +542,10 @@ async fn exec_gh_via_builderd(
     client: &BuilderdClient,
     args: &[&str],
 ) -> Result<CompletedExec, anyhow::Error> {
-    let mut client = client.clone();
-    let req = BuilderExecRequest {
-        command: "gh".into(),
-        args: args.iter().map(|s| s.to_string()).collect(),
-        working_dir: "/tmp".into(),
-        env: std::collections::HashMap::new(),
-        long_lived: false,
-    };
-    let start_msg = BuilderExecMessage {
-        payload: Some(ExecPayload::Start(req)),
-    };
-    let response = client
-        .exec(tokio_stream::once(start_msg))
+    client
+        .exec_collect("gh", args, "/tmp")
         .await
-        .map_err(|e| anyhow::anyhow!("builderd exec failed: {e}"))?;
-    let completed = CompletedExec::collect(response.into_inner())
-        .await
-        .map_err(|e| anyhow::anyhow!("stream error: {e}"))?;
-    Ok(completed)
+        .map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg(test)]
