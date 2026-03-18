@@ -51,7 +51,7 @@ async fn make_test_components(
         },
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         git_branch_prefix: String::new(),
-        workflow: ur_config::WorkflowConfig::default(),
+
         projects: HashMap::new(),
     };
     let db = ur_db::DatabaseManager::open(":memory:")
@@ -80,7 +80,6 @@ async fn make_test_components(
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
-        Vec::new(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),

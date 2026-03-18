@@ -467,6 +467,9 @@ mod tests {
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
                 mounts: Vec::new(),
+                workflow_hooks_dir: None,
+                max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
+                protected_branches: ur_config::default_protected_branches(),
             },
         );
         let worker_repo = test_worker_repo().await;
@@ -720,6 +723,9 @@ mod tests {
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
                 mounts: Vec::new(),
+                workflow_hooks_dir: None,
+                max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
+                protected_branches: ur_config::default_protected_branches(),
             },
         );
         let channel =

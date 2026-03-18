@@ -145,11 +145,6 @@ pub const BUILDERD_PID_FILE: &str = "builderd.pid";
 /// Environment variable: `host:port` address for worker→builderd gRPC connections.
 pub const BUILDERD_ADDR_ENV: &str = "UR_BUILDERD_ADDR";
 
-/// Environment variable: newline-separated list of verification commands to run before pushing.
-/// Set by the server from the `[workflow]` config section. Workers read this to enforce
-/// pre-push verification. Empty or unset means no verification scripts configured.
-pub const UR_VERIFICATION_SCRIPTS_ENV: &str = "UR_VERIFICATION_SCRIPTS";
-
 /// Subdirectory under `config_dir` for host execution configuration.
 pub const HOSTEXEC_DIR: &str = "hostexec";
 
@@ -277,7 +272,6 @@ struct RawConfig {
     hostexec: Option<RawHostExecConfig>,
     rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
-    workflow: Option<RawWorkflowConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -333,6 +327,12 @@ struct RawProjectConfig {
     git_hooks_dir: Option<String>,
     #[serde(default)]
     mounts: Vec<String>,
+    /// Template path to a directory of workflow hook scripts.
+    workflow_hooks_dir: Option<String>,
+    /// Maximum fix loop iterations before stalling agent.
+    max_fix_attempts: Option<u32>,
+    /// Branches that cannot be force-pushed. Supports glob patterns.
+    protected_branches: Option<Vec<String>>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -375,22 +375,12 @@ struct RawBackupConfig {
     retain_count: Option<u64>,
 }
 
-/// Raw TOML representation for the `[workflow]` section.
-#[derive(Debug, Default, Deserialize)]
-struct RawWorkflowConfig {
-    /// Commands to run before pushing. Each string is a shell command
-    /// (e.g., "cargo clippy --all-targets", "cargo test").
-    #[serde(default)]
-    verification: Vec<String>,
-}
+/// Default maximum number of fix loop iterations before stalling an agent.
+pub const DEFAULT_MAX_FIX_ATTEMPTS: u32 = 5;
 
-/// Workflow configuration from the `[workflow]` section of `ur.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkflowConfig {
-    /// Shell commands to run before pushing. Each string is executed as a
-    /// separate command (e.g., "cargo clippy --all-targets", "cargo test").
-    /// Failure of any command blocks the push.
-    pub verification: Vec<String>,
+/// Default protected branch patterns (branches that cannot be force-pushed).
+pub fn default_protected_branches() -> Vec<String> {
+    vec!["main".to_string(), "master".to_string()]
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -478,6 +468,15 @@ pub struct ProjectConfig {
     /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
     /// Parsed from `"source:destination"` strings in TOML.
     pub mounts: Vec<MountConfig>,
+    /// Optional template path to a directory of workflow hook scripts.
+    /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
+    /// Resolve with [`resolve_template_path`] at use time.
+    pub workflow_hooks_dir: Option<String>,
+    /// Maximum fix loop iterations before stalling the agent (default: 5).
+    pub max_fix_attempts: u32,
+    /// Branch patterns that cannot be force-pushed (default: `["main", "master"]`).
+    /// Supports glob patterns.
+    pub protected_branches: Vec<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -508,8 +507,6 @@ pub struct Config {
     /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
     /// Empty string means no prefix.
     pub git_branch_prefix: String,
-    /// Workflow settings (verification scripts, etc.).
-    pub workflow: WorkflowConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -654,19 +651,19 @@ impl Config {
                         .enumerate()
                         .map(|(i, m)| parse_mount_entry(&key, i, m))
                         .collect::<anyhow::Result<Vec<_>>>()?,
+                    workflow_hooks_dir: raw_proj.workflow_hooks_dir,
+                    max_fix_attempts: raw_proj
+                        .max_fix_attempts
+                        .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
+                    protected_branches: raw_proj
+                        .protected_branches
+                        .unwrap_or_else(default_protected_branches),
                 };
                 Ok((key, resolved))
             })
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
-
-        let workflow = match raw.workflow {
-            Some(w) => WorkflowConfig {
-                verification: w.verification,
-            },
-            None => WorkflowConfig::default(),
-        };
 
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
@@ -681,7 +678,6 @@ impl Config {
             rag,
             backup,
             git_branch_prefix,
-            workflow,
             projects,
         })
     }
@@ -714,6 +710,10 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
     if let Some(ref tpl) = raw_proj.git_hooks_dir {
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
+    }
+    if let Some(ref tpl) = raw_proj.workflow_hooks_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': workflow_hooks_dir: {}", key, e))?;
     }
     // Mount validation is handled by parse_mount_entry during config loading.
     Ok(())
@@ -1542,33 +1542,64 @@ bad = { bidi = true }
     }
 
     #[test]
-    fn workflow_defaults_when_section_absent() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.workflow.verification.is_empty());
-    }
-
-    #[test]
-    fn workflow_defaults_when_present_but_empty() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[workflow]\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.workflow.verification.is_empty());
-    }
-
-    #[test]
-    fn workflow_reads_verification_scripts() {
+    fn project_workflow_fields_default() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[workflow]\nverification = [\"cargo clippy --all-targets\", \"cargo test\"]\n",
+            r#"
+[projects.myproj]
+repo = "git@github.com:example/myproj.git"
+"#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["myproj"];
+        assert_eq!(proj.workflow_hooks_dir, None);
+        assert_eq!(proj.max_fix_attempts, DEFAULT_MAX_FIX_ATTEMPTS);
+        assert_eq!(proj.protected_branches, default_protected_branches());
+    }
+
+    #[test]
+    fn project_workflow_fields_custom() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.myproj]
+repo = "git@github.com:example/myproj.git"
+workflow_hooks_dir = "%PROJECT%/.workflow"
+max_fix_attempts = 3
+protected_branches = ["main", "release/*"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["myproj"];
         assert_eq!(
-            cfg.workflow.verification,
-            vec!["cargo clippy --all-targets", "cargo test"]
+            proj.workflow_hooks_dir.as_deref(),
+            Some("%PROJECT%/.workflow")
+        );
+        assert_eq!(proj.max_fix_attempts, 3);
+        assert_eq!(proj.protected_branches, vec!["main", "release/*"]);
+    }
+
+    #[test]
+    fn project_workflow_hooks_dir_validates_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.myproj]
+repo = "git@github.com:example/myproj.git"
+workflow_hooks_dir = "relative/path"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workflow_hooks_dir"),
+            "expected workflow_hooks_dir error, got: {msg}"
         );
     }
 

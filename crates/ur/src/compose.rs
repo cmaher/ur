@@ -433,7 +433,7 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
             git_branch_prefix: String::new(),
-            workflow: ur_config::WorkflowConfig::default(),
+
             projects: std::collections::HashMap::new(),
         };
 

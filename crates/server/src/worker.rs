@@ -250,8 +250,6 @@ pub struct WorkerManager {
     worker_port: u16,
     prompt_modes: PromptModesConfig,
     worker_repo: WorkerRepo,
-    /// Pre-push verification scripts from `[workflow]` config.
-    verification_scripts: Vec<String>,
 }
 
 impl WorkerManager {
@@ -265,7 +263,6 @@ impl WorkerManager {
         worker_port: u16,
         prompt_modes: PromptModesConfig,
         worker_repo: WorkerRepo,
-        verification_scripts: Vec<String>,
     ) -> Self {
         Self {
             workspace,
@@ -276,7 +273,6 @@ impl WorkerManager {
             worker_port,
             prompt_modes,
             worker_repo,
-            verification_scripts,
         }
     }
 
@@ -475,14 +471,6 @@ impl WorkerManager {
         // Inject project key so workers can resolve project context via env
         if !config.project_key.is_empty() {
             env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
-        }
-
-        // Inject pre-push verification scripts (newline-separated)
-        if !self.verification_scripts.is_empty() {
-            env_vars.push((
-                ur_config::UR_VERIFICATION_SCRIPTS_ENV.into(),
-                self.verification_scripts.join("\n"),
-            ));
         }
 
         // Build RunOpts via the builder
@@ -722,7 +710,7 @@ mod tests {
             },
             worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
             git_branch_prefix: String::new(),
-            workflow: ur_config::WorkflowConfig::default(),
+
             projects: std::collections::HashMap::new(),
         }
     }
@@ -771,7 +759,6 @@ mod tests {
             ur_config::DEFAULT_DAEMON_PORT + 1,
             PromptModesConfig::default(),
             worker_repo,
-            Vec::new(),
         );
         (mgr, workspace)
     }

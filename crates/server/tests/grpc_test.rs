@@ -69,7 +69,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         },
         worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
         git_branch_prefix: String::new(),
-        workflow: ur_config::WorkflowConfig::default(),
+
         projects: std::collections::HashMap::new(),
     };
     let db = ur_db::DatabaseManager::open(":memory:")
@@ -98,7 +98,6 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         ur_config::DEFAULT_DAEMON_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
-        Vec::new(),
     );
     let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
         Path::new("/nonexistent"),
