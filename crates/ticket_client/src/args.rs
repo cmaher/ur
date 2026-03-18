@@ -29,7 +29,7 @@ pub enum TicketArgs {
         body: String,
 
         /// Create as work-in-progress (sets lifecycle_status to design)
-        #[arg(long)]
+        #[arg(short = 'd', long, alias = "design")]
         wip: bool,
     },
 

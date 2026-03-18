@@ -5,6 +5,8 @@ use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
+use ur_rpc::lifecycle;
+
 use crate::TicketOutput;
 use crate::args::TicketArgs;
 use crate::status::build_status_report;
@@ -41,7 +43,7 @@ where
                 .create_ticket(CreateTicketRequest {
                     project: project.unwrap_or_default(),
                     ticket_type,
-                    status: "open".to_owned(),
+                    status: lifecycle::OPEN.to_owned(),
                     priority,
                     parent_id: parent,
                     title,
@@ -271,7 +273,7 @@ where
                     force: false,
                     ticket_type: None,
                     parent_id: None,
-                    lifecycle_status: Some("feedback_creating".to_owned()),
+                    lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
                     branch: None,
                 })
                 .await

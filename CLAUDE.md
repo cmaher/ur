@@ -46,6 +46,7 @@ Cargo workspace:
 - **Acceptance tests**: When adding a new launch mode, flag, or code path (e.g., `-p` project pool launches vs `-w` workspace mounts), the acceptance test suite MUST cover that path. Do not ship a feature whose primary flow is untested in the e2e acceptance tests.
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Docker backend tested locally on macOS and in CI (ubuntu-latest).
+- **Lifecycle status constants**: Use `ur_rpc::lifecycle::*` constants (e.g., `lifecycle::OPEN`, `lifecycle::IMPLEMENTING`) instead of string literals when working with lifecycle statuses in gRPC requests or proto types. The canonical Rust enum is `ur_db::model::LifecycleStatus` for server-side code that can depend on `ur_db`.
 - **Codeflows** (`docs/codeflows/`): Detailed flow diagrams for cross-cutting concerns (credential injection, process launch, etc.). Consult these before modifying multi-component flows.
 
 @docs/codeflows/CLAUDE.md
