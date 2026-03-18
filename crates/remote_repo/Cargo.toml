@@ -12,4 +12,4 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }
-ur_rpc = { path = "../ur_rpc", features = ["builder", "stream"] }
+ur_rpc = { path = "../ur_rpc", features = ["stream"] }

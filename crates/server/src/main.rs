@@ -176,12 +176,10 @@ async fn main() -> anyhow::Result<()> {
         "worker reconciliation complete"
     );
 
-    #[cfg(feature = "hostexec")]
     let hostexec_config =
         ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
             .expect("failed to load hostexec config");
 
-    #[cfg(feature = "rag")]
     let rag_handler = {
         use std::sync::Arc;
 
@@ -231,12 +229,9 @@ async fn main() -> anyhow::Result<()> {
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
 
-    #[cfg(feature = "ticket")]
-    let ticket_handler = {
-        ur_server::grpc_ticket::TicketServiceHandler {
-            ticket_repo: ticket_repo.clone(),
-            valid_projects: cfg.projects.keys().cloned().collect(),
-        }
+    let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
+        ticket_repo: ticket_repo.clone(),
+        valid_projects: cfg.projects.keys().cloned().collect(),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -247,9 +242,7 @@ async fn main() -> anyhow::Result<()> {
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
         network_config: cfg.network.clone(),
-        #[cfg(feature = "hostexec")]
         hostexec_config: hostexec_config.clone(),
-        #[cfg(feature = "hostexec")]
         builderd_addr: builderd_addr.clone(),
     };
 
@@ -259,13 +252,10 @@ async fn main() -> anyhow::Result<()> {
     let host_server = ur_server::grpc_server::serve_grpc(
         host_addr,
         grpc_handler,
-        #[cfg(feature = "rag")]
         rag_handler.clone(),
-        #[cfg(feature = "ticket")]
         ticket_handler.clone(),
     );
 
-    #[cfg(feature = "remote_repo")]
     let remote_repo_handler = {
         let builderd_client =
             ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
@@ -281,17 +271,11 @@ async fn main() -> anyhow::Result<()> {
         ticket_repo,
         cfg.network.worker_prefix.clone(),
         cfg.projects,
-        #[cfg(feature = "hostexec")]
         hostexec_config,
-        #[cfg(feature = "hostexec")]
         builderd_addr,
-        #[cfg(feature = "hostexec")]
         host_workspace,
-        #[cfg(feature = "rag")]
         rag_handler,
-        #[cfg(feature = "ticket")]
         ticket_handler,
-        #[cfg(feature = "remote_repo")]
         remote_repo_handler,
     );
 

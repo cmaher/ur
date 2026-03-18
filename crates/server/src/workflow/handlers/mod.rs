@@ -1,23 +1,15 @@
 // Handler registry for workflow transitions.
 
-#[cfg(feature = "workerd")]
 mod dispatch_implement;
-#[cfg(feature = "workerd")]
 mod dispatch_push;
-#[cfg(feature = "workerd")]
 mod feedback_create;
-#[cfg(feature = "workerd")]
 mod feedback_resolve;
 mod review_start;
 mod stall;
 
-#[cfg(feature = "workerd")]
 pub use dispatch_implement::DispatchImplementHandler;
-#[cfg(feature = "workerd")]
 pub use dispatch_push::DispatchPushHandler;
-#[cfg(feature = "workerd")]
 pub use feedback_create::FeedbackCreateHandler;
-#[cfg(feature = "workerd")]
 pub use feedback_resolve::FeedbackResolveHandler;
 pub use review_start::ReviewStartHandler;
 pub use stall::StallHandler;
@@ -31,49 +23,39 @@ use super::HandlerEntry;
 /// Build the list of all workflow handler registrations.
 ///
 /// Returns a `Vec<HandlerEntry>` to be passed to `WorkflowEngine::new()`.
-#[allow(clippy::vec_init_then_push)]
 pub fn build_handlers() -> Vec<HandlerEntry> {
-    // cfg-conditional entries prevent using vec![] directly.
-    let mut entries: Vec<HandlerEntry> = Vec::new();
-
-    // Open → Implementing: dispatch worker with implement RPC
-    #[cfg(feature = "workerd")]
-    entries.push((
-        LifecycleStatus::Open,
-        LifecycleStatus::Implementing,
-        Arc::new(DispatchImplementHandler),
-    ));
-
-    // Implementing → Pushing: dispatch push RPC to worker
-    #[cfg(feature = "workerd")]
-    entries.push((
-        LifecycleStatus::Implementing,
-        LifecycleStatus::Pushing,
-        Arc::new(DispatchPushHandler),
-    ));
-
-    // InReview → FeedbackCreating: dispatch feedback create RPC to worker
-    #[cfg(feature = "workerd")]
-    entries.push((
-        LifecycleStatus::InReview,
-        LifecycleStatus::FeedbackCreating,
-        Arc::new(FeedbackCreateHandler),
-    ));
-
-    // FeedbackCreating → FeedbackResolving: resolve feedback (merge or re-implement)
-    #[cfg(feature = "workerd")]
-    entries.push((
-        LifecycleStatus::FeedbackCreating,
-        LifecycleStatus::FeedbackResolving,
-        Arc::new(FeedbackResolveHandler),
-    ));
-
-    // Pushing → InReview: no-op signal handler
-    entries.push((
-        LifecycleStatus::Pushing,
-        LifecycleStatus::InReview,
-        Arc::new(ReviewStartHandler),
-    ));
+    let mut entries: Vec<HandlerEntry> = vec![
+        // Open → Implementing: dispatch worker with implement RPC
+        (
+            LifecycleStatus::Open,
+            LifecycleStatus::Implementing,
+            Arc::new(DispatchImplementHandler),
+        ),
+        // Implementing → Pushing: dispatch push RPC to worker
+        (
+            LifecycleStatus::Implementing,
+            LifecycleStatus::Pushing,
+            Arc::new(DispatchPushHandler),
+        ),
+        // InReview → FeedbackCreating: dispatch feedback create RPC to worker
+        (
+            LifecycleStatus::InReview,
+            LifecycleStatus::FeedbackCreating,
+            Arc::new(FeedbackCreateHandler),
+        ),
+        // FeedbackCreating → FeedbackResolving: resolve feedback (merge or re-implement)
+        (
+            LifecycleStatus::FeedbackCreating,
+            LifecycleStatus::FeedbackResolving,
+            Arc::new(FeedbackResolveHandler),
+        ),
+        // Pushing → InReview: no-op signal handler
+        (
+            LifecycleStatus::Pushing,
+            LifecycleStatus::InReview,
+            Arc::new(ReviewStartHandler),
+        ),
+    ];
 
     // * → Stalled: wildcard handler for all possible source states
     let stall_handler = Arc::new(StallHandler);

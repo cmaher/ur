@@ -15,4 +15,4 @@ tonic = { workspace = true }
 ur_config = { path = "../ur_config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "rag", "remote_repo", "workerd"] }
+ur_rpc = { path = "../ur_rpc" }
