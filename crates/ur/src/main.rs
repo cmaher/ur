@@ -260,7 +260,7 @@ enum WorkerCommands {
         skills: Option<String>,
         /// Dispatch a ticket: validate it exists and is open, then transition to implementing
         #[arg(short = 'd', long = "dispatch")]
-        dispatch: Option<String>,
+        dispatch: bool,
     },
     /// List all running processes
     List,
@@ -1010,7 +1010,7 @@ async fn handle_worker_launch(
     force: bool,
     mode: String,
     skills: Option<String>,
-    dispatch: Option<String>,
+    dispatch: bool,
 ) -> Result<()> {
     input::validate_id(&ticket_id, "ticket_id")?;
     if let Some(ref p) = project {
@@ -1033,8 +1033,8 @@ async fn handle_worker_launch(
         debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
         let _ = process_stop(&mut client, &ticket_id, output).await;
     }
-    if let Some(ref dispatch_ticket_id) = dispatch {
-        dispatch_ticket(port, dispatch_ticket_id).await?;
+    if dispatch {
+        dispatch_ticket(port, &ticket_id).await?;
     }
     process_launch(
         &mut client,
