@@ -1,16 +1,16 @@
 // Handler registry for workflow transitions.
 
 mod dispatch_implement;
-mod dispatch_push;
 mod feedback_create;
 mod feedback_resolve;
+mod push;
 mod review_start;
 mod verify;
 
 pub use dispatch_implement::DispatchImplementHandler;
-pub use dispatch_push::DispatchPushHandler;
 pub use feedback_create::FeedbackCreateHandler;
 pub use feedback_resolve::FeedbackResolveHandler;
+pub use push::PushHandler;
 pub use review_start::ReviewStartHandler;
 pub use verify::VerifyHandler;
 
@@ -43,11 +43,11 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::Verifying,
             Arc::new(VerifyHandler),
         ),
-        // Verifying → Pushing: dispatch push RPC to worker
+        // Verifying → Pushing: workflow-driven push handler
         (
             LifecycleStatus::Verifying,
             LifecycleStatus::Pushing,
-            Arc::new(DispatchPushHandler),
+            Arc::new(PushHandler),
         ),
         // InReview → FeedbackCreating: dispatch feedback create RPC to worker
         (
