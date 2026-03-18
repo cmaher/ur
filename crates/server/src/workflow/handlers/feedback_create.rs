@@ -3,6 +3,7 @@ use std::pin::Pin;
 
 use anyhow::bail;
 use tracing::info;
+use ur_db::model::{EdgeKind, LifecycleStatus, TicketUpdate};
 
 use crate::workflow::{TransitionKey, WorkflowContext, WorkflowHandler};
 
@@ -33,6 +34,34 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 .get_ticket(&ticket_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
+
+            // 1b. Check if follow-up tickets already exist (follow_up edge present).
+            // This happens when we re-enter feedback_creating after a merge conflict
+            // retry cycle — the follow-up epic was already created on the first pass.
+            let follow_up_edges = ctx
+                .ticket_repo
+                .edges_for(&ticket_id, Some(EdgeKind::FollowUp))
+                .await?;
+
+            if !follow_up_edges.is_empty() {
+                info!(
+                    ticket_id = %ticket_id,
+                    "follow-up tickets already exist — skipping creation, advancing to feedback_resolving"
+                );
+
+                let update = TicketUpdate {
+                    lifecycle_status: Some(LifecycleStatus::FeedbackResolving),
+                    status: None,
+                    type_: None,
+                    priority: None,
+                    title: None,
+                    body: None,
+                    branch: None,
+                    parent_id: None,
+                };
+                ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
+                return Ok(());
+            }
 
             // 2. Read metadata: worker_id and pr_number.
             let meta = ctx.ticket_repo.get_meta(&ticket_id, "ticket").await?;

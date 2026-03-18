@@ -148,7 +148,7 @@ async fn close_ticket(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), anyh
 
 /// feedback_later path:
 /// 1. `gh pr merge <pr_number> --squash`
-/// 2. If merge fails → stall with reason
+/// 2. If merge fails due to conflicts → transition back to pushing for worker resolution
 /// 3. Close original ticket
 /// 4. Dispatch follow-up epic children as independent work (transition to open)
 async fn resolve_feedback_later(
@@ -176,6 +176,35 @@ async fn resolve_feedback_later(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_lower = stderr.to_lowercase();
+
+        // Merge conflicts are recoverable: transition back to pushing so a
+        // worker can resolve conflicts, push, and re-enter the review cycle.
+        if stderr_lower.contains("merge conflict")
+            || stderr_lower.contains("not mergeable")
+            || stderr_lower.contains("conflicts")
+        {
+            warn!(
+                ticket_id = %ticket_id,
+                pr_number = %pr_number,
+                stderr = %stderr.trim(),
+                "merge failed due to conflicts — transitioning back to pushing for worker resolution"
+            );
+
+            let update = TicketUpdate {
+                lifecycle_status: Some(LifecycleStatus::Pushing),
+                status: None,
+                type_: None,
+                priority: None,
+                title: None,
+                body: None,
+                branch: None,
+                parent_id: None,
+            };
+            ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+            return Ok(());
+        }
+
         bail!(
             "gh pr merge failed for PR #{} on ticket {}: {}",
             pr_number,
