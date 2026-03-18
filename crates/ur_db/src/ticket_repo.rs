@@ -145,6 +145,7 @@ impl TicketRepo {
         let priority = update.priority.unwrap_or(existing.priority);
         let title = update.title.as_deref().unwrap_or(&existing.title);
         let body = update.body.as_deref().unwrap_or(&existing.body);
+        let project = update.project.as_deref().unwrap_or(&existing.project);
         let parent_id = match &update.parent_id {
             Some(p) => p.as_deref(),
             None => existing.parent_id.as_deref(),
@@ -156,7 +157,7 @@ impl TicketRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, updated_at = ?
+            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, project = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(type_)
@@ -167,6 +168,7 @@ impl TicketRepo {
         .bind(body)
         .bind(parent_id)
         .bind(branch)
+        .bind(project)
         .bind(&now)
         .bind(id)
         .execute(&self.pool)
@@ -174,7 +176,7 @@ impl TicketRepo {
 
         Ok(Ticket {
             id: existing.id,
-            project: existing.project,
+            project: project.to_owned(),
             type_: type_.to_owned(),
             status: status.to_owned(),
             lifecycle_status,

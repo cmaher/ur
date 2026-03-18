@@ -569,6 +569,7 @@ async fn handle_idle_redispatch(
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         ticket_repo.update_ticket(ticket_id, &update).await?;
         return Ok(());

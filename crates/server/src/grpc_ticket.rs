@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
@@ -84,6 +84,7 @@ impl From<TicketError> for Status {
 #[derive(Clone)]
 pub struct TicketServiceHandler {
     pub ticket_repo: TicketRepo,
+    pub valid_projects: HashSet<String>,
 }
 
 #[tonic::async_trait]
@@ -94,6 +95,19 @@ impl TicketService for TicketServiceHandler {
     ) -> Result<Response<CreateTicketResponse>, Status> {
         let req = req.into_inner();
         info!(project = %req.project, title = %req.title, "create_ticket request");
+
+        if !self.valid_projects.is_empty() && !self.valid_projects.contains(&req.project) {
+            return Err(TicketError::Validation(format!(
+                "unknown project '{}'; configured projects: {}",
+                req.project,
+                self.valid_projects
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ))
+            .into());
+        }
 
         let id = req
             .id
@@ -328,6 +342,23 @@ impl TicketService for TicketServiceHandler {
             Some(s) => Some(Some(s)),
         };
 
+        let project = req.project.filter(|s| !s.is_empty());
+        if let Some(ref p) = project
+            && !self.valid_projects.is_empty()
+            && !self.valid_projects.contains(p)
+        {
+            return Err(TicketError::Validation(format!(
+                "unknown project '{}'; configured projects: {}",
+                p,
+                self.valid_projects
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ))
+            .into());
+        }
+
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
             lifecycle_status,
@@ -337,6 +368,7 @@ impl TicketService for TicketServiceHandler {
             body: req.body.filter(|s| !s.is_empty()),
             branch,
             parent_id,
+            project,
         };
 
         if update.status.as_deref() == Some("closed") {

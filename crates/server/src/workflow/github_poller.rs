@@ -304,6 +304,7 @@ impl GithubPollerManager {
             body: None,
             branch: None,
             parent_id: None,
+            project: None,
         };
         if let Err(e) = self.ticket_repo.update_ticket(ticket_id, &update).await {
             error!(

@@ -110,6 +110,7 @@ where
             lifecycle,
             branch,
             no_branch,
+            project,
         } => {
             let parent_id = if no_parent {
                 Some("NONE".to_owned())
@@ -133,6 +134,7 @@ where
                     parent_id,
                     lifecycle_status: lifecycle,
                     branch: branch_value,
+                    project,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -275,6 +277,7 @@ where
                     parent_id: None,
                     lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
                     branch: None,
+                    project: None,
                 })
                 .await
                 .with_status_context("transition lifecycle to feedback_creating")?;
@@ -295,6 +298,7 @@ where
                     parent_id: None,
                     lifecycle_status: None,
                     branch: None,
+                    project: None,
                 })
                 .await
                 .with_status_context("close ticket")?;
@@ -314,6 +318,7 @@ where
                     parent_id: None,
                     lifecycle_status: None,
                     branch: None,
+                    project: None,
                 })
                 .await
                 .with_status_context("open ticket")?;

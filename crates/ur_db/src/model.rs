@@ -102,6 +102,7 @@ pub struct TicketUpdate {
     pub body: Option<String>,
     pub branch: Option<Option<String>>,    // Some(None) to clear
     pub parent_id: Option<Option<String>>, // Some(None) to clear
+    pub project: Option<String>,
 }
 
 pub struct TicketFilter {

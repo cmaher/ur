@@ -512,6 +512,7 @@ async fn execute_update_nonexistent_returns_error() {
             lifecycle: None,
             branch: None,
             no_branch: false,
+            project: None,
         },
         &mut client,
     )
@@ -836,6 +837,7 @@ async fn execute_update_existing_ticket() {
             lifecycle: None,
             branch: None,
             no_branch: false,
+            project: None,
         },
         &mut client,
     )
