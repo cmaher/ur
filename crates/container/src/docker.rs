@@ -164,6 +164,14 @@ impl ContainerRuntime for DockerRuntime {
             .status()
             .with_context(|| format!("failed to execute interactive {} exec", self.command))
     }
+
+    fn health_status(&self, id: &ContainerId) -> Result<String> {
+        let output = Command::new(&self.command)
+            .args(["inspect", "--format", "{{.State.Health.Status}}", &id.0])
+            .output()
+            .with_context(|| format!("failed to inspect container {}", id.0))?;
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
 }
 
 #[cfg(test)]

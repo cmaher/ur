@@ -539,6 +539,40 @@ fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()
     Ok(())
 }
 
+/// Wait for a container's Docker HEALTHCHECK to report "healthy".
+/// Polls every 500ms for up to 60s.
+fn wait_for_healthy(worker_id: &str, worker_prefix: &str) -> Result<()> {
+    let runtime = container::runtime_from_env();
+    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
+    let max_attempts = 120; // 60s at 500ms intervals
+    let mut printed = false;
+    for i in 0..max_attempts {
+        let status = runtime.health_status(&id).unwrap_or_default();
+        if status == "healthy" {
+            if printed {
+                eprintln!(" ready");
+            }
+            return Ok(());
+        }
+        if status == "unhealthy" {
+            if printed {
+                eprintln!();
+            }
+            bail!("container {} became unhealthy", id.0);
+        }
+        if i == 0 {
+            eprint!("Waiting for worker to initialize");
+            printed = true;
+        }
+        eprint!(".");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    if printed {
+        eprintln!();
+    }
+    bail!("container {} did not become healthy after 60s", id.0);
+}
+
 #[instrument]
 fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     let runtime = container::runtime_from_env();
@@ -909,6 +943,7 @@ async fn handle_worker(
                     output.print_error(&err);
                     process::exit(err.code.exit_code());
                 }
+                wait_for_healthy(&ticket_id, worker_prefix)?;
                 let exit_code = process_attach(&ticket_id, worker_prefix)?;
                 if rm {
                     println!("Stopping {ticket_id} (--rm)...");

@@ -74,6 +74,9 @@ pub trait ContainerRuntime {
         id: &ContainerId,
         command: &[String],
     ) -> Result<std::process::ExitStatus>;
+    /// Return the Docker HEALTHCHECK status string (e.g. "healthy", "starting", "unhealthy").
+    /// Returns an empty string when no health check is configured.
+    fn health_status(&self, id: &ContainerId) -> Result<String>;
 }
 
 /// Create a Docker-based container runtime.
