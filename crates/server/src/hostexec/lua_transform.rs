@@ -1522,4 +1522,64 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, args);
     }
+
+    #[test]
+    fn test_ur_ticket_injects_project_from_worker_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let ctx = WorkerContext {
+            worker_id: "w-1".into(),
+            project_key: "ur".into(),
+            slot_path: "/pool/ur/0".into(),
+        };
+        let args: Vec<String> = vec!["ticket".into(), "list".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["ticket", "-p", "ur", "list"],);
+    }
+
+    #[test]
+    fn test_ur_ticket_does_not_inject_project_when_explicit() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let ctx = WorkerContext {
+            worker_id: "w-1".into(),
+            project_key: "ur".into(),
+            slot_path: "/pool/ur/0".into(),
+        };
+        // Explicit -p already present
+        let args: Vec<String> = vec!["ticket".into(), "list".into(), "-p".into(), "other".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, args, "should not override explicit -p");
+
+        // Explicit --project already present
+        let args2: Vec<String> = vec![
+            "ticket".into(),
+            "create".into(),
+            "--project".into(),
+            "foo".into(),
+            "title".into(),
+        ];
+        let result2 = mgr
+            .run_transform(script, "ur", &args2, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result2.args, args2,
+            "should not override explicit --project"
+        );
+    }
+
+    #[test]
+    fn test_ur_ticket_no_inject_without_worker_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/ur.lua");
+        let args: Vec<String> = vec!["ticket".into(), "show".into(), "ur-abc12".into()];
+        let result = mgr
+            .run_transform(script, "ur", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args, "no injection without worker_context");
+    }
 }
