@@ -145,6 +145,11 @@ pub const BUILDERD_PID_FILE: &str = "builderd.pid";
 /// Environment variable: `host:port` address for worker→builderd gRPC connections.
 pub const BUILDERD_ADDR_ENV: &str = "UR_BUILDERD_ADDR";
 
+/// Environment variable: newline-separated list of verification commands to run before pushing.
+/// Set by the server from the `[workflow]` config section. Workers read this to enforce
+/// pre-push verification. Empty or unset means no verification scripts configured.
+pub const UR_VERIFICATION_SCRIPTS_ENV: &str = "UR_VERIFICATION_SCRIPTS";
+
 /// Subdirectory under `config_dir` for host execution configuration.
 pub const HOSTEXEC_DIR: &str = "hostexec";
 
@@ -272,6 +277,7 @@ struct RawConfig {
     hostexec: Option<RawHostExecConfig>,
     rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
+    workflow: Option<RawWorkflowConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -367,6 +373,24 @@ struct RawBackupConfig {
     interval_minutes: Option<u64>,
     enabled: Option<bool>,
     retain_count: Option<u64>,
+}
+
+/// Raw TOML representation for the `[workflow]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawWorkflowConfig {
+    /// Commands to run before pushing. Each string is a shell command
+    /// (e.g., "cargo clippy --all-targets", "cargo test").
+    #[serde(default)]
+    verification: Vec<String>,
+}
+
+/// Workflow configuration from the `[workflow]` section of `ur.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowConfig {
+    /// Shell commands to run before pushing. Each string is executed as a
+    /// separate command (e.g., "cargo clippy --all-targets", "cargo test").
+    /// Failure of any command blocks the push.
+    pub verification: Vec<String>,
 }
 
 /// Forward proxy configuration for restricting container network access.
@@ -484,6 +508,8 @@ pub struct Config {
     /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
     /// Empty string means no prefix.
     pub git_branch_prefix: String,
+    /// Workflow settings (verification scripts, etc.).
+    pub workflow: WorkflowConfig,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
 }
@@ -635,6 +661,13 @@ impl Config {
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
 
+        let workflow = match raw.workflow {
+            Some(w) => WorkflowConfig {
+                verification: w.verification,
+            },
+            None => WorkflowConfig::default(),
+        };
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -648,6 +681,7 @@ impl Config {
             rag,
             backup,
             git_branch_prefix,
+            workflow,
             projects,
         })
     }
@@ -1504,6 +1538,37 @@ bad = { bidi = true }
         assert!(
             msg.contains("bidi = true requires long_lived = true"),
             "{msg}"
+        );
+    }
+
+    #[test]
+    fn workflow_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.workflow.verification.is_empty());
+    }
+
+    #[test]
+    fn workflow_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[workflow]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.workflow.verification.is_empty());
+    }
+
+    #[test]
+    fn workflow_reads_verification_scripts() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[workflow]\nverification = [\"cargo clippy --all-targets\", \"cargo test\"]\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.workflow.verification,
+            vec!["cargo clippy --all-targets", "cargo test"]
         );
     }
 

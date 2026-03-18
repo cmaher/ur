@@ -145,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.worker_port,
         prompt_modes,
         worker_repo.clone(),
+        cfg.workflow.verification.clone(),
     );
 
     // Reconcile agents: check container liveness for active agents and update status.
