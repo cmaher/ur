@@ -31,6 +31,10 @@ pub enum TicketArgs {
         /// Create as work-in-progress (sets lifecycle_status to design)
         #[arg(short = 'd', long, alias = "design")]
         wip: bool,
+
+        /// After creating, add a follow_up edge to this ticket ID
+        #[arg(long)]
+        follow_up: Option<String>,
     },
 
     /// List tickets with optional filters
@@ -93,12 +97,12 @@ pub enum TicketArgs {
         ticket_type: Option<String>,
 
         /// New parent ticket ID
-        #[arg(long, conflicts_with = "no_parent")]
+        #[arg(long, conflicts_with = "unparent")]
         parent: Option<String>,
 
         /// Clear the parent (remove from epic)
         #[arg(long, conflicts_with = "parent")]
-        no_parent: bool,
+        unparent: bool,
 
         /// Force the update (e.g. close an epic with open children)
         #[arg(long)]

@@ -193,6 +193,7 @@ mod tests {
             project: "test".to_owned(),
             lifecycle_status: String::new(),
             branch: String::new(),
+            lifecycle_managed: false,
         }
     }
 

@@ -38,6 +38,8 @@ Tickets are managed via `ur ticket`, which communicates with the ur-server over 
 | `ur ticket update <id> --status open --output json` | Reopen a ticket |
 | `ur ticket update <id> --title "new title" --output json` | Change title |
 | `ur ticket update <id> --priority 2 --output json` | Change priority |
+| `ur ticket update <id> --parent <epic-id> --output json` | Re-parent under a different epic |
+| `ur ticket update <id> --unparent --output json` | Remove from epic (clear parent) |
 | `ur ticket add-activity <id> "text" --output json` | Append timestamped note |
 
 ### Dependencies & Links

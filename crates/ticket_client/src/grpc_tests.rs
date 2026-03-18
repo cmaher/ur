@@ -65,6 +65,7 @@ impl TicketService for MockTicketStore {
                 lifecycle::OPEN.into()
             },
             branch: String::new(),
+            lifecycle_managed: false,
         };
         self.inner
             .lock()
@@ -383,6 +384,7 @@ async fn execute_create_and_show() {
             priority: 2,
             body: "Body text".into(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -420,6 +422,7 @@ async fn execute_create_and_list_filtered() {
             priority: 1,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -442,6 +445,7 @@ async fn execute_create_and_list_filtered() {
             priority: 2,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -507,7 +511,7 @@ async fn execute_update_nonexistent_returns_error() {
             priority: None,
             ticket_type: None,
             parent: None,
-            no_parent: false,
+            unparent: false,
             force: false,
             lifecycle: None,
             branch: None,
@@ -539,6 +543,7 @@ async fn execute_set_and_delete_meta() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -603,6 +608,7 @@ async fn execute_add_and_list_activities() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -660,6 +666,7 @@ async fn execute_add_and_remove_block() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -675,6 +682,7 @@ async fn execute_add_and_remove_block() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -736,6 +744,7 @@ async fn execute_add_and_remove_link() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -751,6 +760,7 @@ async fn execute_add_and_remove_link() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -799,6 +809,63 @@ async fn execute_add_and_remove_link() {
 }
 
 #[tokio::test]
+async fn execute_create_with_follow_up() {
+    let (addr, store) = start_mock_server().await;
+    let mut client = connect(addr).await;
+
+    // Create a ticket to be the follow-up target
+    crate::execute(
+        TicketArgs::Create {
+            title: "Original ticket".into(),
+            project: Some("test".into()),
+            ticket_type: "task".into(),
+            parent: None,
+            priority: 0,
+            body: String::new(),
+            wip: false,
+            follow_up: None,
+        },
+        &mut client,
+    )
+    .await
+    .unwrap();
+
+    let original_id = {
+        let state = store.inner.lock().unwrap();
+        state.tickets.keys().next().unwrap().clone()
+    };
+
+    // Create a follow-up epic linked to the original ticket
+    crate::execute(
+        TicketArgs::Create {
+            title: "Follow-up epic".into(),
+            project: Some("test".into()),
+            ticket_type: "epic".into(),
+            parent: None,
+            priority: 1,
+            body: String::new(),
+            wip: false,
+            follow_up: Some(original_id.clone()),
+        },
+        &mut client,
+    )
+    .await
+    .expect("create with --follow-up should succeed");
+
+    // Verify a follow_up edge was created
+    {
+        let state = store.inner.lock().unwrap();
+        assert_eq!(state.edges.len(), 1, "should have exactly one edge");
+        let edge = &state.edges[0];
+        assert_eq!(
+            edge.1, original_id,
+            "right_id should be the original ticket"
+        );
+        assert_eq!(edge.2, "follow_up", "edge kind should be follow_up");
+    }
+}
+
+#[tokio::test]
 async fn execute_update_existing_ticket() {
     let (addr, store) = start_mock_server().await;
     let mut client = connect(addr).await;
@@ -812,6 +879,7 @@ async fn execute_update_existing_ticket() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -832,7 +900,7 @@ async fn execute_update_existing_ticket() {
             priority: Some(5),
             ticket_type: None,
             parent: None,
-            no_parent: false,
+            unparent: false,
             force: false,
             lifecycle: None,
             branch: None,
@@ -868,6 +936,7 @@ async fn execute_dispatchable() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -890,6 +959,7 @@ async fn execute_dispatchable() {
             priority: 1,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -935,6 +1005,7 @@ async fn execute_list_activities_empty() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )
@@ -1016,6 +1087,7 @@ async fn auth_rejection_propagates_error() {
             priority: 0,
             body: String::new(),
             wip: false,
+            follow_up: None,
         },
         &mut client,
     )

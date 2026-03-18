@@ -26,50 +26,54 @@ use std::sync::Arc;
 
 use ur_db::model::LifecycleStatus;
 
-use super::WorkflowEngine;
+use super::HandlerEntry;
 
-/// Register all workflow handlers with the engine.
+/// Build the list of all workflow handler registrations.
 ///
-/// Called once during engine setup to wire transitions to their handlers.
-pub fn register_all(engine: &mut WorkflowEngine) {
+/// Returns a `Vec<HandlerEntry>` to be passed to `WorkflowEngine::new()`.
+#[allow(clippy::vec_init_then_push)]
+pub fn build_handlers() -> Vec<HandlerEntry> {
+    // cfg-conditional entries prevent using vec![] directly.
+    let mut entries: Vec<HandlerEntry> = Vec::new();
+
     // Open → Implementing: dispatch worker with implement RPC
     #[cfg(feature = "workerd")]
-    engine.register_handler(
+    entries.push((
         LifecycleStatus::Open,
         LifecycleStatus::Implementing,
         Arc::new(DispatchImplementHandler),
-    );
+    ));
 
     // Implementing → Pushing: dispatch push RPC to worker
     #[cfg(feature = "workerd")]
-    engine.register_handler(
+    entries.push((
         LifecycleStatus::Implementing,
         LifecycleStatus::Pushing,
         Arc::new(DispatchPushHandler),
-    );
+    ));
 
     // InReview → FeedbackCreating: dispatch feedback create RPC to worker
     #[cfg(feature = "workerd")]
-    engine.register_handler(
+    entries.push((
         LifecycleStatus::InReview,
         LifecycleStatus::FeedbackCreating,
         Arc::new(FeedbackCreateHandler),
-    );
+    ));
 
     // FeedbackCreating → FeedbackResolving: resolve feedback (merge or re-implement)
     #[cfg(feature = "workerd")]
-    engine.register_handler(
+    entries.push((
         LifecycleStatus::FeedbackCreating,
         LifecycleStatus::FeedbackResolving,
         Arc::new(FeedbackResolveHandler),
-    );
+    ));
 
     // Pushing → InReview: no-op signal handler
-    engine.register_handler(
+    entries.push((
         LifecycleStatus::Pushing,
         LifecycleStatus::InReview,
         Arc::new(ReviewStartHandler),
-    );
+    ));
 
     // * → Stalled: wildcard handler for all possible source states
     let stall_handler = Arc::new(StallHandler);
@@ -85,6 +89,8 @@ pub fn register_all(engine: &mut WorkflowEngine) {
         LifecycleStatus::Done,
     ];
     for from in source_states {
-        engine.register_handler(from, LifecycleStatus::Stalled, stall_handler.clone());
+        entries.push((from, LifecycleStatus::Stalled, stall_handler.clone()));
     }
+
+    entries
 }

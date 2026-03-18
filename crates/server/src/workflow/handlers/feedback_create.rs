@@ -48,6 +48,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
 
                 let update = TicketUpdate {
                     lifecycle_status: Some(LifecycleStatus::FeedbackResolving),
+                    lifecycle_managed: None,
                     status: None,
                     type_: None,
                     priority: None,

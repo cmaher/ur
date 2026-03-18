@@ -34,4 +34,4 @@ pub use strategy::WorkerStrategy;
 pub use worker::{WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary};
 #[cfg(feature = "workerd")]
 pub use workerd_client::WorkerdClient;
-pub use workflow::{GithubPollerManager, WorkflowEngine};
+pub use workflow::{GithubPollerManager, HandlerEntry, WorkflowEngine};

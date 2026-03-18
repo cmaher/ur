@@ -21,14 +21,16 @@ Every project goes through this process. A todo list, a single-function utility,
 
 This skill does NOT transition to implementation. There is no "next step" after tickets are created. The user will decide when and how to implement. Do not suggest coding, do not invoke writing-plans, do not mention implementation skills.
 
-## Spike Ticket
+## Design Ticket
 
-The design skill is invoked on a **spike ticket** — the ticket that triggered this design session. The spike ticket becomes the epic parent of all created child tickets. You can identify the spike ticket from the current ticket context (e.g., `$TICKET_ID` or the ticket the user is working on).
+The design skill MAY be invoked on a **design ticket** — a ticket of type `design` that triggered this design session. You can identify the design ticket from the current ticket context (e.g., `$TICKET_ID` or the ticket the user is working on).
 
-- The spike ticket MUST be converted to an epic (if not already) using `ur ticket update <spike-id> --type epic --output json`
-- The spike ticket's body should be updated with the full design document
-- All child tickets are parented to the spike ticket
-- When design is complete, **close the spike ticket** using `ur ticket update <spike-id> --status closed --output json`
+**This lifecycle flow ONLY applies when the current ticket is a design ticket.** If the skill is invoked without a design ticket (e.g., the user just wants to brainstorm), skip the design ticket lifecycle steps (closing, etc.) and just create the epic and child tickets normally.
+
+When a design ticket is present:
+- Create a NEW epic for the implementation: `ur ticket create "Epic title" --type epic --body "..." --output json`
+- Create all child tickets parented to the NEW epic
+- Close the design ticket: `ur ticket update <design-ticket-id> --status closed --output json`
 
 ## Checklist
 
@@ -38,9 +40,9 @@ You MUST create a task for each of these items and complete them in order:
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
-5. **Update spike ticket** — convert to epic if needed, write the full design document as the spike ticket's body
-6. **Create child tickets** — one per discrete task, all parented to the spike ticket
-7. **Close the spike ticket** — design is complete, close it
+5. **Create epic ticket** — create a new epic with the full design document as the body
+6. **Create child tickets** — one per discrete task, all parented to the new epic
+7. **Close the design ticket** (only if invoked on a design ticket) — design is complete, close it
 
 ## Process Flow
 
@@ -51,9 +53,9 @@ digraph brainstorming {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
-    "Update spike ticket with design doc" [shape=box];
-    "Create child tickets" [shape=box];
-    "Close spike ticket" [shape=box];
+    "Create new epic with design doc" [shape=box];
+    "Create child tickets under epic" [shape=box];
+    "Close design ticket (if applicable)" [shape=box];
     "Done — tickets ready" [shape=doublecircle];
 
     "Explore project context" -> "Ask clarifying questions";
@@ -61,10 +63,10 @@ digraph brainstorming {
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Update spike ticket with design doc" [label="yes"];
-    "Update spike ticket with design doc" -> "Create child tickets";
-    "Create child tickets" -> "Close spike ticket";
-    "Close spike ticket" -> "Done — tickets ready";
+    "User approves design?" -> "Create new epic with design doc" [label="yes"];
+    "Create new epic with design doc" -> "Create child tickets under epic";
+    "Create child tickets under epic" -> "Close design ticket (if applicable)";
+    "Close design ticket (if applicable)" -> "Done — tickets ready";
 }
 ```
 
@@ -111,24 +113,26 @@ digraph brainstorming {
 
 ## After the Design
 
-**Updating the spike ticket:**
+**Creating the epic:**
 
-- Convert the spike ticket to an epic if needed: `ur ticket update <spike-id> --type epic --output json`
-- Update the spike ticket's body with the full design document — architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming: `ur ticket update <spike-id> --body "..." --output json`
+- Create a new epic with the full design document as the body: `ur ticket create "Epic title" --type epic --body "..." --output json`
+- The design document should include architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
+- If invoked on a design ticket, add a link between the design ticket and the new epic: `ur ticket add-link <design-ticket-id> <epic-id> --output json`
 
 **Creating child tickets:**
 
-- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <spike-id> --output json`
+- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <epic-id> --output json`
 - Do NOT use the `--wip` flag — child tickets must default to lifecycle_status=open so they are immediately dispatchable
 - Each ticket should have a clear scope description in the `--body` argument
 - Order tickets by dependency — use `ur ticket add-block <id> <dep-id> --output json` for hard dependencies
 - Use `ur ticket add-link <id> <id> --output json` for related but non-blocking relationships
 - Tickets should be small enough for a single agent to complete in one session
 
-**Closing the spike ticket:**
+**Closing the design ticket:**
 
-- Once all child tickets are created, close the spike ticket: `ur ticket update <spike-id> --status closed --output json`
-- This signals that the design phase is complete and the spike has been broken down into actionable work
+- This step ONLY applies if the design skill was invoked on a design ticket
+- Once all child tickets are created, close the design ticket: `ur ticket update <design-ticket-id> --status closed --output json`
+- This signals that the design phase is complete and has been broken down into actionable work
 
 **That's it. You're done.** Do not suggest next steps. Do not mention coding. Do not invoke any other skill. The user has a complete set of tickets and will decide what to do with them.
 

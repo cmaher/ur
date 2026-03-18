@@ -38,6 +38,7 @@ where
             priority,
             body,
             wip,
+            follow_up,
         } => {
             let resp = client
                 .create_ticket(CreateTicketRequest {
@@ -55,6 +56,18 @@ where
                 .await
                 .with_status_context("create ticket")?;
             let id = resp.into_inner().id;
+
+            if let Some(follow_up_id) = follow_up {
+                client
+                    .add_link(AddLinkRequest {
+                        left_id: id.clone(),
+                        right_id: follow_up_id,
+                        edge_kind: Some("follow_up".to_owned()),
+                    })
+                    .await
+                    .with_status_context("add follow_up link")?;
+            }
+
             Ok(TicketOutput::Created { id })
         }
 
@@ -105,14 +118,14 @@ where
             priority,
             ticket_type,
             parent,
-            no_parent,
+            unparent,
             force,
             lifecycle,
             branch,
             no_branch,
             project,
         } => {
-            let parent_id = if no_parent {
+            let parent_id = if unparent {
                 Some("NONE".to_owned())
             } else {
                 parent
@@ -135,6 +148,7 @@ where
                     lifecycle_status: lifecycle,
                     branch: branch_value,
                     project,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -278,6 +292,7 @@ where
                     lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("transition lifecycle to feedback_creating")?;
@@ -299,6 +314,7 @@ where
                     lifecycle_status: None,
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("close ticket")?;
@@ -319,6 +335,7 @@ where
                     lifecycle_status: None,
                     branch: None,
                     project: None,
+                    lifecycle_managed: None,
                 })
                 .await
                 .with_status_context("open ticket")?;

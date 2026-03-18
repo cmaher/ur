@@ -22,6 +22,14 @@ pub struct CreateOptions {
 }
 
 impl Session {
+    /// Get a handle to the well-known `agent` tmux session.
+    /// This is the primary session used by worker daemons for Claude Code interaction.
+    pub fn agent() -> Self {
+        Self {
+            name: "agent".into(),
+        }
+    }
+
     /// Get a handle to an existing tmux session by name.
     /// Does not verify the session exists — operations will fail if it doesn't.
     pub fn from_name(name: impl Into<String>) -> Self {
@@ -200,5 +208,11 @@ mod tests {
             session.attach_command(),
             vec!["tmux", "-u", "attach-session", "-t", "agent"]
         );
+    }
+
+    #[test]
+    fn test_agent_session() {
+        let session = Session::agent();
+        assert_eq!(session.name(), "agent");
     }
 }

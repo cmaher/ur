@@ -154,6 +154,7 @@ mod tests {
                 priority,
                 body,
                 wip,
+                follow_up,
             } => {
                 assert_eq!(title, "My new ticket");
                 assert!(project.is_none());
@@ -162,6 +163,7 @@ mod tests {
                 assert_eq!(priority, 0);
                 assert_eq!(body, "");
                 assert!(!wip);
+                assert!(follow_up.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -193,6 +195,7 @@ mod tests {
                 priority,
                 body,
                 wip,
+                follow_up,
             } => {
                 assert_eq!(title, "Epic title");
                 assert_eq!(project.as_deref(), Some("myproj"));
@@ -201,6 +204,7 @@ mod tests {
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
                 assert!(!wip);
+                assert!(follow_up.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -287,7 +291,7 @@ mod tests {
                 priority,
                 ticket_type,
                 parent,
-                no_parent,
+                unparent,
                 force,
                 lifecycle,
                 branch,
@@ -301,7 +305,7 @@ mod tests {
                 assert!(priority.is_none());
                 assert!(ticket_type.is_none());
                 assert!(parent.is_none());
-                assert!(!no_parent);
+                assert!(!unparent);
                 assert!(!force);
                 assert!(lifecycle.is_none());
                 assert!(branch.is_none());
@@ -521,6 +525,28 @@ mod tests {
                 assert!(project.is_none());
             }
             other => panic!("expected Dispatchable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_create_with_follow_up() {
+        let cmd = parse(&[
+            "ticket",
+            "create",
+            "Follow-up epic",
+            "--type",
+            "epic",
+            "--follow-up",
+            "ur-orig1",
+        ]);
+        match cmd.command {
+            super::TicketArgs::Create {
+                title, follow_up, ..
+            } => {
+                assert_eq!(title, "Follow-up epic");
+                assert_eq!(follow_up.as_deref(), Some("ur-orig1"));
+            }
+            other => panic!("expected Create, got {other:?}"),
         }
     }
 

@@ -33,6 +33,7 @@ message Ticket {
   string project = 10;
   string lifecycle_status = 11;
   string branch = 12;
+  bool lifecycle_managed = 13;
 }
 
 message MetadataEntry {
@@ -131,6 +132,7 @@ message UpdateTicketRequest {
   optional string lifecycle_status = 9;
   optional string branch = 10;
   optional string project = 11;
+  optional bool lifecycle_managed = 12;
 }
 
 message UpdateTicketResponse {}

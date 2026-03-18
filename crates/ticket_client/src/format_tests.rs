@@ -16,6 +16,7 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
         project: "test".to_owned(),
         lifecycle_status: String::new(),
         branch: String::new(),
+        lifecycle_managed: false,
     }
 }
 
