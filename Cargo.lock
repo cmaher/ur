@@ -3749,6 +3749,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmux"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tokenizers"
 version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4233,6 +4242,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "ticket_client",
+ "tmux",
  "tokio",
  "toml",
  "toml_edit",
@@ -4273,6 +4283,7 @@ dependencies = [
  "rag",
  "rand 0.9.2",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4994,6 +5005,7 @@ dependencies = [
  "anyhow",
  "clap",
  "tempfile",
+ "tmux",
  "tokio",
  "tonic 0.13.1",
  "tracing",

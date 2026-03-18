@@ -1,7 +1,9 @@
 mod engine;
+pub mod github_poller;
 pub mod handlers;
 
 pub use engine::WorkflowEngine;
+pub use github_poller::GithubPollerManager;
 
 use std::fmt;
 use std::future::Future;
