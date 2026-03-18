@@ -1,6 +1,8 @@
 mod admin;
 mod builderd;
 mod compose;
+#[allow(dead_code)] // consumed after call-site migration (ur-2cc6f)
+pub(crate) mod connection;
 mod credential;
 mod db;
 mod describe;
