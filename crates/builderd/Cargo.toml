@@ -15,3 +15,6 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 ur_config = { path = "../ur_config" }
 ur_rpc = { path = "../ur_rpc", features = ["stream"] }
+
+[lints]
+workspace = true

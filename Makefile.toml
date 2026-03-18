@@ -22,7 +22,7 @@ args = ["fmt", "--all"]
 [tasks.clippy]
 description = "Run clippy lints on all workspace crates"
 command = "cargo"
-args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings", "-W", "clippy::excessive_nesting"]
+args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.build]
 description = "Build all workspace crates"

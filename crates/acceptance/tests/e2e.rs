@@ -568,6 +568,110 @@ fn scenario_workspace_mount(env: &TestEnv) {
     }
 }
 
+/// Run a command inside a container and return its output.
+fn exec_in_container(runtime: &str, container: &str, args: &[&str]) -> std::process::Output {
+    Command::new(runtime)
+        .arg("exec")
+        .arg(container)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to exec {args:?} in container {container}: {e}"))
+}
+
+/// Assert that a container exec exited with code 0, panicking with stdout/stderr on failure.
+fn assert_exec_success(output: &std::process::Output, context: &str) {
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{context}\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// Verify that ur-ping returns "pong" inside a container.
+fn assert_ping_pong(runtime: &str, container: &str) {
+    let ping_output = exec_in_container(runtime, container, &["ur-ping"]);
+    assert_exec_success(&ping_output, "ur-ping should exit 0");
+    assert_eq!(
+        String::from_utf8_lossy(&ping_output.stdout).trim(),
+        "pong",
+        "ur-ping should return 'pong'"
+    );
+}
+
+/// Verify git hostexec works and that Lua validation blocks the -C flag.
+fn assert_git_hostexec(runtime: &str, container: &str) {
+    // git log should succeed and show our commit
+    let git_output = exec_in_container(runtime, container, &["git", "log", "--oneline", "-1"]);
+    assert_exec_success(&git_output, "git log should work in pool slot");
+    let git_stdout = String::from_utf8_lossy(&git_output.stdout);
+    assert!(
+        git_stdout.contains("initial commit"),
+        "git log should show our commit.\nGot: {git_stdout}"
+    );
+
+    // git -C should be blocked by Lua validation
+    let blocked_output = exec_in_container(runtime, container, &["git", "-C", "/tmp", "status"]);
+    assert_ne!(
+        blocked_output.status.code(),
+        Some(0),
+        "git -C should be blocked.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&blocked_output.stdout),
+        String::from_utf8_lossy(&blocked_output.stderr),
+    );
+    let blocked_stderr = String::from_utf8_lossy(&blocked_output.stderr);
+    assert!(
+        blocked_stderr.contains("-C"),
+        "error should mention -C.\nstderr: {blocked_stderr}"
+    );
+}
+
+/// Verify squid proxy blocks disallowed domains and allows configured ones.
+fn assert_squid_proxy_filtering(runtime: &str, container: &str) {
+    let curl_args = |url: &str| -> Vec<String> {
+        [
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_connect}",
+            "--max-time",
+            "10",
+            url,
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+    };
+
+    // Blocked domain should return 403
+    let blocked_args = curl_args("https://google.com");
+    let blocked_refs: Vec<&str> = blocked_args.iter().map(|s| s.as_str()).collect();
+    let blocked_curl = exec_in_container(runtime, container, &blocked_refs);
+    let blocked_code = String::from_utf8_lossy(&blocked_curl.stdout);
+    assert_eq!(
+        blocked_code.trim(),
+        "403",
+        "blocked domain should get 403 from squid.\nhttp_connect: {blocked_code}\nstderr: {}",
+        String::from_utf8_lossy(&blocked_curl.stderr),
+    );
+
+    // Allowed domain should connect through
+    let allowed_args = curl_args("https://api.anthropic.com");
+    let allowed_refs: Vec<&str> = allowed_args.iter().map(|s| s.as_str()).collect();
+    let allowed_curl = exec_in_container(runtime, container, &allowed_refs);
+    let allowed_code = String::from_utf8_lossy(&allowed_curl.stdout);
+    let allowed_code_num: u16 = allowed_code.trim().parse().unwrap_or(0);
+    assert!(
+        allowed_code_num > 0 && allowed_code_num != 403,
+        "allowed domain should connect through squid (not 000/403).\n\
+         http_connect: {allowed_code}\nstderr: {}",
+        String::from_utf8_lossy(&allowed_curl.stderr),
+    );
+}
+
 /// Pool launch: clone, ping, git hostexec, squid proxy, Lua validation, host dir structure.
 /// All container-side tests run against a single pool container to avoid redundant launches.
 fn scenario_pool_launch(env: &TestEnv) {
@@ -600,125 +704,24 @@ fn scenario_pool_launch(env: &TestEnv) {
         wait_for_healthy(&env.runtime, &container_name);
 
         // ---- Verify workspace has cloned content ----
-        let ls_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "ls", "/workspace/README.md"])
-            .output()
-            .expect("failed to exec ls in container");
-        assert_eq!(
-            ls_output.status.code(),
-            Some(0),
-            "pool slot should contain README.md from cloned repo.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&ls_output.stdout),
-            String::from_utf8_lossy(&ls_output.stderr),
+        let ls_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/workspace/README.md"],
+        );
+        assert_exec_success(
+            &ls_output,
+            "pool slot should contain README.md from cloned repo",
         );
 
         // ---- exec ur-ping inside container ----
-        let ping_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "ur-ping"])
-            .output()
-            .expect("failed to exec ur-ping in container");
-        assert_eq!(
-            ping_output.status.code(),
-            Some(0),
-            "ur-ping should exit 0.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&ping_output.stdout),
-            String::from_utf8_lossy(&ping_output.stderr),
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&ping_output.stdout).trim(),
-            "pong",
-            "ur-ping should return 'pong'"
-        );
+        assert_ping_pong(&env.runtime, &container_name);
 
-        // ---- Test hostexec: git commands via worker -> server -> builderd -> host ----
-        let git_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "git", "log", "--oneline", "-1"])
-            .output()
-            .expect("failed to exec git log in container");
-        assert_eq!(
-            git_output.status.code(),
-            Some(0),
-            "git log should work in pool slot.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&git_output.stdout),
-            String::from_utf8_lossy(&git_output.stderr),
-        );
+        // ---- Test hostexec: git commands and Lua validation ----
+        assert_git_hostexec(&env.runtime, &container_name);
 
-        let git_stdout = String::from_utf8_lossy(&git_output.stdout);
-        assert!(
-            git_stdout.contains("initial commit"),
-            "git log should show our commit.\nGot: {git_stdout}"
-        );
-
-        // ---- Test hostexec Lua validation: -C flag blocking ----
-        let blocked_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "git", "-C", "/tmp", "status"])
-            .output()
-            .expect("failed to exec git -C /tmp status in container");
-        assert_ne!(
-            blocked_output.status.code(),
-            Some(0),
-            "git -C should be blocked.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&blocked_output.stdout),
-            String::from_utf8_lossy(&blocked_output.stderr),
-        );
-        let blocked_stderr = String::from_utf8_lossy(&blocked_output.stderr);
-        assert!(
-            blocked_stderr.contains("-C"),
-            "error should mention -C.\nstderr: {blocked_stderr}"
-        );
-
-        // ---- Squid proxy: blocked domain returns 403 ----
-        let blocked_curl = Command::new(&env.runtime)
-            .args([
-                "exec",
-                &container_name,
-                "curl",
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_connect}",
-                "--max-time",
-                "10",
-                "https://google.com",
-            ])
-            .output()
-            .expect("failed to exec curl (blocked) in container");
-
-        let blocked_code = String::from_utf8_lossy(&blocked_curl.stdout);
-        assert_eq!(
-            blocked_code.trim(),
-            "403",
-            "blocked domain should get 403 from squid.\nhttp_connect: {blocked_code}\nstderr: {}",
-            String::from_utf8_lossy(&blocked_curl.stderr),
-        );
-
-        // ---- Squid proxy: allowed domain connects through ----
-        let allowed_curl = Command::new(&env.runtime)
-            .args([
-                "exec",
-                &container_name,
-                "curl",
-                "-s",
-                "-o",
-                "/dev/null",
-                "-w",
-                "%{http_connect}",
-                "--max-time",
-                "10",
-                "https://api.anthropic.com",
-            ])
-            .output()
-            .expect("failed to exec curl (allowed) in container");
-
-        let allowed_code = String::from_utf8_lossy(&allowed_curl.stdout);
-        let allowed_code_num: u16 = allowed_code.trim().parse().unwrap_or(0);
-        assert!(
-            allowed_code_num > 0 && allowed_code_num != 403,
-            "allowed domain should connect through squid (not 000/403).\n\
-             http_connect: {allowed_code}\nstderr: {}",
-            String::from_utf8_lossy(&allowed_curl.stderr),
-        );
+        // ---- Squid proxy filtering ----
+        assert_squid_proxy_filtering(&env.runtime, &container_name);
 
         // ---- Verify pool directory structure on host ----
         let pool_slot = env

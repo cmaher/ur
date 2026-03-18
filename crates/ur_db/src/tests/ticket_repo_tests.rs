@@ -44,7 +44,15 @@ async fn populated_db() -> (TestDb, TicketRepo) {
     let db = TestDb::new().await;
     let repo = repo(&db);
 
-    // --- Epics ---
+    seed_epics_and_children(&repo).await;
+    seed_remaining_tickets(&repo).await;
+    seed_edges_and_metadata(&repo).await;
+
+    (db, repo)
+}
+
+/// Create epics and their child tasks for the populated_db fixture.
+async fn seed_epics_and_children(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: "epic-1".into(),
         type_: "epic".into(),
@@ -129,8 +137,10 @@ async fn populated_db() -> (TestDb, TicketRepo) {
     )
     .await
     .unwrap();
+}
 
-    // --- Children of epic-2 ---
+/// Create epic-2 children and standalone ticket for the populated_db fixture.
+async fn seed_remaining_tickets(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: "task-2a".into(),
         type_: "task".into(),
@@ -157,7 +167,6 @@ async fn populated_db() -> (TestDb, TicketRepo) {
     .await
     .unwrap();
 
-    // --- Standalone ---
     repo.create_ticket(&NewTicket {
         id: "standalone".into(),
         type_: "task".into(),
@@ -170,7 +179,10 @@ async fn populated_db() -> (TestDb, TicketRepo) {
     })
     .await
     .unwrap();
+}
 
+/// Seed edges, metadata, and activities for the populated_db fixture.
+async fn seed_edges_and_metadata(repo: &TicketRepo) {
     // --- Edges ---
     repo.add_edge("task-1a", "task-1b", EdgeKind::Blocks)
         .await
@@ -215,8 +227,6 @@ async fn populated_db() -> (TestDb, TicketRepo) {
     repo.set_meta(&act1.id, "activity", "source", "cli")
         .await
         .unwrap();
-
-    (db, repo)
 }
 
 // ============================================================

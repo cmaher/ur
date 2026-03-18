@@ -220,12 +220,9 @@ async fn restore_fails_if_source_missing() {
     // No cleanup needed -- neither file should exist.
 }
 
-#[tokio::test]
-async fn snapshot_data_integrity_full_round_trip() {
-    let db = TestDb::new().await;
-    let repo = repo_from_db(db.db());
-
-    // Build a richer dataset: parent epic + children + metadata + activities + edges.
+/// Seed the integrity round-trip dataset: epic + two child tasks, metadata,
+/// edges, and activities.
+async fn seed_integrity_data(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: "int-epic".into(),
         type_: "epic".into(),
@@ -265,7 +262,6 @@ async fn snapshot_data_integrity_full_round_trip() {
     .await
     .unwrap();
 
-    // Metadata on tickets.
     repo.set_meta("int-t1", "ticket", "component", "backend")
         .await
         .unwrap();
@@ -273,12 +269,10 @@ async fn snapshot_data_integrity_full_round_trip() {
         .await
         .unwrap();
 
-    // Edge: int-t1 blocks int-t2.
     repo.add_edge("int-t1", "int-t2", crate::model::EdgeKind::Blocks)
         .await
         .unwrap();
 
-    // Activities.
     repo.add_activity("int-t1", "alice", "started work")
         .await
         .unwrap();
@@ -288,6 +282,63 @@ async fn snapshot_data_integrity_full_round_trip() {
     repo.add_activity("int-t2", "alice", "waiting on int-t1")
         .await
         .unwrap();
+}
+
+/// Verify all data survived the snapshot round-trip.
+async fn assert_integrity_data(repo: &TicketRepo) {
+    let all_tickets = repo
+        .list_tickets(&TicketFilter {
+            project: None,
+            status: None,
+            type_: None,
+            parent_id: None,
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(all_tickets.len(), 3);
+
+    let epic = repo.get_ticket("int-epic").await.unwrap().unwrap();
+    assert_eq!(epic.type_, "epic");
+    assert_eq!(epic.title, "Integrity epic");
+
+    let t1 = repo.get_ticket("int-t1").await.unwrap().unwrap();
+    assert_eq!(t1.parent_id.as_deref(), Some("int-epic"));
+    assert_eq!(t1.title, "Integrity task one");
+
+    let t2 = repo.get_ticket("int-t2").await.unwrap().unwrap();
+    assert_eq!(t2.parent_id.as_deref(), Some("int-epic"));
+
+    let t1_meta = repo.get_meta("int-t1", "ticket").await.unwrap();
+    assert_eq!(t1_meta.get("component").unwrap(), "backend");
+    let t2_meta = repo.get_meta("int-t2", "ticket").await.unwrap();
+    assert_eq!(t2_meta.get("component").unwrap(), "frontend");
+
+    let edges = repo
+        .edges_for("int-t1", Some(crate::model::EdgeKind::Blocks))
+        .await
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].source_id, "int-t1");
+    assert_eq!(edges[0].target_id, "int-t2");
+
+    let t1_acts = repo.get_activities("int-t1").await.unwrap();
+    assert_eq!(t1_acts.len(), 2);
+    let messages: Vec<&str> = t1_acts.iter().map(|a| a.message.as_str()).collect();
+    assert!(messages.contains(&"started work"));
+    assert!(messages.contains(&"code review done"));
+
+    let t2_acts = repo.get_activities("int-t2").await.unwrap();
+    assert_eq!(t2_acts.len(), 1);
+    assert_eq!(t2_acts[0].message, "waiting on int-t1");
+}
+
+#[tokio::test]
+async fn snapshot_data_integrity_full_round_trip() {
+    let db = TestDb::new().await;
+    let repo = repo_from_db(db.db());
+
+    seed_integrity_data(&repo).await;
 
     // --- Snapshot and restore ---
     let snap_path = snapshot_path();
@@ -300,55 +351,7 @@ async fn snapshot_data_integrity_full_round_trip() {
         .unwrap();
     let restored_repo = repo_from_db(&restored_db);
 
-    // Verify tickets.
-    let all_tickets = restored_repo
-        .list_tickets(&TicketFilter {
-            project: None,
-            status: None,
-            type_: None,
-            parent_id: None,
-            lifecycle_status: None,
-        })
-        .await
-        .unwrap();
-    assert_eq!(all_tickets.len(), 3);
-
-    let epic = restored_repo.get_ticket("int-epic").await.unwrap().unwrap();
-    assert_eq!(epic.type_, "epic");
-    assert_eq!(epic.title, "Integrity epic");
-
-    let t1 = restored_repo.get_ticket("int-t1").await.unwrap().unwrap();
-    assert_eq!(t1.parent_id.as_deref(), Some("int-epic"));
-    assert_eq!(t1.title, "Integrity task one");
-
-    let t2 = restored_repo.get_ticket("int-t2").await.unwrap().unwrap();
-    assert_eq!(t2.parent_id.as_deref(), Some("int-epic"));
-
-    // Verify metadata.
-    let t1_meta = restored_repo.get_meta("int-t1", "ticket").await.unwrap();
-    assert_eq!(t1_meta.get("component").unwrap(), "backend");
-    let t2_meta = restored_repo.get_meta("int-t2", "ticket").await.unwrap();
-    assert_eq!(t2_meta.get("component").unwrap(), "frontend");
-
-    // Verify edges.
-    let edges = restored_repo
-        .edges_for("int-t1", Some(crate::model::EdgeKind::Blocks))
-        .await
-        .unwrap();
-    assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].source_id, "int-t1");
-    assert_eq!(edges[0].target_id, "int-t2");
-
-    // Verify activities.
-    let t1_acts = restored_repo.get_activities("int-t1").await.unwrap();
-    assert_eq!(t1_acts.len(), 2);
-    let messages: Vec<&str> = t1_acts.iter().map(|a| a.message.as_str()).collect();
-    assert!(messages.contains(&"started work"));
-    assert!(messages.contains(&"code review done"));
-
-    let t2_acts = restored_repo.get_activities("int-t2").await.unwrap();
-    assert_eq!(t2_acts.len(), 1);
-    assert_eq!(t2_acts[0].message, "waiting on int-t1");
+    assert_integrity_data(&restored_repo).await;
 
     restored_db.pool().close().await;
     cleanup_file(&restore_path);

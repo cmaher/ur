@@ -843,21 +843,7 @@ async fn handle_worker(
             process_list(&mut client, output).await
         }
         WorkerCommands::Attach { worker_id, rm } => {
-            if output.is_json() {
-                let err = StructuredError::new(
-                    ErrorCode::InteractiveNotSupported,
-                    "attach is an interactive command and cannot produce JSON output",
-                );
-                output.print_error(&err);
-                process::exit(err.code.exit_code());
-            }
-            let exit_code = process_attach(&worker_id, worker_prefix)?;
-            if rm {
-                println!("Stopping {worker_id} (--rm)...");
-                let mut client = connect(port).await?;
-                process_stop(&mut client, &worker_id, output).await?;
-            }
-            process::exit(exit_code);
+            handle_worker_attach(port, worker_prefix, output, &worker_id, rm).await
         }
         WorkerCommands::Kill { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
@@ -865,23 +851,7 @@ async fn handle_worker(
             process_stop(&mut client, &worker_id, output).await
         }
         WorkerCommands::SaveCredentials { worker_id } => {
-            input::validate_id(&worker_id, "worker_id")?;
-            info!(worker_id = %worker_id, "saving credentials from container");
-            let runtime = container::runtime_from_env();
-            let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
-            let cred_mgr = credential::CredentialManager;
-            let paths = cred_mgr.save_from_container(&runtime, &id)?;
-            if output.is_json() {
-                output.print_success(&CredentialsSaved {
-                    paths: paths.iter().map(|p| p.display().to_string()).collect(),
-                });
-            } else {
-                for path in &paths {
-                    info!(path = %path.display(), "saved credential file");
-                    println!("Saved {}", path.display());
-                }
-            }
-            Ok(())
+            handle_worker_save_credentials(worker_prefix, output, &worker_id)
         }
         WorkerCommands::Launch {
             ticket_id,
@@ -894,100 +864,22 @@ async fn handle_worker(
             skills,
             dispatch,
         } => {
-            input::validate_id(&ticket_id, "ticket_id")?;
-            if let Some(ref p) = project {
-                input::validate_id(p, "project")?;
-            }
-            if let Some(ref w) = workspace {
-                input::reject_path_traversal(w, "workspace")?;
-            }
-
-            // Parse comma-separated skills; when provided they override the mode server-side
-            let skills_vec: Vec<String> = skills
-                .iter()
-                .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
-                .filter(|s| !s.is_empty())
-                .collect();
-
-            // Resolve project key: explicit -p flag, derive from ticket ID prefix,
-            // derive from cwd name, or empty when -w is specified.
-            let resolved_project = if let Some(p) = project {
-                p
-            } else if workspace.is_none() {
-                // Try to derive from ticket ID prefix (before first '-' or '.')
-                let id_prefix = ticket_id
-                    .split(&['-', '.'][..])
-                    .next()
-                    .unwrap_or("")
-                    .to_owned();
-                if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
-                    debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
-                    id_prefix
-                } else {
-                    // Fall back to current working directory name
-                    let cwd = std::env::current_dir()
-                        .context("failed to get current working directory")?;
-                    let dir_name = cwd
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
-                        .to_owned();
-                    if project_keys.contains(&dir_name) {
-                        debug!(project_key = %dir_name, "derived project from cwd");
-                        dir_name
-                    } else {
-                        bail!(
-                            "could not derive project from ticket ID prefix '{}' or \
-                             cwd directory name '{}' \
-                             (neither is a configured project key). Use -p <project> or -w <path>.",
-                            id_prefix,
-                            dir_name
-                        );
-                    }
-                }
-            } else {
-                // -w specified: no project association
-                String::new()
-            };
-
-            let mut client = connect(port).await?;
-            if force {
-                debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
-                let _ = process_stop(&mut client, &ticket_id, output).await;
-            }
-            if let Some(ref dispatch_ticket_id) = dispatch {
-                dispatch_ticket(port, dispatch_ticket_id).await?;
-            }
-            process_launch(
-                &mut client,
-                &ticket_id,
-                workspace,
-                &resolved_project,
+            handle_worker_launch(
+                port,
                 worker_prefix,
-                &mode,
-                &skills_vec,
+                project_keys,
                 output,
+                ticket_id,
+                workspace,
+                project,
+                attach,
+                rm,
+                force,
+                mode,
+                skills,
+                dispatch,
             )
-            .await?;
-            if attach || rm {
-                if output.is_json() {
-                    let err = StructuredError::new(
-                        ErrorCode::InteractiveNotSupported,
-                        "attach is an interactive command and cannot produce JSON output",
-                    );
-                    output.print_error(&err);
-                    process::exit(err.code.exit_code());
-                }
-                wait_for_healthy(&ticket_id, worker_prefix)?;
-                let exit_code = process_attach(&ticket_id, worker_prefix)?;
-                if rm {
-                    println!("Stopping {ticket_id} (--rm)...");
-                    let mut client = connect(port).await?;
-                    process_stop(&mut client, &ticket_id, output).await?;
-                }
-                process::exit(exit_code);
-            }
-            Ok(())
+            .await
         }
         WorkerCommands::Status { worker_id } => {
             debug!(worker_id = ?worker_id, "querying process status");
@@ -995,52 +887,225 @@ async fn handle_worker(
             process_status(&mut client, worker_id.as_deref(), output).await
         }
         WorkerCommands::Send { worker_id, message } => {
-            input::validate_id(&worker_id, "worker_id")?;
-            let mut client = connect(port).await?;
-            info!(worker_id = %worker_id, "sending message to worker");
-            client
-                .send_worker_message(SendWorkerMessageRequest {
-                    worker_id: worker_id.clone(),
-                    message,
-                })
-                .await?;
-            if output.is_json() {
-                output.print_text(&format!(
-                    "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
-                ));
-            } else {
-                println!("Message sent to {worker_id}.");
-            }
-            Ok(())
+            handle_worker_send(port, output, worker_id, message).await
         }
         WorkerCommands::Stop { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
             process_stop(&mut client, &worker_id, output).await
         }
-        WorkerCommands::Dir { worker_id } => {
-            input::validate_id(&worker_id, "worker_id")?;
-            let dir = process_workspace_dir(port, &worker_id).await?;
-            if output.is_json() {
-                output.print_success(&WorkerDir { path: dir });
-            } else {
-                println!("{dir}");
-            }
-            Ok(())
-        }
-        WorkerCommands::Code { worker_id } => {
-            input::validate_id(&worker_id, "worker_id")?;
-            let dir = process_workspace_dir(port, &worker_id).await?;
-            let status = process::Command::new("code")
-                .arg(&dir)
-                .status()
-                .context("failed to launch VS Code — is `code` on your PATH?")?;
-            if !status.success() {
-                bail!("VS Code exited with {status}");
-            }
-            Ok(())
+        WorkerCommands::Dir { worker_id } => handle_worker_dir(port, output, &worker_id).await,
+        WorkerCommands::Code { worker_id } => handle_worker_code(port, &worker_id).await,
+    }
+}
+
+async fn handle_worker_attach(
+    port: u16,
+    worker_prefix: &str,
+    output: &OutputManager,
+    worker_id: &str,
+    rm: bool,
+) -> Result<()> {
+    if output.is_json() {
+        let err = StructuredError::new(
+            ErrorCode::InteractiveNotSupported,
+            "attach is an interactive command and cannot produce JSON output",
+        );
+        output.print_error(&err);
+        process::exit(err.code.exit_code());
+    }
+    let exit_code = process_attach(worker_id, worker_prefix)?;
+    if rm {
+        println!("Stopping {worker_id} (--rm)...");
+        let mut client = connect(port).await?;
+        process_stop(&mut client, worker_id, output).await?;
+    }
+    process::exit(exit_code);
+}
+
+fn handle_worker_save_credentials(
+    worker_prefix: &str,
+    output: &OutputManager,
+    worker_id: &str,
+) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    info!(worker_id = %worker_id, "saving credentials from container");
+    let runtime = container::runtime_from_env();
+    let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
+    let cred_mgr = credential::CredentialManager;
+    let paths = cred_mgr.save_from_container(&runtime, &id)?;
+    if output.is_json() {
+        output.print_success(&CredentialsSaved {
+            paths: paths.iter().map(|p| p.display().to_string()).collect(),
+        });
+    } else {
+        for path in &paths {
+            info!(path = %path.display(), "saved credential file");
+            println!("Saved {}", path.display());
         }
     }
+    Ok(())
+}
+
+async fn handle_worker_send(
+    port: u16,
+    output: &OutputManager,
+    worker_id: String,
+    message: String,
+) -> Result<()> {
+    input::validate_id(&worker_id, "worker_id")?;
+    let mut client = connect(port).await?;
+    info!(worker_id = %worker_id, "sending message to worker");
+    client
+        .send_worker_message(SendWorkerMessageRequest {
+            worker_id: worker_id.clone(),
+            message,
+        })
+        .await?;
+    if output.is_json() {
+        output.print_text(&format!(
+            "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
+        ));
+    } else {
+        println!("Message sent to {worker_id}.");
+    }
+    Ok(())
+}
+
+async fn handle_worker_dir(port: u16, output: &OutputManager, worker_id: &str) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    let dir = process_workspace_dir(port, worker_id).await?;
+    if output.is_json() {
+        output.print_success(&WorkerDir { path: dir });
+    } else {
+        println!("{dir}");
+    }
+    Ok(())
+}
+
+async fn handle_worker_code(port: u16, worker_id: &str) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    let dir = process_workspace_dir(port, worker_id).await?;
+    let status = process::Command::new("code")
+        .arg(&dir)
+        .status()
+        .context("failed to launch VS Code — is `code` on your PATH?")?;
+    if !status.success() {
+        bail!("VS Code exited with {status}");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_worker_launch(
+    port: u16,
+    worker_prefix: &str,
+    project_keys: &[String],
+    output: &OutputManager,
+    ticket_id: String,
+    workspace: Option<PathBuf>,
+    project: Option<String>,
+    attach: bool,
+    rm: bool,
+    force: bool,
+    mode: String,
+    skills: Option<String>,
+    dispatch: Option<String>,
+) -> Result<()> {
+    input::validate_id(&ticket_id, "ticket_id")?;
+    if let Some(ref p) = project {
+        input::validate_id(p, "project")?;
+    }
+    if let Some(ref w) = workspace {
+        input::reject_path_traversal(w, "workspace")?;
+    }
+
+    let skills_vec: Vec<String> = skills
+        .iter()
+        .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, project_keys)?;
+
+    let mut client = connect(port).await?;
+    if force {
+        debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
+        let _ = process_stop(&mut client, &ticket_id, output).await;
+    }
+    if let Some(ref dispatch_ticket_id) = dispatch {
+        dispatch_ticket(port, dispatch_ticket_id).await?;
+    }
+    process_launch(
+        &mut client,
+        &ticket_id,
+        workspace,
+        &resolved_project,
+        worker_prefix,
+        &mode,
+        &skills_vec,
+        output,
+    )
+    .await?;
+    if attach || rm {
+        if output.is_json() {
+            let err = StructuredError::new(
+                ErrorCode::InteractiveNotSupported,
+                "attach is an interactive command and cannot produce JSON output",
+            );
+            output.print_error(&err);
+            process::exit(err.code.exit_code());
+        }
+        wait_for_healthy(&ticket_id, worker_prefix)?;
+        let exit_code = process_attach(&ticket_id, worker_prefix)?;
+        if rm {
+            println!("Stopping {ticket_id} (--rm)...");
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &ticket_id, output).await?;
+        }
+        process::exit(exit_code);
+    }
+    Ok(())
+}
+
+fn resolve_project_key(
+    project: Option<String>,
+    workspace: &Option<PathBuf>,
+    ticket_id: &str,
+    project_keys: &[String],
+) -> Result<String> {
+    if let Some(p) = project {
+        return Ok(p);
+    }
+    if workspace.is_none() {
+        let id_prefix = ticket_id
+            .split(&['-', '.'][..])
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+            debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+            return Ok(id_prefix);
+        }
+        let cwd = std::env::current_dir().context("failed to get current working directory")?;
+        let dir_name = cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+            .to_owned();
+        if project_keys.contains(&dir_name) {
+            debug!(project_key = %dir_name, "derived project from cwd");
+            return Ok(dir_name);
+        }
+        bail!(
+            "could not derive project from ticket ID prefix '{}' or \
+             cwd directory name '{}' \
+             (neither is a configured project key). Use -p <project> or -w <path>.",
+            id_prefix,
+            dir_name
+        );
+    }
+    Ok(String::new())
 }
 
 /// Fetch the host workspace directory for a running process via gRPC.
@@ -1103,6 +1168,98 @@ fn main() {
     }
 }
 
+fn handle_project(
+    command: ProjectCommands,
+    config: &ur_config::Config,
+    output: &OutputManager,
+) -> Result<()> {
+    match command {
+        ProjectCommands::Add {
+            path,
+            key,
+            name,
+            pool_limit,
+        } => {
+            if let Some(ref k) = key {
+                input::validate_id(k, "key")?;
+            }
+            if let Some(ref n) = name {
+                input::reject_control_chars(n, "name")?;
+            }
+            input::reject_path_traversal(&path, "path")?;
+            project::add(
+                config,
+                &path,
+                key.as_deref(),
+                name.as_deref(),
+                pool_limit,
+                output,
+            )?
+        }
+        ProjectCommands::List => project::list(config, output)?,
+        ProjectCommands::Remove { key, force } => {
+            input::validate_id(&key, "key")?;
+            project::remove(config, &key, force, output)?
+        }
+    }
+    Ok(())
+}
+
+fn handle_proxy(
+    command: ProxyCommands,
+    config: &ur_config::Config,
+    output: &OutputManager,
+) -> Result<()> {
+    let squid_dir = config.squid_dir();
+    let allowlist_path = squid_dir.join("allowlist.txt");
+    match command {
+        ProxyCommands::Allow { domain } => {
+            input::validate_domain(&domain)?;
+            info!(domain = %domain, "allowing domain through proxy");
+            let domains = proxy::allow_domain(&allowlist_path, &domain)?;
+            proxy::signal_reconfigure(&config.proxy.hostname);
+            proxy::print_domains(&domains, output);
+        }
+        ProxyCommands::Block { domain } => {
+            input::validate_domain(&domain)?;
+            info!(domain = %domain, "blocking domain from proxy");
+            let domains = proxy::block_domain(&allowlist_path, &domain)?;
+            proxy::signal_reconfigure(&config.proxy.hostname);
+            proxy::print_domains(&domains, output);
+        }
+        ProxyCommands::List => {
+            debug!("listing proxy domains");
+            let domains = proxy::read_allowlist(&allowlist_path)?;
+            proxy::print_domains(&domains, output);
+        }
+    }
+    Ok(())
+}
+
+async fn handle_rag(
+    command: RagCommands,
+    port: u16,
+    config: &ur_config::Config,
+    output: &OutputManager,
+) -> Result<()> {
+    match command {
+        RagCommands::Docs => rag::generate_docs(config, output)?,
+        RagCommands::Index { language } => rag::index(port, &language, output).await?,
+        RagCommands::Model { command } => match command {
+            ModelCommands::Download => rag::download_model(config, output)?,
+        },
+        RagCommands::Search {
+            query,
+            language,
+            top_k,
+        } => {
+            input::reject_control_chars(&query, "query")?;
+            rag::search(port, &query, &language, top_k, output).await?
+        }
+    }
+    Ok(())
+}
+
 async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     // Init bypasses config loading — it creates the config files.
     if let Commands::Init {
@@ -1148,75 +1305,9 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             }
         },
         Commands::Init { .. } => unreachable!(),
-        Commands::Project { command } => match command {
-            ProjectCommands::Add {
-                path,
-                key,
-                name,
-                pool_limit,
-            } => {
-                if let Some(ref k) = key {
-                    input::validate_id(k, "key")?;
-                }
-                if let Some(ref n) = name {
-                    input::reject_control_chars(n, "name")?;
-                }
-                input::reject_path_traversal(&path, "path")?;
-                project::add(
-                    &config,
-                    &path,
-                    key.as_deref(),
-                    name.as_deref(),
-                    pool_limit,
-                    output,
-                )?
-            }
-            ProjectCommands::List => project::list(&config, output)?,
-            ProjectCommands::Remove { key, force } => {
-                input::validate_id(&key, "key")?;
-                project::remove(&config, &key, force, output)?
-            }
-        },
-        Commands::Proxy { command } => {
-            let squid_dir = config.squid_dir();
-            let allowlist_path = squid_dir.join("allowlist.txt");
-            match command {
-                ProxyCommands::Allow { domain } => {
-                    input::validate_domain(&domain)?;
-                    info!(domain = %domain, "allowing domain through proxy");
-                    let domains = proxy::allow_domain(&allowlist_path, &domain)?;
-                    proxy::signal_reconfigure(&config.proxy.hostname);
-                    proxy::print_domains(&domains, output);
-                }
-                ProxyCommands::Block { domain } => {
-                    input::validate_domain(&domain)?;
-                    info!(domain = %domain, "blocking domain from proxy");
-                    let domains = proxy::block_domain(&allowlist_path, &domain)?;
-                    proxy::signal_reconfigure(&config.proxy.hostname);
-                    proxy::print_domains(&domains, output);
-                }
-                ProxyCommands::List => {
-                    debug!("listing proxy domains");
-                    let domains = proxy::read_allowlist(&allowlist_path)?;
-                    proxy::print_domains(&domains, output);
-                }
-            }
-        }
-        Commands::Rag { command } => match command {
-            RagCommands::Docs => rag::generate_docs(&config, output)?,
-            RagCommands::Index { language } => rag::index(port, &language, output).await?,
-            RagCommands::Model { command } => match command {
-                ModelCommands::Download => rag::download_model(&config, output)?,
-            },
-            RagCommands::Search {
-                query,
-                language,
-                top_k,
-            } => {
-                input::reject_control_chars(&query, "query")?;
-                rag::search(port, &query, &language, top_k, output).await?
-            }
-        },
+        Commands::Project { command } => handle_project(command, &config, output)?,
+        Commands::Proxy { command } => handle_proxy(command, &config, output)?,
+        Commands::Rag { command } => handle_rag(command, port, &config, output).await?,
         Commands::Server { command } => match command {
             ServerCommands::Redeploy { component } => {
                 redeploy_component(&component, &config, &compose, output)?;

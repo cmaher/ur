@@ -94,7 +94,53 @@ impl GithubPollerManager {
         }
     }
 
-    /// For a pushing ticket: check if CI is all green, then transition to in_review.
+    fn extract_pr_context(
+        &self,
+        ticket_id: &str,
+        meta: &std::collections::HashMap<String, String>,
+    ) -> Option<(i64, String)> {
+        let pr_number_str = meta.get("pr_number")?;
+
+        let pr_number: i64 = match pr_number_str.parse() {
+            Ok(n) => n,
+            Err(e) => {
+                warn!(
+                    ticket_id = %ticket_id,
+                    pr_number = %pr_number_str,
+                    error = %e,
+                    "invalid pr_number metadata — cannot parse as integer"
+                );
+                return None;
+            }
+        };
+
+        let gh_repo = match meta.get("gh_repo") {
+            Some(r) => r.clone(),
+            None => {
+                warn!(
+                    ticket_id = %ticket_id,
+                    "no gh_repo metadata"
+                );
+                return None;
+            }
+        };
+
+        Some((pr_number, gh_repo))
+    }
+
+    async fn set_feedback_mode_and_transition(&self, ticket_id: &str, feedback_mode: &str) {
+        if let Err(e) = self
+            .ticket_repo
+            .set_meta(ticket_id, "ticket", "feedback_mode", feedback_mode)
+            .await
+        {
+            error!(ticket_id = %ticket_id, error = %e, "failed to set feedback_mode");
+            return;
+        }
+        self.transition_lifecycle(ticket_id, LifecycleStatus::FeedbackCreating)
+            .await;
+    }
+
     async fn check_pushing_ticket(&self, ticket: &Ticket) {
         let meta = match self.ticket_repo.get_meta(&ticket.id, "ticket").await {
             Ok(m) => m,
@@ -104,32 +150,8 @@ impl GithubPollerManager {
             }
         };
 
-        let Some(pr_number_str) = meta.get("pr_number") else {
+        let Some((pr_number, gh_repo)) = self.extract_pr_context(&ticket.id, &meta) else {
             return;
-        };
-
-        let pr_number: i64 = match pr_number_str.parse() {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(
-                    ticket_id = %ticket.id,
-                    pr_number = %pr_number_str,
-                    error = %e,
-                    "invalid pr_number metadata — cannot parse as integer"
-                );
-                return;
-            }
-        };
-
-        let gh_repo = match meta.get("gh_repo") {
-            Some(r) => r.clone(),
-            None => {
-                warn!(
-                    ticket_id = %ticket.id,
-                    "no gh_repo metadata — cannot check CI status"
-                );
-                return;
-            }
         };
 
         info!(
@@ -217,7 +239,6 @@ impl GithubPollerManager {
         }
     }
 
-    /// For an in_review ticket: check for review emoji signals or merge/close.
     async fn check_in_review_ticket(&self, ticket: &Ticket) {
         let meta = match self.ticket_repo.get_meta(&ticket.id, "ticket").await {
             Ok(m) => m,
@@ -227,32 +248,8 @@ impl GithubPollerManager {
             }
         };
 
-        let Some(pr_number_str) = meta.get("pr_number") else {
+        let Some((pr_number, gh_repo)) = self.extract_pr_context(&ticket.id, &meta) else {
             return;
-        };
-
-        let pr_number: i64 = match pr_number_str.parse() {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(
-                    ticket_id = %ticket.id,
-                    pr_number = %pr_number_str,
-                    error = %e,
-                    "invalid pr_number metadata — cannot parse as integer"
-                );
-                return;
-            }
-        };
-
-        let gh_repo = match meta.get("gh_repo") {
-            Some(r) => r.clone(),
-            None => {
-                warn!(
-                    ticket_id = %ticket.id,
-                    "no gh_repo metadata — cannot check review status"
-                );
-                return;
-            }
         };
 
         // Check for autoapprove meta — if present, auto-advance without waiting.
@@ -262,15 +259,7 @@ impl GithubPollerManager {
                 pr_number = pr_number,
                 "autoapprove set — transitioning to feedback_creating with feedback_mode=later"
             );
-            if let Err(e) = self
-                .ticket_repo
-                .set_meta(&ticket.id, "ticket", "feedback_mode", "later")
-                .await
-            {
-                error!(ticket_id = %ticket.id, error = %e, "failed to set feedback_mode");
-                return;
-            }
-            self.transition_lifecycle(&ticket.id, LifecycleStatus::FeedbackCreating)
+            self.set_feedback_mode_and_transition(&ticket.id, "later")
                 .await;
             return;
         }
@@ -292,15 +281,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "approval signal — transitioning to feedback_creating (mode=later)"
                 );
-                if let Err(e) = self
-                    .ticket_repo
-                    .set_meta(&ticket.id, "ticket", "feedback_mode", "later")
-                    .await
-                {
-                    error!(ticket_id = %ticket.id, error = %e, "failed to set feedback_mode");
-                    return;
-                }
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::FeedbackCreating)
+                self.set_feedback_mode_and_transition(&ticket.id, "later")
                     .await;
             }
             Ok(ReviewSignal::RequestChanges) => {
@@ -309,15 +290,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "changes requested — transitioning to feedback_creating (mode=now)"
                 );
-                if let Err(e) = self
-                    .ticket_repo
-                    .set_meta(&ticket.id, "ticket", "feedback_mode", "now")
-                    .await
-                {
-                    error!(ticket_id = %ticket.id, error = %e, "failed to set feedback_mode");
-                    return;
-                }
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::FeedbackCreating)
+                self.set_feedback_mode_and_transition(&ticket.id, "now")
                     .await;
             }
             Ok(ReviewSignal::Merged) => {
@@ -326,15 +299,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "PR merged by human — transitioning to feedback_creating (mode=later)"
                 );
-                if let Err(e) = self
-                    .ticket_repo
-                    .set_meta(&ticket.id, "ticket", "feedback_mode", "later")
-                    .await
-                {
-                    error!(ticket_id = %ticket.id, error = %e, "failed to set feedback_mode");
-                    return;
-                }
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::FeedbackCreating)
+                self.set_feedback_mode_and_transition(&ticket.id, "later")
                     .await;
             }
             Ok(ReviewSignal::Closed) => {

@@ -11,3 +11,6 @@ serde_yaml = "0.9"
 tokio = { version = "1", features = ["full"] }
 tonic = "0.13"
 ur_rpc = { path = "../../crates/ur_rpc" }
+
+[lints]
+workspace = true

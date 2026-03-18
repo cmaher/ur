@@ -558,80 +558,16 @@ impl Config {
         let compose_file = raw
             .compose_file
             .unwrap_or_else(|| config_dir.join("docker-compose.yml"));
-        let proxy = match raw.proxy {
-            Some(p) => ProxyConfig {
-                hostname: p
-                    .hostname
-                    .unwrap_or_else(|| DEFAULT_PROXY_HOSTNAME.to_string()),
-                allowlist: p.allowlist.unwrap_or_else(default_proxy_allowlist),
-            },
-            None => ProxyConfig {
-                hostname: DEFAULT_PROXY_HOSTNAME.to_string(),
-                allowlist: default_proxy_allowlist(),
-            },
-        };
-        let network = match raw.network {
-            Some(n) => NetworkConfig {
-                name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
-                worker_name: n
-                    .worker_name
-                    .unwrap_or_else(|| DEFAULT_WORKER_NETWORK_NAME.to_string()),
-                server_hostname: n
-                    .server_hostname
-                    .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
-                worker_prefix: n
-                    .worker_prefix
-                    .unwrap_or_else(|| DEFAULT_WORKER_PREFIX.to_string()),
-            },
-            None => NetworkConfig {
-                name: DEFAULT_NETWORK_NAME.to_string(),
-                worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
-                server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
-                worker_prefix: DEFAULT_WORKER_PREFIX.to_string(),
-            },
-        };
+        let proxy = resolve_proxy(raw.proxy);
+        let network = resolve_network(raw.network);
 
         let hostexec = match raw.hostexec {
             Some(h) => resolve_hostexec_config(h)?,
             None => HostExecConfig::default(),
         };
 
-        let rag = match raw.rag {
-            Some(r) => RagConfig {
-                qdrant_hostname: r
-                    .qdrant_hostname
-                    .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
-                embedding_model: r
-                    .embedding_model
-                    .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
-                docs: r
-                    .docs
-                    .map(|d| RagDocsConfig { exclude: d.exclude })
-                    .unwrap_or_default(),
-            },
-            None => RagConfig {
-                qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
-                embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
-                docs: RagDocsConfig::default(),
-            },
-        };
-
-        let backup = match raw.backup {
-            Some(b) => BackupConfig {
-                path: b.path,
-                interval_minutes: b
-                    .interval_minutes
-                    .unwrap_or(DEFAULT_BACKUP_INTERVAL_MINUTES),
-                enabled: b.enabled.unwrap_or(true),
-                retain_count: b.retain_count.unwrap_or(DEFAULT_BACKUP_RETAIN_COUNT),
-            },
-            None => BackupConfig {
-                path: None,
-                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
+        let rag = resolve_rag(raw.rag);
+        let backup = resolve_backup(raw.backup);
 
         let projects = raw
             .projects
@@ -703,6 +639,85 @@ fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecCon
         commands.insert(name, cmd);
     }
     Ok(HostExecConfig { commands })
+}
+
+fn resolve_proxy(raw: Option<RawProxyConfig>) -> ProxyConfig {
+    match raw {
+        Some(p) => ProxyConfig {
+            hostname: p
+                .hostname
+                .unwrap_or_else(|| DEFAULT_PROXY_HOSTNAME.to_string()),
+            allowlist: p.allowlist.unwrap_or_else(default_proxy_allowlist),
+        },
+        None => ProxyConfig {
+            hostname: DEFAULT_PROXY_HOSTNAME.to_string(),
+            allowlist: default_proxy_allowlist(),
+        },
+    }
+}
+
+fn resolve_network(raw: Option<RawNetworkConfig>) -> NetworkConfig {
+    match raw {
+        Some(n) => NetworkConfig {
+            name: n.name.unwrap_or_else(|| DEFAULT_NETWORK_NAME.to_string()),
+            worker_name: n
+                .worker_name
+                .unwrap_or_else(|| DEFAULT_WORKER_NETWORK_NAME.to_string()),
+            server_hostname: n
+                .server_hostname
+                .unwrap_or_else(|| DEFAULT_SERVER_HOSTNAME.to_string()),
+            worker_prefix: n
+                .worker_prefix
+                .unwrap_or_else(|| DEFAULT_WORKER_PREFIX.to_string()),
+        },
+        None => NetworkConfig {
+            name: DEFAULT_NETWORK_NAME.to_string(),
+            worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
+            server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
+            worker_prefix: DEFAULT_WORKER_PREFIX.to_string(),
+        },
+    }
+}
+
+fn resolve_rag(raw: Option<RawRagConfig>) -> RagConfig {
+    match raw {
+        Some(r) => RagConfig {
+            qdrant_hostname: r
+                .qdrant_hostname
+                .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
+            embedding_model: r
+                .embedding_model
+                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
+            docs: r
+                .docs
+                .map(|d| RagDocsConfig { exclude: d.exclude })
+                .unwrap_or_default(),
+        },
+        None => RagConfig {
+            qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
+            embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
+            docs: RagDocsConfig::default(),
+        },
+    }
+}
+
+fn resolve_backup(raw: Option<RawBackupConfig>) -> BackupConfig {
+    match raw {
+        Some(b) => BackupConfig {
+            path: b.path,
+            interval_minutes: b
+                .interval_minutes
+                .unwrap_or(DEFAULT_BACKUP_INTERVAL_MINUTES),
+            enabled: b.enabled.unwrap_or(true),
+            retain_count: b.retain_count.unwrap_or(DEFAULT_BACKUP_RETAIN_COUNT),
+        },
+        None => BackupConfig {
+            path: None,
+            interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
+            enabled: true,
+            retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
+        },
+    }
 }
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.

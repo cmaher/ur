@@ -6,3 +6,6 @@ version.workspace = true
 [dependencies]
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[lints]
+workspace = true

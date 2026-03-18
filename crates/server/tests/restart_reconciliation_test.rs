@@ -375,6 +375,48 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn insert_worker_with_slot(
+    worker_repo: &ur_db::WorkerRepo,
+    slot_id: &str,
+    slot_name: &str,
+    host_path: &str,
+    worker_id: &str,
+    secret: &str,
+    process_id: &str,
+    container_id: &str,
+) {
+    let slot = ur_db::model::Slot {
+        id: slot_id.to_owned(),
+        project_key: "proj-mix".to_owned(),
+        slot_name: slot_name.to_owned(),
+        host_path: host_path.to_owned(),
+        created_at: "2026-01-01T00:00:00Z".to_owned(),
+        updated_at: "2026-01-01T00:00:00Z".to_owned(),
+    };
+    worker_repo.insert_slot(&slot).await.unwrap();
+
+    let worker = ur_db::model::Worker {
+        worker_id: worker_id.to_owned(),
+        process_id: process_id.to_owned(),
+        project_key: "proj-mix".to_owned(),
+        container_id: container_id.to_owned(),
+        worker_secret: secret.to_owned(),
+        strategy: "code".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
+        workspace_path: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
+    };
+    worker_repo.insert_worker(&worker).await.unwrap();
+    worker_repo
+        .link_worker_slot(worker_id, slot_id)
+        .await
+        .unwrap();
+}
+
 /// Scenario 3: Multiple workers across restart — one container alive, one dead.
 /// Verifies mixed reconciliation: live worker reclaimed, dead worker stopped with
 /// slot released, and only the reclaimed worker can authenticate.
@@ -388,73 +430,34 @@ async fn restart_mixed_live_and_dead_workers() {
 
     let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
 
-    // Create two slots.
-    let slot1 = ur_db::model::Slot {
-        id: "slot-mix-1".to_owned(),
-        project_key: "proj-mix".to_owned(),
-        slot_name: "0".to_owned(),
-
-        host_path: "/tmp/mix/0".to_owned(),
-        created_at: "2026-01-01T00:00:00Z".to_owned(),
-        updated_at: "2026-01-01T00:00:00Z".to_owned(),
-    };
-    let slot2 = ur_db::model::Slot {
-        id: "slot-mix-2".to_owned(),
-        project_key: "proj-mix".to_owned(),
-        slot_name: "1".to_owned(),
-
-        host_path: "/tmp/mix/1".to_owned(),
-        created_at: "2026-01-01T00:00:00Z".to_owned(),
-        updated_at: "2026-01-01T00:00:00Z".to_owned(),
-    };
-    worker_repo1.insert_slot(&slot1).await.unwrap();
-    worker_repo1.insert_slot(&slot2).await.unwrap();
-
-    // Worker with live container.
     let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
-    let worker_live = ur_db::model::Worker {
-        worker_id: live_worker_id.to_owned(),
-        process_id: "proc-live".to_owned(),
-        project_key: "proj-mix".to_owned(),
-        container_id: "container-alive".to_owned(),
-        worker_secret: live_secret.to_owned(),
-        strategy: "code".to_owned(),
-        container_status: "running".to_owned(),
-        agent_status: "starting".to_owned(),
-        workspace_path: None,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-        idle_redispatch_count: 0,
-    };
-    worker_repo1.insert_worker(&worker_live).await.unwrap();
-    worker_repo1
-        .link_worker_slot(live_worker_id, "slot-mix-1")
-        .await
-        .unwrap();
-
-    // Worker with dead container.
     let dead_worker_id = "worker-mix-dead";
     let dead_secret = "secret-dead";
-    let worker_dead = ur_db::model::Worker {
-        worker_id: dead_worker_id.to_owned(),
-        process_id: "proc-dead".to_owned(),
-        project_key: "proj-mix".to_owned(),
-        container_id: "container-dead".to_owned(),
-        worker_secret: dead_secret.to_owned(),
-        strategy: "code".to_owned(),
-        container_status: "running".to_owned(),
-        agent_status: "starting".to_owned(),
-        workspace_path: None,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-        idle_redispatch_count: 0,
-    };
-    worker_repo1.insert_worker(&worker_dead).await.unwrap();
-    worker_repo1
-        .link_worker_slot(dead_worker_id, "slot-mix-2")
-        .await
-        .unwrap();
+
+    insert_worker_with_slot(
+        &worker_repo1,
+        "slot-mix-1",
+        "0",
+        "/tmp/mix/0",
+        live_worker_id,
+        live_secret,
+        "proc-live",
+        "container-alive",
+    )
+    .await;
+
+    insert_worker_with_slot(
+        &worker_repo1,
+        "slot-mix-2",
+        "1",
+        "/tmp/mix/1",
+        dead_worker_id,
+        dead_secret,
+        "proc-dead",
+        "container-dead",
+    )
+    .await;
 
     // --- Phase 2: "Restart" with reconciliation ---
     let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;

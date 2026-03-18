@@ -8,7 +8,7 @@ use ur_rpc::proto::ticket::*;
 use ur_rpc::lifecycle;
 
 use super::TicketOutput;
-use super::args::TicketArgs;
+use super::args::{KeyValue, TicketArgs};
 use super::status::build_status_report;
 
 /// Execute a ticket subcommand against the given gRPC client.
@@ -40,37 +40,19 @@ where
             wip,
             follow_up,
         } => {
-            let resp = client
-                .create_ticket(CreateTicketRequest {
-                    project: project.unwrap_or_default(),
-                    ticket_type,
-                    status: lifecycle::OPEN.to_owned(),
-                    priority,
-                    parent_id: parent,
-                    title,
-                    body,
-                    id: None,
-                    created_at: None,
-                    wip,
-                })
-                .await
-                .with_status_context("create ticket")?;
-            let id = resp.into_inner().id;
-
-            if let Some(follow_up_id) = follow_up {
-                client
-                    .add_link(AddLinkRequest {
-                        left_id: id.clone(),
-                        right_id: follow_up_id,
-                        edge_kind: Some("follow_up".to_owned()),
-                    })
-                    .await
-                    .with_status_context("add follow_up link")?;
-            }
-
-            Ok(TicketOutput::Created { id })
+            execute_create(
+                client,
+                title,
+                project,
+                ticket_type,
+                parent,
+                priority,
+                body,
+                wip,
+                follow_up,
+            )
+            .await
         }
-
         TicketArgs::List {
             project,
             all,
@@ -78,38 +60,8 @@ where
             ticket_type,
             status,
             lifecycle,
-        } => {
-            let project_filter = if all { None } else { project };
-            let resp = client
-                .list_tickets(ListTicketsRequest {
-                    project: project_filter,
-                    ticket_type,
-                    status,
-                    parent_id: epic,
-                    meta_key: None,
-                    meta_value: None,
-                    lifecycle_status: lifecycle,
-                })
-                .await
-                .with_status_context("list tickets")?;
-            let tickets = resp.into_inner().tickets;
-            Ok(TicketOutput::Listed { tickets })
-        }
-
-        TicketArgs::Show { id } => {
-            let resp = client
-                .get_ticket(GetTicketRequest { id: id.clone() })
-                .await
-                .with_status_context("get ticket")?;
-            let inner = resp.into_inner();
-            let t = inner.ticket.context("server returned empty ticket")?;
-            Ok(TicketOutput::Shown {
-                ticket: Box::new(t),
-                metadata: inner.metadata,
-                activities: inner.activities,
-            })
-        }
-
+        } => execute_list(client, project, all, epic, ticket_type, status, lifecycle).await,
+        TicketArgs::Show { id } => execute_show(client, id).await,
         TicketArgs::Update {
             id,
             title,
@@ -125,252 +77,560 @@ where
             no_branch,
             project,
         } => {
-            let parent_id = if unparent {
-                Some("NONE".to_owned())
-            } else {
-                parent
-            };
-            let branch_value = if no_branch {
-                Some("NONE".to_owned())
-            } else {
-                branch
-            };
-            client
-                .update_ticket(UpdateTicketRequest {
-                    id: id.clone(),
-                    status,
-                    priority,
-                    title,
-                    body,
-                    force,
-                    ticket_type,
-                    parent_id,
-                    lifecycle_status: lifecycle,
-                    branch: branch_value,
-                    project,
-                    lifecycle_managed: None,
-                })
-                .await
-                .with_status_context("update ticket")?;
-            Ok(TicketOutput::Updated { id })
+            execute_update(
+                client,
+                id,
+                title,
+                body,
+                status,
+                priority,
+                ticket_type,
+                parent,
+                unparent,
+                force,
+                lifecycle,
+                branch,
+                no_branch,
+                project,
+            )
+            .await
         }
-
-        TicketArgs::SetMeta { id, key, value } => {
-            client
-                .set_meta(SetMetaRequest {
-                    ticket_id: id.clone(),
-                    key: key.clone(),
-                    value: value.clone(),
-                })
-                .await
-                .with_status_context("set metadata")?;
-            Ok(TicketOutput::MetaSet { id, key, value })
-        }
-
-        TicketArgs::DeleteMeta { id, key } => {
-            client
-                .delete_meta(DeleteMetaRequest {
-                    ticket_id: id.clone(),
-                    key: key.clone(),
-                })
-                .await
-                .with_status_context("delete metadata")?;
-            Ok(TicketOutput::MetaDeleted { id, key })
-        }
-
+        TicketArgs::SetMeta { id, key, value } => execute_set_meta(client, id, key, value).await,
+        TicketArgs::DeleteMeta { id, key } => execute_delete_meta(client, id, key).await,
         TicketArgs::AddActivity { id, message, meta } => {
-            let metadata: HashMap<String, String> =
-                meta.into_iter().map(|kv| (kv.key, kv.value)).collect();
-            let resp = client
-                .add_activity(AddActivityRequest {
-                    ticket_id: id.clone(),
-                    author: "cli".to_owned(),
-                    message,
-                    metadata,
-                })
-                .await
-                .with_status_context("add activity")?;
-            let activity_id = resp.into_inner().activity_id;
-            Ok(TicketOutput::ActivityAdded { id, activity_id })
+            execute_add_activity(client, id, message, meta).await
         }
-
-        TicketArgs::ListActivities { id } => {
-            let resp = client
-                .list_activities(ListActivitiesRequest {
-                    ticket_id: id.clone(),
-                })
-                .await
-                .with_status_context("list activities")?;
-            let activities = resp.into_inner().activities;
-            Ok(TicketOutput::ActivitiesListed { id, activities })
-        }
-
+        TicketArgs::ListActivities { id } => execute_list_activities(client, id).await,
         TicketArgs::AddBlock { id, blocked_by_id } => {
-            client
-                .add_block(AddBlockRequest {
-                    blocker_id: blocked_by_id.clone(),
-                    blocked_id: id.clone(),
-                })
-                .await
-                .with_status_context("add block")?;
-            Ok(TicketOutput::BlockAdded { id, blocked_by_id })
+            execute_add_block(client, id, blocked_by_id).await
         }
-
         TicketArgs::RemoveBlock { id, blocked_by_id } => {
-            client
-                .remove_block(RemoveBlockRequest {
-                    blocker_id: blocked_by_id.clone(),
-                    blocked_id: id.clone(),
-                })
-                .await
-                .with_status_context("remove block")?;
-            Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
+            execute_remove_block(client, id, blocked_by_id).await
         }
-
         TicketArgs::AddLink {
             id,
             linked_id,
             edge,
-        } => {
-            client
-                .add_link(AddLinkRequest {
-                    left_id: id.clone(),
-                    right_id: linked_id.clone(),
-                    edge_kind: Some(edge),
-                })
-                .await
-                .with_status_context("link tickets")?;
-            Ok(TicketOutput::LinkAdded { id, linked_id })
-        }
-
+        } => execute_add_link(client, id, linked_id, edge).await,
         TicketArgs::RemoveLink { id, linked_id } => {
-            client
-                .remove_link(RemoveLinkRequest {
-                    left_id: id.clone(),
-                    right_id: linked_id.clone(),
-                })
-                .await
-                .with_status_context("unlink tickets")?;
-            Ok(TicketOutput::LinkRemoved { id, linked_id })
+            execute_remove_link(client, id, linked_id).await
         }
-
         TicketArgs::Approve {
             id,
             feedback_now,
             feedback_later,
-        } => {
-            let feedback_mode = if feedback_now {
-                "now"
-            } else if feedback_later {
-                "later"
-            } else {
-                "now" // default to now
-            }
-            .to_owned();
-
-            // Set feedback_mode metadata
-            client
-                .set_meta(SetMetaRequest {
-                    ticket_id: id.clone(),
-                    key: "feedback_mode".to_owned(),
-                    value: feedback_mode.clone(),
-                })
-                .await
-                .with_status_context("set feedback_mode metadata")?;
-
-            // Transition lifecycle from in_review to feedback_creating
-            client
-                .update_ticket(UpdateTicketRequest {
-                    id: id.clone(),
-                    status: None,
-                    priority: None,
-                    title: None,
-                    body: None,
-                    force: false,
-                    ticket_type: None,
-                    parent_id: None,
-                    lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
-                    branch: None,
-                    project: None,
-                    lifecycle_managed: None,
-                })
-                .await
-                .with_status_context("transition lifecycle to feedback_creating")?;
-
-            Ok(TicketOutput::Approved { id, feedback_mode })
-        }
-
-        TicketArgs::Close { id, force } => {
-            client
-                .update_ticket(UpdateTicketRequest {
-                    id: id.clone(),
-                    status: Some("closed".to_owned()),
-                    priority: None,
-                    title: None,
-                    body: None,
-                    force,
-                    ticket_type: None,
-                    parent_id: None,
-                    lifecycle_status: None,
-                    branch: None,
-                    project: None,
-                    lifecycle_managed: None,
-                })
-                .await
-                .with_status_context("close ticket")?;
-            Ok(TicketOutput::Updated { id })
-        }
-
-        TicketArgs::Open { id } => {
-            client
-                .update_ticket(UpdateTicketRequest {
-                    id: id.clone(),
-                    status: Some("open".to_owned()),
-                    priority: None,
-                    title: None,
-                    body: None,
-                    force: false,
-                    ticket_type: None,
-                    parent_id: None,
-                    lifecycle_status: None,
-                    branch: None,
-                    project: None,
-                    lifecycle_managed: None,
-                })
-                .await
-                .with_status_context("open ticket")?;
-            Ok(TicketOutput::Updated { id })
-        }
-
+        } => execute_approve(client, id, feedback_now, feedback_later).await,
+        TicketArgs::Close { id, force } => execute_close(client, id, force).await,
+        TicketArgs::Open { id } => execute_open(client, id).await,
         TicketArgs::Dispatchable { epic_id, project } => {
-            let resp = client
-                .dispatchable_tickets(DispatchableTicketsRequest {
-                    epic_id: epic_id.clone(),
-                    project,
-                })
-                .await
-                .with_status_context("get dispatchable tickets")?;
-            let tickets = resp.into_inner().tickets;
-            Ok(TicketOutput::Dispatchable { epic_id, tickets })
+            execute_dispatchable(client, epic_id, project).await
         }
-
-        TicketArgs::Status { project } => {
-            let resp = client
-                .list_tickets(ListTicketsRequest {
-                    project: project.clone(),
-                    ticket_type: None,
-                    status: None,
-                    parent_id: None,
-                    meta_key: None,
-                    meta_value: None,
-                    lifecycle_status: None,
-                })
-                .await
-                .with_status_context("list tickets")?;
-            let tickets = resp.into_inner().tickets;
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let report = build_status_report(&tickets, &today, project.as_deref());
-            Ok(TicketOutput::StatusReport { report, tickets })
-        }
+        TicketArgs::Status { project } => execute_status(client, project).await,
     }
+}
+
+async fn execute_list<T>(
+    client: &mut TicketServiceClient<T>,
+    project: Option<String>,
+    all: bool,
+    epic: Option<String>,
+    ticket_type: Option<String>,
+    status: Option<String>,
+    lifecycle: Option<String>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let project_filter = if all { None } else { project };
+    let resp = client
+        .list_tickets(ListTicketsRequest {
+            project: project_filter,
+            ticket_type,
+            status,
+            parent_id: epic,
+            meta_key: None,
+            meta_value: None,
+            lifecycle_status: lifecycle,
+        })
+        .await
+        .with_status_context("list tickets")?;
+    let tickets = resp.into_inner().tickets;
+    Ok(TicketOutput::Listed { tickets })
+}
+
+async fn execute_show<T>(client: &mut TicketServiceClient<T>, id: String) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let resp = client
+        .get_ticket(GetTicketRequest { id: id.clone() })
+        .await
+        .with_status_context("get ticket")?;
+    let inner = resp.into_inner();
+    let t = inner.ticket.context("server returned empty ticket")?;
+    Ok(TicketOutput::Shown {
+        ticket: Box::new(t),
+        metadata: inner.metadata,
+        activities: inner.activities,
+    })
+}
+
+async fn execute_set_meta<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    key: String,
+    value: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .set_meta(SetMetaRequest {
+            ticket_id: id.clone(),
+            key: key.clone(),
+            value: value.clone(),
+        })
+        .await
+        .with_status_context("set metadata")?;
+    Ok(TicketOutput::MetaSet { id, key, value })
+}
+
+async fn execute_delete_meta<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    key: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .delete_meta(DeleteMetaRequest {
+            ticket_id: id.clone(),
+            key: key.clone(),
+        })
+        .await
+        .with_status_context("delete metadata")?;
+    Ok(TicketOutput::MetaDeleted { id, key })
+}
+
+async fn execute_add_activity<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    message: String,
+    meta: Vec<KeyValue>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let metadata: HashMap<String, String> = meta.into_iter().map(|kv| (kv.key, kv.value)).collect();
+    let resp = client
+        .add_activity(AddActivityRequest {
+            ticket_id: id.clone(),
+            author: "cli".to_owned(),
+            message,
+            metadata,
+        })
+        .await
+        .with_status_context("add activity")?;
+    let activity_id = resp.into_inner().activity_id;
+    Ok(TicketOutput::ActivityAdded { id, activity_id })
+}
+
+async fn execute_list_activities<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let resp = client
+        .list_activities(ListActivitiesRequest {
+            ticket_id: id.clone(),
+        })
+        .await
+        .with_status_context("list activities")?;
+    let activities = resp.into_inner().activities;
+    Ok(TicketOutput::ActivitiesListed { id, activities })
+}
+
+async fn execute_add_block<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    blocked_by_id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .add_block(AddBlockRequest {
+            blocker_id: blocked_by_id.clone(),
+            blocked_id: id.clone(),
+        })
+        .await
+        .with_status_context("add block")?;
+    Ok(TicketOutput::BlockAdded { id, blocked_by_id })
+}
+
+async fn execute_remove_block<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    blocked_by_id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .remove_block(RemoveBlockRequest {
+            blocker_id: blocked_by_id.clone(),
+            blocked_id: id.clone(),
+        })
+        .await
+        .with_status_context("remove block")?;
+    Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
+}
+
+async fn execute_add_link<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    linked_id: String,
+    edge: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .add_link(AddLinkRequest {
+            left_id: id.clone(),
+            right_id: linked_id.clone(),
+            edge_kind: Some(edge),
+        })
+        .await
+        .with_status_context("link tickets")?;
+    Ok(TicketOutput::LinkAdded { id, linked_id })
+}
+
+async fn execute_remove_link<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    linked_id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .remove_link(RemoveLinkRequest {
+            left_id: id.clone(),
+            right_id: linked_id.clone(),
+        })
+        .await
+        .with_status_context("unlink tickets")?;
+    Ok(TicketOutput::LinkRemoved { id, linked_id })
+}
+
+async fn execute_dispatchable<T>(
+    client: &mut TicketServiceClient<T>,
+    epic_id: String,
+    project: Option<String>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let resp = client
+        .dispatchable_tickets(DispatchableTicketsRequest {
+            epic_id: epic_id.clone(),
+            project,
+        })
+        .await
+        .with_status_context("get dispatchable tickets")?;
+    let tickets = resp.into_inner().tickets;
+    Ok(TicketOutput::Dispatchable { epic_id, tickets })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_create<T>(
+    client: &mut TicketServiceClient<T>,
+    title: String,
+    project: Option<String>,
+    ticket_type: String,
+    parent: Option<String>,
+    priority: i64,
+    body: String,
+    wip: bool,
+    follow_up: Option<String>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let resp = client
+        .create_ticket(CreateTicketRequest {
+            project: project.unwrap_or_default(),
+            ticket_type,
+            status: lifecycle::OPEN.to_owned(),
+            priority,
+            parent_id: parent,
+            title,
+            body,
+            id: None,
+            created_at: None,
+            wip,
+        })
+        .await
+        .with_status_context("create ticket")?;
+    let id = resp.into_inner().id;
+
+    if let Some(follow_up_id) = follow_up {
+        client
+            .add_link(AddLinkRequest {
+                left_id: id.clone(),
+                right_id: follow_up_id,
+                edge_kind: Some("follow_up".to_owned()),
+            })
+            .await
+            .with_status_context("add follow_up link")?;
+    }
+
+    Ok(TicketOutput::Created { id })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_update<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    title: Option<String>,
+    body: Option<String>,
+    status: Option<String>,
+    priority: Option<i64>,
+    ticket_type: Option<String>,
+    parent: Option<String>,
+    unparent: bool,
+    force: bool,
+    lifecycle: Option<String>,
+    branch: Option<String>,
+    no_branch: bool,
+    project: Option<String>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let parent_id = if unparent {
+        Some("NONE".to_owned())
+    } else {
+        parent
+    };
+    let branch_value = if no_branch {
+        Some("NONE".to_owned())
+    } else {
+        branch
+    };
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: id.clone(),
+            status,
+            priority,
+            title,
+            body,
+            force,
+            ticket_type,
+            parent_id,
+            lifecycle_status: lifecycle,
+            branch: branch_value,
+            project,
+            lifecycle_managed: None,
+        })
+        .await
+        .with_status_context("update ticket")?;
+    Ok(TicketOutput::Updated { id })
+}
+
+async fn execute_approve<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    feedback_now: bool,
+    feedback_later: bool,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let feedback_mode = if feedback_now {
+        "now"
+    } else if feedback_later {
+        "later"
+    } else {
+        "now"
+    }
+    .to_owned();
+
+    client
+        .set_meta(SetMetaRequest {
+            ticket_id: id.clone(),
+            key: "feedback_mode".to_owned(),
+            value: feedback_mode.clone(),
+        })
+        .await
+        .with_status_context("set feedback_mode metadata")?;
+
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: id.clone(),
+            status: None,
+            priority: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
+            branch: None,
+            project: None,
+            lifecycle_managed: None,
+        })
+        .await
+        .with_status_context("transition lifecycle to feedback_creating")?;
+
+    Ok(TicketOutput::Approved { id, feedback_mode })
+}
+
+async fn execute_close<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    force: bool,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: id.clone(),
+            status: Some("closed".to_owned()),
+            priority: None,
+            title: None,
+            body: None,
+            force,
+            ticket_type: None,
+            parent_id: None,
+            lifecycle_status: None,
+            branch: None,
+            project: None,
+            lifecycle_managed: None,
+        })
+        .await
+        .with_status_context("close ticket")?;
+    Ok(TicketOutput::Updated { id })
+}
+
+async fn execute_open<T>(client: &mut TicketServiceClient<T>, id: String) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: id.clone(),
+            status: Some("open".to_owned()),
+            priority: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            lifecycle_status: None,
+            branch: None,
+            project: None,
+            lifecycle_managed: None,
+        })
+        .await
+        .with_status_context("open ticket")?;
+    Ok(TicketOutput::Updated { id })
+}
+
+async fn execute_status<T>(
+    client: &mut TicketServiceClient<T>,
+    project: Option<String>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let resp = client
+        .list_tickets(ListTicketsRequest {
+            project: project.clone(),
+            ticket_type: None,
+            status: None,
+            parent_id: None,
+            meta_key: None,
+            meta_value: None,
+            lifecycle_status: None,
+        })
+        .await
+        .with_status_context("list tickets")?;
+    let tickets = resp.into_inner().tickets;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let report = build_status_report(&tickets, &today, project.as_deref());
+    Ok(TicketOutput::StatusReport { report, tickets })
 }
