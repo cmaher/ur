@@ -4,7 +4,7 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "hooks": {
-    "Notification": [
+    "Stop": [
       {
         "matcher": "",
         "hooks": [
