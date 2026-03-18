@@ -17,6 +17,7 @@ pub trait LocalRepo: Send + Sync {
     async fn fetch(&self, working_dir: &str) -> Result<()>;
     async fn reset_hard(&self, working_dir: &str, ref_name: &str) -> Result<()>;
     async fn clean(&self, working_dir: &str) -> Result<()>;
+    async fn checkout(&self, working_dir: &str, ref_name: &str) -> Result<()>;
     async fn checkout_branch(&self, working_dir: &str, branch: &str) -> Result<()>;
     async fn submodule_update(&self, working_dir: &str) -> Result<()>;
 }

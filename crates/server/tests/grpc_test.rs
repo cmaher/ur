@@ -76,6 +76,10 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         .await
         .expect("failed to open in-memory db");
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
+    let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+    let local_repo = local_repo::GitBackend {
+        client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+    };
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -84,6 +88,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
             "http://127.0.0.1:{}",
             ur_config::DEFAULT_DAEMON_PORT + 2
         )),
+        local_repo,
         worker_repo.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(

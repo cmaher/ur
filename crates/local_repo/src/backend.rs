@@ -212,6 +212,12 @@ impl LocalRepo for GitBackend {
         Ok(())
     }
 
+    async fn checkout(&self, working_dir: &str, ref_name: &str) -> Result<()> {
+        self.exec_git_checked(&["checkout", ref_name], working_dir)
+            .await?;
+        Ok(())
+    }
+
     async fn checkout_branch(&self, working_dir: &str, branch: &str) -> Result<()> {
         self.exec_git_checked(&["checkout", "-B", branch], working_dir)
             .await?;

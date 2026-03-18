@@ -9,6 +9,8 @@ use uuid::Uuid;
 use ur_config::{Config, ProjectConfig};
 use ur_db::WorkerRepo;
 
+use local_repo::LocalRepo;
+
 use crate::BuilderdClient;
 
 /// Manages a pool of pre-cloned git repositories per project.
@@ -30,6 +32,8 @@ pub struct RepoPoolManager {
     host_workspace: PathBuf,
     /// Client for executing commands on the host via builderd.
     builderd_client: BuilderdClient,
+    /// Git operations routed through builderd.
+    local_repo: local_repo::GitBackend,
     /// Project configs keyed by project key.
     projects: HashMap<String, ProjectConfig>,
     /// Prefix prepended to worker-ID branch names.
@@ -44,12 +48,14 @@ impl RepoPoolManager {
         local_workspace: PathBuf,
         host_workspace: PathBuf,
         builderd_client: BuilderdClient,
+        local_repo: local_repo::GitBackend,
         worker_repo: WorkerRepo,
     ) -> Self {
         Self {
             local_workspace,
             host_workspace,
             builderd_client,
+            local_repo,
             projects: config.projects.clone(),
             git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
@@ -272,8 +278,7 @@ impl RepoPoolManager {
 
         // Use slot_name as relative path since CWD is the parent directory.
         // builderd only resolves %WORKSPACE% in working_dir, not in args.
-        self.builderd_client
-            .exec_and_check("git", &["clone", repo_url, slot_name], &builderd_parent)
+        LocalRepo::clone(&self.local_repo, repo_url, slot_name, &builderd_parent)
             .await
             .map_err(|e| format!("git clone failed for {repo_url}: {e}"))?;
 
@@ -327,26 +332,37 @@ impl RepoPoolManager {
     /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx && git submodule update --init --recursive`
     /// `host_slot_path` is the host-side path to the slot.
     async fn reset_slot(&self, host_slot_path: &Path) -> Result<(), String> {
-        let commands: &[&[&str]] = &[
-            &["fetch", "origin"],
-            &["checkout", "master"],
-            &["reset", "--hard", "origin/master"],
-            &["clean", "-fdx"],
-        ];
-
         let cwd = self.to_builderd_path(host_slot_path);
-        for args in commands {
-            self.builderd_client
-                .exec_and_check("git", args, &cwd)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "git {} failed in {}: {e}",
-                        args.join(" "),
-                        host_slot_path.display()
-                    )
-                })?;
-        }
+
+        self.local_repo
+            .fetch(&cwd)
+            .await
+            .map_err(|e| format!("git fetch failed in {}: {e}", host_slot_path.display()))?;
+
+        self.local_repo
+            .checkout(&cwd, "master")
+            .await
+            .map_err(|e| {
+                format!(
+                    "git checkout master failed in {}: {e}",
+                    host_slot_path.display()
+                )
+            })?;
+
+        self.local_repo
+            .reset_hard(&cwd, "origin/master")
+            .await
+            .map_err(|e| {
+                format!(
+                    "git reset --hard origin/master failed in {}: {e}",
+                    host_slot_path.display()
+                )
+            })?;
+
+        self.local_repo
+            .clean(&cwd)
+            .await
+            .map_err(|e| format!("git clean -fdx failed in {}: {e}", host_slot_path.display()))?;
 
         self.init_submodules(host_slot_path).await?;
 
@@ -365,12 +381,12 @@ impl RepoPoolManager {
     ) -> Result<(), String> {
         let full_branch = format!("{}{branch_name}", self.git_branch_prefix);
         let cwd = self.to_builderd_path(host_slot_path);
-        self.builderd_client
-            .exec_and_check("git", &["checkout", "-b", &full_branch], &cwd)
+        self.local_repo
+            .checkout_branch(&cwd, &full_branch)
             .await
             .map_err(|e| {
                 format!(
-                    "git checkout -b {full_branch} failed in {}: {e}",
+                    "git checkout -B {full_branch} failed in {}: {e}",
                     host_slot_path.display()
                 )
             })
@@ -390,19 +406,12 @@ impl RepoPoolManager {
 
         info!(path = %host_slot_path.display(), "initializing git submodules");
         let cwd = self.to_builderd_path(host_slot_path);
-        self.builderd_client
-            .exec_and_check(
-                "git",
-                &["submodule", "update", "--init", "--recursive"],
-                &cwd,
+        self.local_repo.submodule_update(&cwd).await.map_err(|e| {
+            format!(
+                "git submodule update --init --recursive failed in {}: {e}",
+                host_slot_path.display()
             )
-            .await
-            .map_err(|e| {
-                format!(
-                    "git submodule update --init --recursive failed in {}: {e}",
-                    host_slot_path.display()
-                )
-            })
+        })
     }
 
     /// Trust mise configuration in a newly cloned slot if `mise.toml` exists.
@@ -462,10 +471,17 @@ mod tests {
             },
         );
         let worker_repo = test_worker_repo().await;
+        let builderd_client = BuilderdClient::new("http://localhost:42070".into());
+        let channel =
+            tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+        let local_repo = local_repo::GitBackend {
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        };
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
-            builderd_client: BuilderdClient::new("http://localhost:42070".into()),
+            builderd_client,
+            local_repo,
             projects,
             git_branch_prefix: String::new(),
             worker_repo,
@@ -707,10 +723,16 @@ mod tests {
                 mounts: Vec::new(),
             },
         );
+        let channel =
+            tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+        let local_repo = local_repo::GitBackend {
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        };
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
             builderd_client: BuilderdClient::new("http://localhost:42070".into()),
+            local_repo,
             projects,
             git_branch_prefix: String::new(),
             worker_repo,
