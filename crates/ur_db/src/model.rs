@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use ur_common::lifecycle;
+
 /// Lifecycle status for workflow-driven tickets.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifecycleStatus {
@@ -21,15 +23,15 @@ pub enum LifecycleStatus {
 impl LifecycleStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Design => "design",
-            Self::Open => "open",
-            Self::Implementing => "implementing",
-            Self::Pushing => "pushing",
-            Self::InReview => "in_review",
-            Self::FeedbackCreating => "feedback_creating",
-            Self::FeedbackResolving => "feedback_resolving",
-            Self::Stalled => "stalled",
-            Self::Done => "done",
+            Self::Design => lifecycle::DESIGN,
+            Self::Open => lifecycle::OPEN,
+            Self::Implementing => lifecycle::IMPLEMENTING,
+            Self::Pushing => lifecycle::PUSHING,
+            Self::InReview => lifecycle::IN_REVIEW,
+            Self::FeedbackCreating => lifecycle::FEEDBACK_CREATING,
+            Self::FeedbackResolving => lifecycle::FEEDBACK_RESOLVING,
+            Self::Stalled => lifecycle::STALLED,
+            Self::Done => lifecycle::DONE,
         }
     }
 }
@@ -39,15 +41,15 @@ impl FromStr for LifecycleStatus {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "design" => Ok(Self::Design),
-            "open" => Ok(Self::Open),
-            "implementing" => Ok(Self::Implementing),
-            "pushing" => Ok(Self::Pushing),
-            "in_review" => Ok(Self::InReview),
-            "feedback_creating" => Ok(Self::FeedbackCreating),
-            "feedback_resolving" => Ok(Self::FeedbackResolving),
-            "stalled" => Ok(Self::Stalled),
-            "done" => Ok(Self::Done),
+            lifecycle::DESIGN => Ok(Self::Design),
+            lifecycle::OPEN => Ok(Self::Open),
+            lifecycle::IMPLEMENTING => Ok(Self::Implementing),
+            lifecycle::PUSHING => Ok(Self::Pushing),
+            lifecycle::IN_REVIEW => Ok(Self::InReview),
+            lifecycle::FEEDBACK_CREATING => Ok(Self::FeedbackCreating),
+            lifecycle::FEEDBACK_RESOLVING => Ok(Self::FeedbackResolving),
+            lifecycle::STALLED => Ok(Self::Stalled),
+            lifecycle::DONE => Ok(Self::Done),
             _ => Err(format!("unknown lifecycle status: {s}")),
         }
     }

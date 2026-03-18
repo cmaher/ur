@@ -5,6 +5,7 @@ version = "0.1.0"
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+ur_common = { path = "../ur_common" }
 petgraph = "0.7"
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["fs"] }
