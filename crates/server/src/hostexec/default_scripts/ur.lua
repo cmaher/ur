@@ -27,29 +27,14 @@ function transform(command, args, working_dir, worker_context)
             end
         end
 
-        -- Inject -p <project_key> so workers always operate in their project scope.
-        -- Only inject if no explicit -p/--project flag is already present.
+        -- Pass UR_PROJECT env var so the ur CLI resolves the correct project scope.
+        -- The CLI's resolve_project() reads UR_PROJECT as a fallback after --project/-p.
+        local env = {}
         if worker_context ~= nil and worker_context.project_key ~= nil then
-            local has_project = false
-            for i = 1, #args do
-                if args[i] == "-p" or args[i] == "--project" then
-                    has_project = true
-                    break
-                end
-            end
-            if not has_project then
-                -- Insert -p <project_key> right after "ticket" (args[1])
-                local new_args = { args[1] }
-                new_args[#new_args + 1] = "-p"
-                new_args[#new_args + 1] = worker_context.project_key
-                for i = 2, #args do
-                    new_args[#new_args + 1] = args[i]
-                end
-                args = new_args
-            end
+            env["UR_PROJECT"] = worker_context.project_key
         end
 
-        return { command = command, args = args, working_dir = working_dir }
+        return { command = command, args = args, working_dir = working_dir, env = env }
     end
 
     -- Readonly subcommands for management commands
