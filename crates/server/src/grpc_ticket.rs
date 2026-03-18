@@ -343,19 +343,20 @@ impl TicketService for TicketServiceHandler {
         };
 
         let project = req.project.filter(|s| !s.is_empty());
-        if let Some(ref p) = project {
-            if !self.valid_projects.is_empty() && !self.valid_projects.contains(p) {
-                return Err(TicketError::Validation(format!(
-                    "unknown project '{}'; configured projects: {}",
-                    p,
-                    self.valid_projects
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ))
-                .into());
-            }
+        if let Some(ref p) = project
+            && !self.valid_projects.is_empty()
+            && !self.valid_projects.contains(p)
+        {
+            return Err(TicketError::Validation(format!(
+                "unknown project '{}'; configured projects: {}",
+                p,
+                self.valid_projects
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ))
+            .into());
         }
 
         let update = TicketUpdate {

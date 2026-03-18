@@ -292,6 +292,7 @@ mod tests {
                 lifecycle,
                 branch,
                 no_branch,
+                project,
             } => {
                 assert_eq!(id, "ur-abc12");
                 assert!(title.is_none());
@@ -305,6 +306,7 @@ mod tests {
                 assert!(lifecycle.is_none());
                 assert!(branch.is_none());
                 assert!(!no_branch);
+                assert!(project.is_none());
             }
             other => panic!("expected Update, got {other:?}"),
         }
