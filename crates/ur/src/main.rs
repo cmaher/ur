@@ -22,8 +22,11 @@ use clap::{Parser, Subcommand};
 use container::{ContainerId, ContainerRuntime};
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error, info, instrument, warn};
+use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
+use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+use ur_rpc::proto::ticket::*;
 
 use compose::{ComposeManager, compose_manager_from_config};
 use output::{
@@ -257,6 +260,9 @@ enum WorkerCommands {
         /// Comma-separated skill list; overrides mode when provided
         #[arg(short = 's', long = "skills")]
         skills: Option<String>,
+        /// Dispatch a ticket: validate it exists and is open, then transition to implementing
+        #[arg(short = 'd', long = "dispatch")]
+        dispatch: Option<String>,
     },
     /// List all running processes
     List,
@@ -679,6 +685,54 @@ async fn process_status(
     Ok(())
 }
 
+/// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "implementing".
+async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
+    let addr = format!("http://127.0.0.1:{port}");
+    let channel = Endpoint::try_from(addr)?
+        .connect()
+        .await
+        .context("server is not running — run 'ur server start' first")?;
+    let mut ticket_client = TicketServiceClient::new(channel);
+
+    let resp = ticket_client
+        .get_ticket(GetTicketRequest {
+            id: ticket_id.to_owned(),
+        })
+        .await
+        .with_status_context("get ticket for dispatch")?;
+
+    let ticket = resp
+        .into_inner()
+        .ticket
+        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+
+    if ticket.lifecycle_status != "open" {
+        bail!(
+            "ticket {ticket_id} has lifecycle_status '{}', expected 'open'",
+            ticket.lifecycle_status
+        );
+    }
+
+    ticket_client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            status: None,
+            priority: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            lifecycle_status: Some("implementing".to_owned()),
+            branch: None,
+        })
+        .await
+        .with_status_context("transition ticket to implementing")?;
+
+    info!(ticket_id, "dispatched ticket to implementing");
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(skip(client, output), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
@@ -833,6 +887,7 @@ async fn handle_worker(
             force,
             mode,
             skills,
+            dispatch,
         } => {
             input::validate_id(&ticket_id, "ticket_id")?;
             if let Some(ref p) = project {
@@ -894,6 +949,9 @@ async fn handle_worker(
             if force {
                 debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
                 let _ = process_stop(&mut client, &ticket_id, output).await;
+            }
+            if let Some(ref dispatch_ticket_id) = dispatch {
+                dispatch_ticket(port, dispatch_ticket_id).await?;
             }
             process_launch(
                 &mut client,
