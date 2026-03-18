@@ -14,6 +14,17 @@ async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
     Ok(TicketServiceClient::new(channel))
 }
 
+/// Extract the project prefix from a ticket ID (format: `{project}-{hash}`).
+fn project_from_ticket_id(ticket_id: &str) -> Option<String> {
+    let dash = ticket_id.find('-')?;
+    let project = &ticket_id[..dash];
+    if project.is_empty() {
+        None
+    } else {
+        Some(project.to_owned())
+    }
+}
+
 /// Resolve the project key for commands that require it.
 ///
 /// Resolution order: explicit `--project/-p` flag → `UR_PROJECT` env → current directory name.
@@ -76,6 +87,8 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
         } => {
             let resolved = if all {
                 None
+            } else if project.is_none() && epic.is_some() {
+                epic.as_deref().and_then(project_from_ticket_id)
             } else {
                 Some(resolve_project(project)?)
             };
@@ -89,7 +102,13 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             })
         }
         TicketArgs::Dispatchable { epic_id, project } => {
-            let resolved = resolve_project(project)?;
+            let resolved = if let Some(p) = project {
+                p
+            } else if let Some(p) = project_from_ticket_id(&epic_id) {
+                p
+            } else {
+                resolve_project(None)?
+            };
             Ok(TicketArgs::Dispatchable {
                 epic_id,
                 project: Some(resolved),
