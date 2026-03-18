@@ -627,7 +627,7 @@ impl WorkerManager {
         let worker = workers
             .iter()
             .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         Ok(worker.workspace_path.as_ref().map(PathBuf::from))
     }
 
@@ -642,7 +642,7 @@ impl WorkerManager {
         let worker = workers
             .iter()
             .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown process: {process_id}"))?;
+            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
@@ -827,7 +827,7 @@ mod tests {
         let (mgr, _workspace) = test_manager().await;
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown process"));
+        assert!(result.unwrap_err().contains("unknown worker"));
     }
 
     #[test]

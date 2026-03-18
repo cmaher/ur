@@ -680,7 +680,7 @@ async fn process_status(
 
     if filtered.is_empty() {
         if let Some(id) = worker_id {
-            bail!("unknown process: {id}");
+            bail!("unknown worker: {id}");
         }
         output.print_text("No running workers.");
         return Ok(());
