@@ -309,9 +309,9 @@ impl GithubPollerManager {
                 info!(
                     ticket_id = %ticket.id,
                     pr_number = %pr_number,
-                    "PR closed without merge — stalling ticket"
+                    "PR closed without merge — reverting ticket to open"
                 );
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::Stalled)
+                self.transition_lifecycle(&ticket.id, LifecycleStatus::Open)
                     .await;
             }
             Ok(ReviewSignal::Pending) => {

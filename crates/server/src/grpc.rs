@@ -384,7 +384,7 @@ impl CoreService for CoreServiceHandler {
     }
 }
 
-/// Maximum number of idle re-dispatches before a ticket is stalled.
+/// Maximum number of idle re-dispatches before a ticket is reverted to open.
 const MAX_IDLE_REDISPATCH: i32 = 3;
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -554,10 +554,10 @@ async fn handle_idle_redispatch(
             worker_id = %worker_id,
             ticket_id = %ticket_id,
             count = count,
-            "idle re-dispatch count exceeded threshold — stalling ticket"
+            "idle re-dispatch count exceeded threshold — reverting ticket to open"
         );
         let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_status: Some(LifecycleStatus::Open),
             lifecycle_managed: None,
             status: None,
             type_: None,

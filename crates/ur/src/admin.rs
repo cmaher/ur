@@ -17,7 +17,7 @@ pub enum AdminCommands {
         ticket_id: String,
     },
 
-    /// Move a stalled ticket to a specified lifecycle status, clearing stall_reason
+    /// Move a ticket to a specified lifecycle status, clearing stall_reason metadata
     Redrive {
         /// Ticket ID
         id: String,

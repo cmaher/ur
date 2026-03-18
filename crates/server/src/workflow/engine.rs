@@ -11,7 +11,7 @@ use ur_db::model::LifecycleStatus;
 
 use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Maximum number of processing attempts before an event is stalled.
+/// Maximum number of processing attempts before an event is reverted to open.
 const MAX_ATTEMPTS: i32 = 3;
 
 /// Polling interval for the workflow event table.
@@ -189,9 +189,9 @@ impl WorkflowEngine {
                 transition = %transition,
                 attempts = new_attempts,
                 error = %handler_err,
-                "workflow transition stalled after max attempts"
+                "workflow transition failed after max attempts — reverting to open"
             );
-            self.mark_ticket_stalled(&event.ticket_id).await;
+            self.revert_ticket_to_open(&event.ticket_id).await;
         } else {
             warn!(
                 event_id = %event.id,
@@ -219,10 +219,10 @@ impl WorkflowEngine {
         }
     }
 
-    /// Set a ticket's lifecycle status to Stalled.
-    async fn mark_ticket_stalled(&self, ticket_id: &str) {
+    /// Revert a ticket's lifecycle status to Open after max retry attempts.
+    async fn revert_ticket_to_open(&self, ticket_id: &str) {
         let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_status: Some(LifecycleStatus::Open),
             lifecycle_managed: None,
             status: None,
             type_: None,
@@ -234,7 +234,7 @@ impl WorkflowEngine {
             project: None,
         };
         if let Err(e) = self.ctx.ticket_repo.update_ticket(ticket_id, &update).await {
-            error!(error = %e, "failed to set ticket to stalled");
+            error!(error = %e, "failed to revert ticket to open");
         }
     }
 }
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), MAX_ATTEMPTS as u32);
 
         let t = repo.get_ticket("ur-test3").await.unwrap().unwrap();
-        assert_eq!(t.lifecycle_status, LifecycleStatus::Stalled);
+        assert_eq!(t.lifecycle_status, LifecycleStatus::Open);
     }
 
     #[tokio::test]
