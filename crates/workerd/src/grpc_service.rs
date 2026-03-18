@@ -123,6 +123,9 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         info!("Push received, sending skill invocation to tmux");
 
         let session = tmux::Session::agent();
+        if let Err(e) = session.send_keys("/clear").await {
+            error!(error = %e, "tmux send-keys failed for /clear before /push");
+        }
         if let Err(e) = session.send_keys(skill_command).await {
             error!(error = %e, "tmux send-keys failed for /push");
         }
@@ -143,6 +146,9 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         );
 
         let session = tmux::Session::agent();
+        if let Err(e) = session.send_keys("/clear").await {
+            error!(error = %e, "tmux send-keys failed for /clear before /create-feedback");
+        }
         if let Err(e) = session.send_keys(&skill_command).await {
             error!(error = %e, "tmux send-keys failed for /create-feedback");
         }
