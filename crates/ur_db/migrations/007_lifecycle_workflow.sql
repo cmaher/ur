@@ -1,6 +1,7 @@
--- Add lifecycle_status and branch columns to ticket.
+-- Add lifecycle_status, branch, and lifecycle_managed columns to ticket.
 ALTER TABLE ticket ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'open';
 ALTER TABLE ticket ADD COLUMN branch TEXT;
+ALTER TABLE ticket ADD COLUMN lifecycle_managed BOOLEAN NOT NULL DEFAULT 0;
 
 -- Workflow event table to track lifecycle transitions.
 CREATE TABLE workflow_event (

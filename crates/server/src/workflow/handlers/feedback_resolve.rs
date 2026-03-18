@@ -131,6 +131,7 @@ async fn close_ticket(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), anyh
     let update = TicketUpdate {
         status: Some("closed".to_string()),
         lifecycle_status: Some(LifecycleStatus::Done),
+        lifecycle_managed: None,
         type_: None,
         priority: None,
         title: None,
@@ -191,6 +192,7 @@ async fn resolve_feedback_later(
 
             let update = TicketUpdate {
                 lifecycle_status: Some(LifecycleStatus::Pushing),
+                lifecycle_managed: None,
                 status: None,
                 type_: None,
                 priority: None,
@@ -242,6 +244,7 @@ async fn resolve_feedback_later(
             // Clear any inherited branch so they start fresh.
             let update = TicketUpdate {
                 lifecycle_status: Some(LifecycleStatus::Open),
+                lifecycle_managed: None,
                 branch: Some(None),
                 status: None,
                 type_: None,
@@ -290,6 +293,7 @@ async fn resolve_feedback_now(
             branch: Some(Some(branch.clone())),
             status: None,
             lifecycle_status: None,
+            lifecycle_managed: None,
             type_: None,
             priority: None,
             title: None,
@@ -317,6 +321,7 @@ async fn resolve_feedback_now(
             branch: Some(Some(branch.clone())),
             status: None,
             lifecycle_status: None,
+            lifecycle_managed: None,
             type_: None,
             priority: None,
             title: None,
@@ -332,6 +337,7 @@ async fn resolve_feedback_now(
     // 3. Transition follow-up epic to implementing (triggers DispatchImplement).
     let update = TicketUpdate {
         lifecycle_status: Some(LifecycleStatus::Implementing),
+        lifecycle_managed: None,
         status: None,
         type_: None,
         priority: None,

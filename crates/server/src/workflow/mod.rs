@@ -8,6 +8,7 @@ pub use github_poller::GithubPollerManager;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
@@ -53,3 +54,6 @@ pub trait WorkflowHandler: Send + Sync {
         transition: &TransitionKey,
     ) -> HandlerFuture<'_>;
 }
+
+/// A handler registration entry: `(from_status, to_status, handler)`.
+pub type HandlerEntry = (LifecycleStatus, LifecycleStatus, Arc<dyn WorkflowHandler>);

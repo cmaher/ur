@@ -227,6 +227,7 @@ async fn run_migration(
                         lifecycle_status: None,
                         branch: None,
                         project: None,
+                        lifecycle_managed: None,
                     })
                     .await
                     .map_err(|e| format!("update_ticket {}: {e}", f.id))?;

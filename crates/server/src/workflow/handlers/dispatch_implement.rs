@@ -49,6 +49,7 @@ impl WorkflowHandler for DispatchImplementHandler {
                     branch: Some(Some(new_branch.clone())),
                     status: None,
                     lifecycle_status: None,
+                    lifecycle_managed: None,
                     type_: None,
                     priority: None,
                     title: None,

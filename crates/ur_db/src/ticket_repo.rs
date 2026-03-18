@@ -59,6 +59,7 @@ impl TicketRepo {
             type_: ticket.type_.clone(),
             status: status.to_owned(),
             lifecycle_status,
+            lifecycle_managed: false,
             priority: ticket.priority,
             parent_id: ticket.parent_id.clone(),
             title: ticket.title.clone(),
@@ -78,6 +79,7 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                bool,
                 i32,
                 Option<String>,
                 String,
@@ -87,7 +89,7 @@ impl TicketRepo {
                 String,
             ),
         >(
-            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
              FROM ticket WHERE id = ?",
         )
         .bind(id)
@@ -101,6 +103,7 @@ impl TicketRepo {
                 type_,
                 status,
                 lifecycle_status_str,
+                lifecycle_managed,
                 priority,
                 parent_id,
                 title,
@@ -117,6 +120,7 @@ impl TicketRepo {
                     lifecycle_status: lifecycle_status_str
                         .parse::<LifecycleStatus>()
                         .unwrap_or_default(),
+                    lifecycle_managed,
                     priority,
                     parent_id,
                     title,
@@ -141,6 +145,9 @@ impl TicketRepo {
 
         let status = update.status.as_deref().unwrap_or(&existing.status);
         let lifecycle_status = update.lifecycle_status.unwrap_or(existing.lifecycle_status);
+        let lifecycle_managed = update
+            .lifecycle_managed
+            .unwrap_or(existing.lifecycle_managed);
         let type_ = update.type_.as_deref().unwrap_or(&existing.type_);
         let priority = update.priority.unwrap_or(existing.priority);
         let title = update.title.as_deref().unwrap_or(&existing.title);
@@ -157,12 +164,13 @@ impl TicketRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, project = ?, updated_at = ?
+            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, lifecycle_managed = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, project = ?, updated_at = ?
              WHERE id = ?",
         )
         .bind(type_)
         .bind(status)
         .bind(lifecycle_status.as_str())
+        .bind(lifecycle_managed)
         .bind(priority)
         .bind(title)
         .bind(body)
@@ -180,6 +188,7 @@ impl TicketRepo {
             type_: type_.to_owned(),
             status: status.to_owned(),
             lifecycle_status,
+            lifecycle_managed,
             priority,
             parent_id: parent_id.map(|s| s.to_owned()),
             title: title.to_owned(),
@@ -192,7 +201,7 @@ impl TicketRepo {
 
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = String::from(
-            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at FROM ticket WHERE 1=1",
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at FROM ticket WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
 
@@ -227,6 +236,7 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                bool,
                 i32,
                 Option<String>,
                 String,
@@ -251,6 +261,7 @@ impl TicketRepo {
                     type_,
                     status,
                     lifecycle_status_str,
+                    lifecycle_managed,
                     priority,
                     parent_id,
                     title,
@@ -267,6 +278,7 @@ impl TicketRepo {
                         lifecycle_status: lifecycle_status_str
                             .parse::<LifecycleStatus>()
                             .unwrap_or_default(),
+                        lifecycle_managed,
                         priority,
                         parent_id,
                         title,
@@ -672,6 +684,7 @@ impl TicketRepo {
                 String,
                 String,
                 String,
+                bool,
                 i32,
                 Option<String>,
                 String,
@@ -681,7 +694,7 @@ impl TicketRepo {
                 String,
             ),
         >(
-            "SELECT id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
              FROM ticket
              WHERE lifecycle_status = ?
              ORDER BY priority ASC, created_at ASC",
@@ -699,6 +712,7 @@ impl TicketRepo {
                     type_,
                     status,
                     lifecycle_status_str,
+                    lifecycle_managed,
                     priority,
                     parent_id,
                     title,
@@ -715,6 +729,7 @@ impl TicketRepo {
                         lifecycle_status: lifecycle_status_str
                             .parse::<LifecycleStatus>()
                             .unwrap_or_default(),
+                        lifecycle_managed,
                         priority,
                         parent_id,
                         title,

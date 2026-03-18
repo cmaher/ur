@@ -9,7 +9,7 @@ use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
 
-use super::{TransitionKey, WorkflowContext, WorkflowHandler};
+use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
 /// Maximum number of processing attempts before an event is stalled.
 const MAX_ATTEMPTS: i32 = 3;
@@ -29,27 +29,23 @@ pub struct WorkflowEngine {
 }
 
 impl WorkflowEngine {
-    pub fn new(ticket_repo: TicketRepo, worker_repo: WorkerRepo, worker_prefix: String) -> Self {
+    pub fn new(
+        ticket_repo: TicketRepo,
+        worker_repo: WorkerRepo,
+        worker_prefix: String,
+        handler_entries: Vec<HandlerEntry>,
+    ) -> Self {
         let ctx = WorkflowContext {
             ticket_repo,
             worker_repo,
             worker_prefix,
         };
-        Self {
-            ctx,
-            handlers: HashMap::new(),
+        let mut handlers = HashMap::new();
+        for (from, to, handler) in handler_entries {
+            let key = TransitionKey { from, to };
+            handlers.insert(key, handler);
         }
-    }
-
-    /// Register a handler for a specific lifecycle transition.
-    pub fn register_handler(
-        &mut self,
-        from: LifecycleStatus,
-        to: LifecycleStatus,
-        handler: Arc<dyn WorkflowHandler>,
-    ) {
-        let key = TransitionKey { from, to };
-        self.handlers.insert(key, handler);
+        Self { ctx, handlers }
     }
 
     /// Spawn the polling loop as a background tokio task.
@@ -113,6 +109,17 @@ impl WorkflowEngine {
                 return;
             }
         };
+
+        // If the ticket is not lifecycle-managed, delete the event and skip.
+        if !ticket.lifecycle_managed {
+            info!(
+                event_id = %event.id,
+                ticket_id = %event.ticket_id,
+                "ticket is not lifecycle-managed — deleting workflow event"
+            );
+            self.delete_event(&event.id).await;
+            return;
+        }
 
         // If the ticket's lifecycle_status doesn't match the transition's
         // target status, a newer transition has superseded this one — skip it.
@@ -214,6 +221,7 @@ impl WorkflowEngine {
     async fn mark_ticket_stalled(&self, ticket_id: &str) {
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Stalled),
+            lifecycle_managed: None,
             status: None,
             type_: None,
             priority: None,
@@ -292,6 +300,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -308,15 +317,18 @@ mod tests {
         assert!(event.is_some(), "workflow event should exist");
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
-        engine.register_handler(
-            LifecycleStatus::Open,
-            LifecycleStatus::Implementing,
-            Arc::new(CountingHandler {
-                call_count: call_count.clone(),
-                should_fail: false,
-            }),
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            vec![(
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+                Arc::new(CountingHandler {
+                    call_count: call_count.clone(),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
         );
 
         engine.poll_once().await;
@@ -349,6 +361,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -361,15 +374,18 @@ mod tests {
         repo.update_ticket("ur-test2", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
-        engine.register_handler(
-            LifecycleStatus::Open,
-            LifecycleStatus::Implementing,
-            Arc::new(CountingHandler {
-                call_count: call_count.clone(),
-                should_fail: true,
-            }),
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            vec![(
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+                Arc::new(CountingHandler {
+                    call_count: call_count.clone(),
+                    should_fail: true,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
         );
 
         engine.poll_once().await;
@@ -398,6 +414,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -410,15 +427,18 @@ mod tests {
         repo.update_ticket("ur-test3", &update).await.unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
-        let mut engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
-        engine.register_handler(
-            LifecycleStatus::Open,
-            LifecycleStatus::Implementing,
-            Arc::new(CountingHandler {
-                call_count: call_count.clone(),
-                should_fail: true,
-            }),
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            vec![(
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+                Arc::new(CountingHandler {
+                    call_count: call_count.clone(),
+                    should_fail: true,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
         );
 
         for _ in 0..MAX_ATTEMPTS {
@@ -449,6 +469,7 @@ mod tests {
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
             status: None,
             type_: None,
             priority: None,
@@ -460,8 +481,12 @@ mod tests {
         };
         repo.update_ticket("ur-test4", &update).await.unwrap();
 
-        let engine =
-            WorkflowEngine::new(repo.clone(), worker_repo.clone(), "ur-worker-".to_string());
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            vec![],
+        );
 
         engine.poll_once().await;
 

@@ -124,6 +124,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
             branch: None,
             parent_id: None,
             project: None,
+            lifecycle_managed: None,
         },
     )
     .await
@@ -337,6 +338,7 @@ async fn update_ticket_partial_fields() {
                 branch: None,
                 parent_id: None,
                 project: None,
+                lifecycle_managed: None,
             },
         )
         .await
@@ -395,6 +397,7 @@ async fn update_ticket_clear_parent() {
                 branch: None,
                 parent_id: Some(None),
                 project: None,
+                lifecycle_managed: None,
             },
         )
         .await
@@ -426,6 +429,7 @@ async fn update_nonexistent_ticket_returns_error() {
                 branch: None,
                 parent_id: None,
                 project: None,
+                lifecycle_managed: None,
             },
         )
         .await;
@@ -931,6 +935,7 @@ async fn dispatchable_tickets_unblocked_after_closing_blockers() {
             branch: None,
             parent_id: None,
             project: None,
+            lifecycle_managed: None,
         },
     )
     .await
@@ -948,6 +953,7 @@ async fn dispatchable_tickets_unblocked_after_closing_blockers() {
             branch: None,
             parent_id: None,
             project: None,
+            lifecycle_managed: None,
         },
     )
     .await
@@ -1033,6 +1039,7 @@ async fn epic_all_children_closed_true_when_all_closed() {
                 branch: None,
                 parent_id: None,
                 project: None,
+                lifecycle_managed: None,
             },
         )
         .await
