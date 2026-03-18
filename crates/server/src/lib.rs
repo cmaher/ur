@@ -5,6 +5,8 @@ pub mod config;
 pub mod grpc;
 #[cfg(feature = "hostexec")]
 pub mod grpc_hostexec;
+#[cfg(feature = "remote_repo")]
+pub mod grpc_remote_repo;
 pub mod grpc_server;
 #[cfg(feature = "ticket")]
 pub mod grpc_ticket;

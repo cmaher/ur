@@ -259,6 +259,11 @@ async fn main() -> anyhow::Result<()> {
         ticket_handler.clone(),
     );
 
+    #[cfg(feature = "remote_repo")]
+    let remote_repo_handler = ur_server::grpc_remote_repo::RemoteRepoServiceHandler {
+        builderd_addr: builderd_addr.clone(),
+    };
+
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         worker_manager,
@@ -276,6 +281,8 @@ async fn main() -> anyhow::Result<()> {
         rag_handler,
         #[cfg(feature = "ticket")]
         ticket_handler,
+        #[cfg(feature = "remote_repo")]
+        remote_repo_handler,
     );
 
     let result = tokio::try_join!(host_server, worker_server).map(|_| ());

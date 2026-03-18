@@ -25,21 +25,23 @@ mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
 rag = { path = "../rag" }
+remote_repo = { path = "../remote_repo", optional = true }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 ur_utils = { path = "../ur_utils" }
 serde_json.workspace = true
 
 [features]
-default = ["core", "hostexec", "builder", "rag", "ticket", "workerd"]
+default = ["core", "hostexec", "builder", "rag", "ticket", "workerd", "remote_repo"]
 core = ["ur_rpc/core"]
 hostexec = ["ur_rpc/hostexec", "builder"]
 builder = ["ur_rpc/builder"]
 rag = ["ur_rpc/rag"]
 ticket = ["ur_rpc/ticket"]
 workerd = ["ur_rpc/workerd"]
+remote_repo = ["ur_rpc/remote_repo", "dep:remote_repo"]
 temporal = ["ur_rpc/temporal"]
 
 [dev-dependencies]
 futures = "0.3"
 tempfile = "3"
-ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "builder", "ticket", "workerd"] }
+ur_rpc = { path = "../ur_rpc", features = ["core", "hostexec", "builder", "ticket", "workerd", "remote_repo"] }
