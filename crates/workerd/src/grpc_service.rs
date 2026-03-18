@@ -5,7 +5,9 @@ use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    NotifyIdleRequest, NotifyIdleResponse, SendMessageRequest, SendMessageResponse,
+    CreateFeedbackRequest, CreateFeedbackResponse, ImplementRequest, ImplementResponse,
+    NotifyIdleRequest, NotifyIdleResponse, PushRequest, PushResponse, SendMessageRequest,
+    SendMessageResponse,
 };
 
 #[derive(Clone)]
@@ -95,5 +97,56 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         });
 
         Ok(Response::new(NotifyIdleResponse {}))
+    }
+
+    async fn implement(
+        &self,
+        request: Request<ImplementRequest>,
+    ) -> Result<Response<ImplementResponse>, Status> {
+        let ticket_id = &request.into_inner().ticket_id;
+        let skill_command = format!("/implement {ticket_id}");
+        info!(
+            ticket_id,
+            "Implement received, sending skill invocation to tmux"
+        );
+
+        let session = tmux::Session::from_name("agent");
+        if let Err(e) = session.send_keys(&skill_command).await {
+            error!(error = %e, "tmux send-keys failed for /implement");
+        }
+
+        Ok(Response::new(ImplementResponse {}))
+    }
+
+    async fn push(&self, _request: Request<PushRequest>) -> Result<Response<PushResponse>, Status> {
+        let skill_command = "/push";
+        info!("Push received, sending skill invocation to tmux");
+
+        let session = tmux::Session::from_name("agent");
+        if let Err(e) = session.send_keys(skill_command).await {
+            error!(error = %e, "tmux send-keys failed for /push");
+        }
+
+        Ok(Response::new(PushResponse {}))
+    }
+
+    async fn create_feedback_tickets(
+        &self,
+        request: Request<CreateFeedbackRequest>,
+    ) -> Result<Response<CreateFeedbackResponse>, Status> {
+        let inner = request.into_inner();
+        let skill_command = format!("/create-feedback {} {}", inner.ticket_id, inner.pr_number);
+        info!(
+            ticket_id = inner.ticket_id,
+            pr_number = inner.pr_number,
+            "CreateFeedbackTickets received, sending skill invocation to tmux"
+        );
+
+        let session = tmux::Session::from_name("agent");
+        if let Err(e) = session.send_keys(&skill_command).await {
+            error!(error = %e, "tmux send-keys failed for /create-feedback");
+        }
+
+        Ok(Response::new(CreateFeedbackResponse {}))
     }
 }

@@ -62,6 +62,10 @@ pub enum TicketOutput {
         id: String,
         linked_id: String,
     },
+    Approved {
+        id: String,
+        feedback_mode: String,
+    },
     Dispatchable {
         epic_id: String,
         tickets: Vec<DispatchableTicket>,
@@ -109,6 +113,9 @@ pub fn format_output(output: &TicketOutput) -> String {
         }
         TicketOutput::LinkAdded { id, linked_id } => format!("Linked {id} <-> {linked_id}"),
         TicketOutput::LinkRemoved { id, linked_id } => format!("Unlinked {id} <-> {linked_id}"),
+        TicketOutput::Approved { id, feedback_mode } => {
+            format!("Approved {id} (feedback_mode={feedback_mode})")
+        }
         TicketOutput::Dispatchable { epic_id, tickets } => {
             if tickets.is_empty() {
                 format!("No dispatchable tickets for {epic_id}.")
@@ -146,6 +153,7 @@ mod tests {
                 parent,
                 priority,
                 body,
+                wip,
             } => {
                 assert_eq!(title, "My new ticket");
                 assert!(project.is_none());
@@ -153,6 +161,7 @@ mod tests {
                 assert!(parent.is_none());
                 assert_eq!(priority, 0);
                 assert_eq!(body, "");
+                assert!(!wip);
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -183,6 +192,7 @@ mod tests {
                 parent,
                 priority,
                 body,
+                wip,
             } => {
                 assert_eq!(title, "Epic title");
                 assert_eq!(project.as_deref(), Some("myproj"));
@@ -190,6 +200,7 @@ mod tests {
                 assert_eq!(parent.as_deref(), Some("ur-abc12"));
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
+                assert!(!wip);
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -205,12 +216,14 @@ mod tests {
                 epic,
                 ticket_type,
                 status,
+                lifecycle,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
                 assert!(epic.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
+                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -229,12 +242,14 @@ mod tests {
                 epic,
                 ticket_type,
                 status,
+                lifecycle,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
                 assert_eq!(epic.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
+                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -274,6 +289,9 @@ mod tests {
                 parent,
                 no_parent,
                 force,
+                lifecycle,
+                branch,
+                no_branch,
             } => {
                 assert_eq!(id, "ur-abc12");
                 assert!(title.is_none());
@@ -284,6 +302,9 @@ mod tests {
                 assert!(parent.is_none());
                 assert!(!no_parent);
                 assert!(!force);
+                assert!(lifecycle.is_none());
+                assert!(branch.is_none());
+                assert!(!no_branch);
             }
             other => panic!("expected Update, got {other:?}"),
         }
@@ -390,9 +411,14 @@ mod tests {
     fn test_add_link() {
         let cmd = parse(&["ticket", "add-link", "ur-abc12", "ur-def34"]);
         match cmd.command {
-            super::TicketArgs::AddLink { id, linked_id } => {
+            super::TicketArgs::AddLink {
+                id,
+                linked_id,
+                edge,
+            } => {
                 assert_eq!(id, "ur-abc12");
                 assert_eq!(linked_id, "ur-def34");
+                assert_eq!(edge, "relates_to");
             }
             other => panic!("expected AddLink, got {other:?}"),
         }
@@ -407,6 +433,80 @@ mod tests {
                 assert_eq!(linked_id, "ur-def34");
             }
             other => panic!("expected RemoveLink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_feedback_now() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12", "--feedback-now"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(feedback_now);
+                assert!(!feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_feedback_later() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12", "--feedback-later"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(!feedback_now);
+                assert!(feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_approve_default() {
+        let cmd = parse(&["ticket", "approve", "ur-abc12"]);
+        match cmd.command {
+            super::TicketArgs::Approve {
+                id,
+                feedback_now,
+                feedback_later,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert!(!feedback_now);
+                assert!(!feedback_later);
+            }
+            other => panic!("expected Approve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_with_lifecycle() {
+        let cmd = parse(&["ticket", "list", "--lifecycle", "implementing"]);
+        match cmd.command {
+            super::TicketArgs::List { lifecycle, .. } => {
+                assert_eq!(lifecycle.as_deref(), Some("implementing"));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_create_wip() {
+        let cmd = parse(&["ticket", "create", "WIP ticket", "--wip"]);
+        match cmd.command {
+            super::TicketArgs::Create { title, wip, .. } => {
+                assert_eq!(title, "WIP ticket");
+                assert!(wip);
+            }
+            other => panic!("expected Create, got {other:?}"),
         }
     }
 

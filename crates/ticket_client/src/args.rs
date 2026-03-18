@@ -27,6 +27,10 @@ pub enum TicketArgs {
         /// Ticket body text
         #[arg(long, default_value = "")]
         body: String,
+
+        /// Create as work-in-progress (sets lifecycle_status to design)
+        #[arg(long)]
+        wip: bool,
     },
 
     /// List tickets with optional filters
@@ -50,6 +54,10 @@ pub enum TicketArgs {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
+
+        /// Filter by lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        #[arg(long)]
+        lifecycle: Option<String>,
     },
 
     /// Show a ticket's full detail
@@ -95,6 +103,18 @@ pub enum TicketArgs {
         /// Force the update (e.g. close an epic with open children)
         #[arg(long)]
         force: bool,
+
+        /// New lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        #[arg(long)]
+        lifecycle: Option<String>,
+
+        /// New branch name (use --no-branch to clear)
+        #[arg(long, conflicts_with = "no_branch")]
+        branch: Option<String>,
+
+        /// Clear the branch
+        #[arg(long, conflicts_with = "branch")]
+        no_branch: bool,
     },
 
     /// Set a metadata key-value pair on a ticket
@@ -162,6 +182,10 @@ pub enum TicketArgs {
 
         /// Second ticket ID
         linked_id: String,
+
+        /// Edge kind: relates_to (default), follow_up
+        #[arg(long, default_value = "relates_to")]
+        edge: String,
     },
 
     /// Remove a bidirectional link between tickets
@@ -181,6 +205,20 @@ pub enum TicketArgs {
         /// Project key
         #[arg(short, long)]
         project: Option<String>,
+    },
+
+    /// Approve a ticket (transition lifecycle from in_review to feedback_creating)
+    Approve {
+        /// Ticket ID
+        id: String,
+
+        /// Create feedback tickets immediately after approval
+        #[arg(long, group = "feedback_timing")]
+        feedback_now: bool,
+
+        /// Defer feedback ticket creation to later
+        #[arg(long, group = "feedback_timing")]
+        feedback_later: bool,
     },
 
     /// Close a ticket (sugar for `update <id> --status closed`)

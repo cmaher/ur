@@ -27,6 +27,7 @@ toml = "0.8"
 rag = { path = "../rag" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 ur_utils = { path = "../ur_utils" }
+serde_json.workspace = true
 
 [features]
 default = ["core", "hostexec", "builder", "rag", "ticket", "workerd"]

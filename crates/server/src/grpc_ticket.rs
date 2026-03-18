@@ -4,8 +4,10 @@ use tonic::{Code, Request, Response, Status};
 use tracing::info;
 use uuid::Uuid;
 
-use ur_db::{EdgeKind, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
-use ur_rpc::error::{self, DOMAIN_TICKET, INTERNAL, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN};
+use ur_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
+use ur_rpc::error::{
+    self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN,
+};
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
@@ -23,6 +25,9 @@ pub enum TicketError {
 
     #[error("ticket {id} has open children; close them first or use --force")]
     HasOpenChildren { id: String, children: Vec<String> },
+
+    #[error("validation error: {0}")]
+    Validation(String),
 
     #[error("database error: {0}")]
     Db(String),
@@ -57,6 +62,13 @@ impl From<TicketError> for Status {
                     meta,
                 )
             }
+            TicketError::Validation(_) => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_TICKET,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
             TicketError::Db(_) => error::status_with_info(
                 Code::Internal,
                 err.to_string(),
@@ -97,6 +109,12 @@ impl TicketService for TicketServiceHandler {
         };
         let created_at = req.created_at.filter(|s| !s.is_empty());
 
+        let lifecycle_status = if req.wip {
+            Some(LifecycleStatus::Design)
+        } else {
+            None
+        };
+
         let new_ticket = NewTicket {
             id: id.clone(),
             project: req.project,
@@ -106,6 +124,8 @@ impl TicketService for TicketServiceHandler {
             title: req.title,
             body: req.body,
             status,
+            lifecycle_status,
+            branch: None,
             created_at,
         };
 
@@ -148,6 +168,8 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
+                        lifecycle_status: String::new(),
+                        branch: String::new(),
                     })
                     .collect()
             }
@@ -170,15 +192,23 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
+                        lifecycle_status: String::new(),
+                        branch: String::new(),
                     })
                     .collect()
             }
             _ => {
+                let lifecycle_status = req
+                    .lifecycle_status
+                    .filter(|s| !s.is_empty())
+                    .and_then(|s| s.parse::<LifecycleStatus>().ok());
+
                 let filter = TicketFilter {
                     project: req.project.filter(|s| !s.is_empty()),
                     status: req.status.filter(|s| !s.is_empty()),
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
                     parent_id: req.parent_id.filter(|s| !s.is_empty()),
+                    lifecycle_status,
                 };
 
                 let db_tickets = self
@@ -200,6 +230,8 @@ impl TicketService for TicketServiceHandler {
                         created_at: t.created_at,
                         updated_at: t.updated_at,
                         project: t.project,
+                        lifecycle_status: t.lifecycle_status.to_string(),
+                        branch: t.branch.unwrap_or_default(),
                     })
                     .collect()
             }
@@ -245,6 +277,8 @@ impl TicketService for TicketServiceHandler {
             created_at: t.created_at,
             updated_at: t.updated_at,
             project: t.project,
+            lifecycle_status: t.lifecycle_status.to_string(),
+            branch: t.branch.unwrap_or_default(),
         };
 
         let metadata: Vec<_> = meta
@@ -282,12 +316,26 @@ impl TicketService for TicketServiceHandler {
             Some(s) => Some(Some(s)),
         };
 
+        let lifecycle_status = req
+            .lifecycle_status
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<LifecycleStatus>().ok());
+
+        let branch = match req.branch {
+            None => None,
+            Some(ref s) if s == "NONE" => Some(None),
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(Some(s)),
+        };
+
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
+            lifecycle_status,
             type_: req.ticket_type.filter(|s| !s.is_empty()),
             priority: req.priority.map(|p| p as i32),
             title: req.title.filter(|s| !s.is_empty()),
             body: req.body.filter(|s| !s.is_empty()),
+            branch,
             parent_id,
         };
 
@@ -386,10 +434,18 @@ impl TicketService for TicketServiceHandler {
         req: Request<AddLinkRequest>,
     ) -> Result<Response<AddLinkResponse>, Status> {
         let req = req.into_inner();
-        info!(left = %req.left_id, right = %req.right_id, "add_link request");
+        let edge_kind_str = req.edge_kind.as_deref().unwrap_or("relates_to");
+        let edge_kind = match edge_kind_str {
+            "relates_to" => EdgeKind::RelatesTo,
+            "follow_up" => EdgeKind::FollowUp,
+            other => {
+                return Err(TicketError::Validation(format!("unknown edge kind: {other}")).into());
+            }
+        };
+        info!(left = %req.left_id, right = %req.right_id, edge_kind = edge_kind_str, "add_link request");
 
         self.ticket_repo
-            .add_edge(&req.left_id, &req.right_id, EdgeKind::RelatesTo)
+            .add_edge(&req.left_id, &req.right_id, edge_kind)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 

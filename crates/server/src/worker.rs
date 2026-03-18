@@ -250,6 +250,8 @@ pub struct WorkerManager {
     worker_port: u16,
     prompt_modes: PromptModesConfig,
     worker_repo: WorkerRepo,
+    /// Pre-push verification scripts from `[workflow]` config.
+    verification_scripts: Vec<String>,
 }
 
 impl WorkerManager {
@@ -263,6 +265,7 @@ impl WorkerManager {
         worker_port: u16,
         prompt_modes: PromptModesConfig,
         worker_repo: WorkerRepo,
+        verification_scripts: Vec<String>,
     ) -> Self {
         Self {
             workspace,
@@ -273,6 +276,7 @@ impl WorkerManager {
             worker_port,
             prompt_modes,
             worker_repo,
+            verification_scripts,
         }
     }
 
@@ -359,6 +363,7 @@ impl WorkerManager {
             workspace_path: slot_path.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -472,6 +477,14 @@ impl WorkerManager {
             env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
         }
 
+        // Inject pre-push verification scripts (newline-separated)
+        if !self.verification_scripts.is_empty() {
+            env_vars.push((
+                ur_config::UR_VERIFICATION_SCRIPTS_ENV.into(),
+                self.verification_scripts.join("\n"),
+            ));
+        }
+
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
@@ -516,6 +529,7 @@ impl WorkerManager {
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
             created_at: now.clone(),
             updated_at: now,
+            idle_redispatch_count: 0,
         };
         self.worker_repo
             .insert_worker(&worker)
@@ -708,6 +722,7 @@ mod tests {
             },
             worker_port: ur_config::DEFAULT_DAEMON_PORT + 1,
             git_branch_prefix: String::new(),
+            workflow: ur_config::WorkflowConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }
@@ -749,6 +764,7 @@ mod tests {
             ur_config::DEFAULT_DAEMON_PORT + 1,
             PromptModesConfig::default(),
             worker_repo,
+            Vec::new(),
         );
         (mgr, workspace)
     }
@@ -911,7 +927,7 @@ mod tests {
     fn prompt_modes_default_has_code_and_design() {
         let cfg = PromptModesConfig::default();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"ship".to_string()));
+        assert!(code.contains(&"push".to_string()));
         let design = cfg.resolve_skills("design", &[]).unwrap();
         assert!(design.contains(&"design".to_string()));
     }
@@ -958,7 +974,7 @@ skills = ["a", "b"]
         let toml = "daemon_port = 5000\n";
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
         let code = cfg.resolve_skills("", &[]).unwrap();
-        assert!(code.contains(&"ship".to_string()));
+        assert!(code.contains(&"push".to_string()));
     }
 
     #[test]

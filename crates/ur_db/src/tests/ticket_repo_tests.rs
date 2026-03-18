@@ -116,10 +116,12 @@ async fn populated_db() -> (TestDb, TicketRepo) {
         "task-1c",
         &TicketUpdate {
             status: Some("closed".into()),
+            lifecycle_status: None,
             type_: None,
             priority: None,
             title: None,
             body: None,
+            branch: None,
             parent_id: None,
         },
     )
@@ -326,10 +328,12 @@ async fn update_ticket_partial_fields() {
             "t-upd",
             &TicketUpdate {
                 status: Some("in_progress".into()),
+                lifecycle_status: None,
                 type_: None,
                 priority: None,
                 title: Some("Updated Title".into()),
                 body: None,
+                branch: None,
                 parent_id: None,
             },
         )
@@ -381,10 +385,12 @@ async fn update_ticket_clear_parent() {
             "child",
             &TicketUpdate {
                 status: None,
+                lifecycle_status: None,
                 type_: None,
                 priority: None,
                 title: None,
                 body: None,
+                branch: None,
                 parent_id: Some(None),
             },
         )
@@ -409,10 +415,12 @@ async fn update_nonexistent_ticket_returns_error() {
             "no-such",
             &TicketUpdate {
                 status: Some("closed".into()),
+                lifecycle_status: None,
                 type_: None,
                 priority: None,
                 title: None,
                 body: None,
+                branch: None,
                 parent_id: None,
             },
         )
@@ -437,6 +445,7 @@ async fn list_tickets_no_filter() {
             status: None,
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -457,6 +466,7 @@ async fn list_tickets_filter_by_status() {
             status: Some("closed".into()),
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -477,6 +487,7 @@ async fn list_tickets_filter_by_type() {
             status: None,
             type_: Some("epic".into()),
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -496,6 +507,7 @@ async fn list_tickets_filter_by_parent() {
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -520,6 +532,7 @@ async fn list_tickets_combined_filters() {
             status: Some("open".into()),
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -542,6 +555,7 @@ async fn list_tickets_ordered_by_priority() {
             status: None,
             type_: None,
             parent_id: Some("epic-1".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -905,10 +919,12 @@ async fn dispatchable_tickets_unblocked_after_closing_blockers() {
         "task-1a",
         &TicketUpdate {
             status: Some("closed".into()),
+            lifecycle_status: None,
             type_: None,
             priority: None,
             title: None,
             body: None,
+            branch: None,
             parent_id: None,
         },
     )
@@ -919,10 +935,12 @@ async fn dispatchable_tickets_unblocked_after_closing_blockers() {
         "task-2a",
         &TicketUpdate {
             status: Some("closed".into()),
+            lifecycle_status: None,
             type_: None,
             priority: None,
             title: None,
             body: None,
+            branch: None,
             parent_id: None,
         },
     )
@@ -1001,10 +1019,12 @@ async fn epic_all_children_closed_true_when_all_closed() {
             id,
             &TicketUpdate {
                 status: Some("closed".into()),
+                lifecycle_status: None,
                 type_: None,
                 priority: None,
                 title: None,
                 body: None,
+                branch: None,
                 parent_id: None,
             },
         )
@@ -1100,6 +1120,7 @@ async fn hierarchy_children_of_epic() {
             status: None,
             type_: None,
             parent_id: Some("epic-2".into()),
+            lifecycle_status: None,
         })
         .await
         .unwrap();
@@ -1124,6 +1145,7 @@ async fn hierarchy_top_level_tickets() {
             status: None,
             type_: None,
             parent_id: None,
+            lifecycle_status: None,
         })
         .await
         .unwrap();

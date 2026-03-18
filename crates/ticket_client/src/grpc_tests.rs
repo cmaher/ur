@@ -58,6 +58,12 @@ impl TicketService for MockTicketStore {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             project: req.project,
+            lifecycle_status: if req.wip {
+                "design".into()
+            } else {
+                "open".into()
+            },
+            branch: String::new(),
         };
         self.inner
             .lock()
@@ -180,6 +186,16 @@ impl TicketService for MockTicketStore {
             Some(pid) => ticket.parent_id = pid,
             None => {}
         }
+        if let Some(ls) = req.lifecycle_status
+            && !ls.is_empty()
+        {
+            ticket.lifecycle_status = ls;
+        }
+        match req.branch {
+            Some(ref s) if s == "NONE" => ticket.branch = String::new(),
+            Some(b) if !b.is_empty() => ticket.branch = b,
+            _ => {}
+        }
         Ok(Response::new(UpdateTicketResponse {}))
     }
 
@@ -239,11 +255,11 @@ impl TicketService for MockTicketStore {
         req: Request<AddLinkRequest>,
     ) -> Result<Response<AddLinkResponse>, Status> {
         let req = req.into_inner();
-        self.inner
-            .lock()
-            .unwrap()
-            .edges
-            .push((req.left_id, req.right_id, "relates_to".into()));
+        self.inner.lock().unwrap().edges.push((
+            req.left_id,
+            req.right_id,
+            req.edge_kind.unwrap_or_else(|| "relates_to".into()),
+        ));
         Ok(Response::new(AddLinkResponse {}))
     }
 
@@ -365,6 +381,7 @@ async fn execute_create_and_show() {
             parent: None,
             priority: 2,
             body: "Body text".into(),
+            wip: false,
         },
         &mut client,
     )
@@ -379,6 +396,7 @@ async fn execute_create_and_show() {
             epic: None,
             ticket_type: None,
             status: None,
+            lifecycle: None,
         },
         &mut client,
     )
@@ -400,6 +418,7 @@ async fn execute_create_and_list_filtered() {
             parent: None,
             priority: 1,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -421,6 +440,7 @@ async fn execute_create_and_list_filtered() {
             parent: None,
             priority: 2,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -435,6 +455,7 @@ async fn execute_create_and_list_filtered() {
             epic: None,
             ticket_type: None,
             status: Some("open".into()),
+            lifecycle: None,
         },
         &mut client,
     )
@@ -487,6 +508,9 @@ async fn execute_update_nonexistent_returns_error() {
             parent: None,
             no_parent: false,
             force: false,
+            lifecycle: None,
+            branch: None,
+            no_branch: false,
         },
         &mut client,
     )
@@ -512,6 +536,7 @@ async fn execute_set_and_delete_meta() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -575,6 +600,7 @@ async fn execute_add_and_list_activities() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -631,6 +657,7 @@ async fn execute_add_and_remove_block() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -645,6 +672,7 @@ async fn execute_add_and_remove_block() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -705,6 +733,7 @@ async fn execute_add_and_remove_link() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -719,6 +748,7 @@ async fn execute_add_and_remove_link() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -736,6 +766,7 @@ async fn execute_add_and_remove_link() {
         TicketArgs::AddLink {
             id: id_a.clone(),
             linked_id: id_b.clone(),
+            edge: "relates_to".into(),
         },
         &mut client,
     )
@@ -778,6 +809,7 @@ async fn execute_update_existing_ticket() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -800,6 +832,9 @@ async fn execute_update_existing_ticket() {
             parent: None,
             no_parent: false,
             force: false,
+            lifecycle: None,
+            branch: None,
+            no_branch: false,
         },
         &mut client,
     )
@@ -829,6 +864,7 @@ async fn execute_dispatchable() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -850,6 +886,7 @@ async fn execute_dispatchable() {
             parent: Some(epic_id.clone()),
             priority: 1,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -894,6 +931,7 @@ async fn execute_list_activities_empty() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )
@@ -924,6 +962,7 @@ async fn execute_list_empty() {
             epic: None,
             ticket_type: None,
             status: None,
+            lifecycle: None,
         },
         &mut client,
     )
@@ -973,6 +1012,7 @@ async fn auth_rejection_propagates_error() {
             parent: None,
             priority: 0,
             body: String::new(),
+            wip: false,
         },
         &mut client,
     )

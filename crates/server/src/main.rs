@@ -145,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         cfg.worker_port,
         prompt_modes,
         worker_repo.clone(),
+        cfg.workflow.verification.clone(),
     );
 
     // Reconcile agents: check container liveness for active agents and update status.
@@ -220,11 +221,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Create a TicketRepo for the worker gRPC server (idle re-dispatch logic).
+    let graph_manager = GraphManager::new(db.pool().clone());
+    let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
+
     #[cfg(feature = "ticket")]
     let ticket_handler = {
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        ur_server::grpc_ticket::TicketServiceHandler { ticket_repo }
+        ur_server::grpc_ticket::TicketServiceHandler {
+            ticket_repo: ticket_repo.clone(),
+        }
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -257,6 +262,8 @@ async fn main() -> anyhow::Result<()> {
         worker_addr,
         worker_manager,
         worker_repo,
+        ticket_repo,
+        cfg.network.worker_prefix.clone(),
         cfg.projects,
         #[cfg(feature = "hostexec")]
         hostexec_config,

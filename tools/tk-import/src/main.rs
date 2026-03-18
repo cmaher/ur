@@ -207,6 +207,7 @@ async fn run_migration(
                 body: t.body.clone(),
                 id: Some(f.id.clone()),
                 created_at: Some(f.created.clone()),
+                wip: false,
             })
             .await
         {
@@ -223,6 +224,8 @@ async fn run_migration(
                         body: Some(t.body.clone()),
                         force: true,
                         parent_id: None,
+                        lifecycle_status: None,
+                        branch: None,
                     })
                     .await
                     .map_err(|e| format!("update_ticket {}: {e}", f.id))?;
@@ -271,6 +274,7 @@ async fn run_migration(
                 .add_link(AddLinkRequest {
                     left_id: f.id.clone(),
                     right_id: link.clone(),
+                    edge_kind: None,
                 })
                 .await
             {

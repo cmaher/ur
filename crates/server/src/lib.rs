@@ -21,6 +21,7 @@ pub mod stream;
 pub mod worker;
 #[cfg(feature = "workerd")]
 pub mod workerd_client;
+pub mod workflow;
 
 pub use backup::BackupTaskManager;
 pub use builderd_client::BuilderdClient;
@@ -31,3 +32,4 @@ pub use strategy::WorkerStrategy;
 pub use worker::{WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary};
 #[cfg(feature = "workerd")]
 pub use workerd_client::WorkerdClient;
+pub use workflow::{GithubPollerManager, WorkflowEngine};

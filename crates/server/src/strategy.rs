@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::RepoPoolManager;
 
 /// Worker strategy enum governing mode-specific behavior: skill selection,
-/// slot acquisition, and slot release. Two variants ship initially: `Code`
+/// slot acquisition, and slot release. Two variants exist initially: `Code`
 /// (exclusive numbered pool slots) and `Design` (shared named slot).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStrategy {
@@ -86,12 +86,13 @@ impl WorkerStrategy {
 /// Skills shared by all worker strategies.
 fn common_skills() -> Vec<String> {
     vec![
-        "ship".into(),
+        "push".into(),
         "green".into(),
         "cli-design".into(),
         "reclaude".into(),
         "writing-skills".into(),
         "rag-docs".into(),
+        "create-feedback".into(),
     ]
 }
 
@@ -121,12 +122,13 @@ mod tests {
     fn both_strategies_include_common_skills() {
         for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
             let skills = strategy.skills();
-            assert!(skills.contains(&"ship".to_string()));
+            assert!(skills.contains(&"push".to_string()));
             assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));
             assert!(skills.contains(&"reclaude".to_string()));
             assert!(skills.contains(&"writing-skills".to_string()));
             assert!(skills.contains(&"rag-docs".to_string()));
+            assert!(skills.contains(&"create-feedback".to_string()));
         }
     }
 

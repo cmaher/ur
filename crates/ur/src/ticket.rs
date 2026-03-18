@@ -53,6 +53,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             parent,
             priority,
             body,
+            wip,
         } => {
             let resolved = resolve_project(project)?;
             Ok(TicketArgs::Create {
@@ -62,6 +63,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
                 parent,
                 priority,
                 body,
+                wip,
             })
         }
         TicketArgs::List {
@@ -70,6 +72,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             epic,
             ticket_type,
             status,
+            lifecycle,
         } => {
             let resolved = if all {
                 None
@@ -82,6 +85,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
                 epic,
                 ticket_type,
                 status,
+                lifecycle,
             })
         }
         TicketArgs::Dispatchable { epic_id, project } => {

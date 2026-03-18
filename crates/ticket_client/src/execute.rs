@@ -35,6 +35,7 @@ where
             parent,
             priority,
             body,
+            wip,
         } => {
             let resp = client
                 .create_ticket(CreateTicketRequest {
@@ -47,6 +48,7 @@ where
                     body,
                     id: None,
                     created_at: None,
+                    wip,
                 })
                 .await
                 .with_status_context("create ticket")?;
@@ -60,6 +62,7 @@ where
             epic,
             ticket_type,
             status,
+            lifecycle,
         } => {
             let project_filter = if all { None } else { project };
             let resp = client
@@ -70,6 +73,7 @@ where
                     parent_id: epic,
                     meta_key: None,
                     meta_value: None,
+                    lifecycle_status: lifecycle,
                 })
                 .await
                 .with_status_context("list tickets")?;
@@ -101,11 +105,19 @@ where
             parent,
             no_parent,
             force,
+            lifecycle,
+            branch,
+            no_branch,
         } => {
             let parent_id = if no_parent {
                 Some("NONE".to_owned())
             } else {
                 parent
+            };
+            let branch_value = if no_branch {
+                Some("NONE".to_owned())
+            } else {
+                branch
             };
             client
                 .update_ticket(UpdateTicketRequest {
@@ -117,6 +129,8 @@ where
                     force,
                     ticket_type,
                     parent_id,
+                    lifecycle_status: lifecycle,
+                    branch: branch_value,
                 })
                 .await
                 .with_status_context("update ticket")?;
@@ -195,11 +209,16 @@ where
             Ok(TicketOutput::BlockRemoved { id, blocked_by_id })
         }
 
-        TicketArgs::AddLink { id, linked_id } => {
+        TicketArgs::AddLink {
+            id,
+            linked_id,
+            edge,
+        } => {
             client
                 .add_link(AddLinkRequest {
                     left_id: id.clone(),
                     right_id: linked_id.clone(),
+                    edge_kind: Some(edge),
                 })
                 .await
                 .with_status_context("link tickets")?;
@@ -217,6 +236,50 @@ where
             Ok(TicketOutput::LinkRemoved { id, linked_id })
         }
 
+        TicketArgs::Approve {
+            id,
+            feedback_now,
+            feedback_later,
+        } => {
+            let feedback_mode = if feedback_now {
+                "now"
+            } else if feedback_later {
+                "later"
+            } else {
+                "now" // default to now
+            }
+            .to_owned();
+
+            // Set feedback_mode metadata
+            client
+                .set_meta(SetMetaRequest {
+                    ticket_id: id.clone(),
+                    key: "feedback_mode".to_owned(),
+                    value: feedback_mode.clone(),
+                })
+                .await
+                .with_status_context("set feedback_mode metadata")?;
+
+            // Transition lifecycle from in_review to feedback_creating
+            client
+                .update_ticket(UpdateTicketRequest {
+                    id: id.clone(),
+                    status: None,
+                    priority: None,
+                    title: None,
+                    body: None,
+                    force: false,
+                    ticket_type: None,
+                    parent_id: None,
+                    lifecycle_status: Some("feedback_creating".to_owned()),
+                    branch: None,
+                })
+                .await
+                .with_status_context("transition lifecycle to feedback_creating")?;
+
+            Ok(TicketOutput::Approved { id, feedback_mode })
+        }
+
         TicketArgs::Close { id, force } => {
             client
                 .update_ticket(UpdateTicketRequest {
@@ -228,6 +291,8 @@ where
                     force,
                     ticket_type: None,
                     parent_id: None,
+                    lifecycle_status: None,
+                    branch: None,
                 })
                 .await
                 .with_status_context("close ticket")?;
@@ -245,6 +310,8 @@ where
                     force: false,
                     ticket_type: None,
                     parent_id: None,
+                    lifecycle_status: None,
+                    branch: None,
                 })
                 .await
                 .with_status_context("open ticket")?;
@@ -272,6 +339,7 @@ where
                     parent_id: None,
                     meta_key: None,
                     meta_value: None,
+                    lifecycle_status: None,
                 })
                 .await
                 .with_status_context("list tickets")?;

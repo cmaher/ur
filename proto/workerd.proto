@@ -4,6 +4,9 @@ package ur.workerd;
 service WorkerDaemonService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
   rpc NotifyIdle(NotifyIdleRequest) returns (NotifyIdleResponse);
+  rpc Implement(ImplementRequest) returns (ImplementResponse);
+  rpc Push(PushRequest) returns (PushResponse);
+  rpc CreateFeedbackTickets(CreateFeedbackRequest) returns (CreateFeedbackResponse);
 }
 
 message SendMessageRequest {
@@ -18,3 +21,20 @@ message SendMessageResponse {
 message NotifyIdleRequest {}
 
 message NotifyIdleResponse {}
+
+message ImplementRequest {
+  string ticket_id = 1;
+}
+
+message ImplementResponse {}
+
+message PushRequest {}
+
+message PushResponse {}
+
+message CreateFeedbackRequest {
+  string ticket_id = 1;
+  uint32 pr_number = 2;
+}
+
+message CreateFeedbackResponse {}
