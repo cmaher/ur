@@ -23,6 +23,7 @@ use container::{ContainerId, ContainerRuntime};
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, error, info, instrument, warn};
 use ur_rpc::error::StatusResultExt;
+use ur_rpc::lifecycle;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
@@ -740,10 +741,11 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
         .ticket
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
 
-    if ticket.lifecycle_status != "open" {
+    if ticket.lifecycle_status != lifecycle::OPEN {
         bail!(
-            "ticket {ticket_id} has lifecycle_status '{}', expected 'open'",
-            ticket.lifecycle_status
+            "ticket {ticket_id} has lifecycle_status '{}', expected '{}'",
+            ticket.lifecycle_status,
+            lifecycle::OPEN,
         );
     }
 
@@ -757,7 +759,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
             force: false,
             ticket_type: None,
             parent_id: None,
-            lifecycle_status: Some("implementing".to_owned()),
+            lifecycle_status: Some(lifecycle::IMPLEMENTING.to_owned()),
             branch: None,
         })
         .await

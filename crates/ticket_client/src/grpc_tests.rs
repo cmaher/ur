@@ -8,6 +8,7 @@ use tonic::{Code, Request, Response, Status};
 use ur_rpc::error::{
     self, DOMAIN_CORE, DOMAIN_TICKET, NOT_FOUND, StatusResultExt, UNAUTHENTICATED,
 };
+use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::ticket_service_server::{TicketService, TicketServiceServer};
 use ur_rpc::proto::ticket::*;
@@ -59,9 +60,9 @@ impl TicketService for MockTicketStore {
             updated_at: "2026-01-01T00:00:00Z".into(),
             project: req.project,
             lifecycle_status: if req.wip {
-                "design".into()
+                lifecycle::DESIGN.into()
             } else {
-                "open".into()
+                lifecycle::OPEN.into()
             },
             branch: String::new(),
         };

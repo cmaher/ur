@@ -14,6 +14,11 @@ CREATE TABLE workflow_event (
 );
 
 CREATE INDEX idx_workflow_event_ticket_id ON workflow_event(ticket_id);
+CREATE INDEX idx_workflow_event_created_at ON workflow_event(created_at);
+
+-- Add idle_redispatch_count to track how many times a worker has been
+-- nudged with a re-dispatch after reporting idle.
+ALTER TABLE worker ADD COLUMN idle_redispatch_count INTEGER NOT NULL DEFAULT 0;
 
 -- Trigger: automatically log lifecycle transitions.
 CREATE TRIGGER ticket_lifecycle_change

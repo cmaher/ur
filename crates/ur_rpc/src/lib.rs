@@ -1,6 +1,9 @@
 #[cfg(feature = "error")]
 pub mod error;
 
+#[cfg(feature = "ticket")]
+pub mod lifecycle;
+
 #[cfg(feature = "stream")]
 pub mod stream;
 

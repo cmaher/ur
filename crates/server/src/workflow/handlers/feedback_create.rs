@@ -1,11 +1,8 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use anyhow::bail;
 use tracing::info;
 use ur_db::model::{EdgeKind, LifecycleStatus, TicketUpdate};
 
-use crate::workflow::{TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
 
 /// Handler for the InReview → FeedbackCreating transition.
 ///
@@ -24,7 +21,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
         ctx: &WorkflowContext,
         ticket_id: &str,
         _transition: &TransitionKey,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+    ) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move {

@@ -1,9 +1,6 @@
-use std::future::Future;
-use std::pin::Pin;
-
 use tracing::{info, warn};
 
-use crate::workflow::{TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
 
 /// Wildcard handler for any transition into the Stalled state.
 ///
@@ -17,7 +14,7 @@ impl WorkflowHandler for StallHandler {
         ctx: &WorkflowContext,
         ticket_id: &str,
         transition: &TransitionKey,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
+    ) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         let reason = format!(

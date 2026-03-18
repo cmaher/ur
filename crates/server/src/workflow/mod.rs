@@ -13,6 +13,9 @@ use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
 
+/// Result future returned by `WorkflowHandler::handle()`.
+pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
+
 /// Context passed to every workflow handler, providing access to shared
 /// managers and repositories needed to execute transitions.
 #[derive(Clone)]
@@ -48,5 +51,5 @@ pub trait WorkflowHandler: Send + Sync {
         ctx: &WorkflowContext,
         ticket_id: &str,
         transition: &TransitionKey,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>>;
+    ) -> HandlerFuture<'_>;
 }
