@@ -1,9 +1,84 @@
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tracing::warn;
 
 use crate::proto::core::CommandOutput;
 use crate::proto::core::command_output::Payload;
+
+/// Collected result of a completed `CommandOutput` stream.
+///
+/// Accumulates all stdout/stderr chunks and the final exit code from a
+/// `tonic::Streaming<CommandOutput>`. Useful for programmatic callers that
+/// don't need real-time streaming and just want the final result.
+#[derive(Debug, Clone)]
+pub struct CompletedExec {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: i32,
+}
+
+impl CompletedExec {
+    /// Consume a `tonic::Streaming<CommandOutput>`, collecting all frames
+    /// into a single `CompletedExec`. Returns a gRPC error if the stream
+    /// fails or ends without an exit code.
+    pub async fn collect(
+        mut stream: tonic::Streaming<CommandOutput>,
+    ) -> Result<Self, tonic::Status> {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code: Option<i32> = None;
+
+        while let Some(msg) = stream.next().await {
+            let msg = msg?;
+            match msg.payload {
+                Some(Payload::Stdout(data)) => stdout.extend_from_slice(&data),
+                Some(Payload::Stderr(data)) => stderr.extend_from_slice(&data),
+                Some(Payload::ExitCode(code)) => exit_code = Some(code),
+                Some(Payload::AlreadyRunning(_)) | None => {}
+            }
+        }
+
+        let exit_code = exit_code
+            .ok_or_else(|| tonic::Status::internal("stream ended without an exit code"))?;
+
+        Ok(Self {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    }
+
+    /// Return stdout as a lossy UTF-8 string with trailing whitespace trimmed.
+    pub fn stdout_text(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).trim_end().to_string()
+    }
+
+    /// Return stderr as a lossy UTF-8 string with trailing whitespace trimmed.
+    pub fn stderr_text(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).trim_end().to_string()
+    }
+
+    /// Check for a successful (zero) exit code. Returns `Ok(self)` on success,
+    /// or an `Err` with the stderr contents as the error message on non-zero exit.
+    #[allow(clippy::result_large_err)]
+    pub fn check(self) -> Result<Self, tonic::Status> {
+        if self.exit_code == 0 {
+            Ok(self)
+        } else {
+            let msg = if self.stderr.is_empty() {
+                format!("command exited with code {}", self.exit_code)
+            } else {
+                format!(
+                    "command exited with code {}: {}",
+                    self.exit_code,
+                    self.stderr_text()
+                )
+            };
+            Err(tonic::Status::internal(msg))
+        }
+    }
+}
 
 /// Stream a child process's stdout/stderr as `CommandOutput` frames,
 /// then send the exit code. Spawns a background task that reads from
