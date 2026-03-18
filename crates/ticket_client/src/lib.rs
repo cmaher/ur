@@ -287,7 +287,7 @@ mod tests {
                 priority,
                 ticket_type,
                 parent,
-                no_parent,
+                unparent,
                 force,
                 lifecycle,
                 branch,
@@ -301,7 +301,7 @@ mod tests {
                 assert!(priority.is_none());
                 assert!(ticket_type.is_none());
                 assert!(parent.is_none());
-                assert!(!no_parent);
+                assert!(!unparent);
                 assert!(!force);
                 assert!(lifecycle.is_none());
                 assert!(branch.is_none());

@@ -105,14 +105,14 @@ where
             priority,
             ticket_type,
             parent,
-            no_parent,
+            unparent,
             force,
             lifecycle,
             branch,
             no_branch,
             project,
         } => {
-            let parent_id = if no_parent {
+            let parent_id = if unparent {
                 Some("NONE".to_owned())
             } else {
                 parent
