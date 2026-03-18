@@ -16,7 +16,16 @@ function transform(command, args, working_dir, worker_context)
     end
 
     -- All ticket subcommands are allowed (create, list, show, update, etc.)
+    -- but --force is blocked on update/close (could force-close epics with open children)
     if subcmd == "ticket" then
+        local ticket_sub = args[2]
+        if ticket_sub == "update" or ticket_sub == "close" then
+            for i = 3, #args do
+                if args[i] == "--force" then
+                    error("ur ticket " .. ticket_sub .. " --force: not allowed from workers")
+                end
+            end
+        end
         return { command = command, args = args, working_dir = working_dir }
     end
 
