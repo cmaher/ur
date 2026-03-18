@@ -1,6 +1,6 @@
 use ur_rpc::proto::ticket::{ActivityEntry, MetadataEntry, Ticket};
 
-use crate::format::{format_ticket_detail, format_ticket_list};
+use super::format::{format_ticket_detail, format_ticket_list};
 
 fn sample_ticket(id: &str, title: &str) -> Ticket {
     Ticket {

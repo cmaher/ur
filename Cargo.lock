@@ -3666,23 +3666,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ticket_client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "chrono",
- "clap",
- "http-body",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tonic 0.13.1",
- "ur_rpc",
-]
-
-[[package]]
 name = "tiff"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4260,18 +4243,20 @@ name = "ur"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "chrono",
  "clap",
  "container",
  "dirs",
  "fs4",
  "glob",
+ "http-body",
  "serde",
  "serde_json",
  "tempfile",
- "ticket_client",
  "tmux",
  "tokio",
+ "tokio-stream",
  "toml",
  "toml_edit",
  "tonic 0.13.1",

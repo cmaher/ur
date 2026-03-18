@@ -98,7 +98,7 @@ enum Commands {
     /// Manage tickets
     Ticket {
         #[command(subcommand)]
-        command: ticket_client::TicketArgs,
+        command: crate::ticket::TicketArgs,
     },
     /// Manage workers
     Worker {
@@ -273,7 +273,7 @@ enum WorkerCommands {
     /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
-    Vscode { worker_id: String },
+    Code { worker_id: String },
 }
 
 #[instrument]
@@ -1028,7 +1028,7 @@ async fn handle_worker(
             }
             Ok(())
         }
-        WorkerCommands::Vscode { worker_id } => {
+        WorkerCommands::Code { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
             let dir = process_workspace_dir(port, &worker_id).await?;
             let status = process::Command::new("code")
@@ -1070,7 +1070,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Status { .. } => "status",
         WorkerCommands::Stop { .. } => "stop",
         WorkerCommands::Dir { .. } => "dir",
-        WorkerCommands::Vscode { .. } => "vscode",
+        WorkerCommands::Code { .. } => "code",
     }
 }
 

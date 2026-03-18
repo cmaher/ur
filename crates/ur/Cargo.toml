@@ -21,7 +21,8 @@ tonic-types = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
-ticket_client = { path = "../ticket_client" }
+bytes = "1"
+http-body = "1"
 tmux = { path = "../tmux" }
 ur_config = { path = "../ur_config" }
 ur_db = { path = "../ur_db" }
@@ -29,3 +30,4 @@ ur_rpc = { path = "../ur_rpc", features = ["error"] }
 
 [dev-dependencies]
 tempfile = "3"
+tokio-stream = { workspace = true }
