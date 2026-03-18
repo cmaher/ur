@@ -70,6 +70,7 @@ impl WorkerStrategy {
             Self::Code => {
                 skills.extend([
                     "implement".into(),
+                    "ship".into(),
                     "bacon".into(),
                     "systematic-debugging".into(),
                     "test-driven-development".into(),
@@ -104,6 +105,7 @@ mod tests {
     fn code_skills_include_code_specific() {
         let skills = WorkerStrategy::Code.skills();
         assert!(skills.contains(&"implement".to_string()));
+        assert!(skills.contains(&"ship".to_string()));
         assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
