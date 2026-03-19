@@ -275,14 +275,6 @@ async fn handle_merge_conflict(
         "merge failed due to conflicts — transitioning to implementing"
     );
 
-    if let Err(e) = ctx
-        .ticket_repo
-        .set_meta(ticket_id, "ticket", "fix_phase", "merge")
-        .await
-    {
-        error!(ticket_id = %ticket_id, error = %e, "failed to set fix_phase metadata");
-    }
-
     let message = format!(
         "[workflow] merge conflict detected\n\
          source: workflow\n\

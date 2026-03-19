@@ -189,16 +189,6 @@ impl GithubPollerManager {
                     "CI has failures — transitioning to implementing"
                 );
 
-                // Set fix_phase=ci metadata so FixDispatchHandler knows the context.
-                if let Err(e) = self
-                    .ticket_repo
-                    .set_meta(&ticket.id, "ticket", "fix_phase", "ci")
-                    .await
-                {
-                    error!(ticket_id = %ticket.id, error = %e, "failed to set fix_phase metadata");
-                    return;
-                }
-
                 // Add activity with failing check details.
                 let message = format!(
                     "[workflow] CI failure detected\n\
