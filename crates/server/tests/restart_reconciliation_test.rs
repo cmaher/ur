@@ -67,6 +67,8 @@ async fn make_components_with_db(
         projects: HashMap::new(),
     };
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
+    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
+    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -102,6 +104,7 @@ async fn make_components_with_db(
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: HashMap::new(),
         worker_repo: worker_repo.clone(),
+        ticket_repo,
         network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),

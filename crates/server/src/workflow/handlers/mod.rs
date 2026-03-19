@@ -1,5 +1,6 @@
 // Handler registry for workflow transitions.
 
+mod awaiting_dispatch;
 mod dispatch_fix;
 mod dispatch_implement;
 mod feedback_create;
@@ -8,6 +9,7 @@ mod push;
 mod review_start;
 mod verify;
 
+pub use awaiting_dispatch::AwaitingDispatchHandler;
 pub use dispatch_fix::FixDispatchHandler;
 pub use dispatch_implement::DispatchImplementHandler;
 pub use feedback_create::FeedbackCreateHandler;
@@ -27,9 +29,15 @@ use super::HandlerEntry;
 /// Returns a `Vec<HandlerEntry>` to be passed to `WorkflowEngine::new()`.
 pub fn build_handlers() -> Vec<HandlerEntry> {
     vec![
-        // Open → Implementing: dispatch worker with implement RPC
+        // Open → AwaitingDispatch: no-op (acknowledge and delete event)
         (
             LifecycleStatus::Open,
+            LifecycleStatus::AwaitingDispatch,
+            Arc::new(AwaitingDispatchHandler),
+        ),
+        // AwaitingDispatch → Implementing: dispatch worker with implement RPC
+        (
+            LifecycleStatus::AwaitingDispatch,
             LifecycleStatus::Implementing,
             Arc::new(DispatchImplementHandler),
         ),

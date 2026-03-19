@@ -9,7 +9,10 @@ use tracing::info;
 use container::NetworkManager;
 use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
 use ur_server::worker::PromptModesConfig;
-use ur_server::{BackupTaskManager, Config, RepoPoolManager, WorkerManager};
+use ur_server::workflow::handlers::build_handlers;
+use ur_server::{
+    BackupTaskManager, Config, GithubPollerManager, RepoPoolManager, WorkerManager, WorkflowEngine,
+};
 
 #[derive(Parser)]
 #[command(
@@ -195,6 +198,7 @@ async fn init_and_serve(
         proxy_hostname: cfg.proxy.hostname.clone(),
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
         network_config: cfg.network.clone(),
         hostexec_config: hostexec_config.clone(),
         builderd_addr: builderd_addr.clone(),
@@ -214,6 +218,7 @@ async fn init_and_serve(
         hostexec_config,
         builderd_addr,
         host_workspace,
+        Arc::new(cfg.clone()),
     )
     .await
 }
@@ -233,9 +238,38 @@ async fn serve_grpc_servers(
     hostexec_config: ur_server::hostexec::HostExecConfigManager,
     builderd_addr: String,
     host_workspace: PathBuf,
+    config: Arc<ur_config::Config>,
 ) -> anyhow::Result<()> {
     let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
+
+    // Create shutdown channel for workflow engine and github poller.
+    let (workflow_shutdown_tx, workflow_shutdown_rx) = watch::channel(false);
+
+    // Connect a BuilderdClient for the workflow engine and github poller.
+    let workflow_builderd_client =
+        ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
+            .await
+            .expect("failed to connect to builderd for workflow engine");
+
+    // Clone repos before they are moved into gRPC server handlers.
+    let engine_ticket_repo = ticket_repo.clone();
+    let engine_worker_repo = worker_repo.clone();
+    let poller_ticket_repo = ticket_repo.clone();
+    let poller_builderd_client = workflow_builderd_client.clone();
+
+    let engine = WorkflowEngine::new(
+        engine_ticket_repo,
+        engine_worker_repo,
+        network_prefix.clone(),
+        workflow_builderd_client,
+        config,
+        build_handlers(),
+    );
+    let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
+
+    let poller = GithubPollerManager::new(poller_ticket_repo, poller_builderd_client);
+    let poller_handle = poller.spawn(workflow_shutdown_rx);
 
     let host_server = ur_server::grpc_server::serve_grpc(
         host_addr,
@@ -267,7 +301,14 @@ async fn serve_grpc_servers(
         remote_repo_handler,
     );
 
-    tokio::try_join!(host_server, worker_server).map(|_| ())
+    let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
+
+    // Signal workflow engine and github poller to shut down.
+    let _ = workflow_shutdown_tx.send(true);
+    let _ = engine_handle.await;
+    let _ = poller_handle.await;
+
+    server_result
 }
 
 #[tokio::main]

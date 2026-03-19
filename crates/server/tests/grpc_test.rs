@@ -76,6 +76,8 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         .await
         .expect("failed to open in-memory db");
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
+    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
+    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -111,6 +113,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
         projects: std::collections::HashMap::new(),
         worker_repo,
+        ticket_repo,
         network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),

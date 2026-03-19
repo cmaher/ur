@@ -47,6 +47,13 @@ impl LifecycleStepRouter {
             return StepAction::Ignore;
         }
 
+        // AwaitingDispatch tickets are waiting for worker assignment — the
+        // grpc handler triggers the transition to Implementing when the
+        // worker reports idle, so the step router ignores all statuses here.
+        if lifecycle_status == LifecycleStatus::AwaitingDispatch {
+            return StepAction::Ignore;
+        }
+
         match agent_status {
             "stalled" => StepAction::Ignore,
 
@@ -131,6 +138,34 @@ mod tests {
     fn open_stalled() {
         assert_eq!(
             router().route(LifecycleStatus::Open, "stalled", true),
+            StepAction::Ignore,
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // AwaitingDispatch lifecycle — always Ignore regardless of agent status
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn awaiting_dispatch_idle() {
+        assert_eq!(
+            router().route(LifecycleStatus::AwaitingDispatch, "idle", true),
+            StepAction::Ignore,
+        );
+    }
+
+    #[test]
+    fn awaiting_dispatch_working() {
+        assert_eq!(
+            router().route(LifecycleStatus::AwaitingDispatch, "working", true),
+            StepAction::Ignore,
+        );
+    }
+
+    #[test]
+    fn awaiting_dispatch_stalled() {
+        assert_eq!(
+            router().route(LifecycleStatus::AwaitingDispatch, "stalled", true),
             StepAction::Ignore,
         );
     }

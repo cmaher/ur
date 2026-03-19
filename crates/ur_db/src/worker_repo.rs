@@ -8,7 +8,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::model::{Slot, Worker, WorkerSlot};
+use crate::model::{AgentStatus, Slot, Worker, WorkerSlot};
 
 /// Result of slot reconciliation: reports what was cleaned up or discovered.
 pub struct SlotReconcileResult {
@@ -125,12 +125,12 @@ impl WorkerRepo {
     pub async fn update_worker_agent_status(
         &self,
         worker_id: &str,
-        agent_status: &str,
+        agent_status: AgentStatus,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query("UPDATE worker SET agent_status = ?, updated_at = ? WHERE worker_id = ?")
-            .bind(agent_status)
+            .bind(agent_status.as_str())
             .bind(&now)
             .bind(worker_id)
             .execute(&self.pool)

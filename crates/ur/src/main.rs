@@ -691,7 +691,7 @@ async fn process_status(
     Ok(())
 }
 
-/// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "implementing".
+/// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "awaiting_dispatch".
 async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
     let channel = connection::connect(port).await?;
     let mut ticket_client = TicketServiceClient::new(channel);
@@ -726,7 +726,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
             force: false,
             ticket_type: None,
             parent_id: None,
-            lifecycle_status: Some(lifecycle::IMPLEMENTING.to_owned()),
+            lifecycle_status: Some(lifecycle::AWAITING_DISPATCH.to_owned()),
             branch: None,
             project: None,
             lifecycle_managed: Some(true),

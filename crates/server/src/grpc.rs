@@ -5,7 +5,7 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{info, warn};
 
 use ur_db::TicketRepo;
-use ur_db::model::LifecycleStatus;
+use ur_db::model::{AgentStatus, LifecycleStatus};
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
@@ -130,9 +130,87 @@ pub struct CoreServiceHandler {
     pub proxy_hostname: String,
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     pub worker_repo: WorkerRepo,
+    pub ticket_repo: TicketRepo,
     pub network_config: ur_config::NetworkConfig,
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     pub builderd_addr: String,
+}
+
+impl CoreServiceHandler {
+    /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
+    ///
+    /// Extracted from `worker_launch` to keep method body within the line limit.
+    async fn resolve_launch_workspace(
+        &self,
+        req: &WorkerLaunchRequest,
+    ) -> Result<
+        (
+            Option<PathBuf>,
+            String,
+            Option<String>,
+            crate::WorkerId,
+            Vec<String>,
+            crate::WorkerStrategy,
+        ),
+        Status,
+    > {
+        let (strategy, resolved_skills) = self
+            .worker_manager
+            .resolve_mode(&req.mode)
+            .map_err(|e| CoreError::InvalidMode { reason: e })?;
+
+        let (workspace_dir, project_key, slot_id) = if !req.project_key.is_empty() {
+            let (slot_path, slot_id) = strategy
+                .acquire_slot(&self.repo_pool_manager, &req.project_key)
+                .await
+                .map_err(|e| CoreError::PoolSlotFailed {
+                    reason: e.to_string(),
+                })?;
+            info!(
+                worker_id = req.worker_id,
+                project_key = req.project_key,
+                slot_path = %slot_path.display(),
+                slot_id = %slot_id,
+                strategy = strategy.name(),
+                "acquired pool slot"
+            );
+            (Some(slot_path), req.project_key.clone(), Some(slot_id))
+        } else if !req.workspace_dir.is_empty() {
+            (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
+        } else {
+            (None, String::new(), None)
+        };
+
+        let worker_id = self.worker_manager.generate_worker_id(&req.worker_id);
+        info!(
+            worker_id = req.worker_id,
+            internal_worker_id = %worker_id,
+            "generated worker ID"
+        );
+
+        if let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some()) {
+            self.repo_pool_manager
+                .checkout_branch(slot_path, &worker_id.to_string())
+                .await
+                .map_err(|e| CoreError::PoolSlotFailed {
+                    reason: e.to_string(),
+                })?;
+            info!(
+                worker_id = %worker_id,
+                branch = %worker_id,
+                "checked out worker branch in pool slot"
+            );
+        }
+
+        Ok((
+            workspace_dir,
+            project_key,
+            slot_id,
+            worker_id,
+            resolved_skills,
+            strategy,
+        ))
+    }
 }
 
 #[tonic::async_trait]
@@ -157,64 +235,10 @@ impl CoreService for CoreServiceHandler {
             "worker_launch request received"
         );
 
-        // Resolve worker strategy from the mode field early in the launch flow.
-        let (strategy, resolved_skills) = self
-            .worker_manager
-            .resolve_mode(&req.mode)
-            .map_err(|e| CoreError::InvalidMode { reason: e })?;
-
-        // Resolve workspace: project_key triggers pool acquire via the strategy,
-        // otherwise use the explicit workspace_dir from the request.
-        let (workspace_dir, project_key, slot_id) = if !req.project_key.is_empty() {
-            let (slot_path, slot_id) = strategy
-                .acquire_slot(&self.repo_pool_manager, &req.project_key)
-                .await
-                .map_err(|e| CoreError::PoolSlotFailed {
-                    reason: e.to_string(),
-                })?;
-            info!(
-                worker_id = req.worker_id,
-                project_key = req.project_key,
-                slot_path = %slot_path.display(),
-                slot_id = %slot_id,
-                strategy = strategy.name(),
-                "acquired pool slot"
-            );
-            (Some(slot_path), req.project_key.clone(), Some(slot_id))
-        } else if !req.workspace_dir.is_empty() {
-            (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
-        } else {
-            (None, String::new(), None)
-        };
-
-        // Generate unique worker ID for this launch
-        let worker_id = self.worker_manager.generate_worker_id(&req.worker_id);
-        info!(
-            worker_id = req.worker_id,
-            internal_worker_id = %worker_id,
-            "generated worker ID"
-        );
-
-        // Checkout a worker-specific branch in pool slots so each worker
-        // has its own branch for commits.
-        if let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some()) {
-            self.repo_pool_manager
-                .checkout_branch(slot_path, &worker_id.to_string())
-                .await
-                .map_err(|e| CoreError::PoolSlotFailed {
-                    reason: e.to_string(),
-                })?;
-            info!(
-                worker_id = %worker_id,
-                branch = %worker_id,
-                "checked out worker branch in pool slot"
-            );
-        }
+        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy) =
+            self.resolve_launch_workspace(&req).await?;
 
         // Phase 1: prepare (create repo, git init, register)
-        // prepare() returns the resolved workspace path — for the default case this
-        // is the newly created git-init'd directory that must be mounted into the
-        // container.
         let workspace_dir = self
             .worker_manager
             .prepare(&req.worker_id, &worker_id, workspace_dir)
@@ -223,25 +247,21 @@ impl CoreService for CoreServiceHandler {
                 reason: e.to_string(),
             })?;
 
-        // Use explicit skills from the request if provided, otherwise use
-        // the skills resolved from the strategy/mode.
         let skills = if req.skills.is_empty() {
             resolved_skills
         } else {
             req.skills
         };
 
-        // Phase 2: run container
-        let (git_hooks_dir, mounts) = if !project_key.is_empty() {
-            let proj = self.projects.get(&project_key);
-            (
-                proj.and_then(|p| p.git_hooks_dir.clone()),
-                proj.map(|p| p.mounts.clone()).unwrap_or_default(),
-            )
-        } else {
-            (None, Vec::new())
+        let (git_hooks_dir, mounts) = match self.projects.get(&project_key) {
+            Some(proj) if !project_key.is_empty() => {
+                (proj.git_hooks_dir.clone(), proj.mounts.clone())
+            }
+            _ => (None, Vec::new()),
         };
 
+        let process_id = req.worker_id.clone();
+        let worker_id_str = worker_id.to_string();
         let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
@@ -263,6 +283,14 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(|e| CoreError::RunFailed {
                 reason: e.to_string(),
+            })?;
+
+        // Bind the ticket to its worker for workflow handler lookups.
+        self.ticket_repo
+            .set_meta(&process_id, "ticket", "worker_id", &worker_id_str)
+            .await
+            .map_err(|e| CoreError::RunFailed {
+                reason: format!("failed to set worker_id metadata: {e}"),
             })?;
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
@@ -364,7 +392,7 @@ impl CoreService for CoreServiceHandler {
 
         // On success, update agent_status to 'working' in DB.
         self.worker_repo
-            .update_worker_agent_status(&worker.worker_id, "working")
+            .update_worker_agent_status(&worker.worker_id, AgentStatus::Working)
             .await
             .map_err(|e| CoreError::SendMessageFailed {
                 reason: format!("failed to update agent status: {e}"),
@@ -464,8 +492,13 @@ impl CoreService for WorkerCoreServiceHandler {
             "update_agent_status request received"
         );
 
+        let agent_status: AgentStatus = inner
+            .status
+            .parse()
+            .map_err(|e: String| Status::invalid_argument(e))?;
+
         self.worker_repo
-            .update_worker_agent_status(&worker_id, &inner.status)
+            .update_worker_agent_status(&worker_id, agent_status)
             .await
             .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
 
@@ -572,6 +605,32 @@ async fn handle_agent_status_routed(
         .get_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+
+    // 2b. Worker readiness trigger: when a worker reports idle and its
+    // assigned ticket is in AwaitingDispatch, transition directly to
+    // Implementing. This fires the SQLite trigger which creates a
+    // workflow event for the AwaitingDispatch→Implementing handler.
+    if agent_status == "idle" && ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch {
+        info!(
+            worker_id = %worker_id,
+            ticket_id = %ticket_id,
+            "worker idle with awaiting_dispatch ticket — transitioning to implementing"
+        );
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: None,
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        ticket_repo.update_ticket(ticket_id, &update).await?;
+        return Ok(());
+    }
 
     // 3. Consult the router.
     let action = step_router.route(ticket.lifecycle_status, agent_status, true);
@@ -742,7 +801,7 @@ async fn handle_redispatch(
 
     // Update agent status to working after successful re-dispatch.
     worker_repo
-        .update_worker_agent_status(worker_id, "working")
+        .update_worker_agent_status(worker_id, AgentStatus::Working)
         .await?;
 
     Ok(())
