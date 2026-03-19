@@ -195,17 +195,20 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
     ) -> Result<Response<ImplementResponse>, Status> {
         let ticket_id = &request.into_inner().ticket_id;
         let skill_command = format!("/implement {ticket_id}");
-        info!(
-            ticket_id,
-            "Implement received, sending skill invocation to tmux"
-        );
+        info!(ticket_id, "Implement received, loading dispatch buffer");
+
+        let mut buf = self.dispatch_buffer.lock().await;
+        buf.lifecycle_step = "implementing".to_string();
+        buf.step_complete = false;
+        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+
+        // Pop the first command and send it immediately
+        let first_command = buf.commands.pop_front().expect("commands is non-empty");
+        drop(buf);
 
         let session = tmux::Session::agent();
-        if let Err(e) = session.send_keys("/clear").await {
-            error!(error = %e, "tmux send-keys failed for /clear before /implement");
-        }
-        if let Err(e) = session.send_keys(&skill_command).await {
-            error!(error = %e, "tmux send-keys failed for /implement");
+        if let Err(e) = session.send_keys(&first_command).await {
+            error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 
         Ok(Response::new(ImplementResponse {}))
@@ -220,15 +223,21 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         info!(
             ticket_id = inner.ticket_id,
             pr_number = inner.pr_number,
-            "CreateFeedbackTickets received, sending skill invocation to tmux"
+            "CreateFeedbackTickets received, loading dispatch buffer"
         );
 
+        let mut buf = self.dispatch_buffer.lock().await;
+        buf.lifecycle_step = "feedback_creating".to_string();
+        buf.step_complete = false;
+        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+
+        // Pop the first command and send it immediately
+        let first_command = buf.commands.pop_front().expect("commands is non-empty");
+        drop(buf);
+
         let session = tmux::Session::agent();
-        if let Err(e) = session.send_keys("/clear").await {
-            error!(error = %e, "tmux send-keys failed for /clear before /create-feedback");
-        }
-        if let Err(e) = session.send_keys(&skill_command).await {
-            error!(error = %e, "tmux send-keys failed for /create-feedback");
+        if let Err(e) = session.send_keys(&first_command).await {
+            error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 
         Ok(Response::new(CreateFeedbackResponse {}))
