@@ -113,6 +113,7 @@ fn count_pool_slots(pool_dir: &Path) -> usize {
 pub fn add(
     config: &ur_config::Config,
     path: &Path,
+    image: &str,
     key: Option<&str>,
     name: Option<&str>,
     pool_limit: Option<u32>,
@@ -156,6 +157,10 @@ pub fn add(
     if let Some(limit) = pool_limit {
         proj_table.insert("pool_limit", toml_edit::value(i64::from(limit)));
     }
+
+    let mut container_table = toml_edit::Table::new();
+    container_table.insert("image", toml_edit::value(image));
+    proj_table.insert("container", toml_edit::Item::Table(container_table));
 
     projects.insert(&key, toml_edit::Item::Table(proj_table));
 
@@ -305,11 +310,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = write_config(&tmp, "");
         let repo = make_git_repo("git@github.com:cmaher/ur.git");
-        add(&config, repo.path(), None, None, None, &text_output()).unwrap();
+        add(
+            &config,
+            repo.path(),
+            "base",
+            None,
+            None,
+            None,
+            &text_output(),
+        )
+        .unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(updated.projects.contains_key("ur"));
         assert_eq!(updated.projects["ur"].repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(updated.projects["ur"].container.image, "ur-worker:latest");
     }
 
     #[test]
@@ -320,6 +335,7 @@ mod tests {
         add(
             &config,
             repo.path(),
+            "rust",
             Some("mykey"),
             Some("My Project"),
             Some(5),
@@ -332,6 +348,7 @@ mod tests {
         assert_eq!(proj.repo, "git@github.com:cmaher/ur.git");
         assert_eq!(proj.name, "My Project");
         assert_eq!(proj.pool_limit, 5);
+        assert_eq!(proj.container.image, "ur-worker-rust:latest");
     }
 
     #[test]
@@ -342,11 +359,84 @@ mod tests {
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+
+[projects.ur.container]
+image = "base"
 "#,
         );
         let repo = make_git_repo("git@github.com:other/ur.git");
-        let err = add(&config, repo.path(), None, None, None, &text_output()).unwrap_err();
+        let err = add(
+            &config,
+            repo.path(),
+            "base",
+            None,
+            None,
+            None,
+            &text_output(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn add_project_writes_container_image_toml() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let repo = make_git_repo("git@github.com:cmaher/myproj.git");
+        add(
+            &config,
+            repo.path(),
+            "base",
+            None,
+            None,
+            None,
+            &text_output(),
+        )
+        .unwrap();
+
+        let toml_content = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
+        assert!(toml_content.contains("[projects.myproj.container]"));
+        assert!(toml_content.contains("image = \"base\""));
+    }
+
+    #[test]
+    fn add_project_with_rust_image() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let repo = make_git_repo("git@github.com:cmaher/myproj.git");
+        add(
+            &config,
+            repo.path(),
+            "rust",
+            None,
+            None,
+            None,
+            &text_output(),
+        )
+        .unwrap();
+
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            updated.projects["myproj"].container.image,
+            "ur-worker-rust:latest"
+        );
+    }
+
+    #[test]
+    fn validate_image_alias_unknown_errors() {
+        let err = ur_config::validate_image_alias("unknown").unwrap_err();
+        assert!(err.to_string().contains("unknown image alias"));
+    }
+
+    #[test]
+    fn validate_image_alias_known_ok() {
+        ur_config::validate_image_alias("base").unwrap();
+        ur_config::validate_image_alias("rust").unwrap();
+    }
+
+    #[test]
+    fn validate_image_alias_full_reference_ok() {
+        ur_config::validate_image_alias("myregistry/myimage:v1").unwrap();
     }
 
     #[test]
@@ -357,6 +447,9 @@ repo = "git@github.com:cmaher/ur.git"
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+
+[projects.ur.container]
+image = "base"
 "#,
         );
 
@@ -380,6 +473,9 @@ repo = "git@github.com:cmaher/ur.git"
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+
+[projects.ur.container]
+image = "base"
 "#,
         );
         let err = remove(&config, "ur", false, &text_output()).unwrap_err();

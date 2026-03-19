@@ -15,6 +15,7 @@ mod proxy;
 mod rag;
 mod ticket;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process;
 
@@ -123,6 +124,9 @@ enum ProjectCommands {
     Add {
         /// Path to a git repository directory (e.g. "." for current directory)
         path: PathBuf,
+        /// Container image alias (e.g. "base", "rust") or full image reference
+        #[arg(long)]
+        image: String,
         /// Project key (derived from repo name if omitted)
         #[arg(long)]
         key: Option<String>,
@@ -234,13 +238,13 @@ enum WorkerCommands {
     Dir { worker_id: String },
     /// Force-stop a running worker process (via server)
     Kill { worker_id: String },
-    /// Launch a new worker process
+    /// Launch a new worker process (requires -p project or -w workspace)
     Launch {
         ticket_id: String,
         /// Mount a host directory as the container workspace (mutually exclusive with -p)
         #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
         workspace: Option<PathBuf>,
-        /// Project key for repo pool launch (mutually exclusive with -w)
+        /// Project key — determines container image from project config (mutually exclusive with -w)
         #[arg(short = 'p', long = "project", conflicts_with = "workspace")]
         project: Option<String>,
         /// Attach to the process after launching
@@ -761,7 +765,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[instrument(skip(client, output), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
+#[instrument(skip(client, output, projects), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
@@ -771,6 +775,7 @@ async fn process_launch(
     mode: &str,
     skills: &[String],
     output: &OutputManager,
+    projects: &HashMap<String, ur_config::ProjectConfig>,
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching worker process");
 
@@ -790,7 +795,34 @@ async fn process_launch(
         None => String::new(),
     };
 
-    let image_id = "ur-worker-rust:latest";
+    let default_image;
+    let image_id = match projects
+        .get(project_key)
+        .map(|p| p.container.image.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(image) => image,
+        None if !workspace_dir.is_empty() => {
+            // Workspace mount without a project — use the base image
+            default_image = ur_config::IMAGE_ALIASES
+                .first()
+                .expect("IMAGE_ALIASES must not be empty")
+                .1;
+            default_image
+        }
+        None => {
+            return Err(if project_key.is_empty() {
+                anyhow::anyhow!(
+                    "no project specified — use -p <project> to select a project with a configured container image"
+                )
+            } else {
+                anyhow::anyhow!(
+                    "project '{}' has no container image configured (set container.image in ur.toml)",
+                    project_key
+                )
+            });
+        }
+    };
     let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
         println!("Launching worker {container_name}...");
@@ -851,12 +883,12 @@ async fn process_stop(
     Ok(())
 }
 
-#[instrument(skip(command, project_keys, output), fields(command_name = command_name(&command)))]
+#[instrument(skip(command, projects, output), fields(command_name = command_name(&command)))]
 async fn handle_worker(
     command: WorkerCommands,
     port: u16,
     worker_prefix: &str,
-    project_keys: &[String],
+    projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
 ) -> Result<()> {
     match command {
@@ -889,7 +921,7 @@ async fn handle_worker(
             handle_worker_launch(
                 port,
                 worker_prefix,
-                project_keys,
+                projects,
                 output,
                 ticket_id,
                 workspace,
@@ -1022,7 +1054,7 @@ async fn handle_worker_code(port: u16, worker_id: &str) -> Result<()> {
 async fn handle_worker_launch(
     port: u16,
     worker_prefix: &str,
-    project_keys: &[String],
+    projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
     ticket_id: String,
     workspace: Option<PathBuf>,
@@ -1048,7 +1080,8 @@ async fn handle_worker_launch(
         .filter(|s| !s.is_empty())
         .collect();
 
-    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, project_keys)?;
+    let project_keys: Vec<String> = projects.keys().cloned().collect();
+    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, &project_keys)?;
 
     let mut client = connect(port).await?;
     if force {
@@ -1067,6 +1100,7 @@ async fn handle_worker_launch(
         &mode,
         &skills_vec,
         output,
+        projects,
     )
     .await?;
     if attach || rm {
@@ -1198,6 +1232,7 @@ fn handle_project(
     match command {
         ProjectCommands::Add {
             path,
+            image,
             key,
             name,
             pool_limit,
@@ -1209,9 +1244,11 @@ fn handle_project(
                 input::reject_control_chars(n, "name")?;
             }
             input::reject_path_traversal(&path, "path")?;
+            ur_config::validate_image_alias(&image)?;
             project::add(
                 config,
                 &path,
+                &image,
                 key.as_deref(),
                 name.as_deref(),
                 pool_limit,
@@ -1343,12 +1380,11 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
         Commands::Worker { command } => {
-            let project_keys: Vec<String> = config.projects.keys().cloned().collect();
             handle_worker(
                 command,
                 port,
                 &config.network.worker_prefix,
-                &project_keys,
+                &config.projects,
                 output,
             )
             .await?

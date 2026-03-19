@@ -18,6 +18,17 @@ pub struct MountConfig {
     pub destination: String,
 }
 
+/// A parsed port mapping entry: host port -> container port.
+///
+/// Maps to Docker's `-p host_port:container_port` flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortMapping {
+    /// TCP port on the host.
+    pub host_port: u16,
+    /// TCP port inside the container.
+    pub container_port: u16,
+}
+
 /// Parse a mount string in `"source:destination"` format.
 ///
 /// Splits on the first `:` character. Validates that:
@@ -60,6 +71,36 @@ fn parse_mount_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Resu
     Ok(MountConfig {
         source: source.to_string(),
         destination: destination.to_string(),
+    })
+}
+
+/// Parse a port mapping string in `"host_port:container_port"` format.
+///
+/// Both ports must be valid u16 values.
+fn parse_port_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Result<PortMapping> {
+    let colon_pos = raw.find(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: expected 'host_port:container_port' format, got: {raw}"
+        )
+    })?;
+
+    let host_str = &raw[..colon_pos];
+    let container_str = &raw[colon_pos + 1..];
+
+    let host_port: u16 = host_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: invalid host port '{host_str}', expected a number 0-65535"
+        )
+    })?;
+    let container_port: u16 = container_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: invalid container port '{container_str}', expected a number 0-65535"
+        )
+    })?;
+
+    Ok(PortMapping {
+        host_port,
+        container_port,
     })
 }
 
@@ -316,6 +357,16 @@ pub struct HostExecConfig {
     pub commands: HashMap<String, HostExecCommandConfig>,
 }
 
+/// Raw TOML representation for a `[projects.<key>.container]` section.
+#[derive(Debug, Deserialize)]
+struct RawContainerConfig {
+    image: String,
+    #[serde(default)]
+    mounts: Vec<String>,
+    #[serde(default)]
+    ports: Vec<String>,
+}
+
 /// Raw TOML representation for a `[projects.<key>]` entry.
 #[derive(Debug, Deserialize)]
 struct RawProjectConfig {
@@ -325,8 +376,10 @@ struct RawProjectConfig {
     #[serde(default)]
     hostexec: Vec<String>,
     git_hooks_dir: Option<String>,
+    container: Option<RawContainerConfig>,
+    /// Reject mounts at the project root level with a helpful error.
     #[serde(default)]
-    mounts: Vec<String>,
+    mounts: Option<serde::de::IgnoredAny>,
     /// Template path to a directory of workflow hook scripts.
     workflow_hooks_dir: Option<String>,
     /// Maximum fix loop iterations before stalling agent.
@@ -445,6 +498,68 @@ pub struct BackupConfig {
     pub retain_count: u64,
 }
 
+/// Known image aliases and their full tags.
+pub const IMAGE_ALIASES: &[(&str, &str)] = &[
+    ("base", "ur-worker:latest"),
+    ("rust", "ur-worker-rust:latest"),
+];
+
+/// Validate that the given string is a known image alias or a full image reference.
+/// Returns `Ok(())` if valid, or an error describing the valid aliases.
+pub fn validate_image_alias(raw: &str) -> anyhow::Result<()> {
+    // Full image references are always valid
+    if raw.contains(':') || raw.contains('/') {
+        return Ok(());
+    }
+    for (alias, _) in IMAGE_ALIASES {
+        if raw == *alias {
+            return Ok(());
+        }
+    }
+    let valid: Vec<&str> = IMAGE_ALIASES.iter().map(|(a, _)| *a).collect();
+    anyhow::bail!(
+        "unknown image alias '{raw}'. Valid aliases: {valid:?}. \
+         Use a full image reference (e.g. 'myimage:tag') for custom images."
+    )
+}
+
+/// Resolve an image alias to its full tag.
+/// Returns the full tag if the input is a known alias, or an error if the alias is unknown.
+/// If the input contains `:` or `/`, it is treated as a full image reference and returned as-is.
+fn resolve_image_alias(project_key: &str, raw: &str) -> anyhow::Result<String> {
+    // If it looks like a full image reference, pass through
+    if raw.contains(':') || raw.contains('/') {
+        return Ok(raw.to_string());
+    }
+    // Try alias lookup
+    for (alias, tag) in IMAGE_ALIASES {
+        if raw == *alias {
+            return Ok(tag.to_string());
+        }
+    }
+    let valid: Vec<&str> = IMAGE_ALIASES.iter().map(|(a, _)| *a).collect();
+    anyhow::bail!(
+        "project '{project_key}': container.image: unknown alias '{raw}'. \
+         Valid aliases: {valid:?}. Use a full image reference (e.g. 'myimage:tag') for custom images."
+    )
+}
+
+/// Resolved container configuration for a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerConfig {
+    /// Full image tag (after alias resolution).
+    pub image: String,
+    /// Additional volume mounts for this project.
+    /// Each entry maps a host-side source to a container-side destination.
+    /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
+    /// Parsed from `"source:destination"` strings in TOML.
+    pub mounts: Vec<MountConfig>,
+    /// Port mappings for this project's containers.
+    /// Each entry maps a host TCP port to a container TCP port (`-p host:container`).
+    /// Parsed from `"host_port:container_port"` strings in TOML.
+    pub ports: Vec<PortMapping>,
+}
+
 /// Resolved project configuration for a single project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -463,11 +578,8 @@ pub struct ProjectConfig {
     /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
     pub git_hooks_dir: Option<String>,
-    /// Additional volume mounts for this project.
-    /// Each entry maps a host-side source to a container-side destination.
-    /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
-    /// Parsed from `"source:destination"` strings in TOML.
-    pub mounts: Vec<MountConfig>,
+    /// Container configuration (image, mounts).
+    pub container: ContainerConfig,
     /// Optional template path to a directory of workflow hook scripts.
     /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
@@ -573,7 +685,43 @@ impl Config {
             .projects
             .into_iter()
             .map(|(key, raw_proj)| {
+                // Reject mounts at project root level
+                if raw_proj.mounts.is_some() {
+                    anyhow::bail!(
+                        "project '{key}': 'mounts' must be inside [projects.{key}.container], \
+                         not at the project root level"
+                    );
+                }
+
                 validate_project_templates(&key, &raw_proj)?;
+
+                let raw_container = raw_proj.container.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "project '{key}': missing required [projects.{key}.container] section"
+                    )
+                })?;
+
+                let image = resolve_image_alias(&key, &raw_container.image)?;
+                let mounts = raw_container
+                    .mounts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| parse_mount_entry(&key, i, m))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+
+                let ports = raw_container
+                    .ports
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| parse_port_entry(&key, i, p))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+
+                let container = ContainerConfig {
+                    image,
+                    mounts,
+                    ports,
+                };
+
                 let resolved = ProjectConfig {
                     name: raw_proj.name.unwrap_or_else(|| key.clone()),
                     repo: raw_proj.repo,
@@ -581,12 +729,7 @@ impl Config {
                     key: key.clone(),
                     hostexec: raw_proj.hostexec,
                     git_hooks_dir: raw_proj.git_hooks_dir,
-                    mounts: raw_proj
-                        .mounts
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| parse_mount_entry(&key, i, m))
-                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    container,
                     workflow_hooks_dir: raw_proj.workflow_hooks_dir,
                     max_fix_attempts: raw_proj
                         .max_fix_attempts
@@ -927,6 +1070,8 @@ mod tests {
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -937,6 +1082,7 @@ repo = "git@github.com:cmaher/ur.git"
         assert_eq!(proj.repo, "git@github.com:cmaher/ur.git");
         assert_eq!(proj.name, "ur");
         assert_eq!(proj.pool_limit, DEFAULT_POOL_LIMIT);
+        assert_eq!(proj.container.image, "ur-worker:latest");
     }
 
     #[test]
@@ -949,6 +1095,8 @@ repo = "git@github.com:cmaher/ur.git"
 repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
 pool_limit = 5
+[projects.swa.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -968,11 +1116,15 @@ pool_limit = 5
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 
 [projects.swa]
 repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
 pool_limit = 5
+[projects.swa.container]
+image = "rust"
 "#,
         )
         .unwrap();
@@ -991,6 +1143,8 @@ pool_limit = 5
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 hostexec = ["jq", "rg", "cargo"]
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1007,6 +1161,8 @@ hostexec = ["jq", "rg", "cargo"]
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1037,6 +1193,8 @@ name = "Missing Repo"
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1053,6 +1211,8 @@ repo = "git@github.com:cmaher/ur.git"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%PROJECT%/.git-hooks"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1072,6 +1232,8 @@ git_hooks_dir = "%PROJECT%/.git-hooks"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%BADVAR%/hooks"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1090,6 +1252,8 @@ git_hooks_dir = "%BADVAR%/hooks"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "/opt/hooks/ur"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1109,6 +1273,8 @@ git_hooks_dir = "/opt/hooks/ur"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%URCONFIG%/hooks/ur"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1127,11 +1293,13 @@ git_hooks_dir = "%URCONFIG%/hooks/ur"
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 "#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.projects["ur"].mounts.is_empty());
+        assert!(cfg.projects["ur"].container.mounts.is_empty());
     }
 
     #[test]
@@ -1142,21 +1310,23 @@ repo = "git@github.com:cmaher/ur.git"
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
 "#,
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].mounts.len(), 2);
+        assert_eq!(cfg.projects["ur"].container.mounts.len(), 2);
         assert_eq!(
-            cfg.projects["ur"].mounts[0],
+            cfg.projects["ur"].container.mounts[0],
             MountConfig {
                 source: "%URCONFIG%/shared-data".into(),
                 destination: "/var/data".into(),
             }
         );
         assert_eq!(
-            cfg.projects["ur"].mounts[1],
+            cfg.projects["ur"].container.mounts[1],
             MountConfig {
                 source: "/opt/tools".into(),
                 destination: "/workspace/.tools".into(),
@@ -1172,6 +1342,8 @@ mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 mounts = ["/opt/tools"]
 "#,
         )
@@ -1190,6 +1362,8 @@ mounts = ["/opt/tools"]
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 mounts = ["%PROJECT%/.cache:/workspace/.cache"]
 "#,
         )
@@ -1208,6 +1382,8 @@ mounts = ["%PROJECT%/.cache:/workspace/.cache"]
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 mounts = ["/opt/tools:relative/path"]
 "#,
         )
@@ -1290,6 +1466,8 @@ mounts = ["/opt/tools:relative/path"]
             r#"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
 mounts = ["%INVALID%/bad:/workspace/bad"]
 "#,
         )
@@ -1564,6 +1742,8 @@ bad = { bidi = true }
             r#"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
+[projects.myproj.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1585,6 +1765,8 @@ repo = "git@github.com:example/myproj.git"
 workflow_hooks_dir = "%PROJECT%/.workflow"
 max_fix_attempts = 3
 protected_branches = ["main", "release/*"]
+[projects.myproj.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1607,6 +1789,8 @@ protected_branches = ["main", "release/*"]
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
 workflow_hooks_dir = "relative/path"
+[projects.myproj.container]
+image = "base"
 "#,
         )
         .unwrap();
@@ -1633,5 +1817,227 @@ tool = { long_lived = false, bidi = false }
         let tool = &cfg.hostexec.commands["tool"];
         assert!(!tool.long_lived);
         assert!(!tool.bidi);
+    }
+
+    #[test]
+    fn container_image_alias_base_resolves() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker:latest");
+    }
+
+    #[test]
+    fn container_image_alias_rust_resolves() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "rust"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker-rust:latest");
+    }
+
+    #[test]
+    fn container_image_full_reference_passes_through() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "myregistry/custom-image:v1.2.3"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].container.image,
+            "myregistry/custom-image:v1.2.3"
+        );
+    }
+
+    #[test]
+    fn container_image_unknown_alias_errors() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "unknown"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown alias 'unknown'"), "{msg}");
+        assert!(msg.contains("base"), "{msg}");
+        assert!(msg.contains("rust"), "{msg}");
+    }
+
+    #[test]
+    fn project_missing_container_section_errors() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing required"), "{msg}");
+        assert!(msg.contains("[projects.ur.container]"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_at_project_root_errors() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+mounts = ["/opt/tools:/workspace/.tools"]
+[projects.ur.container]
+image = "base"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must be inside [projects.ur.container]"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn ports_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects["ur"].container.ports.is_empty());
+    }
+
+    #[test]
+    fn ports_parses_host_container_format() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080:80", "3000:3000"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.ports.len(), 2);
+        assert_eq!(
+            cfg.projects["ur"].container.ports[0],
+            PortMapping {
+                host_port: 8080,
+                container_port: 80,
+            }
+        );
+        assert_eq!(
+            cfg.projects["ur"].container.ports[1],
+            PortMapping {
+                host_port: 3000,
+                container_port: 3000,
+            }
+        );
+    }
+
+    #[test]
+    fn ports_rejects_missing_colon() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("host_port:container_port"), "{msg}");
+    }
+
+    #[test]
+    fn ports_rejects_invalid_host_port() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["notaport:80"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("invalid host port"), "{msg}");
+    }
+
+    #[test]
+    fn ports_rejects_invalid_container_port() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080:notaport"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("invalid container port"), "{msg}");
     }
 }
