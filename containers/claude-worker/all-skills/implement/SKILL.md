@@ -45,52 +45,26 @@ No subagents needed. Just do the work.
 2. `git checkout -B <branch-name> origin/master`
 3. Record the branch on the epic: `ur ticket --output json add-activity <epic-id> "branch: <branch-name>"`
 
-### VCS: Sequential Stacking (Critical)
+### Parallel (Default)
 
-Agents stack commits sequentially on the working branch. Each agent commits, and the next agent inherits all previous work.
+Dispatch all dispatchable tickets as subagents in parallel. Each subagent commits independently on the working branch.
 
-```
-origin/master -> agent1 commits -> agent2 commits -> ...
-```
+1. `ur ticket --output json dispatchable <epic-id>` — get all unblocked tickets
+2. Dispatch all subagents in parallel (each subagent claims its own ticket via the prompt template)
+4. Each subagent closes its ticket when done
+5. After all complete, re-query dispatchable — newly unblocked tickets may have surfaced
+6. Repeat until no dispatchable tickets remain
 
-### The Loop
+Parent never reads files or explores code inline — if it takes more than a glance, delegate.
 
-```dot
-digraph implement {
-    "Fresh from master" [shape=doublecircle];
-    "Query dispatchable" [shape=box];
-    "Pick next ticket" [shape=box];
-    "Show ticket for context" [shape=box];
-    "Dispatch subagent" [shape=box];
-    "Record 1-2 line summary" [shape=box];
-    "More dispatchable tickets?" [shape=diamond];
-    "Report final summary" [shape=doublecircle];
+### Sequential Mode
 
-    "Fresh from master" -> "Query dispatchable";
-    "Query dispatchable" -> "Pick next ticket";
-    "Pick next ticket" -> "Show ticket for context";
-    "Show ticket for context" -> "Dispatch subagent";
-    "Dispatch subagent" -> "Record 1-2 line summary";
-    "Record 1-2 line summary" -> "More dispatchable tickets?";
-    "More dispatchable tickets?" -> "Query dispatchable" [label="yes — re-query\nfor newly unblocked"];
-    "More dispatchable tickets?" -> "Run full CI" [label="no"];
-    "Run full CI" -> "Report final summary";
-}
-```
+Use when explicitly requested or when tickets have heavy file overlap (check the "Files" section in ticket bodies):
 
-### Sequential (Default)
-
+- Dispatch one subagent at a time on the working branch
+- Each agent commits, and the next agent inherits all previous work
 - Re-query `ur ticket --output json dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
 - Pass only 1-2 sentence summaries between tasks
-- Parent never reads files or explores code inline — if it takes more than a glance, delegate
-
-### Parallel Mode
-
-Use only when explicitly requested or when tickets are clearly independent:
-
-1. Each subagent claims its ticket: `ur ticket --output json update <id> --status in_progress`
-2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
-3. Each subagent closes its ticket when done
 
 ### Testing Strategy
 
@@ -104,7 +78,11 @@ Use only when explicitly requested or when tickets are clearly independent:
 ```
 Implement ticket <id>.
 
-`ur ticket --output json show <id>` to read the full ticket.
+`ur ticket --output json show <id>` to read the full ticket. Tickets have four sections:
+- **Description**: What to build and why
+- **Context**: How this component interacts with neighbors — use this for architectural awareness
+- **Files**: Likely file paths to create or modify — use this to focus your work
+- **Acceptance Criteria**: Conditions for done — verify all are met before closing
 
 Claim: `ur ticket --output json update <id> --status in_progress`
 
@@ -113,6 +91,11 @@ Claim: `ur ticket --output json update <id> --status in_progress`
 Constraints:
 - [Scope boundaries]
 - [What NOT to change]
+
+Parallel work:
+- Other agents may be working on sibling tickets at the same time
+- They may modify some of the same files — check the ticket's Context and Files sections to understand potential overlap
+- Keep your changes focused to the files relevant to your ticket to minimize conflicts
 
 VCS:
 - Use `git add <files> && git commit -m "message"` when done — do NOT switch branches
@@ -154,11 +137,12 @@ After all dispatchable tickets are done and CI passes:
 
 | Mistake | Fix |
 |---------|-----|
-| Switching branches mid-work | **Never.** Stack via `git commit` on the working branch — next agent inherits automatically |
+| Switching branches mid-work | **Never.** All agents commit on the working branch |
 | Parent reads full subagent output | Ask for "1-2 sentence summary" in every prompt |
 | Parent explores code inline | Delegate to subagent |
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
+| Using sequential when tickets are independent | Default to parallel — only use sequential when tickets have heavy file overlap |
 | Calling /push or advancing lifecycle | **Never.** The workflow engine handles push/PR/lifecycle after `workertools agent done` |
 
 $ARGUMENTS
