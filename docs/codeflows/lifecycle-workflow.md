@@ -119,12 +119,16 @@ Source: `crates/server/src/grpc.rs` (`handle_agent_status_routed()`)
 
 ## Dispatch Implement Handler
 
-The `DispatchImplementHandler` is the single entry point for all transitions into `Implementing`. It covers:
+The `DispatchImplementHandler` handles registered workflow transitions into `Implementing`:
 
 - **Initial dispatch**: AwaitingDispatch -> Implementing
 - **CI failure re-dispatch**: Pushing -> Implementing (via GitHub poller)
 - **Merge conflict re-dispatch**: Merging -> Implementing
-- **Verification failure re-dispatch**: Verifying -> Implementing (via VerifyHandler internal transition)
+
+Other paths to `Implementing` bypass this handler and do not send the implement RPC:
+- **Verification failure**: VerifyHandler internally transitions Verifying -> Implementing (no handler registered for this event; the worker re-enters the verify cycle on next idle report)
+- **Push hook failure**: PushHandler internally transitions Pushing -> Implementing
+- **Feedback mode=now**: Step router's `AdvanceByFeedbackMode` transitions FeedbackCreating -> Implementing (no handler registered; the worker re-enters the verify cycle on next idle report)
 
 The handler ensures the ticket has a branch (generating one from the ticket ID if needed), resolves the assigned worker via `worker_id` metadata, and sends the `Implement(ticket_id)` RPC to the worker's workerd daemon. The workerd handler sends `/clear` before `/implement` to ensure a fresh agent context on each dispatch.
 
@@ -229,7 +233,7 @@ The engine polls `workflow_event` every 500ms and processes one event per cycle:
 4. **Handler lookup**: Find the registered handler for the `(from, to)` transition key
 5. **Execute**: Call `handler.handle(ctx, ticket_id, transition)`
 6. **On success**: Delete the event
-7. **On failure**: Increment attempts; if attempts >= 3, revert ticket to `Open`
+7. **On failure**: Increment attempts; if attempts >= 3, stall the ticket (`stall_reason` metadata set, ticket stays in current lifecycle state, event deleted)
 
 Source: `crates/server/src/workflow/engine.rs`
 
@@ -255,7 +259,7 @@ Source: `crates/server/src/workflow/github_poller.rs`
 
 ## Error Handling
 
-- **Handler failures**: Retried up to 3 times (MAX_ATTEMPTS). After exhausting retries, the ticket is stalled: it stays in its current lifecycle state and `stall_reason` metadata is set with the error message.
+- **Handler failures**: Retried up to 3 times (MAX_ATTEMPTS). After exhausting retries, the ticket is stalled: it stays in its current lifecycle state, `stall_reason` metadata is set with the error message, and the workflow event is deleted. Use `ur admin redrive` to retry.
 - **Stale events**: If a ticket's lifecycle_status has moved past the event's target, the event is deleted without processing.
 - **No handler**: Events with no registered handler are deleted with a warning log.
 - **Non-lifecycle tickets**: Events for tickets without `lifecycle_managed = true` are deleted.
