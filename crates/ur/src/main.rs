@@ -235,13 +235,13 @@ enum WorkerCommands {
     Dir { worker_id: String },
     /// Force-stop a running worker process (via server)
     Kill { worker_id: String },
-    /// Launch a new worker process
+    /// Launch a new worker process (requires -p project or -w workspace)
     Launch {
         ticket_id: String,
         /// Mount a host directory as the container workspace (mutually exclusive with -p)
         #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
         workspace: Option<PathBuf>,
-        /// Project key for repo pool launch (mutually exclusive with -w)
+        /// Project key — determines container image from project config (mutually exclusive with -w)
         #[arg(short = 'p', long = "project", conflicts_with = "workspace")]
         project: Option<String>,
         /// Attach to the process after launching
@@ -778,7 +778,19 @@ async fn process_launch(
     let image_id = projects
         .get(project_key)
         .map(|p| p.container.image.as_str())
-        .unwrap_or("ur-worker-rust:latest");
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            if project_key.is_empty() {
+                anyhow::anyhow!(
+                    "no project specified — use -p <project> to select a project with a configured container image"
+                )
+            } else {
+                anyhow::anyhow!(
+                    "project '{}' has no container image configured (set container.image in ur.toml)",
+                    project_key
+                )
+            }
+        })?;
     let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
         println!("Launching worker {container_name}...");
