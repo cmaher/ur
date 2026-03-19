@@ -35,12 +35,6 @@ No subagents needed. Just do the work.
 
 **Core principle:** The parent orchestrates via `ur ticket`; subagents do the work. Only essential outcomes flow back.
 
-### Before Starting — Branch Setup
-
-1. `git fetch origin` — pull latest from remote
-2. `git checkout -B <branch-name> origin/master`
-3. Record the branch on the epic: `ur ticket --output json add-activity <epic-id> "branch: <branch-name>"`
-
 ### Parallel (Default)
 
 Dispatch all dispatchable tickets as subagents in parallel. Each subagent commits independently on the working branch.
