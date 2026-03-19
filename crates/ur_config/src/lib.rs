@@ -733,66 +733,7 @@ impl Config {
         let projects = raw
             .projects
             .into_iter()
-            .map(|(key, raw_proj)| {
-                // Reject mounts at project root level
-                if raw_proj.mounts.is_some() {
-                    anyhow::bail!(
-                        "project '{key}': 'mounts' must be inside [projects.{key}.container], \
-                         not at the project root level"
-                    );
-                }
-
-                validate_project_templates(&key, &raw_proj)?;
-
-                let raw_container = raw_proj.container.unwrap_or(RawContainerConfig {
-                    image: IMAGE_ALIASES
-                        .first()
-                        .expect("IMAGE_ALIASES must not be empty")
-                        .0
-                        .to_string(),
-                    mounts: Vec::new(),
-                    ports: Vec::new(),
-                });
-
-                let image = resolve_image_alias(&key, &raw_container.image)?;
-                let mounts = raw_container
-                    .mounts
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| parse_mount_entry(&key, i, m))
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-
-                let ports = raw_container
-                    .ports
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| parse_port_entry(&key, i, p))
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-
-                let container = ContainerConfig {
-                    image,
-                    mounts,
-                    ports,
-                };
-
-                let resolved = ProjectConfig {
-                    name: raw_proj.name.unwrap_or_else(|| key.clone()),
-                    repo: raw_proj.repo,
-                    pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
-                    key: key.clone(),
-                    hostexec: raw_proj.hostexec,
-                    git_hooks_dir: raw_proj.git_hooks_dir,
-                    container,
-                    workflow_hooks_dir: raw_proj.workflow_hooks_dir,
-                    max_fix_attempts: raw_proj
-                        .max_fix_attempts
-                        .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
-                    protected_branches: raw_proj
-                        .protected_branches
-                        .unwrap_or_else(default_protected_branches),
-                };
-                Ok((key, resolved))
-            })
+            .map(|(key, raw_proj)| resolve_project(key, raw_proj))
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
@@ -818,6 +759,70 @@ impl Config {
 
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
+
+fn resolve_project(
+    key: String,
+    raw_proj: RawProjectConfig,
+) -> anyhow::Result<(String, ProjectConfig)> {
+    // Reject mounts at project root level
+    if raw_proj.mounts.is_some() {
+        anyhow::bail!(
+            "project '{key}': 'mounts' must be inside [projects.{key}.container], \
+             not at the project root level"
+        );
+    }
+
+    validate_project_templates(&key, &raw_proj)?;
+
+    let raw_container = raw_proj.container.unwrap_or(RawContainerConfig {
+        image: IMAGE_ALIASES
+            .first()
+            .expect("IMAGE_ALIASES must not be empty")
+            .0
+            .to_string(),
+        mounts: Vec::new(),
+        ports: Vec::new(),
+    });
+
+    let image = resolve_image_alias(&key, &raw_container.image)?;
+    let mounts = raw_container
+        .mounts
+        .iter()
+        .enumerate()
+        .map(|(i, m)| parse_mount_entry(&key, i, m))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let ports = raw_container
+        .ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| parse_port_entry(&key, i, p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let container = ContainerConfig {
+        image,
+        mounts,
+        ports,
+    };
+
+    let resolved = ProjectConfig {
+        name: raw_proj.name.unwrap_or_else(|| key.clone()),
+        repo: raw_proj.repo,
+        pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
+        key: key.clone(),
+        hostexec: raw_proj.hostexec,
+        git_hooks_dir: raw_proj.git_hooks_dir,
+        container,
+        workflow_hooks_dir: raw_proj.workflow_hooks_dir,
+        max_fix_attempts: raw_proj
+            .max_fix_attempts
+            .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
+        protected_branches: raw_proj
+            .protected_branches
+            .unwrap_or_else(default_protected_branches),
+    };
+    Ok((key, resolved))
+}
 
 fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecConfig> {
     let mut commands = HashMap::new();
