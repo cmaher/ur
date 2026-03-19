@@ -7,6 +7,8 @@ use ur_rpc::proto::remote_repo::{
     GetPrRequest, GetReviewCommentsRequest, ReplyToCommentRequest,
 };
 
+use crate::inject_auth;
+
 #[derive(Subcommand)]
 pub enum RepoCommands {
     /// Pull request operations
@@ -94,24 +96,6 @@ pub enum RunCommands {
 fn get_gh_repo() -> Result<String, String> {
     std::env::var("UR_GH_REPO")
         .map_err(|_| "UR_GH_REPO environment variable is not set. Workers must have project context to use repo commands.".to_owned())
-}
-
-fn inject_auth(request: &mut tonic::Request<impl std::fmt::Debug>) {
-    if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
-        && let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_ID_HEADER, val);
-    }
-    if let Ok(worker_secret) = std::env::var(ur_config::UR_WORKER_SECRET_ENV)
-        && let Ok(val) =
-            worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_SECRET_HEADER, val);
-    }
 }
 
 async fn connect() -> Result<RemoteRepoServiceClient<Channel>, i32> {

@@ -17,6 +17,25 @@ use ur_rpc::proto::rag::{Language, RagSearchRequest};
 use ur_rpc::proto::workerd::NotifyIdleRequest;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 
+/// Inject worker auth headers (worker ID and secret) into a tonic request from environment variables.
+pub(crate) fn inject_auth<T>(request: &mut tonic::Request<T>) {
+    if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
+        && let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::WORKER_ID_HEADER, val);
+    }
+    if let Ok(worker_secret) = std::env::var(ur_config::UR_WORKER_SECRET_ENV)
+        && let Ok(val) =
+            worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::WORKER_SECRET_HEADER, val);
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "workertools", about = "Ur worker toolkit")]
 struct Cli {
@@ -162,23 +181,7 @@ async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     let outbound = ReceiverStream::new(rx);
 
     let mut request = tonic::Request::new(outbound);
-
-    // Inject worker ID and secret metadata headers if available
-    if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
-        && let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_ID_HEADER, val);
-    }
-    if let Ok(worker_secret) = std::env::var(ur_config::UR_WORKER_SECRET_ENV)
-        && let Ok(val) =
-            worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_SECRET_HEADER, val);
-    }
+    inject_auth(&mut request);
 
     let response = match client.exec(request).await {
         Ok(resp) => resp,
@@ -247,23 +250,7 @@ async fn run_rag_search(query: &str, language: &str, top_k: u32) -> i32 {
         language: lang.into(),
         top_k: Some(top_k),
     });
-
-    // Inject worker ID and secret metadata headers if available
-    if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
-        && let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_ID_HEADER, val);
-    }
-    if let Ok(worker_secret) = std::env::var(ur_config::UR_WORKER_SECRET_ENV)
-        && let Ok(val) =
-            worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_SECRET_HEADER, val);
-    }
+    inject_auth(&mut request);
 
     let resp = match client.rag_search(request).await {
         Ok(resp) => resp,
