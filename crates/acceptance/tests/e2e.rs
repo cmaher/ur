@@ -170,7 +170,7 @@ fn wait_for_healthy(runtime: &str, container: &str) {
 struct ProjectEntry {
     key: String,
     repo: String,
-    /// Container image alias (e.g. "base", "rust") or full reference.
+    /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
     image: String,
 }
 
@@ -451,12 +451,12 @@ fn e2e_all() {
             ProjectEntry {
                 key: project_key.into(),
                 repo: bare_repo.to_string_lossy().into_owned(),
-                image: "base".into(),
+                image: "ur-worker".into(),
             },
             ProjectEntry {
                 key: "rustproj".into(),
                 repo: bare_repo_rust.to_string_lossy().into_owned(),
-                image: "rust".into(),
+                image: "ur-worker-rust".into(),
             },
         ],
     );
@@ -984,7 +984,7 @@ fn scenario_launch_without_project(env: &TestEnv) {
     );
 }
 
-/// Launch with `image = "rust"` project config and verify the container uses `ur-worker-rust:latest`.
+/// Launch with `image = "ur-worker-rust"` project config and verify the container uses `ur-worker-rust:latest`.
 fn scenario_project_image_rust(env: &TestEnv) {
     let ticket_id = "rust-image-test";
     let container_name = env.container_name(ticket_id);
@@ -1120,7 +1120,7 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
             "add",
             repo_dir.to_str().unwrap(),
             "--image",
-            "rust",
+            "ur-worker-rust",
             "--key",
             "addtest",
         ],
@@ -1141,8 +1141,8 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         "ur.toml should contain [projects.addtest.container] section.\nGot:\n{toml_content}"
     );
     assert!(
-        toml_content.contains("image = \"rust\""),
-        "ur.toml should contain image = \"rust\" in the addtest project.\nGot:\n{toml_content}"
+        toml_content.contains("image = \"ur-worker-rust\""),
+        "ur.toml should contain image = \"ur-worker-rust\" in the addtest project.\nGot:\n{toml_content}"
     );
 
     // ---- Clean up: remove the added project so it doesn't affect other tests ----

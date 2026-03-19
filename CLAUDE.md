@@ -19,6 +19,7 @@ Cargo workspace:
 - It is OK for managers to exceed the number of arguments allowed by clippy in their constructors.
 - Never write TODO stubs or placeholder implementations. Always write the real thing unless explicitly told otherwise.
 - Prefer modules with smaller files (<1k non-test lines). Split large files into submodules when they exceed this threshold.
+- **Clippy line limits**: Functions must stay under clippy's `too_many_lines` threshold (100 lines). When a function exceeds the limit, extract a meaningful, self-contained unit of logic — not an arbitrary slice of lines to appease the linter. The extracted function should represent a coherent concept (e.g., `resolve_project` from a project-resolution closure, not `load_from_part2`). Look for natural boundaries: closures, match arms, or blocks with their own inputs and outputs.
 
 ## Development
 

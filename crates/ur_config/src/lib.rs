@@ -546,8 +546,8 @@ pub struct BackupConfig {
 
 /// Known image aliases and their full tags.
 pub const IMAGE_ALIASES: &[(&str, &str)] = &[
-    ("base", "ur-worker:latest"),
-    ("rust", "ur-worker-rust:latest"),
+    ("ur-worker", "ur-worker:latest"),
+    ("ur-worker-rust", "ur-worker-rust:latest"),
 ];
 
 /// Validate that the given string is a known image alias or a full image reference.
@@ -733,62 +733,7 @@ impl Config {
         let projects = raw
             .projects
             .into_iter()
-            .map(|(key, raw_proj)| {
-                // Reject mounts at project root level
-                if raw_proj.mounts.is_some() {
-                    anyhow::bail!(
-                        "project '{key}': 'mounts' must be inside [projects.{key}.container], \
-                         not at the project root level"
-                    );
-                }
-
-                validate_project_templates(&key, &raw_proj)?;
-
-                let raw_container = raw_proj.container.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "project '{key}': missing required [projects.{key}.container] section"
-                    )
-                })?;
-
-                let image = resolve_image_alias(&key, &raw_container.image)?;
-                let mounts = raw_container
-                    .mounts
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| parse_mount_entry(&key, i, m))
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-
-                let ports = raw_container
-                    .ports
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| parse_port_entry(&key, i, p))
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-
-                let container = ContainerConfig {
-                    image,
-                    mounts,
-                    ports,
-                };
-
-                let resolved = ProjectConfig {
-                    name: raw_proj.name.unwrap_or_else(|| key.clone()),
-                    repo: raw_proj.repo,
-                    pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
-                    key: key.clone(),
-                    hostexec: raw_proj.hostexec,
-                    git_hooks_dir: raw_proj.git_hooks_dir,
-                    container,
-                    workflow_hooks_dir: raw_proj.workflow_hooks_dir,
-                    max_fix_attempts: raw_proj
-                        .max_fix_attempts
-                        .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
-                    protected_branches: raw_proj
-                        .protected_branches
-                        .unwrap_or_else(default_protected_branches),
-                };
-                Ok((key, resolved))
-            })
+            .map(|(key, raw_proj)| resolve_project(key, raw_proj))
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
@@ -814,6 +759,70 @@ impl Config {
 
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
+
+fn resolve_project(
+    key: String,
+    raw_proj: RawProjectConfig,
+) -> anyhow::Result<(String, ProjectConfig)> {
+    // Reject mounts at project root level
+    if raw_proj.mounts.is_some() {
+        anyhow::bail!(
+            "project '{key}': 'mounts' must be inside [projects.{key}.container], \
+             not at the project root level"
+        );
+    }
+
+    validate_project_templates(&key, &raw_proj)?;
+
+    let raw_container = raw_proj.container.unwrap_or(RawContainerConfig {
+        image: IMAGE_ALIASES
+            .first()
+            .expect("IMAGE_ALIASES must not be empty")
+            .0
+            .to_string(),
+        mounts: Vec::new(),
+        ports: Vec::new(),
+    });
+
+    let image = resolve_image_alias(&key, &raw_container.image)?;
+    let mounts = raw_container
+        .mounts
+        .iter()
+        .enumerate()
+        .map(|(i, m)| parse_mount_entry(&key, i, m))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let ports = raw_container
+        .ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| parse_port_entry(&key, i, p))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let container = ContainerConfig {
+        image,
+        mounts,
+        ports,
+    };
+
+    let resolved = ProjectConfig {
+        name: raw_proj.name.unwrap_or_else(|| key.clone()),
+        repo: raw_proj.repo,
+        pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
+        key: key.clone(),
+        hostexec: raw_proj.hostexec,
+        git_hooks_dir: raw_proj.git_hooks_dir,
+        container,
+        workflow_hooks_dir: raw_proj.workflow_hooks_dir,
+        max_fix_attempts: raw_proj
+            .max_fix_attempts
+            .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
+        protected_branches: raw_proj
+            .protected_branches
+            .unwrap_or_else(default_protected_branches),
+    };
+    Ok((key, resolved))
+}
 
 fn resolve_hostexec_config(raw: RawHostExecConfig) -> anyhow::Result<HostExecConfig> {
     let mut commands = HashMap::new();
@@ -1151,7 +1160,7 @@ mod tests {
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1176,7 +1185,7 @@ repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
 pool_limit = 5
 [projects.swa.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1197,14 +1206,14 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 
 [projects.swa]
 repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
 pool_limit = 5
 [projects.swa.container]
-image = "rust"
+image = "ur-worker-rust"
 "#,
         )
         .unwrap();
@@ -1224,7 +1233,7 @@ image = "rust"
 repo = "git@github.com:cmaher/ur.git"
 hostexec = ["jq", "rg", "cargo"]
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1242,7 +1251,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1274,7 +1283,7 @@ name = "Missing Repo"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1292,7 +1301,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%PROJECT%/.git-hooks"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1313,7 +1322,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%BADVAR%/hooks"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1333,7 +1342,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "/opt/hooks/ur"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1354,7 +1363,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%URCONFIG%/hooks/ur"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1374,7 +1383,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1391,7 +1400,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
 "#,
         )
@@ -1423,7 +1432,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 mounts = ["/opt/tools"]
 "#,
         )
@@ -1443,7 +1452,7 @@ mounts = ["/opt/tools"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 mounts = ["%PROJECT%/.cache:/workspace/.cache"]
 "#,
         )
@@ -1463,7 +1472,7 @@ mounts = ["%PROJECT%/.cache:/workspace/.cache"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 mounts = ["/opt/tools:relative/path"]
 "#,
         )
@@ -1547,7 +1556,7 @@ mounts = ["/opt/tools:relative/path"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 mounts = ["%INVALID%/bad:/workspace/bad"]
 "#,
         )
@@ -1823,7 +1832,7 @@ bad = { bidi = true }
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
 [projects.myproj.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1846,7 +1855,7 @@ workflow_hooks_dir = "%PROJECT%/.workflow"
 max_fix_attempts = 3
 protected_branches = ["main", "release/*"]
 [projects.myproj.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1870,7 +1879,7 @@ image = "base"
 repo = "git@github.com:example/myproj.git"
 workflow_hooks_dir = "relative/path"
 [projects.myproj.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1900,7 +1909,7 @@ tool = { long_lived = false, bidi = false }
     }
 
     #[test]
-    fn container_image_alias_base_resolves() {
+    fn container_image_alias_ur_worker_resolves() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -1908,7 +1917,7 @@ tool = { long_lived = false, bidi = false }
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -1917,7 +1926,7 @@ image = "base"
     }
 
     #[test]
-    fn container_image_alias_rust_resolves() {
+    fn container_image_alias_ur_worker_rust_resolves() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -1925,7 +1934,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "rust"
+image = "ur-worker-rust"
 "#,
         )
         .unwrap();
@@ -1969,12 +1978,12 @@ image = "unknown"
         let err = Config::load_from(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown alias 'unknown'"), "{msg}");
-        assert!(msg.contains("base"), "{msg}");
-        assert!(msg.contains("rust"), "{msg}");
+        assert!(msg.contains("ur-worker"), "{msg}");
+        assert!(msg.contains("ur-worker-rust"), "{msg}");
     }
 
     #[test]
-    fn project_missing_container_section_errors() {
+    fn project_missing_container_section_defaults_to_ur_worker() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -1984,10 +1993,8 @@ repo = "git@github.com:cmaher/ur.git"
 "#,
         )
         .unwrap();
-        let err = Config::load_from(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("missing required"), "{msg}");
-        assert!(msg.contains("[projects.ur.container]"), "{msg}");
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.image, "ur-worker:latest");
     }
 
     #[test]
@@ -2000,7 +2007,7 @@ repo = "git@github.com:cmaher/ur.git"
 repo = "git@github.com:cmaher/ur.git"
 mounts = ["/opt/tools:/workspace/.tools"]
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -2021,7 +2028,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         )
         .unwrap();
@@ -2038,7 +2045,7 @@ image = "base"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 ports = ["8080:80", "3000:3000"]
 "#,
         )
@@ -2070,7 +2077,7 @@ ports = ["8080:80", "3000:3000"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 ports = ["8080"]
 "#,
         )
@@ -2090,7 +2097,7 @@ ports = ["8080"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 ports = ["notaport:80"]
 "#,
         )
@@ -2110,7 +2117,7 @@ ports = ["notaport:80"]
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 ports = ["8080:notaport"]
 "#,
         )
