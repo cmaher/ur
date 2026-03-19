@@ -131,12 +131,32 @@ impl RemoteRepo for GhBackend {
         if opts.draft {
             args.push("--draft");
         }
-        args.extend_from_slice(&[
-            "--json",
-            "number,url,state,headRefName,baseRefName,title,body",
-        ]);
 
-        let value: serde_json::Value = self.exec_gh_json(&args).await?;
+        // `gh pr create` does not support --json; create first, then view.
+        let output = self.exec_gh_checked(&args).await?;
+        let pr_url = output.trim();
+
+        // Extract PR number from the URL (e.g. https://github.com/owner/repo/pull/123)
+        let pr_number: i64 = pr_url
+            .rsplit('/')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| {
+                anyhow!("failed to parse PR number from gh pr create output: {pr_url}")
+            })?;
+
+        let pr_str = pr_number.to_string();
+        let value: serde_json::Value = self
+            .exec_gh_json(&[
+                "pr",
+                "view",
+                &pr_str,
+                "--repo",
+                &self.gh_repo,
+                "--json",
+                "number,url,state,headRefName,baseRefName,title,body",
+            ])
+            .await?;
         Self::parse_pr_from_api(&value)
     }
 

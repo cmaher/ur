@@ -151,40 +151,24 @@ async fn handle_redrive(
 
     info!(id = %id, to = %to, "redriving ticket");
 
-    client
-        .delete_meta(DeleteMetaRequest {
-            ticket_id: id.clone(),
-            key: "stall_reason".to_owned(),
-        })
-        .await
-        .with_status_context("delete stall_reason metadata")?;
-
-    client
-        .update_ticket(UpdateTicketRequest {
+    let resp = client
+        .redrive_ticket(RedriveTicketRequest {
             id: id.clone(),
-            status: None,
-            priority: None,
-            title: None,
-            body: None,
-            force: false,
-            ticket_type: None,
-            parent_id: None,
-            lifecycle_status: Some(to.clone()),
-            branch: None,
-            project: None,
-            lifecycle_managed: None,
+            to_status: to.clone(),
         })
         .await
-        .with_status_context("update lifecycle status")?;
+        .with_status_context("redrive ticket")?;
+
+    let final_status = resp.into_inner().lifecycle_status;
 
     if output.is_json() {
         output.print_success(&serde_json::json!({
             "kind": "redriven",
             "id": id,
-            "lifecycle_status": to,
+            "lifecycle_status": final_status,
         }));
     } else {
-        println!("Redrove {id} to {to}");
+        println!("Redrove {id} to {final_status}");
     }
     Ok(())
 }

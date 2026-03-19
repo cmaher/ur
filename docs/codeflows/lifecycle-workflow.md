@@ -197,7 +197,7 @@ Source: `crates/server/src/workflow/github_poller.rs`
 
 ## Error Handling
 
-- **Handler failures**: Retried up to 3 times (MAX_ATTEMPTS). After exhausting retries, the ticket reverts to `Open` lifecycle status.
+- **Handler failures**: Retried up to 3 times (MAX_ATTEMPTS). After exhausting retries, the ticket is stalled: it stays in its current lifecycle state and `stall_reason` metadata is set with the error message.
 - **Stale events**: If a ticket's lifecycle_status has moved past the event's target, the event is deleted without processing.
 - **No handler**: Events with no registered handler are deleted with a warning log.
 - **Non-lifecycle tickets**: Events for tickets without `lifecycle_managed = true` are deleted.

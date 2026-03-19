@@ -21,6 +21,8 @@ pub enum PushStatus {
     RemoteRejected { reason: String },
     /// Remote ref is already up to date.
     UpToDate,
+    /// Pre-push hook failed (non-zero exit with no porcelain ref output).
+    HookFailed { summary: String },
 }
 
 /// Outcome of running a git hook script.

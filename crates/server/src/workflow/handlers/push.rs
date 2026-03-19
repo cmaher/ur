@@ -132,6 +132,34 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
             .await?;
             stall_agent(ctx, ticket_id, worker_id).await
         }
+        PushStatus::HookFailed { summary } => {
+            warn!(
+                ticket_id = %ticket_id,
+                branch = %branch,
+                "pre-push hook failed — transitioning to fixing"
+            );
+            add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
+            ctx.ticket_repo
+                .set_meta(ticket_id, "ticket", "fix_phase", "push")
+                .await?;
+            ctx.ticket_repo
+                .set_meta(ticket_id, "ticket", "fix_reason", summary)
+                .await?;
+            let update = ur_db::model::TicketUpdate {
+                lifecycle_status: Some(LifecycleStatus::Fixing),
+                status: None,
+                lifecycle_managed: None,
+                type_: None,
+                priority: None,
+                title: None,
+                body: None,
+                branch: None,
+                parent_id: None,
+                project: None,
+            };
+            ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+            Ok(())
+        }
     }
 }
 
@@ -249,6 +277,34 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
             .await?;
             stall_agent(ctx, ticket_id, worker_id).await
         }
+        PushStatus::HookFailed { summary } => {
+            warn!(
+                ticket_id = %ticket_id,
+                branch = %branch,
+                "pre-push hook failed on force push — transitioning to fixing"
+            );
+            add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
+            ctx.ticket_repo
+                .set_meta(ticket_id, "ticket", "fix_phase", "push")
+                .await?;
+            ctx.ticket_repo
+                .set_meta(ticket_id, "ticket", "fix_reason", summary)
+                .await?;
+            let update = ur_db::model::TicketUpdate {
+                lifecycle_status: Some(LifecycleStatus::Fixing),
+                status: None,
+                lifecycle_managed: None,
+                type_: None,
+                priority: None,
+                title: None,
+                body: None,
+                branch: None,
+                parent_id: None,
+                project: None,
+            };
+            ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+            Ok(())
+        }
     }
 }
 
@@ -260,6 +316,7 @@ fn push_status_label(status: &PushStatus) -> &'static str {
         PushStatus::UpToDate => "up_to_date",
         PushStatus::Rejected { .. } => "rejected",
         PushStatus::RemoteRejected { .. } => "remote_rejected",
+        PushStatus::HookFailed { .. } => "hook_failed",
     }
 }
 

@@ -10,7 +10,7 @@ use ur_db::WorkerRepo;
 
 use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Maximum number of processing attempts before an event is reverted to open.
+/// Maximum number of processing attempts before a ticket is stalled.
 const MAX_ATTEMPTS: i32 = 3;
 
 /// Polling interval for the workflow event table.

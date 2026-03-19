@@ -16,6 +16,7 @@ service TicketService {
   rpc AddActivity(AddActivityRequest) returns (AddActivityResponse);
   rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);
   rpc DispatchableTickets(DispatchableTicketsRequest) returns (DispatchableTicketsResponse);
+  rpc RedriveTicket(RedriveTicketRequest) returns (RedriveTicketResponse);
 }
 
 // --- Shared messages ---
@@ -226,4 +227,15 @@ message DispatchableTicketsRequest {
 
 message DispatchableTicketsResponse {
   repeated DispatchableTicket tickets = 1;
+}
+
+// --- RedriveTicket ---
+
+message RedriveTicketRequest {
+  string id = 1;
+  string to_status = 2;
+}
+
+message RedriveTicketResponse {
+  string lifecycle_status = 1;
 }

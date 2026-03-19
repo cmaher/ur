@@ -46,16 +46,25 @@ impl GitBackend {
         });
 
         let Some(line) = ref_line else {
-            // No parseable porcelain output — fall back to raw output
+            // No parseable porcelain output — check exit code to distinguish
+            // hook failures from successful pushes with unusual output.
             let fallback = if stdout.is_empty() {
                 completed.stderr_text()
             } else {
                 stdout
             };
+            let summary = fallback.trim().to_string();
+            let status = if completed.exit_code != 0 {
+                PushStatus::HookFailed {
+                    summary: summary.clone(),
+                }
+            } else {
+                PushStatus::Success
+            };
             return PushResult {
-                status: PushStatus::Success,
+                status,
                 ref_name: String::new(),
-                summary: fallback.trim().to_string(),
+                summary,
             };
         };
 
@@ -301,5 +310,37 @@ mod tests {
         // No porcelain line found, falls back to Success with raw output
         assert_eq!(result.status, PushStatus::Success);
         assert_eq!(result.ref_name, "");
+    }
+
+    #[test]
+    fn parse_push_hook_failed_nonzero_exit() {
+        let completed = make_completed(
+            "",
+            "error: failed to push some refs\npre-push hook declined",
+            1,
+        );
+        let result = GitBackend::parse_push_output(&completed);
+        assert!(
+            matches!(result.status, PushStatus::HookFailed { .. }),
+            "expected HookFailed, got {:?}",
+            result.status
+        );
+        assert!(result.summary.contains("pre-push hook declined"));
+    }
+
+    #[test]
+    fn parse_push_nonzero_exit_with_porcelain_uses_porcelain() {
+        // If porcelain output exists, parse it normally even with non-zero exit
+        let completed = make_completed(
+            "To github.com:user/repo.git\n!\trefs/heads/main:refs/heads/main\t[rejected] (non-fast-forward)\n",
+            "",
+            1,
+        );
+        let result = GitBackend::parse_push_output(&completed);
+        assert!(
+            matches!(result.status, PushStatus::Rejected { .. }),
+            "expected Rejected, got {:?}",
+            result.status
+        );
     }
 }

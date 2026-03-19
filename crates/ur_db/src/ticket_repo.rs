@@ -650,10 +650,45 @@ impl TicketRepo {
         ))
     }
 
+    /// Insert a workflow event directly (bypassing the SQLite trigger).
+    /// Used by redrive to create the correct forward transition event.
+    pub async fn insert_workflow_event(
+        &self,
+        ticket_id: &str,
+        from_status: LifecycleStatus,
+        to_status: LifecycleStatus,
+    ) -> Result<(), sqlx::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO workflow_event (id, ticket_id, old_lifecycle_status, new_lifecycle_status, attempts, created_at)
+             VALUES (?, ?, ?, ?, 0, datetime('now'))",
+        )
+        .bind(&id)
+        .bind(ticket_id)
+        .bind(from_status.to_string())
+        .bind(to_status.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Delete a workflow event by ID (after successful processing).
     pub async fn delete_workflow_event(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM workflow_event WHERE id = ?")
             .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Delete all workflow events for a given ticket (used by redrive to clear stale trigger events).
+    pub async fn delete_workflow_events_for_ticket(
+        &self,
+        ticket_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow_event WHERE ticket_id = ?")
+            .bind(ticket_id)
             .execute(&self.pool)
             .await?;
 
