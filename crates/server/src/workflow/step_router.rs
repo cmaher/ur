@@ -6,6 +6,11 @@ use ur_rpc::agent_status;
 pub enum StepAction {
     /// Advance the ticket's lifecycle to the given status.
     Advance { to: LifecycleStatus },
+    /// Advance based on `feedback_mode` metadata on the ticket.
+    /// The grpc layer looks up `feedback_mode` and routes accordingly:
+    /// - `now` → Implementing
+    /// - `later` → Merging
+    AdvanceByFeedbackMode,
     /// Re-dispatch the current phase's RPC to the worker.
     /// When `reminder` is true, the worker is still working and this is
     /// a nudge rather than a cold re-dispatch.
@@ -65,7 +70,7 @@ impl LifecycleStepRouter {
                     to: LifecycleStatus::Verifying,
                 },
                 LifecycleStatus::Pushing => StepAction::Redispatch { reminder: false },
-                LifecycleStatus::FeedbackCreating => StepAction::Redispatch { reminder: false },
+                LifecycleStatus::FeedbackCreating => StepAction::AdvanceByFeedbackMode,
                 // All other lifecycle statuses with idle — no action.
                 _ => StepAction::Ignore,
             },
@@ -343,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn feedback_creating_idle_redispatches() {
+    fn feedback_creating_idle_advances_by_feedback_mode() {
         assert_eq!(
             router().route(LifecycleStatus::FeedbackCreating, agent_status::IDLE, true),
-            StepAction::Redispatch { reminder: false },
+            StepAction::AdvanceByFeedbackMode,
         );
     }
 

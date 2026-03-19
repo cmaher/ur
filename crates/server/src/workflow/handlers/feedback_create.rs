@@ -1,16 +1,18 @@
 use anyhow::bail;
 use tracing::info;
-use ur_db::model::{EdgeKind, LifecycleStatus, TicketUpdate};
+use ur_db::model::TicketUpdate;
 
 use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
 
 /// Handler for the InReview → FeedbackCreating transition.
 ///
-/// Resolves the existing worker assigned to this ticket and sends the
-/// `CreateFeedbackTickets(ticket_id, pr_number)` RPC. The worker creates a
-/// follow-up epic with child tickets from PR comments, links the follow-up
-/// epic to the original ticket via a `follow_up` edge, and transitions
-/// `lifecycle_status` to `merging` when done.
+/// Promotes the ticket to an epic (if not already) so child feedback tickets
+/// can be parented under it, then resolves the existing worker and sends
+/// the `CreateFeedbackTickets(ticket_id, pr_number)` RPC. The worker creates
+/// child tickets from PR comments and goes idle. The step router detects
+/// Idle + FeedbackCreating and routes by `feedback_mode` metadata:
+/// - `now` → Implementing
+/// - `later` → Merging
 ///
 /// `pr_number` is expected as metadata on the ticket (set by the push workflow handler).
 pub struct FeedbackCreateHandler;
@@ -26,31 +28,25 @@ impl WorkflowHandler for FeedbackCreateHandler {
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move {
             // 1. Load ticket to verify it exists.
-            let _ticket = ctx
+            let ticket = ctx
                 .ticket_repo
                 .get_ticket(&ticket_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-            // 1b. Check if follow-up tickets already exist (follow_up edge present).
-            // This happens when we re-enter feedback_creating after a merge conflict
-            // retry cycle — the follow-up epic was already created on the first pass.
-            let follow_up_edges = ctx
-                .ticket_repo
-                .edges_for(&ticket_id, Some(EdgeKind::FollowUp))
-                .await?;
-
-            if !follow_up_edges.is_empty() {
+            // 1b. Promote to epic if not already, so child feedback tickets
+            // can be parented under this ticket.
+            if ticket.type_ != "epic" {
                 info!(
                     ticket_id = %ticket_id,
-                    "follow-up tickets already exist — skipping creation, advancing to merging"
+                    current_type = %ticket.type_,
+                    "promoting ticket to epic for feedback child tickets"
                 );
-
                 let update = TicketUpdate {
-                    lifecycle_status: Some(LifecycleStatus::Merging),
+                    type_: Some("epic".to_owned()),
+                    lifecycle_status: None,
                     lifecycle_managed: None,
                     status: None,
-                    type_: None,
                     priority: None,
                     title: None,
                     body: None,
@@ -59,7 +55,6 @@ impl WorkflowHandler for FeedbackCreateHandler {
                     project: None,
                 };
                 ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
-                return Ok(());
             }
 
             // 2. Read metadata: worker_id and pr_number.
