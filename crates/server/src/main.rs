@@ -395,6 +395,17 @@ async fn main() -> anyhow::Result<()> {
 
     reconcile_workers(&worker_repo, &docker_command).await?;
 
+    let stale_deleted = worker_repo
+        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
+        .await
+        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
+    info!(
+        count = stale_deleted.len(),
+        deleted = ?stale_deleted,
+        ttl_days = cfg.server.stale_worker_ttl_days,
+        "stale worker cleanup complete"
+    );
+
     let result = init_and_serve(
         &cfg,
         &db,

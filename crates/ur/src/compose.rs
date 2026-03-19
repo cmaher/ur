@@ -433,7 +433,13 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
             git_branch_prefix: String::new(),
-
+            server: ur_config::ServerConfig {
+                container_command: "docker".into(),
+                stale_worker_ttl_days: 7,
+                max_transition_attempts: 3,
+                poll_interval_ms: 500,
+                github_scan_interval_secs: 30,
+            },
             projects: std::collections::HashMap::new(),
         };
 

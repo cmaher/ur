@@ -612,6 +612,22 @@ impl WorkerRepo {
         Ok(result)
     }
 
+    /// Delete workers where container_status='stopped' and updated_at is older than `ttl_days`.
+    ///
+    /// Returns the list of deleted worker IDs. Associated worker_slot rows are
+    /// cascade-deleted via the foreign key constraint.
+    pub async fn cleanup_stale_workers(&self, ttl_days: u64) -> Result<Vec<String>, sqlx::Error> {
+        let modifier = format!("-{ttl_days} days");
+        let rows = sqlx::query_as::<_, (String,)>(
+            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at < datetime('now', ?) RETURNING worker_id",
+        )
+        .bind(&modifier)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     /// Process a single worker during reconciliation.
     ///
     /// Behavior matrix:
