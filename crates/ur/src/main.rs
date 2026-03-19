@@ -124,7 +124,7 @@ enum ProjectCommands {
     Add {
         /// Path to a git repository directory (e.g. "." for current directory)
         path: PathBuf,
-        /// Container image alias (e.g. "base", "rust") or full image reference
+        /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full image reference
         #[arg(long)]
         image: String,
         /// Project key (derived from repo name if omitted)

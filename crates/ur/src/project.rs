@@ -313,7 +313,7 @@ mod tests {
         add(
             &config,
             repo.path(),
-            "base",
+            "ur-worker",
             None,
             None,
             None,
@@ -335,7 +335,7 @@ mod tests {
         add(
             &config,
             repo.path(),
-            "rust",
+            "ur-worker-rust",
             Some("mykey"),
             Some("My Project"),
             Some(5),
@@ -361,14 +361,14 @@ mod tests {
 repo = "git@github.com:cmaher/ur.git"
 
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         );
         let repo = make_git_repo("git@github.com:other/ur.git");
         let err = add(
             &config,
             repo.path(),
-            "base",
+            "ur-worker",
             None,
             None,
             None,
@@ -386,7 +386,7 @@ image = "base"
         add(
             &config,
             repo.path(),
-            "base",
+            "ur-worker",
             None,
             None,
             None,
@@ -396,7 +396,7 @@ image = "base"
 
         let toml_content = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert!(toml_content.contains("[projects.myproj.container]"));
-        assert!(toml_content.contains("image = \"base\""));
+        assert!(toml_content.contains("image = \"ur-worker\""));
     }
 
     #[test]
@@ -407,7 +407,7 @@ image = "base"
         add(
             &config,
             repo.path(),
-            "rust",
+            "ur-worker-rust",
             None,
             None,
             None,
@@ -430,8 +430,8 @@ image = "base"
 
     #[test]
     fn validate_image_alias_known_ok() {
-        ur_config::validate_image_alias("base").unwrap();
-        ur_config::validate_image_alias("rust").unwrap();
+        ur_config::validate_image_alias("ur-worker").unwrap();
+        ur_config::validate_image_alias("ur-worker-rust").unwrap();
     }
 
     #[test]
@@ -449,7 +449,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         );
 
@@ -475,7 +475,7 @@ image = "base"
 repo = "git@github.com:cmaher/ur.git"
 
 [projects.ur.container]
-image = "base"
+image = "ur-worker"
 "#,
         );
         let err = remove(&config, "ur", false, &text_output()).unwrap_err();
