@@ -5,9 +5,11 @@ description: Use when creating follow-up tickets from PR review comments
 
 Parse `$ARGUMENTS` for two required positional arguments: `<epic_id>` and `<pr_number>`.
 
-## 1. Fetch the epic ticket
+## 1. Fetch the ticket
 
-Run `ur ticket show <epic_id> --output json` to get the epic's details. Record its `project` and `title`.
+Run `ur ticket show <epic_id> --output json` to get the ticket's details. Record its `project` and `title`.
+
+If the ticket's type is `epic`, also run `ur ticket list --epic <epic_id> --output json` to see existing child tickets — avoid creating duplicates of feedback already tracked.
 
 ## 2. Fetch PR review comments
 

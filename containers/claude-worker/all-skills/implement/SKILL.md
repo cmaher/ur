@@ -32,13 +32,18 @@ When given a single non-epic ticket:
 2. `ur ticket --output json update <id> --status in_progress` — claim it
 @/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
 3. Implement the work directly in this context
-@/home/worker/.claude/skill-hooks/implement/before-commit.md
-@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
-4. Commit, close: `ur ticket --output json update <id> --status closed`
-5. Set a summary of the work done as ticket metadata:
+4. Before committing, run any verifications listed in the **Verification Hooks** section below
+5. Commit, close: `ur ticket --output json update <id> --status closed`
+6. Set a summary of the work done as ticket metadata:
    ```
    ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
    ```
+
+### Verification Hooks
+
+Do NOT run any verification commands unless specified in this section.
+
+@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
 
 If you cannot complete the work, run `workertools agent request-human "<reason>"` and stop.
 
@@ -74,10 +79,7 @@ Use when explicitly requested or when tickets have heavy file overlap (check the
 
 ### Verification
 
-Do NOT run any verification commands unless specified by the hooks below.
-
-- **Subagent verifications**: Defined in the hook file referenced in the subagent prompt template
-- **Final verifications (after all subagents complete)**: Defined in the hook file referenced after subagent completion
+Do NOT run any verification commands unless specified in a **Verification Hooks** section.
 
 @/home/worker/.claude/skill-hooks/implement/before-dispatch.md
 
@@ -109,13 +111,11 @@ VCS:
 - Use `git add <files> && git commit -m "message"` when done — do NOT switch branches
 - The parent agent manages branching and pushing
 
-Testing:
-- Do NOT run any verification commands unless specified by the hooks below
-- The parent agent will run full CI after all issues are done
+--- VERIFICATION HOOKS ---
+Do NOT run any verification commands unless specified in this section.
 
 @/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
-@/home/worker/.claude/skill-hooks/implement/before-commit.md
-@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
+--- END VERIFICATION HOOKS ---
 
 When done:
 1. Close the ticket: `ur ticket --output json update <id> --status closed`
