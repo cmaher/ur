@@ -14,6 +14,7 @@ use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceSer
 
 mod grpc_service;
 mod init_git_hooks;
+mod init_skill_hooks;
 mod init_skills;
 mod logging;
 
@@ -68,6 +69,13 @@ async fn run_init() -> Result<()> {
         .run()
         .await
         .context("git hooks initialization failed")?;
+
+    // Initialize skill hooks
+    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager;
+    skill_hooks_manager
+        .run()
+        .await
+        .context("skill hooks initialization failed")?;
 
     // Create hostexec shims
     let shim_dir = resolve_shim_dir();

@@ -466,6 +466,7 @@ mod tests {
                 pool_limit,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
+                skill_hooks_dir: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),
                     mounts: Vec::new(),
@@ -726,6 +727,7 @@ mod tests {
                 pool_limit: 10,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
+                skill_hooks_dir: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),
                     mounts: Vec::new(),
