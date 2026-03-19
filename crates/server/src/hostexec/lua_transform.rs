@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gh_blocks_api_post() {
+    fn test_gh_blocks_api_post_non_comment() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -656,7 +656,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("not allowed (read-only access only)")
+                .contains("only comment/review endpoints permitted")
         );
     }
 
@@ -676,12 +676,12 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("not allowed (read-only access only)")
+                .contains("DELETE method is not allowed")
         );
     }
 
     #[test]
-    fn test_gh_blocks_api_method_equals_form() {
+    fn test_gh_blocks_api_method_equals_form_non_comment() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
@@ -695,7 +695,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("not allowed (read-only access only)")
+                .contains("only comment/review endpoints permitted")
         );
     }
 
@@ -706,12 +706,135 @@ mod tests {
         let args: Vec<String> = vec!["issue".into(), "create".into()];
         let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("not allowed (read-only access only)")
-        );
+        assert!(result.unwrap_err().to_string().contains("is not allowed"));
+    }
+
+    #[test]
+    fn test_gh_allows_pr_comment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "comment".into(),
+            "123".into(),
+            "--body".into(),
+            "LGTM".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_pr_edit() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "edit".into(),
+            "123".into(),
+            "--title".into(),
+            "new title".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_issue_comments() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/issues/42/comments".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_pr_comments() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/pulls/7/comments".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_pr_review_comments() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/pulls/7/reviews/99/comments".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_patch_issue_comment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "--method=PATCH".into(),
+            "/repos/owner/repo/issues/comments/456".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_patch_pr_comment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "--method=PATCH".into(),
+            "/repos/owner/repo/pulls/comments/789".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_pr_reviews() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "/repos/owner/repo/pulls/7/reviews".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
     }
 
     #[test]
