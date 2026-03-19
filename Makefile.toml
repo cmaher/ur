@@ -116,8 +116,17 @@ args = ["test", "-p", "acceptance", "--features", "acceptance"]
 [tasks.install-hooks]
 description = "Install git hooks (pre-commit formats, pre-push runs CI + acceptance)"
 script_runner = "@shell"
-script = ["cp scripts/git-hooks/* .git/hooks/"]
+script = ["cp ur-hooks/git/* .git/hooks/"]
 
 [tasks.ci]
 description = "Run all CI checks"
 dependencies = ["fmt", "clippy", "build", "test"]
+
+[tasks.fmt-fix-silent]
+description = "Fix code formatting (no output)"
+script_runner = "@shell"
+script = ["cargo fmt --all >/dev/null 2>&1"]
+
+[tasks.ci-fmt-fix]
+description = "Auto-fix formatting silently, then run CI checks (clippy, build, test)"
+dependencies = ["fmt-fix-silent", "clippy", "build", "test"]

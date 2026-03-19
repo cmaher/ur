@@ -7,8 +7,6 @@ USER root
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-COPY skill-hooks/ /home/worker/.claude/skill-hooks/
-
 USER worker
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -125,6 +125,44 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add skill hooks volume mount and env var based on project configuration.
+    ///
+    /// - If `skill_hooks_dir` is `None`, this is a no-op.
+    /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a volume mount
+    ///   from the host path to `/var/ur/skill-hooks` and sets `UR_SKILL_HOOKS_DIR=/var/ur/skill-hooks`.
+    /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
+    ///   mount and sets `UR_SKILL_HOOKS_DIR=/workspace/<path>`.
+    pub fn add_skill_hooks(
+        mut self,
+        skill_hooks_dir: &Option<String>,
+        host_config_dir: &Path,
+    ) -> Result<Self, String> {
+        let Some(template) = skill_hooks_dir.as_deref() else {
+            return Ok(self);
+        };
+
+        let resolved = resolve_template_path(template, host_config_dir)
+            .map_err(|e| format!("failed to resolve skill_hooks_dir: {e}"))?;
+
+        match resolved {
+            ResolvedTemplatePath::HostPath(host_path) => {
+                let container_path = PathBuf::from("/var/ur/skill-hooks");
+                self.volumes.push((host_path, container_path));
+                self.env_vars
+                    .push(("UR_SKILL_HOOKS_DIR".into(), "/var/ur/skill-hooks".into()));
+            }
+            ResolvedTemplatePath::ProjectRelative(rel_path) => {
+                let container_hooks_dir = PathBuf::from("/workspace").join(&rel_path);
+                self.env_vars.push((
+                    "UR_SKILL_HOOKS_DIR".into(),
+                    container_hooks_dir.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+
+        Ok(self)
+    }
+
     /// Add project-configured volume mounts.
     ///
     /// Each mount entry has a template source (resolved to a host path) and an absolute
@@ -416,6 +454,54 @@ mod tests {
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
         assert_eq!(opts.env_vars[0].1, "/workspace/.git-hooks");
+    }
+
+    #[test]
+    fn add_skill_hooks_none_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_skill_hooks(&None, Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+        assert!(opts.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_skill_hooks_host_path_adds_mount_and_env() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_skill_hooks(
+                &Some("%URCONFIG%/skill-hooks".into()),
+                Path::new("/home/user/.ur"),
+            )
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(
+            opts.volumes[0].0,
+            PathBuf::from("/home/user/.ur/skill-hooks")
+        );
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/skill-hooks"));
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
+        assert_eq!(opts.env_vars[0].1, "/var/ur/skill-hooks");
+    }
+
+    #[test]
+    fn add_skill_hooks_project_relative_no_mount() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_skill_hooks(
+                &Some("%PROJECT%/ur-hooks/skills".into()),
+                Path::new("/unused"),
+            )
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
+        assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/skills");
     }
 
     #[test]

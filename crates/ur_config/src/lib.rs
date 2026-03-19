@@ -377,6 +377,7 @@ struct RawProjectConfig {
     #[serde(default)]
     hostexec: Vec<String>,
     git_hooks_dir: Option<String>,
+    skill_hooks_dir: Option<String>,
     container: Option<RawContainerConfig>,
     /// Reject mounts at the project root level with a helpful error.
     #[serde(default)]
@@ -624,6 +625,11 @@ pub struct ProjectConfig {
     /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
     pub git_hooks_dir: Option<String>,
+    /// Optional template path to a directory of skill hook snippets.
+    /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
+    /// Resolve with [`resolve_template_path`] at use time.
+    /// Contents are copied to `~/.claude/skill-hooks/` at container startup.
+    pub skill_hooks_dir: Option<String>,
     /// Container configuration (image, mounts).
     pub container: ContainerConfig,
     /// Optional template path to a directory of workflow hook scripts.
@@ -812,6 +818,7 @@ fn resolve_project(
         key: key.clone(),
         hostexec: raw_proj.hostexec,
         git_hooks_dir: raw_proj.git_hooks_dir,
+        skill_hooks_dir: raw_proj.skill_hooks_dir,
         container,
         workflow_hooks_dir: raw_proj.workflow_hooks_dir,
         max_fix_attempts: raw_proj
@@ -957,6 +964,10 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
     if let Some(ref tpl) = raw_proj.git_hooks_dir {
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
+    }
+    if let Some(ref tpl) = raw_proj.skill_hooks_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': skill_hooks_dir: {}", key, e))?;
     }
     if let Some(ref tpl) = raw_proj.workflow_hooks_dir {
         template_path::validate_template_str(tpl)
