@@ -18,6 +18,17 @@ pub struct MountConfig {
     pub destination: String,
 }
 
+/// A parsed port mapping entry: host port -> container port.
+///
+/// Maps to Docker's `-p host_port:container_port` flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortMapping {
+    /// TCP port on the host.
+    pub host_port: u16,
+    /// TCP port inside the container.
+    pub container_port: u16,
+}
+
 /// Parse a mount string in `"source:destination"` format.
 ///
 /// Splits on the first `:` character. Validates that:
@@ -60,6 +71,36 @@ fn parse_mount_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Resu
     Ok(MountConfig {
         source: source.to_string(),
         destination: destination.to_string(),
+    })
+}
+
+/// Parse a port mapping string in `"host_port:container_port"` format.
+///
+/// Both ports must be valid u16 values.
+fn parse_port_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Result<PortMapping> {
+    let colon_pos = raw.find(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: expected 'host_port:container_port' format, got: {raw}"
+        )
+    })?;
+
+    let host_str = &raw[..colon_pos];
+    let container_str = &raw[colon_pos + 1..];
+
+    let host_port: u16 = host_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: invalid host port '{host_str}', expected a number 0-65535"
+        )
+    })?;
+    let container_port: u16 = container_str.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "project '{project_key}': ports[{index}]: invalid container port '{container_str}', expected a number 0-65535"
+        )
+    })?;
+
+    Ok(PortMapping {
+        host_port,
+        container_port,
     })
 }
 
@@ -322,6 +363,8 @@ struct RawContainerConfig {
     image: String,
     #[serde(default)]
     mounts: Vec<String>,
+    #[serde(default)]
+    ports: Vec<String>,
 }
 
 /// Raw TOML representation for a `[projects.<key>]` entry.
@@ -492,6 +535,10 @@ pub struct ContainerConfig {
     /// Source supports `%URCONFIG%/...` or absolute paths (not `%PROJECT%`).
     /// Parsed from `"source:destination"` strings in TOML.
     pub mounts: Vec<MountConfig>,
+    /// Port mappings for this project's containers.
+    /// Each entry maps a host TCP port to a container TCP port (`-p host:container`).
+    /// Parsed from `"host_port:container_port"` strings in TOML.
+    pub ports: Vec<PortMapping>,
 }
 
 /// Resolved project configuration for a single project.
@@ -643,7 +690,18 @@ impl Config {
                     .map(|(i, m)| parse_mount_entry(&key, i, m))
                     .collect::<anyhow::Result<Vec<_>>>()?;
 
-                let container = ContainerConfig { image, mounts };
+                let ports = raw_container
+                    .ports
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| parse_port_entry(&key, i, p))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+
+                let container = ContainerConfig {
+                    image,
+                    mounts,
+                    ports,
+                };
 
                 let resolved = ProjectConfig {
                     name: raw_proj.name.unwrap_or_else(|| key.clone()),
@@ -1853,5 +1911,114 @@ image = "base"
             msg.contains("must be inside [projects.ur.container]"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn ports_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects["ur"].container.ports.is_empty());
+    }
+
+    #[test]
+    fn ports_parses_host_container_format() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080:80", "3000:3000"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.ports.len(), 2);
+        assert_eq!(
+            cfg.projects["ur"].container.ports[0],
+            PortMapping {
+                host_port: 8080,
+                container_port: 80,
+            }
+        );
+        assert_eq!(
+            cfg.projects["ur"].container.ports[1],
+            PortMapping {
+                host_port: 3000,
+                container_port: 3000,
+            }
+        );
+    }
+
+    #[test]
+    fn ports_rejects_missing_colon() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("host_port:container_port"), "{msg}");
+    }
+
+    #[test]
+    fn ports_rejects_invalid_host_port() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["notaport:80"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("invalid host port"), "{msg}");
+    }
+
+    #[test]
+    fn ports_rejects_invalid_container_port() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "base"
+ports = ["8080:notaport"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ports[0]"), "{msg}");
+        assert!(msg.contains("invalid container port"), "{msg}");
     }
 }

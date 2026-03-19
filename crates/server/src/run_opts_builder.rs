@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use container::RunOpts;
-use ur_config::{MountConfig, ResolvedTemplatePath, resolve_template_path};
+use container::{PortMap, RunOpts};
+use ur_config::{MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
 
 use crate::worker::ensure_file_exists;
 
@@ -18,6 +18,7 @@ pub struct RunOptsBuilder {
     memory: String,
     workdir: Option<PathBuf>,
     volumes: Vec<(PathBuf, PathBuf)>,
+    port_maps: Vec<PortMap>,
     env_vars: Vec<(String, String)>,
 }
 
@@ -32,6 +33,7 @@ impl RunOptsBuilder {
             memory: String::new(),
             workdir: None,
             volumes: Vec::new(),
+            port_maps: Vec::new(),
             env_vars: Vec::new(),
         }
     }
@@ -153,6 +155,19 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add port mappings to the container.
+    ///
+    /// Each [`PortMapping`] is converted to a Docker `-p host_port:container_port` flag.
+    pub fn add_ports(mut self, ports: &[PortMapping]) -> Self {
+        for port in ports {
+            self.port_maps.push(PortMap {
+                host_port: port.host_port,
+                container_port: port.container_port,
+            });
+        }
+        self
+    }
+
     /// Add environment variables to the container.
     pub fn add_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars.extend(env_vars);
@@ -167,7 +182,7 @@ impl RunOptsBuilder {
             cpus: self.cpus,
             memory: self.memory,
             volumes: self.volumes,
-            port_maps: vec![],
+            port_maps: self.port_maps,
             env_vars: self.env_vars,
             workdir: self.workdir,
             command: vec![],
@@ -401,5 +416,52 @@ mod tests {
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
         assert_eq!(opts.env_vars[0].1, "/workspace/.git-hooks");
+    }
+
+    #[test]
+    fn add_ports_empty_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_ports(&[])
+            .build();
+
+        assert!(opts.port_maps.is_empty());
+    }
+
+    #[test]
+    fn add_ports_single() {
+        let ports = vec![PortMapping {
+            host_port: 8080,
+            container_port: 80,
+        }];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_ports(&ports)
+            .build();
+
+        assert_eq!(opts.port_maps.len(), 1);
+        assert_eq!(opts.port_maps[0].host_port, 8080);
+        assert_eq!(opts.port_maps[0].container_port, 80);
+    }
+
+    #[test]
+    fn add_ports_multiple() {
+        let ports = vec![
+            PortMapping {
+                host_port: 8080,
+                container_port: 80,
+            },
+            PortMapping {
+                host_port: 3000,
+                container_port: 3000,
+            },
+        ];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_ports(&ports)
+            .build();
+
+        assert_eq!(opts.port_maps.len(), 2);
+        assert_eq!(opts.port_maps[0].host_port, 8080);
+        assert_eq!(opts.port_maps[0].container_port, 80);
+        assert_eq!(opts.port_maps[1].host_port, 3000);
+        assert_eq!(opts.port_maps[1].container_port, 3000);
     }
 }

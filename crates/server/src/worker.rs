@@ -230,6 +230,8 @@ pub struct WorkerConfig {
     pub git_hooks_dir: Option<String>,
     /// Additional volume mounts from project config (source:destination pairs).
     pub mounts: Vec<ur_config::MountConfig>,
+    /// Port mappings from project config (host_port:container_port pairs).
+    pub ports: Vec<ur_config::PortMapping>,
     /// Slot ID if launched from a pool slot (for worker_slot linking).
     pub slot_id: Option<String>,
 }
@@ -487,6 +489,7 @@ impl WorkerManager {
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
+        .add_ports(&config.ports)
         .add_env_vars(env_vars)
         .build();
 

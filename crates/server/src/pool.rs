@@ -469,6 +469,7 @@ mod tests {
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),
                     mounts: Vec::new(),
+                    ports: Vec::new(),
                 },
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
@@ -728,6 +729,7 @@ mod tests {
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),
                     mounts: Vec::new(),
+                    ports: Vec::new(),
                 },
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,

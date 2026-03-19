@@ -253,13 +253,14 @@ impl CoreService for CoreServiceHandler {
             req.skills
         };
 
-        let (git_hooks_dir, mounts, resolved_image) = match self.projects.get(&project_key) {
+        let (git_hooks_dir, mounts, ports, resolved_image) = match self.projects.get(&project_key) {
             Some(proj) if !project_key.is_empty() => (
                 proj.git_hooks_dir.clone(),
                 proj.container.mounts.clone(),
+                proj.container.ports.clone(),
                 proj.container.image.clone(),
             ),
-            _ => (None, Vec::new(), String::new()),
+            _ => (None, Vec::new(), Vec::new(), String::new()),
         };
 
         // Use the image from the request if provided, otherwise fall back to
@@ -289,6 +290,7 @@ impl CoreService for CoreServiceHandler {
             skills,
             git_hooks_dir,
             mounts,
+            ports,
             slot_id,
         };
         let (container_id, _worker_secret) = self
