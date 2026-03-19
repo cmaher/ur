@@ -427,6 +427,18 @@ impl WorkerRepo {
             .collect())
     }
 
+    /// List all workers regardless of container_status.
+    pub async fn list_all_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, WorkerRow>(
+            "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
+             FROM worker ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(worker_from_row).collect())
+    }
+
     /// List workers whose container_status is one of the active lifecycle states
     /// (provisioning, running, stopping).
     pub async fn list_active_workers(&self) -> Result<Vec<Worker>, sqlx::Error> {
@@ -571,9 +583,11 @@ impl WorkerRepo {
     /// `is_container_alive` is an async function that takes a container_id string
     /// and returns whether the container is still running.
     ///
-    /// For each worker in an active state (provisioning, running, stopping):
-    /// - Container alive: update container_status to "running" (reclaim).
-    /// - Container dead: update container_status to "stopped" and unlink its slot.
+    /// Checks ALL workers (including stopped) against container liveness:
+    /// - Active (provisioning/running/stopping) + alive: set container_status = "running" (reclaim).
+    /// - Active (provisioning/running/stopping) + dead: set container_status = "stopped", unlink slot.
+    /// - Stopped + alive: set container_status = "running" (reclaim). Does NOT modify agent_status.
+    /// - Stopped + dead: no-op.
     pub async fn reconcile_workers<F, Fut>(
         &self,
         is_container_alive: F,
@@ -587,9 +601,9 @@ impl WorkerRepo {
             marked_stopped: Vec::new(),
         };
 
-        let active_workers = self.list_active_workers().await?;
+        let all_workers = self.list_all_workers().await?;
 
-        for worker in active_workers {
+        for worker in all_workers {
             let alive = is_container_alive(worker.container_id.clone()).await;
             self.reconcile_single_worker(worker, alive, &mut result)
                 .await?;
@@ -598,18 +612,50 @@ impl WorkerRepo {
         Ok(result)
     }
 
+    /// Delete workers where container_status='stopped' and updated_at is older than `ttl_days`.
+    ///
+    /// Returns the list of deleted worker IDs. Associated worker_slot rows are
+    /// cascade-deleted via the foreign key constraint.
+    pub async fn cleanup_stale_workers(&self, ttl_days: u64) -> Result<Vec<String>, sqlx::Error> {
+        let modifier = format!("-{ttl_days} days");
+        let rows = sqlx::query_as::<_, (String,)>(
+            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at < datetime('now', ?) RETURNING worker_id",
+        )
+        .bind(&modifier)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     /// Process a single worker during reconciliation.
+    ///
+    /// Behavior matrix:
+    /// - Active + alive → reclaim (set container_status = "running")
+    /// - Active + dead → mark stopped, unlink slot
+    /// - Stopped + alive → reclaim (set container_status = "running", preserve agent_status)
+    /// - Stopped + dead → no-op
     async fn reconcile_single_worker(
         &self,
         worker: Worker,
         alive: bool,
         result: &mut WorkerReconcileResult,
     ) -> Result<(), sqlx::Error> {
+        let is_stopped = worker.container_status == "stopped";
+
+        if is_stopped && !alive {
+            // Stopped + dead: no-op.
+            return Ok(());
+        }
+
         if alive {
+            // Active or stopped + alive: reclaim by setting container_status to "running".
+            // Only update container_status — agent_status is preserved.
             self.update_worker_container_status(&worker.worker_id, "running")
                 .await?;
             result.reclaimed.push(worker.worker_id);
         } else {
+            // Active + dead: mark stopped and unlink slot.
             self.update_worker_container_status(&worker.worker_id, "stopped")
                 .await?;
             self.unlink_worker_slot(&worker.worker_id).await?;

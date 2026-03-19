@@ -86,13 +86,6 @@ async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
     Ok(db)
 }
 
-fn resolve_docker_command() -> String {
-    match std::env::var("UR_CONTAINER").as_deref() {
-        Ok("nerdctl") | Ok("containerd") => "nerdctl".to_string(),
-        _ => "docker".to_string(),
-    }
-}
-
 fn load_prompt_modes(cfg: &Config) -> anyhow::Result<PromptModesConfig> {
     let toml_path = cfg.config_dir.join("ur.toml");
     match std::fs::read_to_string(&toml_path) {
@@ -272,6 +265,7 @@ async fn serve_grpc_servers(
     let dispatcher = ur_server::workflow::WorkflowDispatcher::new(dispatcher_ctx, &handlers);
     ticket_handler.workflow_dispatcher = Some(dispatcher);
 
+    let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
     let engine = WorkflowEngine::new(
         engine_ticket_repo,
         engine_worker_repo,
@@ -281,8 +275,8 @@ async fn serve_grpc_servers(
         handlers,
     );
     let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
-
-    let poller = GithubPollerManager::new(poller_ticket_repo, poller_builderd_client);
+    let poller =
+        GithubPollerManager::new(poller_ticket_repo, poller_builderd_client, scan_interval);
     let poller_handle = poller.spawn(workflow_shutdown_rx);
 
     let host_server = ur_server::grpc_server::serve_grpc(
@@ -354,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
     let pid_file = cfg.config_dir.join(ur_config::SERVER_PID_FILE);
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
-    let docker_command = resolve_docker_command();
+    let docker_command = cfg.server.container_command.clone();
     let network_manager =
         NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
@@ -400,6 +394,17 @@ async fn main() -> anyhow::Result<()> {
     );
 
     reconcile_workers(&worker_repo, &docker_command).await?;
+
+    let stale_deleted = worker_repo
+        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
+        .await
+        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
+    info!(
+        count = stale_deleted.len(),
+        deleted = ?stale_deleted,
+        ttl_days = cfg.server.stale_worker_ttl_days,
+        "stale worker cleanup complete"
+    );
 
     let result = init_and_serve(
         &cfg,

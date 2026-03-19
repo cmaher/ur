@@ -37,6 +37,18 @@ Docker network configuration for container networking.
 | `server_hostname` | string | `"ur-server"` | Server hostname via Docker DNS |
 | `worker_prefix` | string | `"ur-worker-"` | Container name prefix for workers |
 
+## `[server]` Section
+
+Server runtime configuration. Replaces hard-coded constants and the `UR_CONTAINER` env var with configurable values.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `container_command` | string | `"docker"` | Container runtime command. Resolution: ur.toml > `UR_CONTAINER` env var > `"docker"` |
+| `stale_worker_ttl_days` | u64 | 7 | Days before stale workers are cleaned up |
+| `max_transition_attempts` | i32 | 3 | Max lifecycle transition attempts before giving up |
+| `poll_interval_ms` | u64 | 500 | Background polling loop interval (ms) |
+| `github_scan_interval_secs` | u64 | 30 | GitHub poller scan interval (seconds) |
+
 ## `[projects.<key>]` Section
 
 Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`).

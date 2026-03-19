@@ -10,12 +10,6 @@ use ur_db::WorkerRepo;
 
 use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Maximum number of processing attempts before a ticket is stalled.
-const MAX_ATTEMPTS: i32 = 3;
-
-/// Polling interval for the workflow event table.
-const POLL_INTERVAL: Duration = Duration::from_millis(500);
-
 /// Drives workflow transitions by polling the `workflow_event` table and
 /// dispatching to registered handlers.
 ///
@@ -25,6 +19,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 pub struct WorkflowEngine {
     ctx: WorkflowContext,
     handlers: HashMap<TransitionKey, Arc<dyn WorkflowHandler>>,
+    max_attempts: i32,
+    poll_interval: Duration,
 }
 
 impl WorkflowEngine {
@@ -36,6 +32,8 @@ impl WorkflowEngine {
         config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
     ) -> Self {
+        let max_attempts = config.server.max_transition_attempts;
+        let poll_interval = Duration::from_millis(config.server.poll_interval_ms);
         let ctx = WorkflowContext {
             ticket_repo,
             worker_repo,
@@ -48,7 +46,12 @@ impl WorkflowEngine {
             let key = TransitionKey { from, to };
             handlers.insert(key, handler);
         }
-        Self { ctx, handlers }
+        Self {
+            ctx,
+            handlers,
+            max_attempts,
+            poll_interval,
+        }
     }
 
     /// Spawn the polling loop as a background tokio task.
@@ -64,7 +67,7 @@ impl WorkflowEngine {
         info!("workflow engine started");
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(POLL_INTERVAL) => {
+                _ = tokio::time::sleep(self.poll_interval) => {
                     self.poll_once().await;
                 }
                 _ = shutdown_rx.changed() => {
@@ -183,7 +186,7 @@ impl WorkflowEngine {
         handler_err: anyhow::Error,
     ) {
         let new_attempts = event.attempts + 1;
-        if new_attempts >= MAX_ATTEMPTS {
+        if new_attempts >= self.max_attempts {
             error!(
                 event_id = %event.id,
                 ticket_id = %event.ticket_id,
@@ -295,6 +298,13 @@ mod tests {
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
             git_branch_prefix: String::new(),
+            server: ur_config::ServerConfig {
+                container_command: "docker".into(),
+                stale_worker_ttl_days: 7,
+                max_transition_attempts: 3,
+                poll_interval_ms: 500,
+                github_scan_interval_secs: 30,
+            },
             projects: std::collections::HashMap::new(),
         })
     }
@@ -488,11 +498,12 @@ mod tests {
             )],
         );
 
-        for _ in 0..MAX_ATTEMPTS {
+        let max_attempts = engine.max_attempts;
+        for _ in 0..max_attempts {
             engine.poll_once().await;
         }
 
-        assert_eq!(call_count.load(Ordering::SeqCst), MAX_ATTEMPTS as u32);
+        assert_eq!(call_count.load(Ordering::SeqCst), max_attempts as u32);
 
         // Ticket stays in its current lifecycle state (not reverted to open).
         let t = repo.get_ticket("ur-test3").await.unwrap().unwrap();

@@ -3,9 +3,22 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use chrono::Utc;
+use sqlx::SqlitePool;
+
 use crate::model::{Slot, Worker};
 use crate::tests::TestDb;
 use crate::worker_repo::WorkerRepo;
+
+/// Set a worker's updated_at to a specific timestamp directly in the database.
+async fn set_worker_updated_at(pool: &SqlitePool, worker_id: &str, updated_at: &str) {
+    sqlx::query("UPDATE worker SET updated_at = ? WHERE worker_id = ?")
+        .bind(updated_at)
+        .bind(worker_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
 
 fn repo(db: &TestDb) -> WorkerRepo {
     WorkerRepo::new(db.db().pool().clone())
@@ -632,15 +645,16 @@ async fn reconcile_workers_mixed_live_and_dead() {
 }
 
 #[tokio::test]
-async fn reconcile_workers_skips_already_stopped() {
+async fn reconcile_workers_stopped_dead_is_noop() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
     let mut worker = test_worker("a1", "proj-a");
     worker.container_status = "stopped".to_owned();
+    worker.agent_status = "idle".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
-    // Nothing should happen -- stopped workers are not active.
+    // Stopped + dead: no-op.
     let result = r
         .reconcile_workers(|_container_id| async { false })
         .await
@@ -648,6 +662,38 @@ async fn reconcile_workers_skips_already_stopped() {
 
     assert!(result.reclaimed.is_empty());
     assert!(result.marked_stopped.is_empty());
+
+    // Worker unchanged.
+    let fetched = r.get_worker("a1").await.unwrap().unwrap();
+    assert_eq!(fetched.container_status, "stopped");
+    assert_eq!(fetched.agent_status, "idle");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn reconcile_workers_stopped_alive_is_reclaimed() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    let mut worker = test_worker("a1", "proj-a");
+    worker.container_status = "stopped".to_owned();
+    worker.agent_status = "idle".to_owned();
+    r.insert_worker(&worker).await.unwrap();
+
+    // Stopped + alive: reclaim (set container_status to "running", preserve agent_status).
+    let result = r
+        .reconcile_workers(|_container_id| async { true })
+        .await
+        .unwrap();
+
+    assert_eq!(result.reclaimed, vec!["a1"]);
+    assert!(result.marked_stopped.is_empty());
+
+    let fetched = r.get_worker("a1").await.unwrap().unwrap();
+    assert_eq!(fetched.container_status, "running");
+    // agent_status must NOT be modified during reclaim.
+    assert_eq!(fetched.agent_status, "idle");
 
     db.cleanup().await;
 }
@@ -680,6 +726,86 @@ async fn reconcile_slots_cleans_stale_project_slots() {
 
     assert_eq!(result.deleted_stale, vec!["orphan-proj-slot"]);
     assert!(r.get_slot("orphan-proj-slot").await.unwrap().is_none());
+
+    db.cleanup().await;
+}
+
+// --- Stale worker cleanup tests ---
+
+#[tokio::test]
+async fn cleanup_stale_workers_deletes_old_stopped_workers() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+    let pool = db.db().pool();
+
+    // Insert a slot and link workers to it to verify cascade delete.
+    r.insert_slot(&test_slot("s1", "proj-a")).await.unwrap();
+
+    // Old stopped worker (updated 30 days ago) — should be deleted.
+    let mut old_stopped = test_worker("old-stopped", "proj-a");
+    old_stopped.container_status = "stopped".to_owned();
+    r.insert_worker(&old_stopped).await.unwrap();
+    r.link_worker_slot("old-stopped", "s1").await.unwrap();
+    set_worker_updated_at(pool, "old-stopped", "2020-01-01T00:00:00Z").await;
+
+    // Recent stopped worker (updated just now) — should be kept.
+    let mut recent_stopped = test_worker("recent-stopped", "proj-a");
+    recent_stopped.container_status = "stopped".to_owned();
+    r.insert_worker(&recent_stopped).await.unwrap();
+    // Set updated_at to now so it's within the TTL window.
+    let now = Utc::now().to_rfc3339();
+    set_worker_updated_at(pool, "recent-stopped", &now).await;
+
+    // Old running worker — should NOT be deleted (still running).
+    let mut old_running = test_worker("old-running", "proj-a");
+    old_running.container_status = "running".to_owned();
+    r.insert_worker(&old_running).await.unwrap();
+    set_worker_updated_at(pool, "old-running", "2020-01-01T00:00:00Z").await;
+
+    let deleted = r.cleanup_stale_workers(7).await.unwrap();
+
+    assert_eq!(deleted, vec!["old-stopped"]);
+
+    // old-stopped is gone.
+    assert!(r.get_worker("old-stopped").await.unwrap().is_none());
+    // worker_slot link cascade-deleted.
+    assert!(r.get_worker_slot("old-stopped").await.unwrap().is_none());
+
+    // recent-stopped and old-running still exist.
+    assert!(r.get_worker("recent-stopped").await.unwrap().is_some());
+    assert!(r.get_worker("old-running").await.unwrap().is_some());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn cleanup_after_reconciliation_preserves_reclaimed_workers() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+    let pool = db.db().pool();
+
+    // Simulate a worker that was stopped with an old updated_at, then reclaimed by
+    // reconcile_workers (container came back alive). After reclaim its container_status
+    // is "running", so cleanup should NOT delete it even though updated_at was old
+    // before reclaim (reclaim updates updated_at via update_worker_container_status).
+    let mut worker = test_worker("reclaimed", "proj-a");
+    worker.container_status = "stopped".to_owned();
+    r.insert_worker(&worker).await.unwrap();
+    set_worker_updated_at(pool, "reclaimed", "2020-01-01T00:00:00Z").await;
+
+    // Simulate reconcile_workers reclaiming this worker (container alive).
+    let result = r
+        .reconcile_workers(|_container_id| async { true })
+        .await
+        .unwrap();
+    assert_eq!(result.reclaimed, vec!["reclaimed"]);
+
+    // Now run cleanup — worker should NOT be deleted because it's running now.
+    let deleted = r.cleanup_stale_workers(7).await.unwrap();
+    assert!(deleted.is_empty());
+
+    let fetched = r.get_worker("reclaimed").await.unwrap().unwrap();
+    assert_eq!(fetched.container_status, "running");
 
     db.cleanup().await;
 }
