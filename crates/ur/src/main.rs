@@ -687,6 +687,15 @@ async fn process_status(
                 ));
             }
 
+            if !w.pr_url.is_empty() {
+                out.push_str(&format!(
+                    "{:>width$}: {}\n",
+                    "PR",
+                    w.pr_url,
+                    width = label_width
+                ));
+            }
+
             if !w.stall_reason.is_empty() {
                 out.push_str(&format!(
                     "{:>width$}: {}\n",

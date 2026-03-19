@@ -348,15 +348,18 @@ impl CoreService for CoreServiceHandler {
                 .as_ref()
                 .map(|t| t.lifecycle_status.to_string())
                 .unwrap_or_default();
-            let stall_reason = if ticket.is_some() {
-                self.ticket_repo
+            let (stall_reason, pr_url) = if ticket.is_some() {
+                let mut meta = self
+                    .ticket_repo
                     .get_meta(&s.process_id, "ticket")
                     .await
-                    .unwrap_or_default()
-                    .remove("stall_reason")
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                (
+                    meta.remove("stall_reason").unwrap_or_default(),
+                    meta.remove("pr_url").unwrap_or_default(),
+                )
             } else {
-                String::new()
+                (String::new(), String::new())
             };
             workers.push(WorkerSummary {
                 worker_id: s.process_id,
@@ -370,6 +373,7 @@ impl CoreService for CoreServiceHandler {
                 agent_status: s.agent_status,
                 lifecycle_status,
                 stall_reason,
+                pr_url,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))
