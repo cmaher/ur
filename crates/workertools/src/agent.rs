@@ -8,8 +8,6 @@ use crate::inject_auth;
 
 #[derive(Subcommand)]
 pub enum AgentCommands {
-    /// Signal that the agent has finished its current task
-    Done,
     /// Request human attention with a message
     RequestHuman {
         /// Message describing why human attention is needed
@@ -46,22 +44,6 @@ pub async fn run(command: AgentCommands) -> i32 {
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_default();
 
     match command {
-        AgentCommands::Done => {
-            let mut request = tonic::Request::new(UpdateAgentStatusRequest {
-                worker_id,
-                status: ur_rpc::agent_status::IDLE.to_string(),
-                message: String::new(),
-            });
-            inject_auth(&mut request);
-
-            match client.update_agent_status(request).await {
-                Ok(_) => 0,
-                Err(status) => {
-                    eprintln!("agent done: {}", status.message());
-                    1
-                }
-            }
-        }
         AgentCommands::RequestHuman { message } => {
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id,

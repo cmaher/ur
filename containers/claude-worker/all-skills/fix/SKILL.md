@@ -1,6 +1,6 @@
 ---
 name: fix
-description: Fix a failing ticket — pre-push verification, CI failures, or merge conflicts — invoked by workerd Fix RPC
+description: Use when fixing a failing ticket — pre-push verification, CI failures, or merge conflicts
 ---
 
 Parse `$ARGUMENTS` for one required positional argument: `<ticket_id>`.
@@ -46,20 +46,10 @@ A merge conflict occurred. The workflow activities contain details about the con
 3. Resolve any conflicts by examining the conflicting files and making the correct choices.
 4. Complete the merge commit.
 
-## 4. Signal completion
+## 4. Done
 
-When you have successfully fixed the issue:
+Just stop when the fix is complete — verification/push happens automatically.
 
-```
-workertools agent done
-```
-
-If you cannot fix the issue and need human intervention, explain why and run:
-
-```
-workertools agent request-human "description of why human help is needed"
-```
-
-You MUST run one of these two commands before stopping. Do not stop without signaling.
+If you cannot fix the issue, run `workertools agent request-human "<reason>"` and stop.
 
 $ARGUMENTS

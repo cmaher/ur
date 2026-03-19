@@ -659,8 +659,8 @@ async fn process_status(
 
     output.print_items(&filtered, |workers| {
         let mut out = format!(
-            "{:<20} {:<12} {:<14} {:<8} {}\n",
-            "WORKER", "STATUS", "AGENT", "MODE", "DIRECTORY"
+            "{:<20} {:<12} {:<14} {:<20} {:<8} {}\n",
+            "WORKER", "STATUS", "AGENT", "LIFECYCLE", "MODE", "DIRECTORY"
         );
         for w in workers {
             let container_status = if w.container_status.is_empty() {
@@ -673,14 +673,19 @@ async fn process_status(
             } else {
                 &w.agent_status
             };
+            let lifecycle_status = if w.lifecycle_status.is_empty() {
+                "-"
+            } else {
+                &w.lifecycle_status
+            };
             let directory = if w.directory.is_empty() {
                 "-"
             } else {
                 &w.directory
             };
             out.push_str(&format!(
-                "{:<20} {:<12} {:<14} {:<8} {}\n",
-                w.worker_id, container_status, agent_status, w.mode, directory
+                "{:<20} {:<12} {:<14} {:<20} {:<8} {}\n",
+                w.worker_id, container_status, agent_status, lifecycle_status, w.mode, directory
             ));
         }
         if out.ends_with('\n') {

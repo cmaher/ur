@@ -39,7 +39,7 @@ impl WorkflowHandler for DispatchImplementHandler {
                 );
                 b.clone()
             } else {
-                let new_branch = format!("ur-{ticket_id}");
+                let new_branch = ticket_id.clone();
                 info!(
                     ticket_id = %ticket_id,
                     branch = %new_branch,
@@ -97,7 +97,11 @@ impl WorkflowHandler for DispatchImplementHandler {
                 "dispatching implement RPC to workerd"
             );
 
-            let workerd_client = crate::WorkerdClient::new(workerd_addr);
+            let workerd_client = crate::WorkerdClient::with_status_tracking(
+                workerd_addr,
+                ctx.worker_repo.clone(),
+                worker_id.clone(),
+            );
             workerd_client
                 .implement(&ticket_id)
                 .await

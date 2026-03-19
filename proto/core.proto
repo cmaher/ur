@@ -99,4 +99,5 @@ message WorkerSummary {
   string directory = 7;
   string container_status = 8;
   string agent_status = 9;
+  string lifecycle_status = 10;
 }

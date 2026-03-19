@@ -115,7 +115,11 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 "dispatching create_feedback_tickets RPC to workerd"
             );
 
-            let workerd_client = crate::WorkerdClient::new(workerd_addr);
+            let workerd_client = crate::WorkerdClient::with_status_tracking(
+                workerd_addr,
+                ctx.worker_repo.clone(),
+                worker_id.clone(),
+            );
             workerd_client
                 .create_feedback_tickets(&ticket_id, pr_number)
                 .await

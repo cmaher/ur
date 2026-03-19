@@ -1,3 +1,6 @@
+use tracing::warn;
+use ur_db::WorkerRepo;
+use ur_db::model::AgentStatus;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{
     CreateFeedbackRequest, FixRequest, ImplementRequest, PushRequest, SendMessageRequest,
@@ -8,15 +11,59 @@ use ur_rpc::proto::workerd::{
 /// Each worker container runs a `workerd` gRPC daemon on a fixed port.
 /// The server derives the workerd address from the container name (Docker DNS)
 /// and the fixed gRPC port.
+///
+/// When `worker_repo` and `worker_id` are set, successful dispatches automatically
+/// update the worker's agent status to `Working`.
 #[derive(Clone)]
 pub struct WorkerdClient {
     /// gRPC address of the workerd daemon (e.g., `http://ur-worker-alice:9120`).
     addr: String,
+    /// Optional worker repo + ID for automatic agent status updates.
+    status_tracking: Option<StatusTracking>,
+}
+
+#[derive(Clone)]
+struct StatusTracking {
+    worker_repo: WorkerRepo,
+    worker_id: String,
 }
 
 impl WorkerdClient {
     pub fn new(addr: String) -> Self {
-        Self { addr }
+        Self {
+            addr,
+            status_tracking: None,
+        }
+    }
+
+    /// Create a client that automatically sets agent status to Working after
+    /// each successful dispatch.
+    pub fn with_status_tracking(addr: String, worker_repo: WorkerRepo, worker_id: String) -> Self {
+        Self {
+            addr,
+            status_tracking: Some(StatusTracking {
+                worker_repo,
+                worker_id,
+            }),
+        }
+    }
+
+    /// Mark the worker as Working after a successful dispatch.
+    /// Logs a warning on failure but does not propagate the error —
+    /// a failed status update should not fail the dispatch itself.
+    async fn mark_working(&self) {
+        if let Some(ref tracking) = self.status_tracking
+            && let Err(e) = tracking
+                .worker_repo
+                .update_worker_agent_status(&tracking.worker_id, AgentStatus::Working)
+                .await
+        {
+            warn!(
+                worker_id = %tracking.worker_id,
+                error = %e,
+                "failed to update agent status to working after dispatch"
+            );
+        }
     }
 
     /// Send a message to the workerd instance and return the result.
@@ -38,6 +85,7 @@ impl WorkerdClient {
 
         let resp = response.into_inner();
         if resp.success {
+            self.mark_working().await;
             Ok(())
         } else {
             Err(resp.error)
@@ -59,6 +107,7 @@ impl WorkerdClient {
             .await
             .map_err(|e| format!("workerd Implement failed: {e}"))?;
 
+        self.mark_working().await;
         Ok(())
     }
 
@@ -75,6 +124,7 @@ impl WorkerdClient {
             .await
             .map_err(|e| format!("workerd Push failed: {e}"))?;
 
+        self.mark_working().await;
         Ok(())
     }
 
@@ -94,6 +144,7 @@ impl WorkerdClient {
             .await
             .map_err(|e| format!("workerd Fix failed: {e}"))?;
 
+        self.mark_working().await;
         Ok(())
     }
 
@@ -117,6 +168,7 @@ impl WorkerdClient {
             .await
             .map_err(|e| format!("workerd CreateFeedbackTickets failed: {e}"))?;
 
+        self.mark_working().await;
         Ok(())
     }
 }

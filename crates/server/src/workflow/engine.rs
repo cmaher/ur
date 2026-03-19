@@ -7,7 +7,6 @@ use tracing::{error, info, warn};
 
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
-use ur_db::model::LifecycleStatus;
 
 use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 
@@ -191,9 +190,12 @@ impl WorkflowEngine {
                 transition = %transition,
                 attempts = new_attempts,
                 error = %handler_err,
-                "workflow transition failed after max attempts — reverting to open"
+                "workflow transition failed after max attempts — stalling"
             );
-            self.revert_ticket_to_open(&event.ticket_id).await;
+            self.stall_ticket(&event.ticket_id, &format!("{handler_err}"))
+                .await;
+            self.delete_event(&event.id).await;
+            return;
         } else {
             warn!(
                 event_id = %event.id,
@@ -221,22 +223,16 @@ impl WorkflowEngine {
         }
     }
 
-    /// Revert a ticket's lifecycle status to Open after max retry attempts.
-    async fn revert_ticket_to_open(&self, ticket_id: &str) {
-        let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Open),
-            lifecycle_managed: None,
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        if let Err(e) = self.ctx.ticket_repo.update_ticket(ticket_id, &update).await {
-            error!(error = %e, "failed to revert ticket to open");
+    /// Stall a ticket by setting `stall_reason` metadata and deleting the workflow event.
+    /// The ticket stays in its current lifecycle state — use `ur admin redrive` to retry.
+    async fn stall_ticket(&self, ticket_id: &str, reason: &str) {
+        if let Err(e) = self
+            .ctx
+            .ticket_repo
+            .set_meta(ticket_id, "ticket", "stall_reason", reason)
+            .await
+        {
+            error!(error = %e, "failed to set stall_reason metadata");
         }
     }
 }
@@ -498,8 +494,17 @@ mod tests {
 
         assert_eq!(call_count.load(Ordering::SeqCst), MAX_ATTEMPTS as u32);
 
+        // Ticket stays in its current lifecycle state (not reverted to open).
         let t = repo.get_ticket("ur-test3").await.unwrap().unwrap();
-        assert_eq!(t.lifecycle_status, LifecycleStatus::Open);
+        assert_eq!(t.lifecycle_status, LifecycleStatus::Implementing);
+
+        // stall_reason metadata is set with the error message.
+        let meta = repo.get_meta("ur-test3", "ticket").await.unwrap();
+        assert!(meta.contains_key("stall_reason"));
+
+        // Workflow event is deleted (engine won't retry).
+        let event = repo.poll_workflow_event().await.unwrap();
+        assert!(event.is_none(), "event should be deleted after stalling");
     }
 
     #[tokio::test]
