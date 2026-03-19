@@ -2,7 +2,7 @@
 
 ## Overview
 
-The lifecycle workflow system drives tickets through an automated state machine: dispatch, implement, verify, push, review, and fix. It consists of three cooperating subsystems spawned at server boot:
+The lifecycle workflow system drives tickets through an automated state machine: dispatch, implement, verify, push, review, and merge. It consists of three cooperating subsystems spawned at server boot:
 
 1. **WorkflowEngine** -- polls `workflow_event` table and dispatches to registered handlers
 2. **GithubPollerManager** -- polls GitHub for CI status and review signals
@@ -15,23 +15,30 @@ The lifecycle workflow system drives tickets through an automated state machine:
                          |
                          v
   Open ──────> AwaitingDispatch ──────> Implementing ──────> Verifying
-                 (worker idle              |                  |    |
-                  triggers)                |                  |    |
-                                           |    ┌─────────────┘    |
-                                           |    v                  v
-                                           |  Fixing ───────> Pushing
-                                           |                  |    |
-                                           |                  |    v
-                                           |                  | InReview
-                                           |                  |    |
-                                           |                  |    v
-                                           |                  | FeedbackCreating
-                                           |                  |    |
-                                           |                  |    v
-                                           |                  | FeedbackResolving
-                                           |                  |    |
-                                           v                  v    v
-                                         Done              (merge or re-fix)
+                 (worker idle              ^    ^               |
+                  triggers)                |    |               |
+                                           |    └───────────────┘
+                                           |              (hook failure,
+                                           |               under limit)
+                                           |
+                                           |                    |
+                                           |                    v (hook passes)
+                                           |                 Pushing
+                                           |                 |    |
+                                           |    (CI failure) |    | (CI green)
+                                           |  ───────────────┘    v
+                                           |                   InReview
+                                           |                      |
+                                           |                      v
+                                           |               FeedbackCreating
+                                           |                /           \
+                                           |     (mode=now)/             \(mode=later)
+                                           |              /               \
+                                           └─────────────┘               Merging
+                                                                        /      \
+                                                              (conflict)/        \(success)
+                                                  ──────────────────────┘         v
+                                                  → Implementing                Done
 ```
 
 ### Lifecycle States
@@ -43,11 +50,10 @@ The lifecycle workflow system drives tickets through an automated state machine:
 | `AwaitingDispatch` | CLI has dispatched; waiting for worker to become idle |
 | `Implementing` | Worker is actively implementing the ticket |
 | `Verifying` | Server runs pre-push verification hook |
-| `Fixing` | Worker is fixing verification or CI failures |
 | `Pushing` | Server pushes branch and creates/updates PR |
 | `InReview` | PR is open, waiting for human review signal |
 | `FeedbackCreating` | Worker creates feedback summary from review |
-| `FeedbackResolving` | Server resolves feedback (merge PR or re-implement) |
+| `Merging` | Server merges PR (squash), kills worker, closes epic, dispatches children |
 | `Done` | Terminal state |
 
 ### Registered Transitions (Handler Registry)
@@ -55,16 +61,14 @@ The lifecycle workflow system drives tickets through an automated state machine:
 | From | To | Handler | Description |
 |------|----|---------|-------------|
 | Open | AwaitingDispatch | `AwaitingDispatchHandler` | No-op; acknowledges dispatch |
-| AwaitingDispatch | Implementing | `DispatchImplementHandler` | Sends implement RPC to worker |
+| AwaitingDispatch | Implementing | `DispatchImplementHandler` | Sends implement RPC to worker (with /clear) |
 | Implementing | Verifying | `VerifyHandler` | Runs pre-push verification hook |
-| Verifying | Fixing | `FixDispatchHandler` | Sends fix RPC to worker |
-| Fixing | Verifying | `VerifyHandler` | Re-runs verification after fix |
 | Verifying | Pushing | `PushHandler` | Pushes branch, creates/updates PR |
 | Pushing | InReview | `ReviewStartHandler` | No-op signal handler |
-| Pushing | Fixing | `FixDispatchHandler` | CI failure detected by poller |
-| InReview | FeedbackCreating | `FeedbackCreateHandler` | Sends feedback create RPC to worker |
-| FeedbackCreating | FeedbackResolving | `FeedbackResolveHandler` | Resolves feedback (merge or re-implement) |
-| FeedbackResolving | Fixing | `FixDispatchHandler` | Merge conflict during PR merge |
+| Pushing | Implementing | `DispatchImplementHandler` | CI failure detected by poller |
+| InReview | FeedbackCreating | `FeedbackCreateHandler` | Promotes to epic, sends feedback create RPC |
+| FeedbackCreating | Merging | `MergeHandler` | Merges PR (squash), kills worker, closes epic |
+| Merging | Implementing | `DispatchImplementHandler` | Merge conflict during PR merge |
 
 Source: `crates/server/src/workflow/handlers/mod.rs` (`build_handlers()`)
 
@@ -108,10 +112,23 @@ When a worker container starts and its agent becomes idle for the first time:
 5. If the ticket's lifecycle_status is `AwaitingDispatch` and agent_status is `"idle"`:
    - Transitions lifecycle_status to `Implementing`
    - This fires the SQLite trigger, creating a `workflow_event` (AwaitingDispatch -> Implementing)
-   - The `DispatchImplementHandler` sends the implement RPC to the worker via workerd
+   - The `DispatchImplementHandler` sends /clear then the implement RPC to the worker via workerd
 6. If the ticket is in any other lifecycle state, the `LifecycleStepRouter` is consulted
 
 Source: `crates/server/src/grpc.rs` (`handle_agent_status_routed()`)
+
+## Dispatch Implement Handler
+
+The `DispatchImplementHandler` is the single entry point for all transitions into `Implementing`. It covers:
+
+- **Initial dispatch**: AwaitingDispatch -> Implementing
+- **CI failure re-dispatch**: Pushing -> Implementing (via GitHub poller)
+- **Merge conflict re-dispatch**: Merging -> Implementing
+- **Verification failure re-dispatch**: Verifying -> Implementing (via VerifyHandler internal transition)
+
+The handler ensures the ticket has a branch (generating one from the ticket ID if needed), resolves the assigned worker via `worker_id` metadata, and sends the `Implement(ticket_id)` RPC to the worker's workerd daemon. The workerd handler sends `/clear` before `/implement` to ensure a fresh agent context on each dispatch.
+
+Source: `crates/server/src/workflow/handlers/dispatch_implement.rs`
 
 ## Worker ID Metadata
 
@@ -147,6 +164,7 @@ The step router is a pure-function mapper from `(lifecycle_status, agent_status)
 | Action | Behavior |
 |--------|----------|
 | `Advance { to }` | Transition ticket to the next lifecycle state |
+| `AdvanceByFeedbackMode` | Route based on `feedback_mode` metadata (`now` -> Implementing, `later` -> Merging) |
 | `Redispatch { reminder }` | Re-send the phase-appropriate RPC to the worker |
 | `Ignore` | No action |
 
@@ -155,11 +173,51 @@ Key routing rules:
 - **Open / AwaitingDispatch**: always `Ignore` (handled by dedicated logic in grpc.rs)
 - **Stalled**: always `Ignore`
 - **Working**: `Redispatch { reminder: true }` for all active states
-- **Idle + Implementing/Fixing**: `Advance { to: Verifying }`
-- **Idle + Pushing/FeedbackCreating**: `Redispatch { reminder: false }`
+- **Idle + Implementing**: `Advance { to: Verifying }`
+- **Idle + Pushing**: `Redispatch { reminder: false }`
+- **Idle + FeedbackCreating**: `AdvanceByFeedbackMode`
 - **Idle + other**: `Ignore`
 
 Source: `crates/server/src/workflow/step_router.rs`
+
+## Verification and Fix Attempt Budget
+
+The `VerifyHandler` runs a configurable pre-push hook against the worker's code. On hook failure:
+
+1. Increments `fix_attempt_count` metadata on the ticket
+2. If `fix_attempt_count` < `max_fix_attempts` (default: 10, configurable per project): transitions to `Implementing` for another attempt
+3. If `fix_attempt_count` >= `max_fix_attempts`: sets the worker's `agent_status` to `stalled`, halting the cycle
+
+On successful push (handled by `PushHandler`), `fix_attempt_count` is reset to 0. This means the budget resets each time code is successfully pushed, giving the worker a fresh set of attempts for any subsequent verification cycles.
+
+Source: `crates/server/src/workflow/handlers/verify.rs`, `crates/server/src/workflow/handlers/push.rs`
+
+## Epic Promotion and Feedback Flow
+
+When a ticket reaches `FeedbackCreating`, the `FeedbackCreateHandler`:
+
+1. **Promotes the ticket to an epic** (if not already) so child feedback tickets can be parented under it
+2. Sends the `CreateFeedbackTickets(ticket_id, pr_number)` RPC to the worker
+3. The worker creates child tickets from PR review comments and goes idle
+4. The step router detects Idle + FeedbackCreating and routes via `AdvanceByFeedbackMode`:
+   - `feedback_mode=now` (changes requested): transitions to `Implementing` to address feedback
+   - `feedback_mode=later` (approved/merged): transitions to `Merging` to complete the PR
+
+Source: `crates/server/src/workflow/handlers/feedback_create.rs`, `crates/server/src/workflow/step_router.rs`
+
+## Merge Flow
+
+The `MergeHandler` (FeedbackCreating -> Merging) performs:
+
+1. Kills the worker and releases its slot
+2. Merges the PR via `GhBackend::merge_pr` (squash strategy)
+3. Closes the original ticket (lifecycle_status -> Done)
+4. Finds the follow-up epic via `follow_up` edge and closes it
+5. Dispatches follow-up epic children as independent work (lifecycle -> Open, branch cleared)
+
+If the merge fails due to a conflict, the handler transitions back to `Implementing` with an activity recording the failure. The `DispatchImplementHandler` then re-dispatches the worker.
+
+Source: `crates/server/src/workflow/handlers/merge.rs`
 
 ## WorkflowEngine Internals
 
@@ -182,7 +240,7 @@ Scans every 30s for tickets in `pushing` or `in_review` lifecycle states:
 ### Pushing tickets
 - Queries GitHub CI status via `GhBackend::check_runs()`
 - **All green / No checks**: Transition to `InReview`
-- **Failed**: Set `fix_phase=ci` metadata, record failing checks as activity, transition to `Fixing`
+- **Failed**: Record failing checks as activity, transition to `Implementing`
 - **Pending**: No action (re-check next scan)
 
 ### InReview tickets
