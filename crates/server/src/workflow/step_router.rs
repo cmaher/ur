@@ -1,4 +1,5 @@
 use ur_db::model::LifecycleStatus;
+use ur_rpc::agent_status;
 
 /// Action to take when a worker reports its agent status.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,11 +56,11 @@ impl LifecycleStepRouter {
         }
 
         match agent_status {
-            "stalled" => StepAction::Ignore,
+            agent_status::STALLED => StepAction::Ignore,
 
-            "working" => StepAction::Redispatch { reminder: true },
+            agent_status::WORKING => StepAction::Redispatch { reminder: true },
 
-            "idle" => match lifecycle_status {
+            agent_status::IDLE => match lifecycle_status {
                 LifecycleStatus::Implementing => StepAction::Advance {
                     to: LifecycleStatus::Verifying,
                 },
@@ -93,7 +94,7 @@ mod tests {
     #[test]
     fn no_ticket_idle() {
         assert_eq!(
-            router().route(LifecycleStatus::Open, "idle", false),
+            router().route(LifecycleStatus::Open, agent_status::IDLE, false),
             StepAction::Ignore,
         );
     }
@@ -101,7 +102,7 @@ mod tests {
     #[test]
     fn no_ticket_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Implementing, "working", false),
+            router().route(LifecycleStatus::Implementing, agent_status::WORKING, false),
             StepAction::Ignore,
         );
     }
@@ -109,7 +110,7 @@ mod tests {
     #[test]
     fn no_ticket_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Pushing, "stalled", false),
+            router().route(LifecycleStatus::Pushing, agent_status::STALLED, false),
             StepAction::Ignore,
         );
     }
@@ -121,7 +122,7 @@ mod tests {
     #[test]
     fn open_idle() {
         assert_eq!(
-            router().route(LifecycleStatus::Open, "idle", true),
+            router().route(LifecycleStatus::Open, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -129,7 +130,7 @@ mod tests {
     #[test]
     fn open_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Open, "working", true),
+            router().route(LifecycleStatus::Open, agent_status::WORKING, true),
             StepAction::Ignore,
         );
     }
@@ -137,7 +138,7 @@ mod tests {
     #[test]
     fn open_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Open, "stalled", true),
+            router().route(LifecycleStatus::Open, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -149,7 +150,7 @@ mod tests {
     #[test]
     fn awaiting_dispatch_idle() {
         assert_eq!(
-            router().route(LifecycleStatus::AwaitingDispatch, "idle", true),
+            router().route(LifecycleStatus::AwaitingDispatch, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -157,7 +158,11 @@ mod tests {
     #[test]
     fn awaiting_dispatch_working() {
         assert_eq!(
-            router().route(LifecycleStatus::AwaitingDispatch, "working", true),
+            router().route(
+                LifecycleStatus::AwaitingDispatch,
+                agent_status::WORKING,
+                true
+            ),
             StepAction::Ignore,
         );
     }
@@ -165,7 +170,11 @@ mod tests {
     #[test]
     fn awaiting_dispatch_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::AwaitingDispatch, "stalled", true),
+            router().route(
+                LifecycleStatus::AwaitingDispatch,
+                agent_status::STALLED,
+                true
+            ),
             StepAction::Ignore,
         );
     }
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn implementing_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Implementing, "stalled", true),
+            router().route(LifecycleStatus::Implementing, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -185,7 +194,7 @@ mod tests {
     #[test]
     fn fixing_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Fixing, "stalled", true),
+            router().route(LifecycleStatus::Fixing, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -193,7 +202,7 @@ mod tests {
     #[test]
     fn pushing_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Pushing, "stalled", true),
+            router().route(LifecycleStatus::Pushing, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -201,7 +210,11 @@ mod tests {
     #[test]
     fn feedback_creating_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackCreating, "stalled", true),
+            router().route(
+                LifecycleStatus::FeedbackCreating,
+                agent_status::STALLED,
+                true
+            ),
             StepAction::Ignore,
         );
     }
@@ -209,7 +222,7 @@ mod tests {
     #[test]
     fn verifying_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Verifying, "stalled", true),
+            router().route(LifecycleStatus::Verifying, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -217,7 +230,7 @@ mod tests {
     #[test]
     fn in_review_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::InReview, "stalled", true),
+            router().route(LifecycleStatus::InReview, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -225,7 +238,11 @@ mod tests {
     #[test]
     fn feedback_resolving_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackResolving, "stalled", true),
+            router().route(
+                LifecycleStatus::FeedbackResolving,
+                agent_status::STALLED,
+                true
+            ),
             StepAction::Ignore,
         );
     }
@@ -233,7 +250,7 @@ mod tests {
     #[test]
     fn design_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Design, "stalled", true),
+            router().route(LifecycleStatus::Design, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -241,7 +258,7 @@ mod tests {
     #[test]
     fn done_stalled() {
         assert_eq!(
-            router().route(LifecycleStatus::Done, "stalled", true),
+            router().route(LifecycleStatus::Done, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -253,7 +270,7 @@ mod tests {
     #[test]
     fn implementing_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Implementing, "working", true),
+            router().route(LifecycleStatus::Implementing, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -261,7 +278,7 @@ mod tests {
     #[test]
     fn fixing_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Fixing, "working", true),
+            router().route(LifecycleStatus::Fixing, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -269,7 +286,7 @@ mod tests {
     #[test]
     fn pushing_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Pushing, "working", true),
+            router().route(LifecycleStatus::Pushing, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -277,7 +294,11 @@ mod tests {
     #[test]
     fn feedback_creating_working() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackCreating, "working", true),
+            router().route(
+                LifecycleStatus::FeedbackCreating,
+                agent_status::WORKING,
+                true
+            ),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -285,7 +306,7 @@ mod tests {
     #[test]
     fn verifying_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Verifying, "working", true),
+            router().route(LifecycleStatus::Verifying, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -293,7 +314,7 @@ mod tests {
     #[test]
     fn in_review_working() {
         assert_eq!(
-            router().route(LifecycleStatus::InReview, "working", true),
+            router().route(LifecycleStatus::InReview, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -301,7 +322,11 @@ mod tests {
     #[test]
     fn feedback_resolving_working() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackResolving, "working", true),
+            router().route(
+                LifecycleStatus::FeedbackResolving,
+                agent_status::WORKING,
+                true
+            ),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -309,7 +334,7 @@ mod tests {
     #[test]
     fn design_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Design, "working", true),
+            router().route(LifecycleStatus::Design, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -317,7 +342,7 @@ mod tests {
     #[test]
     fn done_working() {
         assert_eq!(
-            router().route(LifecycleStatus::Done, "working", true),
+            router().route(LifecycleStatus::Done, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -329,7 +354,7 @@ mod tests {
     #[test]
     fn implementing_idle_advances_to_verifying() {
         assert_eq!(
-            router().route(LifecycleStatus::Implementing, "idle", true),
+            router().route(LifecycleStatus::Implementing, agent_status::IDLE, true),
             StepAction::Advance {
                 to: LifecycleStatus::Verifying
             },
@@ -339,7 +364,7 @@ mod tests {
     #[test]
     fn fixing_idle_advances_to_verifying() {
         assert_eq!(
-            router().route(LifecycleStatus::Fixing, "idle", true),
+            router().route(LifecycleStatus::Fixing, agent_status::IDLE, true),
             StepAction::Advance {
                 to: LifecycleStatus::Verifying
             },
@@ -349,7 +374,7 @@ mod tests {
     #[test]
     fn pushing_idle_redispatches() {
         assert_eq!(
-            router().route(LifecycleStatus::Pushing, "idle", true),
+            router().route(LifecycleStatus::Pushing, agent_status::IDLE, true),
             StepAction::Redispatch { reminder: false },
         );
     }
@@ -357,7 +382,7 @@ mod tests {
     #[test]
     fn feedback_creating_idle_redispatches() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackCreating, "idle", true),
+            router().route(LifecycleStatus::FeedbackCreating, agent_status::IDLE, true),
             StepAction::Redispatch { reminder: false },
         );
     }
@@ -365,7 +390,7 @@ mod tests {
     #[test]
     fn verifying_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::Verifying, "idle", true),
+            router().route(LifecycleStatus::Verifying, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -373,7 +398,7 @@ mod tests {
     #[test]
     fn in_review_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::InReview, "idle", true),
+            router().route(LifecycleStatus::InReview, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -381,7 +406,7 @@ mod tests {
     #[test]
     fn feedback_resolving_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackResolving, "idle", true),
+            router().route(LifecycleStatus::FeedbackResolving, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -389,7 +414,7 @@ mod tests {
     #[test]
     fn design_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::Design, "idle", true),
+            router().route(LifecycleStatus::Design, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }
@@ -397,7 +422,7 @@ mod tests {
     #[test]
     fn done_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::Done, "idle", true),
+            router().route(LifecycleStatus::Done, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }

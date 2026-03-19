@@ -1,6 +1,7 @@
 #[cfg(feature = "error")]
 pub mod error;
 
+pub mod agent_status;
 pub mod lifecycle;
 
 #[cfg(feature = "stream")]

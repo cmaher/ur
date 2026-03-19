@@ -4,6 +4,8 @@ use tonic::transport::Channel;
 use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
+use crate::inject_auth;
+
 #[derive(Subcommand)]
 pub enum AgentCommands {
     /// Signal that the agent has finished its current task
@@ -13,24 +15,6 @@ pub enum AgentCommands {
         /// Message describing why human attention is needed
         message: String,
     },
-}
-
-fn inject_auth(request: &mut tonic::Request<impl std::fmt::Debug>) {
-    if let Ok(worker_id) = std::env::var(ur_config::UR_WORKER_ID_ENV)
-        && let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_ID_HEADER, val);
-    }
-    if let Ok(worker_secret) = std::env::var(ur_config::UR_WORKER_SECRET_ENV)
-        && let Ok(val) =
-            worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-    {
-        request
-            .metadata_mut()
-            .insert(ur_config::WORKER_SECRET_HEADER, val);
-    }
 }
 
 async fn connect() -> Result<CoreServiceClient<Channel>, i32> {
@@ -65,7 +49,7 @@ pub async fn run(command: AgentCommands) -> i32 {
         AgentCommands::Done => {
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id,
-                status: "idle".to_string(),
+                status: ur_rpc::agent_status::IDLE.to_string(),
                 message: String::new(),
             });
             inject_auth(&mut request);
@@ -81,7 +65,7 @@ pub async fn run(command: AgentCommands) -> i32 {
         AgentCommands::RequestHuman { message } => {
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id,
-                status: "stalled".to_string(),
+                status: ur_rpc::agent_status::STALLED.to_string(),
                 message,
             });
             inject_auth(&mut request);

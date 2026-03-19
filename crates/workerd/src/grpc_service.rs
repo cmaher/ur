@@ -71,7 +71,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
 
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id: worker_id.clone(),
-                status: "idle".to_string(),
+                status: ur_rpc::agent_status::IDLE.to_string(),
                 message: String::new(),
             });
 
