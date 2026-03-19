@@ -499,10 +499,29 @@ pub struct BackupConfig {
 }
 
 /// Known image aliases and their full tags.
-const IMAGE_ALIASES: &[(&str, &str)] = &[
+pub const IMAGE_ALIASES: &[(&str, &str)] = &[
     ("base", "ur-worker:latest"),
     ("rust", "ur-worker-rust:latest"),
 ];
+
+/// Validate that the given string is a known image alias or a full image reference.
+/// Returns `Ok(())` if valid, or an error describing the valid aliases.
+pub fn validate_image_alias(raw: &str) -> anyhow::Result<()> {
+    // Full image references are always valid
+    if raw.contains(':') || raw.contains('/') {
+        return Ok(());
+    }
+    for (alias, _) in IMAGE_ALIASES {
+        if raw == *alias {
+            return Ok(());
+        }
+    }
+    let valid: Vec<&str> = IMAGE_ALIASES.iter().map(|(a, _)| *a).collect();
+    anyhow::bail!(
+        "unknown image alias '{raw}'. Valid aliases: {valid:?}. \
+         Use a full image reference (e.g. 'myimage:tag') for custom images."
+    )
+}
 
 /// Resolve an image alias to its full tag.
 /// Returns the full tag if the input is a known alias, or an error if the alias is unknown.

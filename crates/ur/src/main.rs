@@ -124,6 +124,9 @@ enum ProjectCommands {
     Add {
         /// Path to a git repository directory (e.g. "." for current directory)
         path: PathBuf,
+        /// Container image alias (e.g. "base", "rust") or full image reference
+        #[arg(long)]
+        image: String,
         /// Project key (derived from repo name if omitted)
         #[arg(long)]
         key: Option<String>,
@@ -1200,6 +1203,7 @@ fn handle_project(
     match command {
         ProjectCommands::Add {
             path,
+            image,
             key,
             name,
             pool_limit,
@@ -1211,9 +1215,11 @@ fn handle_project(
                 input::reject_control_chars(n, "name")?;
             }
             input::reject_path_traversal(&path, "path")?;
+            ur_config::validate_image_alias(&image)?;
             project::add(
                 config,
                 &path,
+                &image,
                 key.as_deref(),
                 name.as_deref(),
                 pool_limit,
