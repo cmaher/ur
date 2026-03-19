@@ -1,11 +1,17 @@
 use std::path::PathBuf;
 
-use tracing::{info, warn};
+use tracing::info;
 
 const SKILL_HOOKS_DIR_ENV: &str = "UR_SKILL_HOOKS_DIR";
+const DEFAULT_SKILL_HOOKS: &str = "/workspace/ur-hooks/skills";
 const CLAUDE_SKILL_HOOKS: &str = "/home/worker/.claude/skill-hooks";
 
 /// Manages copying skill hooks from a source directory into `~/.claude/skill-hooks/`.
+///
+/// Source resolution order:
+/// 1. `UR_SKILL_HOOKS_DIR` env var (set by server from `skill_hooks_dir` config)
+/// 2. `/workspace/ur-hooks/skills` (convention-based default)
+/// 3. No-op if neither exists
 #[derive(Clone)]
 pub struct InitSkillHooksManager;
 
@@ -13,20 +19,14 @@ impl InitSkillHooksManager {
     pub async fn run(&self) -> Result<(), std::io::Error> {
         let source_dir = match std::env::var(SKILL_HOOKS_DIR_ENV) {
             Ok(val) if !val.trim().is_empty() => PathBuf::from(val),
-            _ => {
-                return Ok(());
-            }
+            _ => PathBuf::from(DEFAULT_SKILL_HOOKS),
         };
 
-        info!(source = %source_dir.display(), "initializing skill hooks");
-
         if !source_dir.exists() {
-            warn!(
-                path = %source_dir.display(),
-                "skill hooks source directory does not exist, skipping"
-            );
             return Ok(());
         }
+
+        info!(source = %source_dir.display(), "initializing skill hooks");
 
         let target_dir = PathBuf::from(CLAUDE_SKILL_HOOKS);
         copy_dir_recursive(&source_dir, &target_dir).await
