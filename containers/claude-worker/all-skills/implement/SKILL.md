@@ -49,6 +49,8 @@ If you cannot complete the work, run `workertools agent request-human "<reason>"
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
+**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+
 No subagents needed. Just do the work.
 
 ## Epic or Multiple Tickets — Subagent Dispatch
@@ -137,6 +139,8 @@ After all dispatchable tickets are done and verification passes:
 If you cannot complete all work, run `workertools agent request-human "<reason>"` and stop.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
+
+**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 ### Common Mistakes
 
