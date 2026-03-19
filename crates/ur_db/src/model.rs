@@ -166,6 +166,47 @@ pub struct WorkflowEvent {
     pub created_at: String,
 }
 
+/// Agent status for workers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AgentStatus {
+    #[default]
+    Starting,
+    Idle,
+    Working,
+    Stalled,
+}
+
+impl AgentStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Stalled => "stalled",
+        }
+    }
+}
+
+impl FromStr for AgentStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "starting" => Ok(Self::Starting),
+            "idle" => Ok(Self::Idle),
+            "working" => Ok(Self::Working),
+            "stalled" => Ok(Self::Stalled),
+            _ => Err(format!("unknown agent status: {s}")),
+        }
+    }
+}
+
+impl fmt::Display for AgentStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 pub struct Slot {
     pub id: String,
     pub project_key: String,
@@ -194,4 +235,38 @@ pub struct WorkerSlot {
     pub worker_id: String,
     pub slot_id: String,
     pub created_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_status_roundtrip() {
+        for status in [
+            AgentStatus::Starting,
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Stalled,
+        ] {
+            let s = status.as_str();
+            let parsed: AgentStatus = s.parse().unwrap();
+            assert_eq!(parsed, status);
+            assert_eq!(status.to_string(), s);
+        }
+    }
+
+    #[test]
+    fn agent_status_rejects_unknown() {
+        let result = "unknown_value".parse::<AgentStatus>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown agent status"));
+    }
+
+    #[test]
+    fn lifecycle_status_rejects_unknown() {
+        let result = "bogus_status".parse::<LifecycleStatus>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown lifecycle status"));
+    }
 }

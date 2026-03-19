@@ -5,7 +5,7 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{info, warn};
 
 use ur_db::TicketRepo;
-use ur_db::model::LifecycleStatus;
+use ur_db::model::{AgentStatus, LifecycleStatus};
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
@@ -364,7 +364,7 @@ impl CoreService for CoreServiceHandler {
 
         // On success, update agent_status to 'working' in DB.
         self.worker_repo
-            .update_worker_agent_status(&worker.worker_id, "working")
+            .update_worker_agent_status(&worker.worker_id, AgentStatus::Working)
             .await
             .map_err(|e| CoreError::SendMessageFailed {
                 reason: format!("failed to update agent status: {e}"),
@@ -464,8 +464,13 @@ impl CoreService for WorkerCoreServiceHandler {
             "update_agent_status request received"
         );
 
+        let agent_status: AgentStatus = inner
+            .status
+            .parse()
+            .map_err(|e: String| Status::invalid_argument(e))?;
+
         self.worker_repo
-            .update_worker_agent_status(&worker_id, &inner.status)
+            .update_worker_agent_status(&worker_id, agent_status)
             .await
             .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
 
@@ -742,7 +747,7 @@ async fn handle_redispatch(
 
     // Update agent status to working after successful re-dispatch.
     worker_repo
-        .update_worker_agent_status(worker_id, "working")
+        .update_worker_agent_status(worker_id, AgentStatus::Working)
         .await?;
 
     Ok(())

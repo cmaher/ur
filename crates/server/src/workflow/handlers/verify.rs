@@ -300,7 +300,7 @@ async fn set_agent_stalled(
     worker_id: &str,
 ) -> anyhow::Result<()> {
     ctx.worker_repo
-        .update_worker_agent_status(worker_id, "stalled")
+        .update_worker_agent_status(worker_id, ur_db::model::AgentStatus::Stalled)
         .await
         .map_err(|e| anyhow::anyhow!("failed to set agent_status to stalled for worker {worker_id} (ticket {ticket_id}): {e}"))?;
     Ok(())

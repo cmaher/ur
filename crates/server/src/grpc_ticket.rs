@@ -337,7 +337,11 @@ impl TicketService for TicketServiceHandler {
         let lifecycle_status = req
             .lifecycle_status
             .filter(|s| !s.is_empty())
-            .and_then(|s| s.parse::<LifecycleStatus>().ok());
+            .map(|s| {
+                s.parse::<LifecycleStatus>()
+                    .map_err(|e| TicketError::Validation(e))
+            })
+            .transpose()?;
 
         let branch = match req.branch {
             None => None,

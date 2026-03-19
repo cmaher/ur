@@ -11,8 +11,9 @@ mod tests;
 pub use database::DatabaseManager;
 pub use graph::GraphManager;
 pub use model::{
-    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Slot, Ticket, TicketFilter, TicketUpdate, Worker, WorkerSlot, WorkflowEvent,
+    Activity, AgentStatus, DispatchableTicket, Edge, EdgeKind, LifecycleStatus,
+    MetadataMatchTicket, NewTicket, Slot, Ticket, TicketFilter, TicketUpdate, Worker, WorkerSlot,
+    WorkflowEvent,
 };
 pub use snapshot::SnapshotManager;
 pub use ticket_repo::TicketRepo;
