@@ -454,7 +454,7 @@ async fn ensure_pr(
         title: title.to_string(),
         body: pr_body,
         head: branch.to_string(),
-        base: "main".to_string(),
+        base: String::new(),
         draft: false,
     };
 

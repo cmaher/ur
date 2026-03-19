@@ -125,9 +125,11 @@ impl RemoteRepo for GhBackend {
             &opts.body,
             "--head",
             &opts.head,
-            "--base",
-            &opts.base,
         ];
+        if !opts.base.is_empty() {
+            args.push("--base");
+            args.push(&opts.base);
+        }
         if opts.draft {
             args.push("--draft");
         }
