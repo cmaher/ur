@@ -63,14 +63,22 @@ impl LifecycleStepRouter {
         match agent_status {
             agent_status::STALLED => StepAction::Ignore,
 
-            agent_status::WORKING => StepAction::Redispatch { reminder: true },
+            agent_status::WORKING => match lifecycle_status {
+                // Workerd's DispatchBuffer intercepts Working signals during
+                // Implementing and FeedbackCreating — they never reach the server.
+                LifecycleStatus::Implementing | LifecycleStatus::FeedbackCreating => {
+                    StepAction::Ignore
+                }
+                _ => StepAction::Redispatch { reminder: true },
+            },
 
             agent_status::IDLE => match lifecycle_status {
-                LifecycleStatus::Implementing => StepAction::Advance {
-                    to: LifecycleStatus::Verifying,
-                },
+                // Workerd's DispatchBuffer intercepts Idle signals during
+                // Implementing and FeedbackCreating — they never reach the server.
+                LifecycleStatus::Implementing | LifecycleStatus::FeedbackCreating => {
+                    StepAction::Ignore
+                }
                 LifecycleStatus::Pushing => StepAction::Redispatch { reminder: false },
-                LifecycleStatus::FeedbackCreating => StepAction::AdvanceByFeedbackMode,
                 // All other lifecycle statuses with idle — no action.
                 _ => StepAction::Ignore,
             },
@@ -258,10 +266,10 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn implementing_working() {
+    fn implementing_working_ignored_workerd_intercepts() {
         assert_eq!(
             router().route(LifecycleStatus::Implementing, agent_status::WORKING, true),
-            StepAction::Redispatch { reminder: true },
+            StepAction::Ignore,
         );
     }
 
@@ -274,14 +282,14 @@ mod tests {
     }
 
     #[test]
-    fn feedback_creating_working() {
+    fn feedback_creating_working_ignored_workerd_intercepts() {
         assert_eq!(
             router().route(
                 LifecycleStatus::FeedbackCreating,
                 agent_status::WORKING,
                 true
             ),
-            StepAction::Redispatch { reminder: true },
+            StepAction::Ignore,
         );
     }
 
@@ -330,12 +338,10 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn implementing_idle_advances_to_verifying() {
+    fn implementing_idle_ignored_workerd_intercepts() {
         assert_eq!(
             router().route(LifecycleStatus::Implementing, agent_status::IDLE, true),
-            StepAction::Advance {
-                to: LifecycleStatus::Verifying
-            },
+            StepAction::Ignore,
         );
     }
 
@@ -348,10 +354,10 @@ mod tests {
     }
 
     #[test]
-    fn feedback_creating_idle_advances_by_feedback_mode() {
+    fn feedback_creating_idle_ignored_workerd_intercepts() {
         assert_eq!(
             router().route(LifecycleStatus::FeedbackCreating, agent_status::IDLE, true),
-            StepAction::AdvanceByFeedbackMode,
+            StepAction::Ignore,
         );
     }
 

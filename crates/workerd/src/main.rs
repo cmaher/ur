@@ -133,6 +133,13 @@ async fn run_daemon_only() -> Result<()> {
         server_addr,
         worker_id,
         worker_secret,
+        dispatch_buffer: std::sync::Arc::new(tokio::sync::Mutex::new(
+            grpc_service::DispatchBuffer {
+                commands: std::collections::VecDeque::new(),
+                step_complete: false,
+                lifecycle_step: String::new(),
+            },
+        )),
     };
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 

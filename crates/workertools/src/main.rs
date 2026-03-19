@@ -14,8 +14,8 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::hostexec::{HostExecMessage, HostExecRequest};
 use ur_rpc::proto::rag::rag_service_client::RagServiceClient;
 use ur_rpc::proto::rag::{Language, RagSearchRequest};
-use ur_rpc::proto::workerd::NotifyIdleRequest;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
+use ur_rpc::proto::workerd::{NotifyIdleRequest, StepCompleteRequest};
 
 /// Inject worker auth headers (worker ID and secret) into a tonic request from environment variables.
 pub(crate) fn inject_auth<T>(request: &mut tonic::Request<T>) {
@@ -68,6 +68,8 @@ enum Commands {
     },
     /// Notify workerd that Claude Code is idle (waiting for user input)
     NotifyIdle,
+    /// Signal workerd that the current lifecycle step completed successfully
+    StepComplete,
     /// Agent lifecycle commands
     Agent {
         #[command(subcommand)]
@@ -116,6 +118,9 @@ async fn main() {
         }
         Commands::NotifyIdle => {
             run_notify_idle().await;
+        }
+        Commands::StepComplete => {
+            run_step_complete().await;
         }
         Commands::Agent { command } => {
             std::process::exit(agent::run(command).await);
@@ -293,5 +298,22 @@ async fn run_notify_idle() {
     match client.notify_idle(NotifyIdleRequest {}).await {
         Ok(_) => eprintln!("[workertools] notify-idle: success"),
         Err(e) => eprintln!("[workertools] notify-idle: RPC failed: {e}"),
+    }
+}
+
+async fn run_step_complete() {
+    eprintln!("[workertools] step-complete: signaling step completion to workerd");
+    let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
+    let channel = match Endpoint::try_from(addr).unwrap().connect().await {
+        Ok(ch) => ch,
+        Err(e) => {
+            eprintln!("[workertools] step-complete: failed to connect to workerd: {e}");
+            return;
+        }
+    };
+    let mut client = WorkerDaemonServiceClient::new(channel);
+    match client.step_complete(StepCompleteRequest {}).await {
+        Ok(_) => eprintln!("[workertools] step-complete: success"),
+        Err(e) => eprintln!("[workertools] step-complete: RPC failed: {e}"),
     }
 }

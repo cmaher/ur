@@ -978,7 +978,11 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    /// Serialize tests that mutate process-wide env vars.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn errors_when_no_toml_file() {
@@ -1028,12 +1032,12 @@ mod tests {
 
     #[test]
     fn ur_config_env_overrides_default() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX; no other test mutates this var concurrently.
         unsafe { std::env::set_var(UR_CONFIG_ENV, tmp.path()) };
         let dir = resolve_config_dir().unwrap();
-        // Clean up before asserting
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONFIG_ENV) };
         assert_eq!(dir, tmp.path());
     }
@@ -2228,20 +2232,22 @@ github_scan_interval_secs = 60
 
     #[test]
     fn server_container_command_falls_back_to_env_var() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX; no other test mutates this var concurrently.
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
         assert_eq!(cfg.server.container_command, "nerdctl");
     }
 
     #[test]
     fn server_container_command_toml_overrides_env_var() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let tmp = TempDir::new().unwrap();
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX; no other test mutates this var concurrently.
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2249,7 +2255,7 @@ github_scan_interval_secs = 60
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        // SAFETY: test-only; single-threaded test runner for this module.
+        // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
         assert_eq!(cfg.server.container_command, "podman");
     }

@@ -6,6 +6,7 @@ service WorkerDaemonService {
   rpc NotifyIdle(NotifyIdleRequest) returns (NotifyIdleResponse);
   rpc Implement(ImplementRequest) returns (ImplementResponse);
   rpc CreateFeedbackTickets(CreateFeedbackRequest) returns (CreateFeedbackResponse);
+  rpc StepComplete(StepCompleteRequest) returns (StepCompleteResponse);
 }
 
 message SendMessageRequest {
@@ -34,3 +35,6 @@ message CreateFeedbackRequest {
 
 message CreateFeedbackResponse {}
 
+message StepCompleteRequest {}
+
+message StepCompleteResponse {}

@@ -76,7 +76,7 @@ Comment: <html_url>
 
 ## 4. Done
 
-Just stop when done — next steps happen automatically.
+**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 If you cannot complete the task, run `workertools agent request-human "<reason>"` and stop.
 
