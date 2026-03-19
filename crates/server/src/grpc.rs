@@ -255,7 +255,7 @@ impl CoreService for CoreServiceHandler {
 
         let (git_hooks_dir, mounts) = match self.projects.get(&project_key) {
             Some(proj) if !project_key.is_empty() => {
-                (proj.git_hooks_dir.clone(), proj.mounts.clone())
+                (proj.git_hooks_dir.clone(), proj.container.mounts.clone())
             }
             _ => (None, Vec::new()),
         };

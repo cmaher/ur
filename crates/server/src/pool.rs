@@ -466,7 +466,10 @@ mod tests {
                 pool_limit,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
-                mounts: Vec::new(),
+                container: ur_config::ContainerConfig {
+                    image: "ur-worker:latest".into(),
+                    mounts: Vec::new(),
+                },
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
@@ -722,7 +725,10 @@ mod tests {
                 pool_limit: 10,
                 hostexec: Vec::new(),
                 git_hooks_dir: None,
-                mounts: Vec::new(),
+                container: ur_config::ContainerConfig {
+                    image: "ur-worker:latest".into(),
+                    mounts: Vec::new(),
+                },
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
