@@ -12,9 +12,6 @@ use ur_rpc::stream::CompletedExec;
 /// Delay between individual GitHub API calls to avoid rate limiting.
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
 
-/// Delay between full polling scans.
-const SCAN_INTERVAL: Duration = Duration::from_secs(30);
-
 /// Polls GitHub for CI status and PR review signals on tickets in
 /// `pushing` and `in_review` lifecycle states.
 ///
@@ -25,13 +22,19 @@ const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
     builderd_client: BuilderdClient,
+    scan_interval: Duration,
 }
 
 impl GithubPollerManager {
-    pub fn new(ticket_repo: TicketRepo, builderd_client: BuilderdClient) -> Self {
+    pub fn new(
+        ticket_repo: TicketRepo,
+        builderd_client: BuilderdClient,
+        scan_interval: Duration,
+    ) -> Self {
         Self {
             ticket_repo,
             builderd_client,
+            scan_interval,
         }
     }
 
@@ -46,7 +49,7 @@ impl GithubPollerManager {
             self.poll_once().await;
 
             tokio::select! {
-                _ = tokio::time::sleep(SCAN_INTERVAL) => {}
+                _ = tokio::time::sleep(self.scan_interval) => {}
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         info!("github poller shutting down");
