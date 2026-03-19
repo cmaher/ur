@@ -170,6 +170,8 @@ fn wait_for_healthy(runtime: &str, container: &str) {
 struct ProjectEntry {
     key: String,
     repo: String,
+    /// Container image alias (e.g. "base", "rust") or full reference.
+    image: String,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -239,9 +241,10 @@ fn write_test_config(
     let mut projects_toml = String::new();
     for proj in projects {
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n",
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n\n[projects.{key}.container]\nimage = \"{image}\"\n",
             key = proj.key,
             repo = proj.repo,
+            image = proj.image,
         ));
     }
 
@@ -435,14 +438,27 @@ fn e2e_all() {
     .expect("failed to write test doc");
 
     // Write config with the pool project
+    // Create a second bare repo for the rust-image project
+    let rust_repos_dir = config_path.join("rust-repos");
+    std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
+    let bare_repo_rust = create_bare_repo(&rust_repos_dir);
+
     write_test_config(
         &config_path,
         server_port,
         &names,
-        &[ProjectEntry {
-            key: project_key.into(),
-            repo: bare_repo.to_string_lossy().into_owned(),
-        }],
+        &[
+            ProjectEntry {
+                key: project_key.into(),
+                repo: bare_repo.to_string_lossy().into_owned(),
+                image: "base".into(),
+            },
+            ProjectEntry {
+                key: "rustproj".into(),
+                repo: bare_repo_rust.to_string_lossy().into_owned(),
+                image: "rust".into(),
+            },
+        ],
     );
 
     let ur = bin("ur");
@@ -484,10 +500,19 @@ fn e2e_all() {
         scenario_pool_launch(&env);
         scenario_design_mode_pool_launch(&env);
         scenario_rag_search(&env);
+        scenario_launch_without_project(&env);
+        scenario_project_image_rust(&env);
+        scenario_project_add_image_flag(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
-    for ticket in ["ping-test", "pool-test", "design-test-1", "design-test-2"] {
+    for ticket in [
+        "ping-test",
+        "pool-test",
+        "design-test-1",
+        "design-test-2",
+        "rust-image-test",
+    ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
     stop_server(&env.ur, &env.config_path);
@@ -931,5 +956,215 @@ fn scenario_rag_search(env: &TestEnv) {
     assert!(
         search_stdout.contains("Source:"),
         "ur rag search output should contain Source field.\nGot: {search_stdout}"
+    );
+}
+
+/// Launching without `-p` (no project) should fail with a clear error message.
+fn scenario_launch_without_project(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // Launch without -p or -w should fail
+    let launch_output = run_cmd(
+        &env.ur,
+        &["worker", "launch", "no-project-test"],
+        &env_slice,
+    );
+    assert!(
+        !launch_output.status.success(),
+        "launch without -p should fail.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+
+    let stderr = String::from_utf8_lossy(&launch_output.stderr);
+    assert!(
+        stderr.contains("-p") || stderr.contains("project"),
+        "error message should mention -p or project.\nstderr: {stderr}"
+    );
+}
+
+/// Launch with `image = "rust"` project config and verify the container uses `ur-worker-rust:latest`.
+fn scenario_project_image_rust(env: &TestEnv) {
+    let ticket_id = "rust-image-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch worker with rust-image project ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "rustproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p rustproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify the container is running the rust image ----
+        // Inspect the container image to confirm it is ur-worker-rust:latest
+        let inspect_output = Command::new(&env.runtime)
+            .args(["inspect", "--format", "{{.Config.Image}}", &container_name])
+            .output()
+            .expect("failed to inspect container image");
+        let image = String::from_utf8_lossy(&inspect_output.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            image.contains("ur-worker-rust"),
+            "container should use ur-worker-rust image, got: {image}"
+        );
+
+        // ---- Verify rustc is available (rust image has Rust toolchain) ----
+        let rustc_output =
+            exec_in_container(&env.runtime, &container_name, &["rustc", "--version"]);
+        assert_exec_success(&rustc_output, "rustc should be available in rust image");
+        let rustc_stdout = String::from_utf8_lossy(&rustc_output.stdout);
+        assert!(
+            rustc_stdout.contains("rustc"),
+            "rustc --version should output version info, got: {rustc_stdout}"
+        );
+
+        // ---- Verify workspace has cloned content ----
+        let ls_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/workspace/README.md"],
+        );
+        assert_exec_success(
+            &ls_output,
+            "rust pool slot should contain README.md from cloned repo",
+        );
+
+        // ---- exec ur-ping inside container ----
+        assert_ping_pong(&env.runtime, &container_name);
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Verify `ur project add` CLI writes correct TOML with `[container]` section,
+/// and that omitting `--image` produces an error.
+fn scenario_project_add_image_flag(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // ---- Create a temporary git repo to add as a project ----
+    let repo_dir = env.config_path.join("add-test-repo");
+    std::fs::create_dir_all(&repo_dir).expect("failed to create add-test-repo dir");
+    let git_init = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(&repo_dir)
+        .output()
+        .expect("failed to git init");
+    assert!(git_init.status.success(), "git init failed");
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&repo_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&repo_dir)
+        .output();
+    std::fs::write(repo_dir.join("README.md"), "# Add test\n").expect("write readme");
+    let _ = Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["remote", "add", "origin", "git@github.com:test/addtest.git"])
+        .current_dir(&repo_dir)
+        .output();
+
+    // ---- `ur project add` without --image should fail ----
+    let no_image_output = run_cmd(
+        &env.ur,
+        &["project", "add", repo_dir.to_str().unwrap()],
+        &env_slice,
+    );
+    assert!(
+        !no_image_output.status.success(),
+        "project add without --image should fail.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&no_image_output.stdout),
+        String::from_utf8_lossy(&no_image_output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&no_image_output.stderr);
+    assert!(
+        stderr.contains("--image"),
+        "error should mention --image.\nstderr: {stderr}"
+    );
+
+    // ---- `ur project add --image rust` should succeed and write correct TOML ----
+    let add_output = run_cmd(
+        &env.ur,
+        &[
+            "project",
+            "add",
+            repo_dir.to_str().unwrap(),
+            "--image",
+            "rust",
+            "--key",
+            "addtest",
+        ],
+        &env_slice,
+    );
+    assert!(
+        add_output.status.success(),
+        "project add --image rust failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr),
+    );
+
+    // ---- Verify the TOML was written correctly ----
+    let toml_content =
+        std::fs::read_to_string(env.config_path.join("ur.toml")).expect("failed to read ur.toml");
+    assert!(
+        toml_content.contains("[projects.addtest.container]"),
+        "ur.toml should contain [projects.addtest.container] section.\nGot:\n{toml_content}"
+    );
+    assert!(
+        toml_content.contains("image = \"rust\""),
+        "ur.toml should contain image = \"rust\" in the addtest project.\nGot:\n{toml_content}"
+    );
+
+    // ---- Clean up: remove the added project so it doesn't affect other tests ----
+    let remove_output = run_cmd(
+        &env.ur,
+        &["project", "remove", "addtest", "--force"],
+        &env_slice,
+    );
+    assert!(
+        remove_output.status.success(),
+        "project remove failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_output.stdout),
+        String::from_utf8_lossy(&remove_output.stderr),
     );
 }
