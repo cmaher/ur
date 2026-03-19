@@ -778,12 +778,23 @@ async fn process_launch(
         None => String::new(),
     };
 
-    let image_id = projects
+    let default_image;
+    let image_id = match projects
         .get(project_key)
         .map(|p| p.container.image.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            if project_key.is_empty() {
+    {
+        Some(image) => image,
+        None if !workspace_dir.is_empty() => {
+            // Workspace mount without a project — use the base image
+            default_image = ur_config::IMAGE_ALIASES
+                .first()
+                .expect("IMAGE_ALIASES must not be empty")
+                .1;
+            default_image
+        }
+        None => {
+            return Err(if project_key.is_empty() {
                 anyhow::anyhow!(
                     "no project specified — use -p <project> to select a project with a configured container image"
                 )
@@ -792,8 +803,9 @@ async fn process_launch(
                     "project '{}' has no container image configured (set container.image in ur.toml)",
                     project_key
                 )
-            }
-        })?;
+            });
+        }
+    };
     let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
         println!("Launching worker {container_name}...");

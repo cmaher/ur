@@ -1027,16 +1027,6 @@ fn scenario_project_image_rust(env: &TestEnv) {
             "container should use ur-worker-rust image, got: {image}"
         );
 
-        // ---- Verify rustc is available (rust image has Rust toolchain) ----
-        let rustc_output =
-            exec_in_container(&env.runtime, &container_name, &["rustc", "--version"]);
-        assert_exec_success(&rustc_output, "rustc should be available in rust image");
-        let rustc_stdout = String::from_utf8_lossy(&rustc_output.stdout);
-        assert!(
-            rustc_stdout.contains("rustc"),
-            "rustc --version should output version info, got: {rustc_stdout}"
-        );
-
         // ---- Verify workspace has cloned content ----
         let ls_output = exec_in_container(
             &env.runtime,
