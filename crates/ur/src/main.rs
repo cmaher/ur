@@ -15,6 +15,7 @@ mod proxy;
 mod rag;
 mod ticket;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process;
 
@@ -744,7 +745,7 @@ async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[instrument(skip(client, output), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
+#[instrument(skip(client, output, projects), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
 async fn process_launch(
     client: &mut CoreServiceClient<Channel>,
     ticket_id: &str,
@@ -754,6 +755,7 @@ async fn process_launch(
     mode: &str,
     skills: &[String],
     output: &OutputManager,
+    projects: &HashMap<String, ur_config::ProjectConfig>,
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching worker process");
 
@@ -773,7 +775,10 @@ async fn process_launch(
         None => String::new(),
     };
 
-    let image_id = "ur-worker-rust:latest";
+    let image_id = projects
+        .get(project_key)
+        .map(|p| p.container.image.as_str())
+        .unwrap_or("ur-worker-rust:latest");
     let container_name = format!("{worker_prefix}{ticket_id}");
     if !output.is_json() {
         println!("Launching worker {container_name}...");
@@ -834,12 +839,12 @@ async fn process_stop(
     Ok(())
 }
 
-#[instrument(skip(command, project_keys, output), fields(command_name = command_name(&command)))]
+#[instrument(skip(command, projects, output), fields(command_name = command_name(&command)))]
 async fn handle_worker(
     command: WorkerCommands,
     port: u16,
     worker_prefix: &str,
-    project_keys: &[String],
+    projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
 ) -> Result<()> {
     match command {
@@ -872,7 +877,7 @@ async fn handle_worker(
             handle_worker_launch(
                 port,
                 worker_prefix,
-                project_keys,
+                projects,
                 output,
                 ticket_id,
                 workspace,
@@ -1005,7 +1010,7 @@ async fn handle_worker_code(port: u16, worker_id: &str) -> Result<()> {
 async fn handle_worker_launch(
     port: u16,
     worker_prefix: &str,
-    project_keys: &[String],
+    projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
     ticket_id: String,
     workspace: Option<PathBuf>,
@@ -1031,7 +1036,8 @@ async fn handle_worker_launch(
         .filter(|s| !s.is_empty())
         .collect();
 
-    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, project_keys)?;
+    let project_keys: Vec<String> = projects.keys().cloned().collect();
+    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, &project_keys)?;
 
     let mut client = connect(port).await?;
     if force {
@@ -1050,6 +1056,7 @@ async fn handle_worker_launch(
         &mode,
         &skills_vec,
         output,
+        projects,
     )
     .await?;
     if attach || rm {
@@ -1326,12 +1333,11 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
         Commands::Worker { command } => {
-            let project_keys: Vec<String> = config.projects.keys().cloned().collect();
             handle_worker(
                 command,
                 port,
                 &config.network.worker_prefix,
-                &project_keys,
+                &config.projects,
                 output,
             )
             .await?

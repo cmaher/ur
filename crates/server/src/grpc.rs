@@ -253,11 +253,25 @@ impl CoreService for CoreServiceHandler {
             req.skills
         };
 
-        let (git_hooks_dir, mounts) = match self.projects.get(&project_key) {
-            Some(proj) if !project_key.is_empty() => {
-                (proj.git_hooks_dir.clone(), proj.container.mounts.clone())
+        let (git_hooks_dir, mounts, resolved_image) = match self.projects.get(&project_key) {
+            Some(proj) if !project_key.is_empty() => (
+                proj.git_hooks_dir.clone(),
+                proj.container.mounts.clone(),
+                proj.container.image.clone(),
+            ),
+            _ => (None, Vec::new(), String::new()),
+        };
+
+        // Use the image from the request if provided, otherwise fall back to
+        // the project's configured image.
+        let image_id = if req.image_id.is_empty() {
+            if resolved_image.is_empty() {
+                "ur-worker-rust:latest".to_owned()
+            } else {
+                resolved_image
             }
-            _ => (None, Vec::new()),
+        } else {
+            req.image_id
         };
 
         let process_id = req.worker_id.clone();
@@ -265,7 +279,7 @@ impl CoreService for CoreServiceHandler {
         let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
-            image_id: req.image_id,
+            image_id,
             cpus: req.cpus,
             memory: req.memory,
             workspace_dir,
