@@ -23,6 +23,7 @@ run_step() {
 
 run_step "Cargo.lock check" cargo check --locked --quiet
 run_step "CI (fmt + clippy + build + test)" cargo make ci
+run_step "cargo audit" cargo audit
 
 # --- Mutex: only one pre-push hook runs image builds/acceptance at a time ---
 LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"

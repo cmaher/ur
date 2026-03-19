@@ -280,11 +280,18 @@ async fn run_rag_search(query: &str, language: &str, top_k: u32) -> i32 {
 const WORKERD_PORT: u16 = 9120;
 
 async fn run_notify_idle() {
+    eprintln!("[workertools] notify-idle: sending idle notification to workerd");
     let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("[workertools] notify-idle: failed to connect to workerd: {e}");
+            return;
+        }
     };
     let mut client = WorkerDaemonServiceClient::new(channel);
-    let _ = client.notify_idle(NotifyIdleRequest {}).await;
+    match client.notify_idle(NotifyIdleRequest {}).await {
+        Ok(_) => eprintln!("[workertools] notify-idle: success"),
+        Err(e) => eprintln!("[workertools] notify-idle: RPC failed: {e}"),
+    }
 }

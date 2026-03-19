@@ -70,7 +70,11 @@ impl WorkflowHandler for FixDispatchHandler {
                 "dispatching fix RPC to workerd"
             );
 
-            let workerd_client = crate::WorkerdClient::new(workerd_addr);
+            let workerd_client = crate::WorkerdClient::with_status_tracking(
+                workerd_addr,
+                ctx.worker_repo.clone(),
+                worker_id.clone(),
+            );
             workerd_client
                 .fix(&ticket_id, fix_phase)
                 .await

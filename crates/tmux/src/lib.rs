@@ -97,13 +97,16 @@ impl Session {
             })
     }
 
-    /// Send literal text to the session via `send-keys`.
-    /// The text is escaped for safe delivery (single-quote wrapping).
+    /// Send literal text to the session via `send-keys -l` (literal mode).
+    /// The `-l` flag tells tmux to treat the argument as literal text, not key names.
+    /// A separate `Enter` key is sent afterwards to submit the input.
     pub async fn send_keys(&self, text: &str) -> Result<()> {
-        let escaped = escape_for_send_keys(text);
-        run_tmux(&["send-keys", "-t", &self.name, &escaped, "Enter"])
+        run_tmux(&["send-keys", "-t", &self.name, "-l", text])
             .await
-            .with_context(|| format!("failed to send keys to tmux session '{}'", self.name))
+            .with_context(|| format!("failed to send keys to tmux session '{}'", self.name))?;
+        run_tmux(&["send-keys", "-t", &self.name, "Enter"])
+            .await
+            .with_context(|| format!("failed to send Enter to tmux session '{}'", self.name))
     }
 
     /// Send raw keys without escaping (e.g., "Enter", "C-c").
@@ -126,13 +129,6 @@ impl Session {
             self.name.clone(),
         ]
     }
-}
-
-/// Escape a message for safe use with `tmux send-keys`.
-/// Wraps in single quotes and escapes embedded single quotes.
-fn escape_for_send_keys(message: &str) -> String {
-    let escaped = message.replace('\'', "'\\''");
-    format!("'{escaped}'")
 }
 
 /// Run a tmux command and check for success.
@@ -175,29 +171,6 @@ pub async fn exec_interactive(args: &[impl AsRef<str>]) -> Result<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_escape_simple() {
-        assert_eq!(escape_for_send_keys("hello world"), "'hello world'");
-    }
-
-    #[test]
-    fn test_escape_single_quotes() {
-        assert_eq!(escape_for_send_keys("it's here"), "'it'\\''s here'");
-    }
-
-    #[test]
-    fn test_escape_empty() {
-        assert_eq!(escape_for_send_keys(""), "''");
-    }
-
-    #[test]
-    fn test_escape_special_chars() {
-        assert_eq!(
-            escape_for_send_keys("echo $HOME && rm -rf /"),
-            "'echo $HOME && rm -rf /'"
-        );
-    }
 
     #[test]
     fn test_attach_command() {

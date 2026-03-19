@@ -1,6 +1,6 @@
 ---
 name: create-feedback
-description: Create follow-up tickets from PR review comments — invoked by workerd CreateFeedbackTickets RPC
+description: Use when creating follow-up tickets from PR review comments
 ---
 
 Parse `$ARGUMENTS` for two required positional arguments: `<ticket_id>` and `<pr_number>`.
@@ -70,20 +70,10 @@ ur ticket update <ticket_id> --lifecycle feedback_resolving --output json
 
 This signals that the original ticket now has feedback being addressed.
 
-## 6. Signal completion
+## 6. Done
 
-When you have finished creating feedback tickets (or determined there are none):
+Just stop when done — next steps happen automatically.
 
-```
-workertools agent done
-```
-
-If you cannot complete the task and need human intervention:
-
-```
-workertools agent request-human "description of why human help is needed"
-```
-
-You MUST run one of these two commands before stopping. Do not stop without signaling.
+If you cannot complete the task, run `workertools agent request-human "<reason>"` and stop.
 
 $ARGUMENTS
