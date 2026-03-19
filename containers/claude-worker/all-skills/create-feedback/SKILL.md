@@ -3,20 +3,21 @@ name: create-feedback
 description: Use when creating follow-up tickets from PR review comments
 ---
 
-Parse `$ARGUMENTS` for two required positional arguments: `<ticket_id>` and `<pr_number>`.
+Parse `$ARGUMENTS` for two required positional arguments: `<epic_id>` and `<pr_number>`.
 
-## 1. Fetch the original ticket
+## 1. Fetch the ticket
 
-Run `ur ticket show <ticket_id> --output json` to get the original ticket's details. Record its `parent_id` and `project`.
+Run `ur ticket show <epic_id> --output json` to get the ticket's details. Record its `project` and `title`.
+
+If the ticket's type is `epic`, also run `ur ticket list --epic <epic_id> --output json` to see existing child tickets — avoid creating duplicates of feedback already tracked.
 
 ## 2. Fetch PR review comments
 
-Run `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate` to fetch all review comments on the PR.
+Run `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate` to fetch all inline review comments on the PR.
 
 - Parse the JSON array of review comment objects.
-- Extract the `body`, `path`, `line`, and `user.login` fields from each comment.
+- Extract the `body`, `path`, `line`, `html_url`, and `user.login` fields from each comment.
 - Skip bot comments (users ending in `[bot]`).
-- If there are no actionable review comments, skip to step 5.
 
 Also fetch top-level PR comments (conversation comments, not inline reviews):
 
@@ -27,50 +28,53 @@ gh api repos/{owner}/{repo}/issues/<pr_number>/comments --paginate
 
 Use `gh api repos/{owner}/{repo}/pulls/<pr_number> --jq '.head.repo.full_name'` (or parse from `gh pr view <pr_number> --json url`) to determine `{owner}/{repo}`.
 
-## 3. Create follow-up epic
+If there are no actionable review comments after filtering, skip to step 4.
 
-Create a follow-up epic as a **sibling** of the original ticket (same parent):
+## 3. Create child tickets from review comments
 
-```
-ur ticket create "Follow-up: <original_title>" \
-  --type epic \
-  --parent <original_parent_id> \
-  --priority 1 \
-  --body "Follow-up items from PR #<pr_number> review of <ticket_id>" \
-  --follow-up <ticket_id> \
-  --output json
-```
-
-This creates the epic and automatically adds a `follow_up` edge to the original ticket. Record the new epic's ID as `<followup_epic_id>`.
-
-## 4. Create child tickets from review comments
-
-For each actionable review comment (or group of related comments on the same topic), create a child ticket under the follow-up epic:
+For each actionable review comment (or group of related comments on the same topic), create a child ticket under the existing epic:
 
 ```
 ur ticket create "<short summary of the feedback>" \
-  --parent <followup_epic_id> \
+  --parent <epic_id> \
   --priority 2 \
-  --body "<full comment body>\n\nSource: <path>:<line> by @<user>" \
+  --body "PR Feedback from PR #<pr_number>
+
+Reviewer: @<user>
+PR: #<pr_number>
+File: <path>:<line>
+Comment: <html_url>
+
+---
+
+<full comment body>" \
   --output json
 ```
 
 Guidelines for grouping:
 - Multiple comments about the same concern should be merged into a single ticket.
 - Each ticket title should be a concise, actionable description (e.g., "Add error handling for edge case X", "Rename function Y for clarity").
-- Include the file path and line number in the ticket body for context.
+- When merging multiple comments into one ticket, include all PR context entries (each with their own file, line, URL, and comment body).
 
-## 5. Update lifecycle status
-
-Transition the original ticket's lifecycle status to `feedback_resolving`:
+For top-level PR comments (from the issues endpoint), omit the `File:` and line fields since they are not file-specific:
 
 ```
-ur ticket update <ticket_id> --lifecycle feedback_resolving --output json
+ur ticket create "<short summary of the feedback>" \
+  --parent <epic_id> \
+  --priority 2 \
+  --body "PR Feedback from PR #<pr_number>
+
+Reviewer: @<user>
+PR: #<pr_number>
+Comment: <html_url>
+
+---
+
+<full comment body>" \
+  --output json
 ```
 
-This signals that the original ticket now has feedback being addressed.
-
-## 6. Done
+## 4. Done
 
 Just stop when done — next steps happen automatically.
 

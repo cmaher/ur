@@ -91,6 +91,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     // 4. Handle based on push status.
     match &push_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
+            reset_fix_attempts(ctx, ticket_id).await?;
             handle_push_success(
                 ctx,
                 ticket_id,
@@ -220,6 +221,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
 
     match &force_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
+            reset_fix_attempts(ctx, ticket_id).await?;
             let result_label = push_status_label(&force_result.status);
             add_push_activity(
                 ctx,
@@ -258,7 +260,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
     }
 }
 
-/// Handle a pre-push hook failure: record activity and transition to Fixing.
+/// Handle a pre-push hook failure: record activity and transition to Implementing.
 async fn handle_hook_failed(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -268,17 +270,11 @@ async fn handle_hook_failed(
     warn!(
         ticket_id = %ticket_id,
         branch = %branch,
-        "pre-push hook failed — transitioning to fixing"
+        "pre-push hook failed — transitioning to implementing"
     );
     add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
-    ctx.ticket_repo
-        .set_meta(ticket_id, "ticket", "fix_phase", "push")
-        .await?;
-    ctx.ticket_repo
-        .set_meta(ticket_id, "ticket", "fix_reason", summary)
-        .await?;
     let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Fixing),
+        lifecycle_status: Some(LifecycleStatus::Implementing),
         status: None,
         lifecycle_managed: None,
         type_: None,
@@ -564,6 +560,14 @@ async fn add_push_activity(
     );
     ctx.ticket_repo
         .add_activity(ticket_id, "workflow", &message)
+        .await?;
+    Ok(())
+}
+
+/// Reset `fix_attempt_count` metadata to 0 on successful push.
+async fn reset_fix_attempts(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
+    ctx.ticket_repo
+        .set_meta(ticket_id, "ticket", "fix_attempt_count", "0")
         .await?;
     Ok(())
 }

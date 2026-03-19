@@ -6,6 +6,11 @@ use ur_rpc::agent_status;
 pub enum StepAction {
     /// Advance the ticket's lifecycle to the given status.
     Advance { to: LifecycleStatus },
+    /// Advance based on `feedback_mode` metadata on the ticket.
+    /// The grpc layer looks up `feedback_mode` and routes accordingly:
+    /// - `now` → Implementing
+    /// - `later` → Merging
+    AdvanceByFeedbackMode,
     /// Re-dispatch the current phase's RPC to the worker.
     /// When `reminder` is true, the worker is still working and this is
     /// a nudge rather than a cold re-dispatch.
@@ -64,11 +69,8 @@ impl LifecycleStepRouter {
                 LifecycleStatus::Implementing => StepAction::Advance {
                     to: LifecycleStatus::Verifying,
                 },
-                LifecycleStatus::Fixing => StepAction::Advance {
-                    to: LifecycleStatus::Verifying,
-                },
                 LifecycleStatus::Pushing => StepAction::Redispatch { reminder: false },
-                LifecycleStatus::FeedbackCreating => StepAction::Redispatch { reminder: false },
+                LifecycleStatus::FeedbackCreating => StepAction::AdvanceByFeedbackMode,
                 // All other lifecycle statuses with idle — no action.
                 _ => StepAction::Ignore,
             },
@@ -192,14 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn fixing_stalled() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::STALLED, true),
-            StepAction::Ignore,
-        );
-    }
-
-    #[test]
     fn pushing_stalled() {
         assert_eq!(
             router().route(LifecycleStatus::Pushing, agent_status::STALLED, true),
@@ -236,13 +230,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_stalled() {
+    fn merging_stalled() {
         assert_eq!(
-            router().route(
-                LifecycleStatus::FeedbackResolving,
-                agent_status::STALLED,
-                true
-            ),
+            router().route(LifecycleStatus::Merging, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -271,14 +261,6 @@ mod tests {
     fn implementing_working() {
         assert_eq!(
             router().route(LifecycleStatus::Implementing, agent_status::WORKING, true),
-            StepAction::Redispatch { reminder: true },
-        );
-    }
-
-    #[test]
-    fn fixing_working() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -320,13 +302,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_working() {
+    fn merging_working() {
         assert_eq!(
-            router().route(
-                LifecycleStatus::FeedbackResolving,
-                agent_status::WORKING,
-                true
-            ),
+            router().route(LifecycleStatus::Merging, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -362,16 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn fixing_idle_advances_to_verifying() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::IDLE, true),
-            StepAction::Advance {
-                to: LifecycleStatus::Verifying
-            },
-        );
-    }
-
-    #[test]
     fn pushing_idle_redispatches() {
         assert_eq!(
             router().route(LifecycleStatus::Pushing, agent_status::IDLE, true),
@@ -380,10 +348,10 @@ mod tests {
     }
 
     #[test]
-    fn feedback_creating_idle_redispatches() {
+    fn feedback_creating_idle_advances_by_feedback_mode() {
         assert_eq!(
             router().route(LifecycleStatus::FeedbackCreating, agent_status::IDLE, true),
-            StepAction::Redispatch { reminder: false },
+            StepAction::AdvanceByFeedbackMode,
         );
     }
 
@@ -404,9 +372,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_idle_ignores() {
+    fn merging_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackResolving, agent_status::IDLE, true),
+            router().route(LifecycleStatus::Merging, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }

@@ -429,7 +429,7 @@ struct RawBackupConfig {
 }
 
 /// Default maximum number of fix loop iterations before stalling an agent.
-pub const DEFAULT_MAX_FIX_ATTEMPTS: u32 = 5;
+pub const DEFAULT_MAX_FIX_ATTEMPTS: u32 = 10;
 
 /// Default protected branch patterns (branches that cannot be force-pushed).
 pub fn default_protected_branches() -> Vec<String> {

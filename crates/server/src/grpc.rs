@@ -656,19 +656,7 @@ async fn handle_agent_status_routed(
             ticket_id = %ticket_id,
             "worker idle with awaiting_dispatch ticket — transitioning to implementing"
         );
-        let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Implementing),
-            lifecycle_managed: None,
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        ticket_repo.update_ticket(ticket_id, &update).await?;
+        advance_lifecycle(ticket_repo, ticket_id, LifecycleStatus::Implementing).await?;
         return Ok(());
     }
 
@@ -694,20 +682,24 @@ async fn handle_agent_status_routed(
                 to = %to,
                 "step router: advancing lifecycle"
             );
-            let update = ur_db::model::TicketUpdate {
-                lifecycle_status: Some(to),
-                lifecycle_managed: None,
-                status: None,
-                type_: None,
-                priority: None,
-                title: None,
-                body: None,
-                branch: None,
-                parent_id: None,
-                project: None,
+            advance_lifecycle(ticket_repo, ticket_id, to).await
+        }
+        StepAction::AdvanceByFeedbackMode => {
+            let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
+            let feedback_mode = meta.get("feedback_mode").map(|s| s.as_str()).unwrap_or("");
+            let to = match feedback_mode {
+                ur_rpc::feedback_mode::NOW => LifecycleStatus::Implementing,
+                _ => LifecycleStatus::Merging,
             };
-            ticket_repo.update_ticket(ticket_id, &update).await?;
-            Ok(())
+            info!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                feedback_mode = %feedback_mode,
+                from = %ticket.lifecycle_status,
+                to = %to,
+                "step router: advancing by feedback_mode"
+            );
+            advance_lifecycle(ticket_repo, ticket_id, to).await
         }
         StepAction::Redispatch { reminder } => {
             handle_redispatch(
@@ -722,6 +714,28 @@ async fn handle_agent_status_routed(
             .await
         }
     }
+}
+
+/// Update a ticket's lifecycle_status to the given value.
+async fn advance_lifecycle(
+    ticket_repo: &TicketRepo,
+    ticket_id: &str,
+    to: LifecycleStatus,
+) -> Result<(), anyhow::Error> {
+    let update = ur_db::model::TicketUpdate {
+        lifecycle_status: Some(to),
+        lifecycle_managed: None,
+        status: None,
+        type_: None,
+        priority: None,
+        title: None,
+        body: None,
+        branch: None,
+        parent_id: None,
+        project: None,
+    };
+    ticket_repo.update_ticket(ticket_id, &update).await?;
+    Ok(())
 }
 
 /// Execute a redispatch: re-send the phase-appropriate workerd RPC.
@@ -740,7 +754,6 @@ async fn handle_redispatch(
     // Determine the RPC kind from the lifecycle status.
     let rpc_kind = match lifecycle_status {
         LifecycleStatus::Implementing => "implement",
-        LifecycleStatus::Pushing => "push",
         LifecycleStatus::FeedbackCreating => "create_feedback_tickets",
         _ => {
             info!(
@@ -817,12 +830,6 @@ async fn handle_redispatch(
                 .implement(ticket_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("re-dispatch implement failed: {e}"))?;
-        }
-        "push" => {
-            workerd_client
-                .push()
-                .await
-                .map_err(|e| anyhow::anyhow!("re-dispatch push failed: {e}"))?;
         }
         "create_feedback_tickets" => {
             let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;

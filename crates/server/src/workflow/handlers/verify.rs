@@ -8,7 +8,7 @@ use ur_db::model::LifecycleStatus;
 
 use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Handler for the Implementing/Fixing -> Verifying transition.
+/// Handler for the Implementing -> Verifying transition.
 ///
 /// Runs the project's `pre-push` workflow hook (if configured) to verify
 /// that the worker's changes pass local checks before pushing.
@@ -23,7 +23,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 /// - Hook not configured or not found: skip verification, transition to Pushing.
 /// - Hook passes (exit 0): transition to Pushing.
 /// - Hook fails: increment `fix_attempt_count` meta. If under
-///   `max_fix_attempts`, transition to Fixing. If over, set `agent_status`
+///   `max_fix_attempts`, transition to Implementing. If over, set `agent_status`
 ///   to `stalled`.
 pub struct VerifyHandler;
 
@@ -188,7 +188,7 @@ async fn resolve_hook_context(
 }
 
 /// Handle a failed hook: increment fix attempts, then either transition to
-/// Fixing or stall the agent.
+/// Implementing or stall the agent.
 async fn handle_hook_failure(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -210,9 +210,9 @@ async fn handle_hook_failure(
             ticket_id = %ticket_id,
             fix_attempt_count = fix_attempt_count,
             max_fix_attempts = max_fix_attempts,
-            "under fix limit — transitioning to fixing"
+            "under fix limit — transitioning to implementing"
         );
-        advance_to_fixing(ctx, ticket_id).await?;
+        advance_to_implementing(ctx, ticket_id).await?;
     }
     Ok(())
 }
@@ -235,10 +235,10 @@ async fn advance_to_pushing(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
     Ok(())
 }
 
-/// Transition the ticket's lifecycle status to Fixing.
-async fn advance_to_fixing(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
+/// Transition the ticket's lifecycle status to Implementing.
+async fn advance_to_implementing(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
     let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Fixing),
+        lifecycle_status: Some(LifecycleStatus::Implementing),
         status: None,
         lifecycle_managed: None,
         type_: None,

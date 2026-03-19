@@ -87,14 +87,12 @@ impl WorkerStrategy {
 /// Skills shared by all worker strategies.
 fn common_skills() -> Vec<String> {
     vec![
-        "push".into(),
         "green".into(),
         "cli-design".into(),
         "reclaude".into(),
         "writing-skills".into(),
         "rag-docs".into(),
         "create-feedback".into(),
-        "fix".into(),
     ]
 }
 
@@ -125,14 +123,12 @@ mod tests {
     fn both_strategies_include_common_skills() {
         for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
             let skills = strategy.skills();
-            assert!(skills.contains(&"push".to_string()));
             assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));
             assert!(skills.contains(&"reclaude".to_string()));
             assert!(skills.contains(&"writing-skills".to_string()));
             assert!(skills.contains(&"rag-docs".to_string()));
             assert!(skills.contains(&"create-feedback".to_string()));
-            assert!(skills.contains(&"fix".to_string()));
         }
     }
 

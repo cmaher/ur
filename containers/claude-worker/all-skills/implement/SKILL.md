@@ -9,21 +9,41 @@ Implement one or more tickets. For a **single ticket**, work on it directly. For
 
 **If the ticket description and codebase do not provide enough context to implement confidently, run `workertools agent request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
 
+## Error Recovery — Check Before Starting
+
+Before doing any implementation work, check for unaddressed workflow error activities on the ticket. These appear when a previous attempt failed verification, CI, or merge.
+
+1. `ur ticket --output json show <id>` — read the ticket and its activities
+2. Look for activities where `source=workflow` — these are system-generated entries from the lifecycle engine
+3. Read the **most recent** workflow activities first (they contain the latest failure output)
+4. If workflow error activities exist and are not yet addressed:
+   - The error output describes what failed (build errors, test failures, merge conflicts, etc.)
+   - Fix the errors **before** moving on to any other work or dispatching child tickets
+   - The server sends `/clear` before every dispatch, so you start with a clean conversation — the ticket activities are your only source of prior context
+5. If no workflow error activities exist, proceed normally
+
+This applies to both single-ticket and epic flows. For epics, fix any errors on the epic ticket itself before dispatching children.
+
 ## Single Ticket
 
 When given a single non-epic ticket:
 
-1. `ur ticket --output json show <id>` — read the ticket
+1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
 2. `ur ticket --output json update <id> --status in_progress` — claim it
 @/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
 3. Implement the work directly in this context
-@/home/worker/.claude/skill-hooks/implement/before-commit.md
-@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
-4. Commit, close: `ur ticket --output json update <id> --status closed`
-5. Set a summary of the work done as ticket metadata:
+4. Before committing, run any verifications listed in the **Verification Hooks** section below
+5. Commit, close: `ur ticket --output json update <id> --status closed`
+6. Set a summary of the work done as ticket metadata:
    ```
    ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
    ```
+
+### Verification Hooks
+
+Do NOT run any verification commands unless specified in this section.
+
+@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
 
 If you cannot complete the work, run `workertools agent request-human "<reason>"` and stop.
 
@@ -39,8 +59,9 @@ No subagents needed. Just do the work.
 
 Dispatch all dispatchable tickets as subagents in parallel. Each subagent commits independently on the working branch.
 
-1. `ur ticket --output json dispatchable <epic-id>` — get all unblocked tickets
-2. Dispatch all subagents in parallel (each subagent claims its own ticket via the prompt template)
+1. Check for workflow error activities on the epic (see Error Recovery above) — fix before dispatching
+2. `ur ticket --output json dispatchable <epic-id>` — get all unblocked tickets
+3. Dispatch all subagents in parallel (each subagent claims its own ticket via the prompt template)
 4. Each subagent closes its ticket when done
 5. After all complete, re-query dispatchable — newly unblocked tickets may have surfaced
 6. Repeat until no dispatchable tickets remain
@@ -56,10 +77,9 @@ Use when explicitly requested or when tickets have heavy file overlap (check the
 - Re-query `ur ticket --output json dispatchable <epic-id>` each iteration — newly unblocked tickets surface naturally
 - Pass only 1-2 sentence summaries between tasks
 
-### Testing Strategy
+### Verification
 
-- **Subagents**: Run only the minimum tests needed to validate their change (check CLAUDE.md for project-specific commands)
-- **Parent (after all issues done)**: Run full CI and fix any integration issues
+Do NOT run any verification commands unless specified in a **Verification Hooks** section.
 
 @/home/worker/.claude/skill-hooks/implement/before-dispatch.md
 
@@ -91,12 +111,11 @@ VCS:
 - Use `git add <files> && git commit -m "message"` when done — do NOT switch branches
 - The parent agent manages branching and pushing
 
-Testing:
-- Run only the minimum tests needed to validate YOUR change — not the full CI suite
-- The parent agent will run full CI after all issues are done
+--- VERIFICATION HOOKS ---
+Do NOT run any verification commands unless specified in this section.
 
-@/home/worker/.claude/skill-hooks/implement/before-commit.md
-@/home/worker/.claude/skill-hooks/implement/before-ticket-close.md
+@/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
+--- END VERIFICATION HOOKS ---
 
 When done:
 1. Close the ticket: `ur ticket --output json update <id> --status closed`
@@ -106,7 +125,9 @@ When done:
 
 ### After All Subagents Complete (Epic Only)
 
-After all dispatchable tickets are done and CI passes:
+@/home/worker/.claude/skill-hooks/implement/final-verifications.md
+
+After all dispatchable tickets are done and verification passes:
 
 1. Set `pr_summary` metadata on the epic with a summary of all work done:
    ```
@@ -127,6 +148,8 @@ Do NOT push, create PRs, or advance lifecycle status — that happens automatica
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
 | Using sequential when tickets are independent | Default to parallel — only use sequential when tickets have heavy file overlap |
-| Calling /push or advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
+| Advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
+| Running cargo build/test/clippy inline | **Never.** Only run verification commands specified by hook files |
+| Ignoring workflow error activities | **Always** check for `source=workflow` activities before starting work |
 
 $ARGUMENTS

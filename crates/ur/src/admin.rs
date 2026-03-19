@@ -13,7 +13,6 @@ fn next_lifecycle_status(current: &str) -> Option<&'static str> {
     match current {
         "awaiting_dispatch" => Some("implementing"),
         "implementing" => Some("verifying"),
-        "fixing" => Some("verifying"),
         "verifying" => Some("pushing"),
         "pushing" => Some("in_review"),
         _ => None,
