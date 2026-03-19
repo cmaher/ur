@@ -338,14 +338,29 @@ impl CoreService for CoreServiceHandler {
         let summaries = self.worker_manager.list().await;
         let mut workers = Vec::with_capacity(summaries.len());
         for s in summaries {
-            let lifecycle_status = self
+            let ticket = self
                 .ticket_repo
                 .get_ticket(&s.process_id)
                 .await
                 .ok()
-                .flatten()
+                .flatten();
+            let lifecycle_status = ticket
+                .as_ref()
                 .map(|t| t.lifecycle_status.to_string())
                 .unwrap_or_default();
+            let (stall_reason, pr_url) = if ticket.is_some() {
+                let mut meta = self
+                    .ticket_repo
+                    .get_meta(&s.process_id, "ticket")
+                    .await
+                    .unwrap_or_default();
+                (
+                    meta.remove("stall_reason").unwrap_or_default(),
+                    meta.remove("pr_url").unwrap_or_default(),
+                )
+            } else {
+                (String::new(), String::new())
+            };
             workers.push(WorkerSummary {
                 worker_id: s.process_id,
                 worker_id_full: s.worker_id,
@@ -357,6 +372,8 @@ impl CoreService for CoreServiceHandler {
                 container_status: s.container_status,
                 agent_status: s.agent_status,
                 lifecycle_status,
+                stall_reason,
+                pr_url,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))

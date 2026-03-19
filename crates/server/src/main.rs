@@ -189,6 +189,7 @@ async fn init_and_serve(
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
+        workflow_dispatcher: None, // set in serve_grpc_servers after builderd connects
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -231,7 +232,7 @@ async fn serve_grpc_servers(
     projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     grpc_handler: ur_server::grpc::CoreServiceHandler,
     rag_handler: ur_server::rag::RagServiceHandler,
-    ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
+    mut ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
@@ -258,13 +259,26 @@ async fn serve_grpc_servers(
     let poller_ticket_repo = ticket_repo.clone();
     let poller_builderd_client = workflow_builderd_client.clone();
 
+    let handlers = build_handlers();
+
+    // Build a workflow dispatcher for the redrive endpoint (shares handlers with engine).
+    let dispatcher_ctx = ur_server::workflow::WorkflowContext {
+        ticket_repo: ticket_repo.clone(),
+        worker_repo: worker_repo.clone(),
+        worker_prefix: network_prefix.clone(),
+        builderd_client: workflow_builderd_client.clone(),
+        config: config.clone(),
+    };
+    let dispatcher = ur_server::workflow::WorkflowDispatcher::new(dispatcher_ctx, &handlers);
+    ticket_handler.workflow_dispatcher = Some(dispatcher);
+
     let engine = WorkflowEngine::new(
         engine_ticket_repo,
         engine_worker_repo,
         network_prefix.clone(),
         workflow_builderd_client,
         config,
-        build_handlers(),
+        handlers,
     );
     let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
 

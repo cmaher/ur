@@ -14,8 +14,9 @@ use ur_rpc::proto::ticket::{
     AddLinkResponse, CreateTicketRequest, CreateTicketResponse, DeleteMetaRequest,
     DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
     GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
-    ListTicketsResponse, RemoveBlockRequest, RemoveBlockResponse, RemoveLinkRequest,
-    RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
+    ListTicketsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
+    RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
+    UpdateTicketRequest, UpdateTicketResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +86,9 @@ impl From<TicketError> for Status {
 pub struct TicketServiceHandler {
     pub ticket_repo: TicketRepo,
     pub valid_projects: HashSet<String>,
+    /// Optional workflow dispatcher for redrive support.
+    /// None on the worker server (no workflow engine).
+    pub workflow_dispatcher: Option<crate::workflow::WorkflowDispatcher>,
 }
 
 #[tonic::async_trait]
@@ -598,6 +602,82 @@ impl TicketService for TicketServiceHandler {
 
         Ok(Response::new(DispatchableTicketsResponse {
             tickets: proto_tickets,
+        }))
+    }
+
+    async fn redrive_ticket(
+        &self,
+        req: Request<RedriveTicketRequest>,
+    ) -> Result<Response<RedriveTicketResponse>, Status> {
+        let req = req.into_inner();
+        info!(id = %req.id, to_status = %req.to_status, "redrive_ticket request");
+
+        let dispatcher = self.workflow_dispatcher.as_ref().ok_or_else(|| {
+            Status::unavailable("redrive not available on this server (no workflow engine)")
+        })?;
+
+        let to_status: LifecycleStatus = req
+            .to_status
+            .parse()
+            .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.to_status)))?;
+
+        // 1. Clear stall_reason metadata.
+        let _ = self
+            .ticket_repo
+            .delete_meta(&req.id, "ticket", "stall_reason")
+            .await;
+
+        // 2. Set lifecycle to the target status.
+        let update = TicketUpdate {
+            lifecycle_status: Some(to_status),
+            status: None,
+            lifecycle_managed: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        self.ticket_repo
+            .update_ticket(&req.id, &update)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        // 3. Delete any stale workflow events for this ticket (from the trigger).
+        self.ticket_repo
+            .delete_workflow_events_for_ticket(&req.id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        // 4. Spawn the handler in the background and return immediately.
+        let dispatcher = dispatcher.clone();
+        let ticket_id = req.id.clone();
+        let target = to_status;
+        tokio::spawn(async move {
+            match dispatcher.trigger(&ticket_id, target).await {
+                Ok(result) => {
+                    info!(
+                        id = %ticket_id,
+                        target = %target,
+                        result = %result,
+                        "redrive handler completed"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        id = %ticket_id,
+                        target = %target,
+                        error = %e,
+                        "redrive handler failed"
+                    );
+                }
+            }
+        });
+
+        Ok(Response::new(RedriveTicketResponse {
+            lifecycle_status: to_status.to_string(),
         }))
     }
 }

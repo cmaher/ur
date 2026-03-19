@@ -658,35 +658,52 @@ async fn process_status(
     }
 
     output.print_items(&filtered, |workers| {
-        let mut out = format!(
-            "{:<20} {:<12} {:<14} {:<20} {:<8} {}\n",
-            "WORKER", "STATUS", "AGENT", "LIFECYCLE", "MODE", "DIRECTORY"
-        );
-        for w in workers {
-            let container_status = if w.container_status.is_empty() {
-                "-"
-            } else {
-                &w.container_status
-            };
-            let agent_status = if w.agent_status.is_empty() {
-                "-"
-            } else {
-                &w.agent_status
-            };
-            let lifecycle_status = if w.lifecycle_status.is_empty() {
-                "-"
-            } else {
-                &w.lifecycle_status
-            };
-            let directory = if w.directory.is_empty() {
-                "-"
-            } else {
-                &w.directory
-            };
-            out.push_str(&format!(
-                "{:<20} {:<12} {:<14} {:<20} {:<8} {}\n",
-                w.worker_id, container_status, agent_status, lifecycle_status, w.mode, directory
-            ));
+        let mut out = String::new();
+        for (i, w) in workers.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            fn dash(s: &str) -> &str {
+                if s.is_empty() { "-" } else { s }
+            }
+            let fields: Vec<(&str, &str)> = vec![
+                ("Worker", &w.worker_id),
+                ("Container", dash(&w.container_status)),
+                ("Agent", dash(&w.agent_status)),
+                ("Lifecycle", dash(&w.lifecycle_status)),
+                ("Mode", &w.mode),
+                ("Directory", dash(&w.directory)),
+            ];
+
+            // Find max label width for alignment
+            let label_width = fields.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+
+            for (label, value) in &fields {
+                out.push_str(&format!(
+                    "{:>width$}: {}\n",
+                    label,
+                    value,
+                    width = label_width
+                ));
+            }
+
+            if !w.pr_url.is_empty() {
+                out.push_str(&format!(
+                    "{:>width$}: {}\n",
+                    "PR",
+                    w.pr_url,
+                    width = label_width
+                ));
+            }
+
+            if !w.stall_reason.is_empty() {
+                out.push_str(&format!(
+                    "{:>width$}: {}\n",
+                    "Stalled",
+                    w.stall_reason,
+                    width = label_width
+                ));
+            }
         }
         if out.ends_with('\n') {
             out.pop();

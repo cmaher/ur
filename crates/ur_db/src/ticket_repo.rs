@@ -660,6 +660,19 @@ impl TicketRepo {
         Ok(())
     }
 
+    /// Delete all workflow events for a given ticket (used by redrive to clear stale trigger events).
+    pub async fn delete_workflow_events_for_ticket(
+        &self,
+        ticket_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow_event WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     /// Increment the attempts counter on a workflow event (after a failed processing attempt).
     pub async fn increment_workflow_event_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE workflow_event SET attempts = attempts + 1 WHERE id = ?")

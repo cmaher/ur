@@ -337,6 +337,13 @@ impl TicketService for MockTicketStore {
             .collect();
         Ok(Response::new(DispatchableTicketsResponse { tickets }))
     }
+
+    async fn redrive_ticket(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::RedriveTicketRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::RedriveTicketResponse>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
 }
 
 // --- Test helpers ---

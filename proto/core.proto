@@ -100,4 +100,6 @@ message WorkerSummary {
   string container_status = 8;
   string agent_status = 9;
   string lifecycle_status = 10;
+  string stall_reason = 11;
+  string pr_url = 12;
 }

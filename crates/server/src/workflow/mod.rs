@@ -7,6 +7,7 @@ pub use engine::WorkflowEngine;
 pub use github_poller::GithubPollerManager;
 pub use step_router::{LifecycleStepRouter, StepAction};
 
+use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -67,3 +68,64 @@ pub trait WorkflowHandler: Send + Sync {
 
 /// A handler registration entry: `(from_status, to_status, handler)`.
 pub type HandlerEntry = (LifecycleStatus, LifecycleStatus, Arc<dyn WorkflowHandler>);
+
+/// The happy-path predecessor for each lifecycle status.
+/// Used by redrive to find the handler that transitions **into** the target.
+fn natural_prev(status: &LifecycleStatus) -> Option<LifecycleStatus> {
+    match status {
+        LifecycleStatus::AwaitingDispatch => Some(LifecycleStatus::Open),
+        LifecycleStatus::Implementing => Some(LifecycleStatus::AwaitingDispatch),
+        LifecycleStatus::Verifying => Some(LifecycleStatus::Implementing),
+        LifecycleStatus::Pushing => Some(LifecycleStatus::Verifying),
+        LifecycleStatus::InReview => Some(LifecycleStatus::Pushing),
+        LifecycleStatus::FeedbackCreating => Some(LifecycleStatus::InReview),
+        LifecycleStatus::FeedbackResolving => Some(LifecycleStatus::FeedbackCreating),
+        _ => None,
+    }
+}
+
+/// Shared dispatcher that can trigger lifecycle handlers directly (without events).
+/// Used by the redrive endpoint to re-execute a transition for a given status.
+#[derive(Clone)]
+pub struct WorkflowDispatcher {
+    ctx: WorkflowContext,
+    handlers: Arc<HashMap<TransitionKey, Arc<dyn WorkflowHandler>>>,
+}
+
+impl WorkflowDispatcher {
+    pub fn new(ctx: WorkflowContext, handler_entries: &[HandlerEntry]) -> Self {
+        let mut handlers = HashMap::new();
+        for (from, to, handler) in handler_entries {
+            let key = TransitionKey {
+                from: *from,
+                to: *to,
+            };
+            handlers.insert(key, handler.clone());
+        }
+        Self {
+            ctx,
+            handlers: Arc::new(handlers),
+        }
+    }
+
+    /// Execute the handler that transitions **into** `target_status`.
+    /// "Redrive to verifying" runs the VerifyHandler, not the PushHandler.
+    pub async fn trigger(
+        &self,
+        ticket_id: &str,
+        target_status: LifecycleStatus,
+    ) -> Result<LifecycleStatus, anyhow::Error> {
+        let from = natural_prev(&target_status)
+            .ok_or_else(|| anyhow::anyhow!("no natural predecessor for '{target_status}'"))?;
+        let key = TransitionKey {
+            from,
+            to: target_status,
+        };
+        let handler = self
+            .handlers
+            .get(&key)
+            .ok_or_else(|| anyhow::anyhow!("no handler registered for transition '{key}'"))?;
+        handler.handle(&self.ctx, ticket_id, &key).await?;
+        Ok(key.to)
+    }
+}
