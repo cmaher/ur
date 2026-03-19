@@ -1141,8 +1141,8 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         "ur.toml should contain [projects.addtest.container] section.\nGot:\n{toml_content}"
     );
     assert!(
-        toml_content.contains("image = \"rust\""),
-        "ur.toml should contain image = \"rust\" in the addtest project.\nGot:\n{toml_content}"
+        toml_content.contains("image = \"ur-worker-rust\""),
+        "ur.toml should contain image = \"ur-worker-rust\" in the addtest project.\nGot:\n{toml_content}"
     );
 
     // ---- Clean up: remove the added project so it doesn't affect other tests ----
