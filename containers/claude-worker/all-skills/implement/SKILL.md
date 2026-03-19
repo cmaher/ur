@@ -89,7 +89,7 @@ digraph implement {
 Use only when explicitly requested or when tickets are clearly independent:
 
 1. Each subagent claims its ticket: `ur ticket --output json update <id> --status in_progress`
-2. Dispatch via `superpowers:dispatching-parallel-agents` pattern
+2. Dispatch subagents in parallel
 3. Each subagent closes its ticket when done
 
 ### Testing Strategy
