@@ -503,6 +503,185 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_open_to_awaiting_dispatch_noop_processes_and_deletes() {
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
+
+        let ticket = NewTicket {
+            id: "ur-ad01".to_string(),
+            project: "ur".to_string(),
+            type_: "task".to_string(),
+            priority: 2,
+            title: "Awaiting dispatch test".to_string(),
+            body: String::new(),
+            lifecycle_status: Some(LifecycleStatus::Open),
+            ..Default::default()
+        };
+        repo.create_ticket(&ticket).await.unwrap();
+
+        // Enable lifecycle management and transition to AwaitingDispatch.
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
+            lifecycle_managed: Some(true),
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        repo.update_ticket("ur-ad01", &update).await.unwrap();
+
+        // Verify event exists.
+        let event = repo.poll_workflow_event().await.unwrap();
+        assert!(event.is_some(), "workflow event should exist");
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            dummy_builderd_client(),
+            dummy_config(),
+            vec![(
+                LifecycleStatus::Open,
+                LifecycleStatus::AwaitingDispatch,
+                Arc::new(CountingHandler {
+                    call_count: call_count.clone(),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
+        );
+
+        engine.poll_once().await;
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "no-op handler should be called once"
+        );
+
+        // Event should be deleted after successful processing.
+        let event = repo.poll_workflow_event().await.unwrap();
+        assert!(
+            event.is_none(),
+            "event should be deleted after no-op handler succeeds"
+        );
+
+        // Ticket should still be in AwaitingDispatch.
+        let t = repo.get_ticket("ur-ad01").await.unwrap().unwrap();
+        assert_eq!(t.lifecycle_status, LifecycleStatus::AwaitingDispatch);
+    }
+
+    #[tokio::test]
+    async fn engine_awaiting_dispatch_to_implementing_fires_handler() {
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
+
+        let ticket = NewTicket {
+            id: "ur-ad02".to_string(),
+            project: "ur".to_string(),
+            type_: "task".to_string(),
+            priority: 2,
+            title: "Dispatch implement test".to_string(),
+            body: String::new(),
+            lifecycle_status: Some(LifecycleStatus::Open),
+            ..Default::default()
+        };
+        repo.create_ticket(&ticket).await.unwrap();
+
+        // First transition: Open → AwaitingDispatch (enable lifecycle management).
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
+            lifecycle_managed: Some(true),
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        repo.update_ticket("ur-ad02", &update).await.unwrap();
+
+        // Drain the Open→AwaitingDispatch event (not relevant to this test).
+        repo.poll_workflow_event().await.unwrap();
+        // Delete it manually since we have no handler for it in this engine.
+        // Use a small engine with the no-op handler.
+        let noop_engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            dummy_builderd_client(),
+            dummy_config(),
+            vec![(
+                LifecycleStatus::Open,
+                LifecycleStatus::AwaitingDispatch,
+                Arc::new(CountingHandler {
+                    call_count: Arc::new(AtomicU32::new(0)),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
+        );
+        noop_engine.poll_once().await;
+
+        // Second transition: AwaitingDispatch → Implementing.
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: None,
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        repo.update_ticket("ur-ad02", &update).await.unwrap();
+
+        // Verify event exists.
+        let event = repo.poll_workflow_event().await.unwrap();
+        assert!(
+            event.is_some(),
+            "AwaitingDispatch→Implementing event should exist"
+        );
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let engine = WorkflowEngine::new(
+            repo.clone(),
+            worker_repo.clone(),
+            "ur-worker-".to_string(),
+            dummy_builderd_client(),
+            dummy_config(),
+            vec![(
+                LifecycleStatus::AwaitingDispatch,
+                LifecycleStatus::Implementing,
+                Arc::new(CountingHandler {
+                    call_count: call_count.clone(),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            )],
+        );
+
+        engine.poll_once().await;
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "DispatchImplementHandler stand-in should be called once"
+        );
+
+        // Event should be deleted after successful processing.
+        let event = repo.poll_workflow_event().await.unwrap();
+        assert!(
+            event.is_none(),
+            "event should be deleted after handler succeeds"
+        );
+    }
+
+    #[tokio::test]
     async fn engine_deletes_event_with_no_handler() {
         let (_tmp, repo, worker_repo) = setup_test_db().await;
 
