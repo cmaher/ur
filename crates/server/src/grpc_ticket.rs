@@ -339,7 +339,7 @@ impl TicketService for TicketServiceHandler {
             .filter(|s| !s.is_empty())
             .map(|s| {
                 s.parse::<LifecycleStatus>()
-                    .map_err(|e| TicketError::Validation(e))
+                    .map_err(TicketError::Validation)
             })
             .transpose()?;
 
