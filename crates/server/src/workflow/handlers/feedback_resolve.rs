@@ -62,10 +62,10 @@ impl WorkflowHandler for FeedbackResolveHandler {
             kill_worker(&ctx, worker_id).await?;
 
             match feedback_mode.as_str() {
-                "feedback_later" => {
+                "later" | "feedback_later" => {
                     resolve_feedback_later(&ctx, &ticket_id, &meta, &follow_up_epic_id).await
                 }
-                "feedback_now" => {
+                "now" | "feedback_now" => {
                     resolve_feedback_now(&ctx, &ticket_id, &meta, &follow_up_epic_id).await
                 }
                 other => bail!("unknown feedback_mode '{}' on ticket {}", other, ticket_id),
