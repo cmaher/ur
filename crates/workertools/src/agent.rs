@@ -65,7 +65,7 @@ pub async fn run(command: AgentCommands) -> i32 {
         AgentCommands::Done => {
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id,
-                status: "idle".to_string(),
+                status: ur_rpc::agent_status::IDLE.to_string(),
                 message: String::new(),
             });
             inject_auth(&mut request);
@@ -81,7 +81,7 @@ pub async fn run(command: AgentCommands) -> i32 {
         AgentCommands::RequestHuman { message } => {
             let mut request = tonic::Request::new(UpdateAgentStatusRequest {
                 worker_id,
-                status: "stalled".to_string(),
+                status: ur_rpc::agent_status::STALLED.to_string(),
                 message,
             });
             inject_auth(&mut request);

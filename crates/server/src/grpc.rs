@@ -531,7 +531,7 @@ impl CoreService for WorkerCoreServiceHandler {
         }
 
         // When a worker requests human attention, add activity to the assigned ticket.
-        if inner.status == "stalled" && !inner.message.is_empty() {
+        if inner.status == ur_rpc::agent_status::STALLED && !inner.message.is_empty() {
             let ticket_repo = self.ticket_repo.clone();
             let wid = worker_id.clone();
             let message = inner.message.clone();
@@ -610,7 +610,9 @@ async fn handle_agent_status_routed(
     // assigned ticket is in AwaitingDispatch, transition directly to
     // Implementing. This fires the SQLite trigger which creates a
     // workflow event for the AwaitingDispatch→Implementing handler.
-    if agent_status == "idle" && ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch {
+    if agent_status == ur_rpc::agent_status::IDLE
+        && ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch
+    {
         info!(
             worker_id = %worker_id,
             ticket_id = %ticket_id,
