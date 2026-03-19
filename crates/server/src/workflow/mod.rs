@@ -79,7 +79,7 @@ fn natural_prev(status: &LifecycleStatus) -> Option<LifecycleStatus> {
         LifecycleStatus::Pushing => Some(LifecycleStatus::Verifying),
         LifecycleStatus::InReview => Some(LifecycleStatus::Pushing),
         LifecycleStatus::FeedbackCreating => Some(LifecycleStatus::InReview),
-        LifecycleStatus::FeedbackResolving => Some(LifecycleStatus::FeedbackCreating),
+        LifecycleStatus::Merging => Some(LifecycleStatus::FeedbackCreating),
         _ => None,
     }
 }

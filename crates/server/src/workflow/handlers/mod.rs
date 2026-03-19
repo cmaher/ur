@@ -3,7 +3,7 @@
 mod awaiting_dispatch;
 mod dispatch_implement;
 mod feedback_create;
-mod feedback_resolve;
+mod merge;
 mod push;
 mod review_start;
 mod verify;
@@ -11,7 +11,7 @@ mod verify;
 pub use awaiting_dispatch::AwaitingDispatchHandler;
 pub use dispatch_implement::DispatchImplementHandler;
 pub use feedback_create::FeedbackCreateHandler;
-pub use feedback_resolve::FeedbackResolveHandler;
+pub use merge::MergeHandler;
 pub use push::PushHandler;
 pub use review_start::ReviewStartHandler;
 pub use verify::VerifyHandler;
@@ -57,11 +57,11 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::FeedbackCreating,
             Arc::new(FeedbackCreateHandler),
         ),
-        // FeedbackCreating → FeedbackResolving: resolve feedback (merge or re-implement)
+        // FeedbackCreating → Merging: merge PR (squash), kill worker, close epic, dispatch children
         (
             LifecycleStatus::FeedbackCreating,
-            LifecycleStatus::FeedbackResolving,
-            Arc::new(FeedbackResolveHandler),
+            LifecycleStatus::Merging,
+            Arc::new(MergeHandler),
         ),
         // Pushing → Implementing: CI failure detected by GitHub poller
         (
@@ -69,9 +69,9 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::Implementing,
             Arc::new(DispatchImplementHandler),
         ),
-        // FeedbackResolving → Implementing: merge conflict during PR merge
+        // Merging → Implementing: merge conflict during PR merge
         (
-            LifecycleStatus::FeedbackResolving,
+            LifecycleStatus::Merging,
             LifecycleStatus::Implementing,
             Arc::new(DispatchImplementHandler),
         ),

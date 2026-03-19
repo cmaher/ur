@@ -225,13 +225,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_stalled() {
+    fn merging_stalled() {
         assert_eq!(
-            router().route(
-                LifecycleStatus::FeedbackResolving,
-                agent_status::STALLED,
-                true
-            ),
+            router().route(LifecycleStatus::Merging, agent_status::STALLED, true),
             StepAction::Ignore,
         );
     }
@@ -301,13 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_working() {
+    fn merging_working() {
         assert_eq!(
-            router().route(
-                LifecycleStatus::FeedbackResolving,
-                agent_status::WORKING,
-                true
-            ),
+            router().route(LifecycleStatus::Merging, agent_status::WORKING, true),
             StepAction::Redispatch { reminder: true },
         );
     }
@@ -375,9 +367,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_resolving_idle_ignores() {
+    fn merging_idle_ignores() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackResolving, agent_status::IDLE, true),
+            router().route(LifecycleStatus::Merging, agent_status::IDLE, true),
             StepAction::Ignore,
         );
     }

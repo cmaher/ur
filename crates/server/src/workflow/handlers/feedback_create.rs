@@ -10,7 +10,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 /// `CreateFeedbackTickets(ticket_id, pr_number)` RPC. The worker creates a
 /// follow-up epic with child tickets from PR comments, links the follow-up
 /// epic to the original ticket via a `follow_up` edge, and transitions
-/// `lifecycle_status` to `feedback_resolving` when done.
+/// `lifecycle_status` to `merging` when done.
 ///
 /// `pr_number` is expected as metadata on the ticket (set by the push workflow handler).
 pub struct FeedbackCreateHandler;
@@ -43,11 +43,11 @@ impl WorkflowHandler for FeedbackCreateHandler {
             if !follow_up_edges.is_empty() {
                 info!(
                     ticket_id = %ticket_id,
-                    "follow-up tickets already exist — skipping creation, advancing to feedback_resolving"
+                    "follow-up tickets already exist — skipping creation, advancing to merging"
                 );
 
                 let update = TicketUpdate {
-                    lifecycle_status: Some(LifecycleStatus::FeedbackResolving),
+                    lifecycle_status: Some(LifecycleStatus::Merging),
                     lifecycle_managed: None,
                     status: None,
                     type_: None,

@@ -62,13 +62,13 @@ Guidelines for grouping:
 
 ## 5. Update lifecycle status
 
-Transition the original ticket's lifecycle status to `feedback_resolving`:
+Transition the original ticket's lifecycle status to `merging`:
 
 ```
-ur ticket update <ticket_id> --lifecycle feedback_resolving --output json
+ur ticket update <ticket_id> --lifecycle merging --output json
 ```
 
-This signals that the original ticket now has feedback being addressed.
+This signals that the original ticket is ready to be merged.
 
 ## 6. Done
 
