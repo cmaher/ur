@@ -654,21 +654,21 @@ impl TicketService for TicketServiceHandler {
         // 4. Spawn the handler in the background and return immediately.
         let dispatcher = dispatcher.clone();
         let ticket_id = req.id.clone();
-        let from = to_status;
+        let target = to_status;
         tokio::spawn(async move {
-            match dispatcher.trigger(&ticket_id, from).await {
-                Ok(to) => {
+            match dispatcher.trigger(&ticket_id, target).await {
+                Ok(result) => {
                     info!(
                         id = %ticket_id,
-                        from = %from,
-                        to = %to,
+                        target = %target,
+                        result = %result,
                         "redrive handler completed"
                     );
                 }
                 Err(e) => {
                     tracing::error!(
                         id = %ticket_id,
-                        from = %from,
+                        target = %target,
                         error = %e,
                         "redrive handler failed"
                     );
