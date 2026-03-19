@@ -313,6 +313,7 @@ struct RawConfig {
     hostexec: Option<RawHostExecConfig>,
     rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
+    server: Option<RawServerConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -426,6 +427,51 @@ struct RawBackupConfig {
     interval_minutes: Option<u64>,
     enabled: Option<bool>,
     retain_count: Option<u64>,
+}
+
+/// Raw TOML representation for the `[server]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawServerConfig {
+    container_command: Option<String>,
+    stale_worker_ttl_days: Option<u64>,
+    max_transition_attempts: Option<i32>,
+    poll_interval_ms: Option<u64>,
+    github_scan_interval_secs: Option<u64>,
+}
+
+/// Environment variable: container runtime command override (e.g. "nerdctl").
+/// Checked as a fallback when `[server].container_command` is not set in ur.toml.
+pub const UR_CONTAINER_ENV: &str = "UR_CONTAINER";
+
+/// Default container runtime command.
+pub const DEFAULT_CONTAINER_COMMAND: &str = "docker";
+
+/// Default number of days before a stale worker is cleaned up.
+pub const DEFAULT_STALE_WORKER_TTL_DAYS: u64 = 7;
+
+/// Default maximum number of lifecycle transition attempts before giving up.
+pub const DEFAULT_MAX_TRANSITION_ATTEMPTS: i32 = 3;
+
+/// Default poll interval in milliseconds for background polling loops.
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+
+/// Default GitHub scan interval in seconds for the poller.
+pub const DEFAULT_GITHUB_SCAN_INTERVAL_SECS: u64 = 30;
+
+/// Server runtime configuration from the `[server]` section of `ur.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerConfig {
+    /// Container runtime command (default: "docker").
+    /// Resolution order: ur.toml > `UR_CONTAINER` env var > "docker".
+    pub container_command: String,
+    /// Number of days before stale workers are cleaned up (default: 7).
+    pub stale_worker_ttl_days: u64,
+    /// Maximum number of lifecycle transition attempts (default: 3).
+    pub max_transition_attempts: i32,
+    /// Poll interval in milliseconds for background loops (default: 500).
+    pub poll_interval_ms: u64,
+    /// GitHub scan interval in seconds for the poller (default: 30).
+    pub github_scan_interval_secs: u64,
 }
 
 /// Default maximum number of fix loop iterations before stalling an agent.
@@ -616,6 +662,8 @@ pub struct Config {
     pub rag: RagConfig,
     /// Periodic backup settings for the database.
     pub backup: BackupConfig,
+    /// Server runtime settings (container command, polling intervals, etc.).
+    pub server: ServerConfig,
     /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
     /// Empty string means no prefix.
     pub git_branch_prefix: String,
@@ -680,6 +728,7 @@ impl Config {
 
         let rag = resolve_rag(raw.rag);
         let backup = resolve_backup(raw.backup);
+        let server = resolve_server(raw.server);
 
         let projects = raw
             .projects
@@ -756,6 +805,7 @@ impl Config {
             hostexec,
             rag,
             backup,
+            server,
             git_branch_prefix,
             projects,
         })
@@ -840,6 +890,36 @@ fn resolve_rag(raw: Option<RawRagConfig>) -> RagConfig {
             qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
             embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
             docs: RagDocsConfig::default(),
+        },
+    }
+}
+
+fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
+    let container_command = match raw.as_ref().and_then(|s| s.container_command.clone()) {
+        Some(cmd) => cmd,
+        None => std::env::var(UR_CONTAINER_ENV)
+            .unwrap_or_else(|_| DEFAULT_CONTAINER_COMMAND.to_string()),
+    };
+    match raw {
+        Some(s) => ServerConfig {
+            container_command,
+            stale_worker_ttl_days: s
+                .stale_worker_ttl_days
+                .unwrap_or(DEFAULT_STALE_WORKER_TTL_DAYS),
+            max_transition_attempts: s
+                .max_transition_attempts
+                .unwrap_or(DEFAULT_MAX_TRANSITION_ATTEMPTS),
+            poll_interval_ms: s.poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS),
+            github_scan_interval_secs: s
+                .github_scan_interval_secs
+                .unwrap_or(DEFAULT_GITHUB_SCAN_INTERVAL_SECS),
+        },
+        None => ServerConfig {
+            container_command,
+            stale_worker_ttl_days: DEFAULT_STALE_WORKER_TTL_DAYS,
+            max_transition_attempts: DEFAULT_MAX_TRANSITION_ATTEMPTS,
+            poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+            github_scan_interval_secs: DEFAULT_GITHUB_SCAN_INTERVAL_SECS,
         },
     }
 }
@@ -2039,5 +2119,131 @@ ports = ["8080:notaport"]
         let msg = err.to_string();
         assert!(msg.contains("ports[0]"), "{msg}");
         assert!(msg.contains("invalid container port"), "{msg}");
+    }
+
+    #[test]
+    fn server_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        // Set container_command explicitly to avoid env var race conditions
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[server]\ncontainer_command = \"docker\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.server.container_command, DEFAULT_CONTAINER_COMMAND);
+        assert_eq!(
+            cfg.server.stale_worker_ttl_days,
+            DEFAULT_STALE_WORKER_TTL_DAYS
+        );
+        assert_eq!(
+            cfg.server.max_transition_attempts,
+            DEFAULT_MAX_TRANSITION_ATTEMPTS
+        );
+        assert_eq!(cfg.server.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        assert_eq!(
+            cfg.server.github_scan_interval_secs,
+            DEFAULT_GITHUB_SCAN_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn server_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        // Set container_command explicitly to avoid env var race conditions
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[server]\ncontainer_command = \"docker\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.server.container_command, DEFAULT_CONTAINER_COMMAND);
+        assert_eq!(
+            cfg.server.stale_worker_ttl_days,
+            DEFAULT_STALE_WORKER_TTL_DAYS
+        );
+        assert_eq!(
+            cfg.server.max_transition_attempts,
+            DEFAULT_MAX_TRANSITION_ATTEMPTS
+        );
+        assert_eq!(cfg.server.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        assert_eq!(
+            cfg.server.github_scan_interval_secs,
+            DEFAULT_GITHUB_SCAN_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn server_reads_partial_overrides() {
+        let tmp = TempDir::new().unwrap();
+        // Set container_command explicitly to avoid env var race conditions
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[server]\ncontainer_command = \"docker\"\nstale_worker_ttl_days = 14\npoll_interval_ms = 1000\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.server.container_command, DEFAULT_CONTAINER_COMMAND);
+        assert_eq!(cfg.server.stale_worker_ttl_days, 14);
+        assert_eq!(
+            cfg.server.max_transition_attempts,
+            DEFAULT_MAX_TRANSITION_ATTEMPTS
+        );
+        assert_eq!(cfg.server.poll_interval_ms, 1000);
+        assert_eq!(
+            cfg.server.github_scan_interval_secs,
+            DEFAULT_GITHUB_SCAN_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn server_reads_all_custom_values() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[server]
+container_command = "nerdctl"
+stale_worker_ttl_days = 30
+max_transition_attempts = 5
+poll_interval_ms = 2000
+github_scan_interval_secs = 60
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.server.container_command, "nerdctl");
+        assert_eq!(cfg.server.stale_worker_ttl_days, 30);
+        assert_eq!(cfg.server.max_transition_attempts, 5);
+        assert_eq!(cfg.server.poll_interval_ms, 2000);
+        assert_eq!(cfg.server.github_scan_interval_secs, 60);
+    }
+
+    #[test]
+    fn server_container_command_falls_back_to_env_var() {
+        let tmp = TempDir::new().unwrap();
+        // SAFETY: test-only; single-threaded test runner for this module.
+        unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        // SAFETY: test-only; single-threaded test runner for this module.
+        unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
+        assert_eq!(cfg.server.container_command, "nerdctl");
+    }
+
+    #[test]
+    fn server_container_command_toml_overrides_env_var() {
+        let tmp = TempDir::new().unwrap();
+        // SAFETY: test-only; single-threaded test runner for this module.
+        unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[server]\ncontainer_command = \"podman\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        // SAFETY: test-only; single-threaded test runner for this module.
+        unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
+        assert_eq!(cfg.server.container_command, "podman");
     }
 }
