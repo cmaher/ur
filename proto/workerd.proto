@@ -5,9 +5,7 @@ service WorkerDaemonService {
   rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
   rpc NotifyIdle(NotifyIdleRequest) returns (NotifyIdleResponse);
   rpc Implement(ImplementRequest) returns (ImplementResponse);
-  rpc Push(PushRequest) returns (PushResponse);
   rpc CreateFeedbackTickets(CreateFeedbackRequest) returns (CreateFeedbackResponse);
-  rpc Fix(FixRequest) returns (FixResponse);
 }
 
 message SendMessageRequest {
@@ -29,10 +27,6 @@ message ImplementRequest {
 
 message ImplementResponse {}
 
-message PushRequest {}
-
-message PushResponse {}
-
 message CreateFeedbackRequest {
   string ticket_id = 1;
   uint32 pr_number = 2;
@@ -40,9 +34,3 @@ message CreateFeedbackRequest {
 
 message CreateFeedbackResponse {}
 
-message FixRequest {
-  string ticket_id = 1;
-  string fix_phase = 2;
-}
-
-message FixResponse {}

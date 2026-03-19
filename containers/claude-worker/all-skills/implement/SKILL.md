@@ -127,6 +127,6 @@ Do NOT push, create PRs, or advance lifecycle status — that happens automatica
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
 | Using sequential when tickets are independent | Default to parallel — only use sequential when tickets have heavy file overlap |
-| Calling /push or advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
+| Advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
 
 $ARGUMENTS
