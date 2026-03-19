@@ -111,6 +111,9 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         );
 
         let session = tmux::Session::agent();
+        if let Err(e) = session.send_keys("/clear").await {
+            error!(error = %e, "tmux send-keys failed for /clear before /implement");
+        }
         if let Err(e) = session.send_keys(&skill_command).await {
             error!(error = %e, "tmux send-keys failed for /implement");
         }

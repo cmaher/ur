@@ -3,14 +3,23 @@ use tracing::info;
 
 use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
 
-/// Handler for the Open → Implementing transition.
+/// Handler for all transitions into Implementing.
+///
+/// This is the single entry point for dispatching implement work to a worker,
+/// covering initial dispatch and all re-dispatch paths:
+/// - Initial dispatch (AwaitingDispatch → Implementing)
+/// - Verification failure re-dispatch (Verifying → Implementing)
+/// - CI failure re-dispatch (Pushing → Implementing via poller)
+/// - Merge conflict re-dispatch (Merging → Implementing)
+/// - Feedback re-dispatch (FeedbackCreating → Implementing)
 ///
 /// Looks up the ticket's branch field:
 /// - If set, the worker will check out and pull that branch.
 /// - If not set, generates a branch name from the ticket ID and persists it.
 ///
 /// Then resolves the assigned worker (via `worker_id` metadata) and sends
-/// the `Implement(ticket_id)` RPC to the worker's workerd daemon.
+/// the `Implement(ticket_id)` RPC to the worker's workerd daemon. The workerd
+/// handler sends /clear before /implement to ensure a fresh agent context.
 pub struct DispatchImplementHandler;
 
 impl WorkflowHandler for DispatchImplementHandler {
