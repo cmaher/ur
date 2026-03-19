@@ -56,15 +56,20 @@ end
 -- Extract the API endpoint (first positional arg after "api")
 local function extract_api_endpoint(args)
     local found_api = false
+    local skip_next = false
     for i = 1, #args do
-        local a = args[i]
-        if a == "api" then
-            found_api = true
-        elseif found_api and a:sub(1, 1) ~= "-" then
-            return a
-        elseif found_api and (a == "-X" or a == "--method" or a == "-R" or a == "--repo" or a == "-C") then
-            -- skip flag and its value
-            -- (handled by skipping next iteration implicitly via the loop)
+        if skip_next then
+            skip_next = false
+        else
+            local a = args[i]
+            if a == "api" then
+                found_api = true
+            elseif found_api and (a == "-X" or a == "--method" or a == "-R" or a == "--repo" or a == "-C") then
+                -- skip flag and its value
+                skip_next = true
+            elseif found_api and a:sub(1, 1) ~= "-" then
+                return a
+            end
         end
     end
     return nil
