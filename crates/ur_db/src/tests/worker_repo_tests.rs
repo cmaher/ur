@@ -632,15 +632,16 @@ async fn reconcile_workers_mixed_live_and_dead() {
 }
 
 #[tokio::test]
-async fn reconcile_workers_skips_already_stopped() {
+async fn reconcile_workers_stopped_dead_is_noop() {
     let db = TestDb::new().await;
     let r = repo(&db);
 
     let mut worker = test_worker("a1", "proj-a");
     worker.container_status = "stopped".to_owned();
+    worker.agent_status = "idle".to_owned();
     r.insert_worker(&worker).await.unwrap();
 
-    // Nothing should happen -- stopped workers are not active.
+    // Stopped + dead: no-op.
     let result = r
         .reconcile_workers(|_container_id| async { false })
         .await
@@ -648,6 +649,38 @@ async fn reconcile_workers_skips_already_stopped() {
 
     assert!(result.reclaimed.is_empty());
     assert!(result.marked_stopped.is_empty());
+
+    // Worker unchanged.
+    let fetched = r.get_worker("a1").await.unwrap().unwrap();
+    assert_eq!(fetched.container_status, "stopped");
+    assert_eq!(fetched.agent_status, "idle");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn reconcile_workers_stopped_alive_is_reclaimed() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+
+    let mut worker = test_worker("a1", "proj-a");
+    worker.container_status = "stopped".to_owned();
+    worker.agent_status = "idle".to_owned();
+    r.insert_worker(&worker).await.unwrap();
+
+    // Stopped + alive: reclaim (set container_status to "running", preserve agent_status).
+    let result = r
+        .reconcile_workers(|_container_id| async { true })
+        .await
+        .unwrap();
+
+    assert_eq!(result.reclaimed, vec!["a1"]);
+    assert!(result.marked_stopped.is_empty());
+
+    let fetched = r.get_worker("a1").await.unwrap().unwrap();
+    assert_eq!(fetched.container_status, "running");
+    // agent_status must NOT be modified during reclaim.
+    assert_eq!(fetched.agent_status, "idle");
 
     db.cleanup().await;
 }
