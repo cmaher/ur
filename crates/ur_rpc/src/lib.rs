@@ -2,6 +2,7 @@
 pub mod error;
 
 pub mod agent_status;
+pub mod feedback_mode;
 pub mod lifecycle;
 
 #[cfg(feature = "stream")]
