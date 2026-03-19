@@ -124,6 +124,8 @@ digraph brainstorming {
 - Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <epic-id> --output json`
 - Do NOT use the `--wip` flag — child tickets must default to lifecycle_status=open so they are immediately dispatchable
 - Each ticket should have a clear scope description in the `--body` argument
+- Include a "Files" section in the ticket body listing the file paths likely to be created or modified (e.g., `src/foo/bar.rs`, `src/foo/mod.rs`). This helps the dispatcher detect overlap between tickets and decide whether they can run in parallel.
+- Set `file_paths` metadata on each ticket with a comma-separated list of the same paths: `ur ticket set-meta <id> file_paths "src/foo/bar.rs,src/foo/mod.rs" --output json`
 - Order tickets by dependency — use `ur ticket add-block <id> <dep-id> --output json` for hard dependencies
 - Use `ur ticket add-link <id> <id> --output json` for related but non-blocking relationships
 - Tickets should be small enough for a single agent to complete in one session
