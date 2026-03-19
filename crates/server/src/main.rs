@@ -195,6 +195,7 @@ async fn init_and_serve(
         proxy_hostname: cfg.proxy.hostname.clone(),
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
         network_config: cfg.network.clone(),
         hostexec_config: hostexec_config.clone(),
         builderd_addr: builderd_addr.clone(),

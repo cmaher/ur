@@ -130,6 +130,7 @@ pub struct CoreServiceHandler {
     pub proxy_hostname: String,
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     pub worker_repo: WorkerRepo,
+    pub ticket_repo: TicketRepo,
     pub network_config: ur_config::NetworkConfig,
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     pub builderd_addr: String,
@@ -223,25 +224,21 @@ impl CoreService for CoreServiceHandler {
                 reason: e.to_string(),
             })?;
 
-        // Use explicit skills from the request if provided, otherwise use
-        // the skills resolved from the strategy/mode.
         let skills = if req.skills.is_empty() {
             resolved_skills
         } else {
             req.skills
         };
 
-        // Phase 2: run container
-        let (git_hooks_dir, mounts) = if !project_key.is_empty() {
-            let proj = self.projects.get(&project_key);
-            (
-                proj.and_then(|p| p.git_hooks_dir.clone()),
-                proj.map(|p| p.mounts.clone()).unwrap_or_default(),
-            )
-        } else {
-            (None, Vec::new())
+        let (git_hooks_dir, mounts) = match self.projects.get(&project_key) {
+            Some(proj) if !project_key.is_empty() => {
+                (proj.git_hooks_dir.clone(), proj.mounts.clone())
+            }
+            _ => (None, Vec::new()),
         };
 
+        let process_id = req.worker_id.clone();
+        let worker_id_str = worker_id.to_string();
         let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
@@ -263,6 +260,14 @@ impl CoreService for CoreServiceHandler {
             .await
             .map_err(|e| CoreError::RunFailed {
                 reason: e.to_string(),
+            })?;
+
+        // Bind the ticket to its worker for workflow handler lookups.
+        self.ticket_repo
+            .set_meta(&process_id, "ticket", "worker_id", &worker_id_str)
+            .await
+            .map_err(|e| CoreError::RunFailed {
+                reason: format!("failed to set worker_id metadata: {e}"),
             })?;
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
