@@ -272,7 +272,7 @@ async fn handle_merge_conflict(
         ticket_id = %ticket_id,
         pr_number = %pr_number,
         error = %error_message,
-        "merge failed due to conflicts — transitioning to fixing"
+        "merge failed due to conflicts — transitioning to implementing"
     );
 
     if let Err(e) = ctx
@@ -299,7 +299,7 @@ async fn handle_merge_conflict(
     }
 
     let update = TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Fixing),
+        lifecycle_status: Some(LifecycleStatus::Implementing),
         lifecycle_managed: None,
         status: None,
         type_: None,

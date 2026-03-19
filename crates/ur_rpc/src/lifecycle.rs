@@ -10,6 +10,5 @@ pub const IN_REVIEW: &str = "in_review";
 pub const FEEDBACK_CREATING: &str = "feedback_creating";
 pub const FEEDBACK_RESOLVING: &str = "feedback_resolving";
 pub const VERIFYING: &str = "verifying";
-pub const FIXING: &str = "fixing";
 pub const AWAITING_DISPATCH: &str = "awaiting_dispatch";
 pub const DONE: &str = "done";

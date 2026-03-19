@@ -740,7 +740,6 @@ async fn handle_redispatch(
     // Determine the RPC kind from the lifecycle status.
     let rpc_kind = match lifecycle_status {
         LifecycleStatus::Implementing => "implement",
-        LifecycleStatus::Pushing => "push",
         LifecycleStatus::FeedbackCreating => "create_feedback_tickets",
         _ => {
             info!(
@@ -817,12 +816,6 @@ async fn handle_redispatch(
                 .implement(ticket_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("re-dispatch implement failed: {e}"))?;
-        }
-        "push" => {
-            workerd_client
-                .push()
-                .await
-                .map_err(|e| anyhow::anyhow!("re-dispatch push failed: {e}"))?;
         }
         "create_feedback_tickets" => {
             let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;

@@ -64,9 +64,6 @@ impl LifecycleStepRouter {
                 LifecycleStatus::Implementing => StepAction::Advance {
                     to: LifecycleStatus::Verifying,
                 },
-                LifecycleStatus::Fixing => StepAction::Advance {
-                    to: LifecycleStatus::Verifying,
-                },
                 LifecycleStatus::Pushing => StepAction::Redispatch { reminder: false },
                 LifecycleStatus::FeedbackCreating => StepAction::Redispatch { reminder: false },
                 // All other lifecycle statuses with idle — no action.
@@ -192,14 +189,6 @@ mod tests {
     }
 
     #[test]
-    fn fixing_stalled() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::STALLED, true),
-            StepAction::Ignore,
-        );
-    }
-
-    #[test]
     fn pushing_stalled() {
         assert_eq!(
             router().route(LifecycleStatus::Pushing, agent_status::STALLED, true),
@@ -276,14 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn fixing_working() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::WORKING, true),
-            StepAction::Redispatch { reminder: true },
-        );
-    }
-
-    #[test]
     fn pushing_working() {
         assert_eq!(
             router().route(LifecycleStatus::Pushing, agent_status::WORKING, true),
@@ -355,16 +336,6 @@ mod tests {
     fn implementing_idle_advances_to_verifying() {
         assert_eq!(
             router().route(LifecycleStatus::Implementing, agent_status::IDLE, true),
-            StepAction::Advance {
-                to: LifecycleStatus::Verifying
-            },
-        );
-    }
-
-    #[test]
-    fn fixing_idle_advances_to_verifying() {
-        assert_eq!(
-            router().route(LifecycleStatus::Fixing, agent_status::IDLE, true),
             StepAction::Advance {
                 to: LifecycleStatus::Verifying
             },

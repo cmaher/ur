@@ -15,7 +15,6 @@ pub enum LifecycleStatus {
     FeedbackCreating,
     FeedbackResolving,
     Verifying,
-    Fixing,
     AwaitingDispatch,
     Done,
 }
@@ -31,7 +30,6 @@ impl LifecycleStatus {
             Self::FeedbackCreating => "feedback_creating",
             Self::FeedbackResolving => "feedback_resolving",
             Self::Verifying => "verifying",
-            Self::Fixing => "fixing",
             Self::AwaitingDispatch => "awaiting_dispatch",
             Self::Done => "done",
         }
@@ -51,7 +49,6 @@ impl FromStr for LifecycleStatus {
             "feedback_creating" => Ok(Self::FeedbackCreating),
             "feedback_resolving" => Ok(Self::FeedbackResolving),
             "verifying" => Ok(Self::Verifying),
-            "fixing" => Ok(Self::Fixing),
             "awaiting_dispatch" => Ok(Self::AwaitingDispatch),
             "done" => Ok(Self::Done),
             _ => Err(format!("unknown lifecycle status: {s}")),

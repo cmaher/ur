@@ -258,7 +258,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
     }
 }
 
-/// Handle a pre-push hook failure: record activity and transition to Fixing.
+/// Handle a pre-push hook failure: record activity and transition to Implementing.
 async fn handle_hook_failed(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -268,7 +268,7 @@ async fn handle_hook_failed(
     warn!(
         ticket_id = %ticket_id,
         branch = %branch,
-        "pre-push hook failed — transitioning to fixing"
+        "pre-push hook failed — transitioning to implementing"
     );
     add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
     ctx.ticket_repo
@@ -278,7 +278,7 @@ async fn handle_hook_failed(
         .set_meta(ticket_id, "ticket", "fix_reason", summary)
         .await?;
     let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Fixing),
+        lifecycle_status: Some(LifecycleStatus::Implementing),
         status: None,
         lifecycle_managed: None,
         type_: None,

@@ -179,14 +179,14 @@ impl GithubPollerManager {
                 // Still running — do nothing, will check again next scan.
             }
             Ok(CiStatus::Failed) => {
-                // CI failed — collect failing check names and transition to fixing.
+                // CI failed — collect failing check names and transition to implementing.
                 let failing_checks = collect_failing_checks(&backend, pr_number).await;
 
                 warn!(
                     ticket_id = %ticket.id,
                     pr_number = %pr_number,
                     failing_checks = %failing_checks,
-                    "CI has failures — transitioning to fixing"
+                    "CI has failures — transitioning to implementing"
                 );
 
                 // Set fix_phase=ci metadata so FixDispatchHandler knows the context.
@@ -216,7 +216,7 @@ impl GithubPollerManager {
                     return;
                 }
 
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::Fixing)
+                self.transition_lifecycle(&ticket.id, LifecycleStatus::Implementing)
                     .await;
             }
             Ok(CiStatus::NoChecks) => {

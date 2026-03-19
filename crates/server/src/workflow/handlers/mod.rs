@@ -1,7 +1,6 @@
 // Handler registry for workflow transitions.
 
 mod awaiting_dispatch;
-mod dispatch_fix;
 mod dispatch_implement;
 mod feedback_create;
 mod feedback_resolve;
@@ -10,7 +9,6 @@ mod review_start;
 mod verify;
 
 pub use awaiting_dispatch::AwaitingDispatchHandler;
-pub use dispatch_fix::FixDispatchHandler;
 pub use dispatch_implement::DispatchImplementHandler;
 pub use feedback_create::FeedbackCreateHandler;
 pub use feedback_resolve::FeedbackResolveHandler;
@@ -47,18 +45,6 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::Verifying,
             Arc::new(VerifyHandler),
         ),
-        // Verifying → Fixing: dispatch fix RPC to worker
-        (
-            LifecycleStatus::Verifying,
-            LifecycleStatus::Fixing,
-            Arc::new(FixDispatchHandler),
-        ),
-        // Fixing → Verifying: re-run pre-push verification hook after fix
-        (
-            LifecycleStatus::Fixing,
-            LifecycleStatus::Verifying,
-            Arc::new(VerifyHandler),
-        ),
         // Verifying → Pushing: workflow-driven push handler
         (
             LifecycleStatus::Verifying,
@@ -77,17 +63,17 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::FeedbackResolving,
             Arc::new(FeedbackResolveHandler),
         ),
-        // Pushing → Fixing: CI failure detected by GitHub poller
+        // Pushing → Implementing: CI failure detected by GitHub poller
         (
             LifecycleStatus::Pushing,
-            LifecycleStatus::Fixing,
-            Arc::new(FixDispatchHandler),
+            LifecycleStatus::Implementing,
+            Arc::new(DispatchImplementHandler),
         ),
-        // FeedbackResolving → Fixing: merge conflict during PR merge
+        // FeedbackResolving → Implementing: merge conflict during PR merge
         (
             LifecycleStatus::FeedbackResolving,
-            LifecycleStatus::Fixing,
-            Arc::new(FixDispatchHandler),
+            LifecycleStatus::Implementing,
+            Arc::new(DispatchImplementHandler),
         ),
         // Pushing → InReview: no-op signal handler
         (
