@@ -629,7 +629,7 @@ impl TicketService for TicketServiceHandler {
 
         // 2. Set lifecycle to the target status.
         let update = TicketUpdate {
-            lifecycle_status: Some(to_status.clone()),
+            lifecycle_status: Some(to_status),
             status: None,
             lifecycle_managed: None,
             type_: None,
@@ -654,9 +654,9 @@ impl TicketService for TicketServiceHandler {
         // 4. Spawn the handler in the background and return immediately.
         let dispatcher = dispatcher.clone();
         let ticket_id = req.id.clone();
-        let from = to_status.clone();
+        let from = to_status;
         tokio::spawn(async move {
-            match dispatcher.trigger(&ticket_id, from.clone()).await {
+            match dispatcher.trigger(&ticket_id, from).await {
                 Ok(to) => {
                     info!(
                         id = %ticket_id,

@@ -98,8 +98,8 @@ impl WorkflowDispatcher {
         let mut handlers = HashMap::new();
         for (from, to, handler) in handler_entries {
             let key = TransitionKey {
-                from: from.clone(),
-                to: to.clone(),
+                from: *from,
+                to: *to,
             };
             handlers.insert(key, handler.clone());
         }
@@ -120,7 +120,7 @@ impl WorkflowDispatcher {
             .ok_or_else(|| anyhow::anyhow!("no natural next state from '{from_status}'"))?;
         let key = TransitionKey {
             from: from_status,
-            to: to.clone(),
+            to,
         };
         let handler = self
             .handlers
