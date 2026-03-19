@@ -336,9 +336,17 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerListResponse>, Status> {
         info!("worker_list request received");
         let summaries = self.worker_manager.list().await;
-        let workers = summaries
-            .into_iter()
-            .map(|s| WorkerSummary {
+        let mut workers = Vec::with_capacity(summaries.len());
+        for s in summaries {
+            let lifecycle_status = self
+                .ticket_repo
+                .get_ticket(&s.process_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|t| t.lifecycle_status.to_string())
+                .unwrap_or_default();
+            workers.push(WorkerSummary {
                 worker_id: s.process_id,
                 worker_id_full: s.worker_id,
                 container_id: s.container_id,
@@ -348,8 +356,9 @@ impl CoreService for CoreServiceHandler {
                 directory: s.directory,
                 container_status: s.container_status,
                 agent_status: s.agent_status,
-            })
-            .collect();
+                lifecycle_status,
+            });
+        }
         Ok(Response::new(WorkerListResponse { workers }))
     }
 
@@ -384,19 +393,15 @@ impl CoreService for CoreServiceHandler {
         let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
 
         // Forward the message to workerd.
-        let workerd_client = crate::WorkerdClient::new(workerd_addr);
+        let workerd_client = crate::WorkerdClient::with_status_tracking(
+            workerd_addr,
+            self.worker_repo.clone(),
+            worker.worker_id.clone(),
+        );
         workerd_client
             .send_message(&req.message)
             .await
             .map_err(|e| CoreError::SendMessageFailed { reason: e })?;
-
-        // On success, update agent_status to 'working' in DB.
-        self.worker_repo
-            .update_worker_agent_status(&worker.worker_id, AgentStatus::Working)
-            .await
-            .map_err(|e| CoreError::SendMessageFailed {
-                reason: format!("failed to update agent status: {e}"),
-            })?;
 
         Ok(Response::new(SendWorkerMessageResponse {
             success: true,
@@ -758,7 +763,11 @@ async fn handle_redispatch(
 
     let container_name = format!("{}{}", worker_prefix, worker.process_id);
     let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
-    let workerd_client = crate::WorkerdClient::new(workerd_addr);
+    let workerd_client = crate::WorkerdClient::with_status_tracking(
+        workerd_addr,
+        worker_repo.clone(),
+        worker_id.to_string(),
+    );
 
     info!(
         worker_id = %worker_id,
@@ -800,11 +809,6 @@ async fn handle_redispatch(
         }
         _ => unreachable!(),
     }
-
-    // Update agent status to working after successful re-dispatch.
-    worker_repo
-        .update_worker_agent_status(worker_id, AgentStatus::Working)
-        .await?;
 
     Ok(())
 }

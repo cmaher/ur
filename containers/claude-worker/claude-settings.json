@@ -4,6 +4,17 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "workertools notify-idle"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

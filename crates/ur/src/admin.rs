@@ -8,6 +8,18 @@ use ur_rpc::proto::ticket::*;
 use crate::connection;
 use crate::output::OutputManager;
 
+/// Map a lifecycle status to its natural next state (what --continue does).
+fn next_lifecycle_status(current: &str) -> Option<&'static str> {
+    match current {
+        "awaiting_dispatch" => Some("implementing"),
+        "implementing" => Some("verifying"),
+        "fixing" => Some("verifying"),
+        "verifying" => Some("pushing"),
+        "pushing" => Some("in_review"),
+        _ => None,
+    }
+}
+
 /// Admin subcommands — privileged operations blocked from workers via hostexec.
 #[derive(Debug, Subcommand)]
 pub enum AdminCommands {
@@ -23,8 +35,12 @@ pub enum AdminCommands {
         id: String,
 
         /// Target lifecycle status to move to
-        #[arg(long)]
-        to: String,
+        #[arg(long, required_unless_present = "advance")]
+        to: Option<String>,
+
+        /// Advance to the natural next lifecycle state
+        #[arg(long = "continue", id = "advance", conflicts_with = "to")]
+        advance: bool,
     },
 
     /// Pre-set feedback_mode meta so GithubPoller auto-advances from in_review
@@ -69,47 +85,8 @@ pub async fn handle(port: u16, command: AdminCommands, output: &OutputManager) -
             Ok(())
         }
 
-        AdminCommands::Redrive { id, to } => {
-            info!(id = %id, to = %to, "redriving ticket");
-
-            // Clear stall_reason meta
-            client
-                .delete_meta(DeleteMetaRequest {
-                    ticket_id: id.clone(),
-                    key: "stall_reason".to_owned(),
-                })
-                .await
-                .with_status_context("delete stall_reason metadata")?;
-
-            // Move to target lifecycle status
-            client
-                .update_ticket(UpdateTicketRequest {
-                    id: id.clone(),
-                    status: None,
-                    priority: None,
-                    title: None,
-                    body: None,
-                    force: false,
-                    ticket_type: None,
-                    parent_id: None,
-                    lifecycle_status: Some(to.clone()),
-                    branch: None,
-                    project: None,
-                    lifecycle_managed: None,
-                })
-                .await
-                .with_status_context("update lifecycle status")?;
-
-            if output.is_json() {
-                output.print_success(&serde_json::json!({
-                    "kind": "redriven",
-                    "id": id,
-                    "lifecycle_status": to,
-                }));
-            } else {
-                println!("Redrove {id} to {to}");
-            }
-            Ok(())
+        AdminCommands::Redrive { id, to, advance } => {
+            handle_redrive(&mut client, output, id, to, advance).await
         }
 
         AdminCommands::Autoapprove {
@@ -146,4 +123,68 @@ pub async fn handle(port: u16, command: AdminCommands, output: &OutputManager) -
             Ok(())
         }
     }
+}
+
+async fn handle_redrive(
+    client: &mut TicketServiceClient<tonic::transport::Channel>,
+    output: &OutputManager,
+    id: String,
+    to: Option<String>,
+    advance: bool,
+) -> Result<()> {
+    let to = if advance {
+        let resp = client
+            .get_ticket(GetTicketRequest { id: id.clone() })
+            .await
+            .with_status_context("get ticket for --continue")?;
+        let ticket = resp
+            .into_inner()
+            .ticket
+            .ok_or_else(|| anyhow::anyhow!("ticket {id} not found"))?;
+        let current = &ticket.lifecycle_status;
+        next_lifecycle_status(current)
+            .ok_or_else(|| anyhow::anyhow!("no natural next state from '{current}' — use --to"))?
+            .to_string()
+    } else {
+        to.unwrap()
+    };
+
+    info!(id = %id, to = %to, "redriving ticket");
+
+    client
+        .delete_meta(DeleteMetaRequest {
+            ticket_id: id.clone(),
+            key: "stall_reason".to_owned(),
+        })
+        .await
+        .with_status_context("delete stall_reason metadata")?;
+
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: id.clone(),
+            status: None,
+            priority: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            lifecycle_status: Some(to.clone()),
+            branch: None,
+            project: None,
+            lifecycle_managed: None,
+        })
+        .await
+        .with_status_context("update lifecycle status")?;
+
+    if output.is_json() {
+        output.print_success(&serde_json::json!({
+            "kind": "redriven",
+            "id": id,
+            "lifecycle_status": to,
+        }));
+    } else {
+        println!("Redrove {id} to {to}");
+    }
+    Ok(())
 }

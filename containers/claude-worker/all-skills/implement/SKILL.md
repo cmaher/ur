@@ -7,6 +7,8 @@ description: Use when implementing a ticket, epic, or set of tickets — dispatc
 
 Implement one or more tickets. For a **single ticket**, work on it directly. For an **epic or multiple tickets**, dispatch subagents — one per ticket, sequential by default.
 
+**If the ticket description and codebase do not provide enough context to implement confidently, run `workertools agent request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
+
 ## Single Ticket
 
 When given a single non-epic ticket:
@@ -22,16 +24,10 @@ When given a single non-epic ticket:
    ```
    ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
    ```
-6. Signal completion — you MUST run exactly one of these before stopping:
-   ```
-   workertools agent done
-   ```
-   If you cannot complete the work and need human intervention:
-   ```
-   workertools agent request-human "description of why human help is needed"
-   ```
 
-**Important**: Do NOT attempt to push, create PRs, or advance lifecycle status directly. The workflow engine handles verification, push, and PR creation automatically after you signal done.
+If you cannot complete the work, run `workertools agent request-human "<reason>"` and stop.
+
+Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
 No subagents needed. Just do the work.
 
@@ -122,16 +118,10 @@ After all dispatchable tickets are done and CI passes:
    ```
    ur ticket set-meta <epic-id> pr_summary "Summary of all changes across subagents" --output json
    ```
-2. Signal completion:
-   ```
-   workertools agent done
-   ```
-   If you cannot complete all work and need human intervention:
-   ```
-   workertools agent request-human "description of why human help is needed"
-   ```
 
-**Important**: Do NOT attempt to push, create PRs, or advance lifecycle status directly. The workflow engine handles verification, push, and PR creation automatically after you signal done.
+If you cannot complete all work, run `workertools agent request-human "<reason>"` and stop.
+
+Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
 ### Common Mistakes
 
@@ -143,6 +133,6 @@ After all dispatchable tickets are done and CI passes:
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Parallel without claiming | Two agents grab same ticket — always claim first |
 | Using sequential when tickets are independent | Default to parallel — only use sequential when tickets have heavy file overlap |
-| Calling /push or advancing lifecycle | **Never.** The workflow engine handles push/PR/lifecycle after `workertools agent done` |
+| Calling /push or advancing lifecycle | **Never.** Push/PR/lifecycle happens automatically after you stop |
 
 $ARGUMENTS
