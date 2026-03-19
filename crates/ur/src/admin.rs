@@ -98,7 +98,12 @@ pub async fn handle(port: u16, command: AdminCommands, output: &OutputManager) -
                 bail!("one of --feedback-now or --feedback-later is required");
             }
 
-            let feedback_mode = if feedback_now { "now" } else { "later" }.to_owned();
+            let feedback_mode = if feedback_now {
+                ur_rpc::feedback_mode::NOW
+            } else {
+                ur_rpc::feedback_mode::LATER
+            }
+            .to_owned();
 
             info!(ticket_id = %ticket_id, feedback_mode = %feedback_mode, "setting autoapprove");
 

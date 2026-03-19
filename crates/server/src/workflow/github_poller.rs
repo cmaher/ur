@@ -259,7 +259,7 @@ impl GithubPollerManager {
                 pr_number = pr_number,
                 "autoapprove set — transitioning to feedback_creating with feedback_mode=later"
             );
-            self.set_feedback_mode_and_transition(&ticket.id, "later")
+            self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::LATER)
                 .await;
             return;
         }
@@ -281,7 +281,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "approval signal — transitioning to feedback_creating (mode=later)"
                 );
-                self.set_feedback_mode_and_transition(&ticket.id, "later")
+                self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::LATER)
                     .await;
             }
             Ok(ReviewSignal::RequestChanges) => {
@@ -290,7 +290,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "changes requested — transitioning to feedback_creating (mode=now)"
                 );
-                self.set_feedback_mode_and_transition(&ticket.id, "now")
+                self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::NOW)
                     .await;
             }
             Ok(ReviewSignal::Merged) => {
@@ -299,7 +299,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "PR merged by human — transitioning to feedback_creating (mode=later)"
                 );
-                self.set_feedback_mode_and_transition(&ticket.id, "later")
+                self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::LATER)
                     .await;
             }
             Ok(ReviewSignal::Closed) => {
