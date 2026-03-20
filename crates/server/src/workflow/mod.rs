@@ -1,8 +1,10 @@
+mod coordinator;
 mod engine;
 pub mod github_poller;
 pub mod handlers;
 mod step_router;
 
+pub use coordinator::{TransitionRequest, WorkflowCoordinator, channel as coordinator_channel};
 pub use engine::WorkflowEngine;
 pub use github_poller::GithubPollerManager;
 pub use step_router::{LifecycleStepRouter, StepAction};

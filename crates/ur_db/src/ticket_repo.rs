@@ -815,6 +815,33 @@ impl TicketRepo {
         ))
     }
 
+    /// List all workflow intents, ordered by creation time (oldest first).
+    /// Used for startup recovery to re-spawn handlers for incomplete intents.
+    pub async fn list_intents(&self) -> Result<Vec<WorkflowIntent>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, i32, String)>(
+            "SELECT id, ticket_id, target_status, attempts, created_at
+             FROM workflow_intent
+             ORDER BY id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ticket_id, target_status_str, attempts, created_at)| WorkflowIntent {
+                    id,
+                    ticket_id,
+                    target_status: target_status_str
+                        .parse::<LifecycleStatus>()
+                        .unwrap_or_default(),
+                    attempts,
+                    created_at,
+                },
+            )
+            .collect())
+    }
+
     /// Delete a workflow intent by ID (after successful processing).
     pub async fn delete_intent(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM workflow_intent WHERE id = ?")
