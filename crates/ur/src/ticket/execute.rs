@@ -18,6 +18,7 @@ use super::status::build_status_report;
 ///
 /// Generic over the transport type `T` so callers can pass a plain `Channel`
 /// or an `InterceptedService<Channel, F>` with auth headers.
+#[allow(clippy::too_many_lines)]
 pub async fn execute<T>(
     args: TicketArgs,
     client: &mut TicketServiceClient<T>,
