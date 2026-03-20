@@ -169,10 +169,10 @@ async fn seed_remaining_tickets(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: "standalone".into(),
-        type_: "task".into(),
+        type_: "design".into(),
         priority: 5,
         parent_id: None,
-        title: "Standalone Task".into(),
+        title: "Standalone Design".into(),
         body: "No parent".into(),
         project: "test".into(),
         ..Default::default()
@@ -499,18 +499,19 @@ async fn list_tickets_filter_by_status() {
 async fn list_tickets_filter_by_type() {
     let (db, repo) = populated_db().await;
 
-    let epics = repo
+    let designs = repo
         .list_tickets(&TicketFilter {
             project: None,
             status: None,
-            type_: Some("task".into()),
+            type_: Some("design".into()),
             parent_id: None,
             lifecycle_status: None,
         })
         .await
         .unwrap();
 
-    assert_eq!(epics.len(), 2);
+    assert_eq!(designs.len(), 1);
+    assert_eq!(designs[0].id, "standalone");
 
     db.cleanup().await;
 }
