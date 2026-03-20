@@ -391,10 +391,12 @@ impl CoreService for CoreServiceHandler {
                 .await
                 .ok()
                 .flatten();
-            let stall_reason = workflow
+            let workflow_stalled = workflow.as_ref().map(|w| w.stalled).unwrap_or(false);
+            let workflow_stall_reason = workflow
                 .as_ref()
                 .map(|w| w.stall_reason.clone())
                 .unwrap_or_default();
+            let stall_reason = workflow_stall_reason.clone();
             let (workflow_id, workflow_status) = workflow
                 .map(|w| (w.id, w.status.to_string()))
                 .unwrap_or_default();
@@ -413,6 +415,8 @@ impl CoreService for CoreServiceHandler {
                 pr_url,
                 workflow_id,
                 workflow_status,
+                workflow_stalled,
+                workflow_stall_reason,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))

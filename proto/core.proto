@@ -106,6 +106,8 @@ message WorkerSummary {
   string pr_url = 12;
   string workflow_id = 13;
   string workflow_status = 14;
+  bool workflow_stalled = 15;
+  string workflow_stall_reason = 16;
 }
 
 message WorkflowStepCompleteRequest {
