@@ -86,7 +86,6 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     // 4. Handle based on push status.
     match &push_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
-            reset_fix_attempts(ctx, ticket_id).await?;
             handle_push_success(
                 ctx,
                 ticket_id,
@@ -216,7 +215,6 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
 
     match &force_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
-            reset_fix_attempts(ctx, ticket_id).await?;
             let result_label = push_status_label(&force_result.status);
             add_push_activity(
                 ctx,
@@ -543,14 +541,6 @@ async fn add_push_activity(
     );
     ctx.ticket_repo
         .add_activity(ticket_id, "workflow", &message)
-        .await?;
-    Ok(())
-}
-
-/// Reset `fix_attempt_count` metadata to 0 on successful push.
-async fn reset_fix_attempts(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    ctx.ticket_repo
-        .set_meta(ticket_id, "ticket", "fix_attempt_count", "0")
         .await?;
     Ok(())
 }
