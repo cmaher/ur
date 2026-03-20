@@ -772,6 +772,40 @@ impl TicketRepo {
         ))
     }
 
+    /// List all workflows, optionally filtered by status.
+    pub async fn list_workflows(
+        &self,
+        status: Option<LifecycleStatus>,
+    ) -> Result<Vec<Workflow>, sqlx::Error> {
+        let rows = match &status {
+            Some(s) => {
+                sqlx::query_as::<
+                    _,
+                    (String, String, String, bool, String, i32, String, bool, String, String),
+                >(
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+                     FROM workflow WHERE status = ? ORDER BY created_at",
+                )
+                .bind(s.as_str())
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_as::<
+                    _,
+                    (String, String, String, bool, String, i32, String, bool, String, String),
+                >(
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+                     FROM workflow ORDER BY created_at",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+
+        Ok(rows.into_iter().map(row_to_workflow).collect())
+    }
+
     /// Update the status of a workflow.
     pub async fn update_workflow_status(
         &self,
@@ -1172,5 +1206,44 @@ fn edge_kind_from_str(s: &str) -> EdgeKind {
         "blocks" => EdgeKind::Blocks,
         "follow_up" => EdgeKind::FollowUp,
         _ => EdgeKind::RelatesTo,
+    }
+}
+
+fn row_to_workflow(
+    (
+        id,
+        ticket_id,
+        status_str,
+        stalled,
+        stall_reason,
+        implement_cycles,
+        worker_id,
+        noverify,
+        feedback_mode,
+        created_at,
+    ): (
+        String,
+        String,
+        String,
+        bool,
+        String,
+        i32,
+        String,
+        bool,
+        String,
+        String,
+    ),
+) -> Workflow {
+    Workflow {
+        id,
+        ticket_id,
+        status: status_str.parse::<LifecycleStatus>().unwrap_or_default(),
+        stalled,
+        stall_reason,
+        implement_cycles,
+        worker_id,
+        noverify,
+        feedback_mode,
+        created_at,
     }
 }
