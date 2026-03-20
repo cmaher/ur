@@ -39,6 +39,8 @@ struct TicketSlot {
 pub struct WorkflowCoordinator {
     rx: mpsc::Receiver<TransitionRequest>,
     cancel_rx: mpsc::Receiver<String>,
+    completion_rx: mpsc::Receiver<String>,
+    completion_tx: mpsc::Sender<String>,
     ctx: WorkflowContext,
     handlers: HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>,
     in_flight: HashMap<String, TicketSlot>,
@@ -57,9 +59,12 @@ impl WorkflowCoordinator {
         for (target, handler) in handler_entries {
             handlers.insert(*target, handler.clone());
         }
+        let (completion_tx, completion_rx) = mpsc::channel(64);
         Self {
             rx,
             cancel_rx,
+            completion_rx,
+            completion_tx,
             ctx,
             handlers,
             in_flight: HashMap::new(),
@@ -138,6 +143,9 @@ impl WorkflowCoordinator {
                         }
                     }
                 }
+                Some(ticket_id) = self.completion_rx.recv() => {
+                    self.handle_completion(&ticket_id).await;
+                }
                 msg = self.rx.recv() => {
                     match msg {
                         Some(request) => self.handle_request(request).await,
@@ -188,6 +196,20 @@ impl WorkflowCoordinator {
         self.spawn_handler_task(request.ticket_id.clone(), request.target_status);
     }
 
+    /// Handle a completed handler task: remove from in_flight and process pending.
+    async fn handle_completion(&mut self, ticket_id: &str) {
+        if let Some(slot) = self.in_flight.remove(ticket_id)
+            && let Some(pending) = slot.pending
+        {
+            info!(
+                ticket_id = %pending.ticket_id,
+                target = %pending.target_status,
+                "processing pending transition after handler completion"
+            );
+            self.spawn_handler_task(pending.ticket_id, pending.target_status);
+        }
+    }
+
     /// Cancel any in-flight or pending handler for a ticket.
     ///
     /// Aborts the running task and removes the ticket from `in_flight`.
@@ -208,6 +230,7 @@ impl WorkflowCoordinator {
         let handler = self.handlers.get(&target_status).cloned();
         let max_attempts = self.max_attempts;
         let completion_ticket_id = ticket_id.clone();
+        let completion_tx = self.completion_tx.clone();
 
         let handle = tokio::spawn(async move {
             run_handler(
@@ -218,6 +241,8 @@ impl WorkflowCoordinator {
                 max_attempts,
             )
             .await;
+            // Notify coordinator that this ticket's handler is done.
+            let _ = completion_tx.send(completion_ticket_id).await;
         });
 
         self.in_flight.insert(
@@ -662,6 +687,73 @@ mod tests {
         assert!(
             meta.contains_key("stall_reason"),
             "stall_reason should be set"
+        );
+
+        shutdown_tx.send(true).unwrap();
+        join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn coordinator_processes_pending_after_first_handler_completes() {
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        create_test_ticket(&repo, "ur-pend1").await;
+
+        let dispatch_count = Arc::new(AtomicU32::new(0));
+        let implement_count = Arc::new(AtomicU32::new(0));
+
+        let (tx, rx) = channel(16);
+        let ctx = make_ctx(repo.clone(), worker_repo);
+
+        let handlers: Vec<HandlerEntry> = vec![
+            (
+                LifecycleStatus::AwaitingDispatch,
+                Arc::new(CountingHandler {
+                    call_count: dispatch_count.clone(),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            ),
+            (
+                LifecycleStatus::Implementing,
+                Arc::new(CountingHandler {
+                    call_count: implement_count.clone(),
+                    should_fail: false,
+                }) as Arc<dyn WorkflowHandler>,
+            ),
+        ];
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
+        let join = coordinator.spawn(shutdown_rx);
+
+        // Send both transitions back-to-back: the second should be queued
+        // as pending and processed after the first completes.
+        tx.send(TransitionRequest {
+            ticket_id: "ur-pend1".to_string(),
+            target_status: LifecycleStatus::AwaitingDispatch,
+        })
+        .await
+        .unwrap();
+
+        tx.send(TransitionRequest {
+            ticket_id: "ur-pend1".to_string(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .unwrap();
+
+        // Give both handlers time to run (first completes, pending dequeued).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert_eq!(
+            dispatch_count.load(Ordering::SeqCst),
+            1,
+            "awaiting_dispatch handler should run once"
+        );
+        assert_eq!(
+            implement_count.load(Ordering::SeqCst),
+            1,
+            "implementing handler should run after awaiting_dispatch completes"
         );
 
         shutdown_tx.send(true).unwrap();

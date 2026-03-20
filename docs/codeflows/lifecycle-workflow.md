@@ -4,13 +4,13 @@
 
 The workflow system drives tickets through an automated state machine: dispatch, implement, verify, push, review, and merge. It is built on three layers:
 
-1. **WorkflowCoordinator** -- receives step-complete signals from workers via gRPC and advances tickets through the workflow
-2. **WorkerdNextStepRouter** -- pure-function router mapping `(workflow_status, agent_status)` to the next action
+1. **WorkflowCoordinator** -- channel-driven coordinator that receives `TransitionRequest` messages, serializes per-ticket handler execution, and processes pending requests after handler completion
+2. **WorkerdNextStepRouter** -- pure-function router mapping `workflow_status` to the next action
 3. **GithubPollerManager** -- polls GitHub for CI status and review signals, advancing external-wait states
 
-The system uses two database tables (added by a prior ticket):
-- **`workflow`** -- tracks the current workflow state for each ticket (status, worker assignment, attempt counts)
-- **`workflow_intent`** -- records pending intents (what the coordinator plans to do next) for crash recovery
+The system uses two database tables:
+- **`workflow`** -- tracks the current workflow state for each ticket (status, timestamps)
+- **`workflow_intent`** -- records pending intents (target status) for crash recovery
 
 ## State Machine
 
@@ -64,91 +64,140 @@ The system uses two database tables (added by a prior ticket):
 
 ### WorkflowCoordinator
 
-The coordinator is the central orchestrator. Instead of polling a `workflow_event` table, it receives explicit `WorkflowStepComplete` gRPC calls from workers (via the `CoreService` RPC). On each signal:
+The coordinator is a channel-driven task that serializes handler execution per ticket. It receives `TransitionRequest` messages via an mpsc channel from two sources:
 
-1. Looks up the worker's assigned ticket via `worker_id` metadata
-2. Loads the workflow record from the `workflow` table to get current status
-3. Consults the `WorkerdNextStepRouter` for the `(status, agent_status)` pair
-4. Records an intent in the `workflow_intent` table (crash recovery)
-5. Executes the handler for the transition
+1. **WorkerCoreServiceHandler** -- worker gRPC calls (`UpdateAgentStatus`, `WorkflowStepComplete`) trigger transitions
+2. **GithubPollerManager** -- background poller detects CI/review signals and triggers transitions
+3. **Handlers themselves** -- some handlers auto-advance (e.g., VerifyHandler → Pushing on hook pass)
+
+On each request:
+
+1. Writes an intent to `workflow_intent` (crash recovery)
+2. If a handler is already running for this ticket, queues as pending (latest wins)
+3. If no handler is running, spawns one
+4. When a handler completes, sends a completion signal back to the coordinator
+5. Coordinator removes the ticket from in-flight and processes any pending request
 6. On success: updates workflow status, deletes the intent
 7. On failure: increments attempts; if attempts >= max, stalls the ticket
 
+The completion channel is critical: without it, pending requests for a ticket would never be dequeued after the first handler completes.
+
+Source: `crates/server/src/workflow/coordinator.rs`
+
 ### WorkerdNextStepRouter
 
-The step router is a pure-function mapper from `(workflow_status, agent_status)` to `StepAction`:
+The step router is a pure function mapping `workflow_status` → `NextStepResult`:
 
-| Action | Behavior |
-|--------|----------|
-| `Advance { to }` | Transition ticket to the next workflow state |
-| `AdvanceByFeedbackMode` | Route based on `feedback_mode` metadata (`now` -> Implementing, `later` -> Merging) |
-| `Redispatch { reminder }` | Re-send the phase-appropriate RPC to the worker |
-| `Ignore` | No action |
+| Current Status | Result |
+|----------------|--------|
+| `Implementing` | `Advance { to: Verifying }` |
+| `FeedbackCreating` | `AdvanceByFeedbackMode` |
+| All others | `Ignore` |
 
-Key routing rules:
-- **No ticket assigned**: always `Ignore`
-- **Open / AwaitingDispatch**: always `Ignore` (handled by dedicated logic)
-- **Stalled**: always `Ignore`
-- **Working**: `Redispatch { reminder: true }` for all active states
-- **Idle + Implementing**: `Advance { to: Verifying }`
-- **Idle + Pushing**: `Redispatch { reminder: false }`
-- **Idle + FeedbackCreating**: `AdvanceByFeedbackMode`
-- **Idle + other**: `Ignore`
+`AdvanceByFeedbackMode` routes based on `feedback_mode` ticket metadata:
+- `now` (changes requested) → `Implementing`
+- `later` (approved) → `Merging`
+
+The router only handles workerd-driven transitions. Poller-driven transitions (Pushing → InReview, InReview → FeedbackCreating) and handler-driven transitions (Verifying → Pushing) bypass the router entirely.
 
 Source: `crates/server/src/workflow/step_router.rs`
 
-### Registered Transitions (Handler Registry)
+### Registered Handlers
 
-| From | To | Handler | Description |
-|------|----|---------|-------------|
-| Open | AwaitingDispatch | `AwaitingDispatchHandler` | No-op; acknowledges dispatch |
-| AwaitingDispatch | Implementing | `DispatchImplementHandler` | Sends implement RPC to worker (with /clear) |
-| Implementing | Verifying | `VerifyHandler` | Runs pre-push verification hook |
-| Verifying | Pushing | `PushHandler` | Pushes branch, creates/updates PR |
-| Pushing | InReview | `ReviewStartHandler` | No-op signal handler |
-| Pushing | Implementing | `DispatchImplementHandler` | CI failure detected by poller |
-| InReview | FeedbackCreating | `FeedbackCreateHandler` | Promotes to epic, sends feedback create RPC |
-| FeedbackCreating | Merging | `MergeHandler` | Merges PR (squash), kills worker, closes epic |
-| Merging | Implementing | `DispatchImplementHandler` | Merge conflict during PR merge |
+Handlers are keyed by **target status**, not by transition. Each handler runs when a ticket enters that status, regardless of which status it came from.
+
+| Target Status | Handler | Description |
+|---------------|---------|-------------|
+| `AwaitingDispatch` | `AwaitingDispatchHandler` | No-op; acknowledges dispatch |
+| `Implementing` | `ImplementHandler` | Sends Implement RPC to workerd (with /clear) |
+| `Verifying` | `VerifyHandler` | Runs pre-push verification hook via builderd |
+| `Pushing` | `PushHandler` | Pushes branch, creates/updates PR |
+| `InReview` | `ReviewStartHandler` | No-op signal handler |
+| `FeedbackCreating` | `FeedbackCreateHandler` | Promotes to epic, sends feedback create RPC to worker |
+| `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes epic, dispatches children |
 
 Source: `crates/server/src/workflow/handlers/mod.rs` (`build_handlers()`)
 
+## Transition Triggers
+
+Different lifecycle transitions are triggered by different sources:
+
+| Transition | Trigger |
+|------------|---------|
+| Open → AwaitingDispatch | CLI dispatch (`ur worker launch --dispatch`) |
+| AwaitingDispatch → Implementing | Worker idle signal (`UpdateAgentStatus` RPC with `idle`) |
+| Implementing → Verifying | Worker step complete (`WorkflowStepComplete` RPC) |
+| Verifying → Pushing | VerifyHandler (hook passes or not configured) |
+| Verifying → Implementing | VerifyHandler (hook fails, under fix limit) |
+| Pushing → InReview | GithubPollerManager (CI green or no checks) |
+| Pushing → Implementing | GithubPollerManager (CI failure) |
+| InReview → FeedbackCreating | GithubPollerManager (review signal or autoapprove) |
+| FeedbackCreating → Implementing | Worker step complete + `feedback_mode=now` |
+| FeedbackCreating → Merging | Worker step complete + `feedback_mode=later` |
+| Merging → Implementing | MergeHandler (merge conflict) |
+
 ## gRPC Interface
 
-### WorkflowStepComplete RPC
+### Worker-Facing RPCs (WorkerCoreServiceHandler)
 
-Defined on `CoreService` in `proto/core.proto`:
+Served on the worker gRPC server (`0.0.0.0:{worker_port}`), protected by auth interceptor.
 
-```protobuf
-rpc WorkflowStepComplete(WorkflowStepCompleteRequest) returns (WorkflowStepCompleteResponse);
+**`UpdateAgentStatus`** -- Worker reports its agent status (idle, working, stalled).
+- On `idle`: checks if the worker's ticket has workflow status `AwaitingDispatch`. If so, sends a `TransitionRequest` for `Implementing` to the coordinator.
+- On `stalled` with message: records request-human activity on the ticket.
 
-message WorkflowStepCompleteRequest {
-  string worker_id = 1;
-}
+**`WorkflowStepComplete`** -- Worker signals the current step is done.
+- Finds the worker's assigned ticket via `worker_id` metadata
+- Looks up the workflow status
+- Consults the `WorkerdNextStepRouter`
+- Sends the appropriate `TransitionRequest` to the coordinator
 
-message WorkflowStepCompleteResponse {}
-```
+Source: `crates/server/src/grpc.rs` (`WorkerCoreServiceHandler`)
 
-Workers call this RPC when they finish a workflow step (e.g., implementation complete, feedback tickets created). The server-side handler (ur-a9b62) will look up the worker's ticket, consult the router, and advance the workflow.
+### Workerd RPCs (in worker container)
 
-### Proto Changes
+Served by the `workerd` daemon inside each worker container on port 9120.
 
-The `lifecycle_status` and `lifecycle_managed` fields have been removed from the ticket proto messages (`Ticket`, `UpdateTicketRequest`, `ListTicketsRequest`). Workflow state is now tracked in the `workflow` table rather than as fields on the ticket itself. The `WorkerSummary` message in `core.proto` retains `lifecycle_status` for display purposes (populated from the DB ticket's lifecycle_status column).
+**`Implement(ticket_id)`** -- Server dispatches implementation work.
+- Populates `DispatchBuffer` with `["/clear", "/implement {ticket_id}"]`
+- Sets `lifecycle_step = "implementing"`
+- Pops and sends `/clear` to tmux immediately
+
+**`NotifyIdle()`** -- Called by Claude Code hooks when agent goes idle.
+- 4-state machine:
+  1. Buffer has commands → pop and send to tmux
+  2. Buffer empty + step_complete → send `WorkflowStepComplete` RPC to server
+  3. Buffer empty + !step_complete + lifecycle_step set → nudge agent
+  4. No active dispatch → forward idle to server (`UpdateAgentStatus`)
+
+**`StepComplete()`** -- Called by `workertools step-complete` when agent finishes work.
+- Sets `step_complete = true` on the `DispatchBuffer`
+- Next idle signal will trigger case 2 above
+
+Source: `crates/workerd/src/grpc_service.rs`
 
 ## Server Boot
 
-At startup, `ur-server` spawns both the workflow engine and GitHub poller as background tokio tasks sharing a `watch::Receiver<bool>` shutdown channel:
+At startup, `ur-server` spawns the coordinator, engine, and poller as background tokio tasks sharing a `watch::Receiver<bool>` shutdown channel:
 
 ```
 ur-server main()
-├── WorkflowEngine::new(ticket_repo, worker_repo, worker_prefix, builderd_client, config, build_handlers())
-│   └── engine.spawn(shutdown_rx)   // processes workflow transitions
+├── WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, handlers, max_attempts)
+│   └── coordinator.spawn(shutdown_rx)   // channel-driven coordinator
 │
-└── GithubPollerManager::new(ticket_repo, builderd_client)
-    └── poller.spawn(shutdown_rx)   // scans pushing/in_review tickets every 30s
+├── WorkflowEngine::new(...)
+│   └── engine.spawn(shutdown_rx)        // polls workflow_event table (legacy)
+│
+├── GithubPollerManager::new(...)
+│   └── poller.spawn(shutdown_rx)        // scans pushing/in_review every 30s
+│
+├── serve_grpc(host_addr, ...)           // host CLI gRPC server
+│
+└── serve_worker_grpc(worker_addr, ..., transition_tx)
+    └── WorkerCoreServiceHandler         // worker gRPC server with auth
 ```
 
-Both tasks run until the shutdown channel signals `true`, then exit gracefully.
+The `transition_tx` channel connects the worker gRPC handler to the coordinator. Both servers share the same `TicketRepo` and `WorkerRepo`.
 
 Source: `crates/server/src/main.rs`
 
@@ -160,8 +209,6 @@ Source: `crates/server/src/main.rs`
 |--------|------|-------------|
 | `ticket_id` | TEXT PK | References tickets.id |
 | `status` | TEXT | Current workflow status (e.g., implementing, verifying) |
-| `worker_id` | TEXT | Assigned worker ID |
-| `attempt_count` | INTEGER | Handler retry count |
 | `created_at` | TEXT | Workflow creation timestamp |
 | `updated_at` | TEXT | Last status change timestamp |
 
@@ -171,37 +218,38 @@ Source: `crates/server/src/main.rs`
 |--------|------|-------------|
 | `id` | TEXT PK | Intent ID |
 | `ticket_id` | TEXT | References tickets.id |
-| `action` | TEXT | Planned action (e.g., advance, redispatch) |
 | `target_status` | TEXT | Target workflow status |
+| `attempts` | INTEGER | Handler retry count |
 | `created_at` | TEXT | Intent creation timestamp |
 
-The intent table provides crash recovery: if the server crashes mid-transition, on restart it can replay pending intents. Intents are deleted after successful execution.
+The intent table provides crash recovery: if the server crashes mid-transition, on restart the coordinator replays pending intents. Intents are deleted after successful execution.
 
 ## Dispatch Flow
 
-When the user runs `ur launch --dispatch <ticket-id>`:
+When the user runs `ur worker launch --dispatch <ticket-id>`:
 
-1. `dispatch_ticket()` validates the ticket exists and is not closed
-2. Sends an update via gRPC (the server-side workflow will handle the actual state transition)
-3. The coordinator creates a workflow record and transitions to `AwaitingDispatch`
-4. The ticket remains in `AwaitingDispatch` until a worker reports idle
+1. CLI creates a workflow record in `awaiting_dispatch` status
+2. CLI launches the worker container
+3. The ticket remains in `AwaitingDispatch` until the worker reports idle
+4. The coordinator runs the `AwaitingDispatchHandler` (no-op acknowledgment)
 
-Source: `crates/ur/src/main.rs` (`dispatch_ticket()`)
+Source: `crates/ur/src/main.rs`, `crates/server/src/grpc.rs`
 
 ## Worker Readiness Flow (AwaitingDispatch to Implementing)
 
 When a worker container starts and its agent becomes idle for the first time:
 
-1. Worker calls `update_agent_status` RPC with `status: "idle"`
-2. The gRPC handler validates the agent status via `AgentStatus` enum
-3. Updates the worker's `agent_status` in the database
-4. Looks up the worker's assigned ticket via `worker_id` metadata
-5. If the ticket's workflow status is `AwaitingDispatch` and agent_status is `"idle"`:
-   - Transitions workflow status to `Implementing`
-   - The `DispatchImplementHandler` sends /clear then the implement RPC to the worker
-6. If the ticket is in any other state, the `WorkerdNextStepRouter` is consulted
+1. Workerd's `NotifyIdle` handler (case 4: no active dispatch) fires `UpdateAgentStatus(idle)` to the server
+2. `WorkerCoreServiceHandler::update_agent_status` updates the worker's status in DB
+3. Spawns `handle_awaiting_dispatch_readiness`:
+   - Finds the worker's assigned ticket via `worker_id` metadata
+   - Checks if the ticket's workflow status is `AwaitingDispatch`
+   - If so, sends a `TransitionRequest` for `Implementing` to the coordinator
+4. The coordinator queues `Implementing` as pending (if `AwaitingDispatch` handler is still in-flight) or spawns immediately
+5. `ImplementHandler` sends the Implement RPC to the workerd daemon
+6. Workerd populates the DispatchBuffer with `/clear` + `/implement {ticket_id}`
 
-Source: `crates/server/src/grpc.rs` (`handle_agent_status_routed()`)
+Source: `crates/server/src/grpc.rs` (`handle_awaiting_dispatch_readiness`)
 
 ## AgentStatus Enum
 
@@ -234,8 +282,9 @@ When a ticket reaches `FeedbackCreating`, the `FeedbackCreateHandler`:
 
 1. **Promotes the ticket to an epic** (if not already) so child feedback tickets can be parented under it
 2. Sends the `CreateFeedbackTickets(ticket_id, pr_number)` RPC to the worker
-3. The worker creates child tickets from PR review comments and goes idle
-4. The step router detects Idle + FeedbackCreating and routes via `AdvanceByFeedbackMode`:
+3. The worker creates child tickets from PR review comments and signals step complete
+4. Workerd sends `WorkflowStepComplete` RPC to the server
+5. The step router routes via `AdvanceByFeedbackMode`:
    - `feedback_mode=now` (changes requested): transitions to `Implementing` to address feedback
    - `feedback_mode=later` (approved/merged): transitions to `Merging` to complete the PR
 
@@ -243,11 +292,11 @@ Source: `crates/server/src/workflow/handlers/feedback_create.rs`, `crates/server
 
 ## Merge Flow
 
-The `MergeHandler` (FeedbackCreating -> Merging) performs:
+The `MergeHandler` (→ Merging) performs:
 
 1. Kills the worker and releases its slot
 2. Merges the PR via `GhBackend::merge_pr` (squash strategy)
-3. Closes the original ticket (status -> Done)
+3. Closes the original ticket (status → Done)
 4. Finds the follow-up epic via `follow_up` edge and closes it
 5. Dispatches follow-up epic children as independent work (branch cleared)
 
@@ -270,14 +319,14 @@ Scans every 30s for tickets in `pushing` or `in_review` workflow states:
 - Otherwise, check latest PR comment for emoji signals:
   - Approval (checkmark/rocket/ship/:shipit:): Transition to `FeedbackCreating` with `feedback_mode=later`
   - Changes requested (construction): Transition to `FeedbackCreating` with `feedback_mode=now`
-- Check PR state: merged -> `FeedbackCreating`, closed -> revert to `Open`
+- Check PR state: merged → `FeedbackCreating`, closed → revert to `Open`
 - Only the latest comment counts, and only if no commits were pushed after it
 
 Source: `crates/server/src/workflow/github_poller.rs`
 
 ## Error Handling
 
-- **Handler failures**: Retried up to max_transition_attempts times. After exhausting retries, the ticket is stalled: it stays in its current workflow state, `stall_reason` metadata is set with the error message, and the intent is deleted. Use `ur admin redrive` to retry.
-- **Stale intents**: On server restart, pending intents are replayed. If the ticket has moved past the intent's target, the intent is deleted without processing.
-- **No handler**: Transitions with no registered handler are logged as warnings and skipped.
+- **Handler failures**: Retried up to `max_transition_attempts` times. After exhausting retries, the ticket is stalled: it stays in its current workflow state, `stall_reason` metadata is set with the error message, and the intent is deleted. Use `ur admin redrive` to retry.
+- **Stale intents**: On server restart, pending intents are replayed. If attempts are already at max, the intent is deleted and the ticket is stalled.
+- **No handler**: Transitions with no registered handler are logged as warnings and the intent is cleaned up.
 - **Crash recovery**: The intent table ensures no transitions are lost if the server crashes mid-execution.
