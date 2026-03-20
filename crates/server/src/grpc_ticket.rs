@@ -775,4 +775,18 @@ impl TicketService for TicketServiceHandler {
             lifecycle_status: to_status.to_string(),
         }))
     }
+
+    async fn get_workflow(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::GetWorkflowRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::GetWorkflowResponse>, Status> {
+        Err(Status::unimplemented("get_workflow not yet implemented"))
+    }
+
+    async fn list_workflows(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::ListWorkflowsRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::ListWorkflowsResponse>, Status> {
+        Err(Status::unimplemented("list_workflows not yet implemented"))
+    }
 }

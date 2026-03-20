@@ -19,6 +19,8 @@ service TicketService {
   rpc RedriveTicket(RedriveTicketRequest) returns (RedriveTicketResponse);
   rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
+  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
+  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
 }
 
 // --- Shared messages ---
@@ -260,3 +262,37 @@ message CancelWorkflowRequest {
 }
 
 message CancelWorkflowResponse {}
+
+// --- WorkflowInfo ---
+
+message WorkflowInfo {
+  string id = 1;
+  string ticket_id = 2;
+  string status = 3;
+  bool stalled = 4;
+  string stall_reason = 5;
+  int64 implement_cycles = 6;
+  string worker_id = 7;
+  string feedback_mode = 8;
+  string created_at = 9;
+}
+
+// --- GetWorkflow ---
+
+message GetWorkflowRequest {
+  string ticket_id = 1;
+}
+
+message GetWorkflowResponse {
+  WorkflowInfo workflow = 1;
+}
+
+// --- ListWorkflows ---
+
+message ListWorkflowsRequest {
+  optional string status = 1;
+}
+
+message ListWorkflowsResponse {
+  repeated WorkflowInfo workflows = 1;
+}
