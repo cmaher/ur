@@ -21,8 +21,8 @@ pub struct TransitionRequest {
 /// Tracks in-flight and pending transitions for a single ticket.
 struct TicketSlot {
     /// The currently running handler task.
-    /// Kept to allow future cancellation or join-on-shutdown.
-    _handle: JoinHandle<()>,
+    /// Used for cancellation when a ticket is closed.
+    handle: JoinHandle<()>,
     /// The most recent pending request (latest wins, intermediates dropped).
     pending: Option<TransitionRequest>,
 }
@@ -38,6 +38,7 @@ struct TicketSlot {
 /// and re-spawns their handlers.
 pub struct WorkflowCoordinator {
     rx: mpsc::Receiver<TransitionRequest>,
+    cancel_rx: mpsc::Receiver<String>,
     ctx: WorkflowContext,
     handlers: HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>,
     in_flight: HashMap<String, TicketSlot>,
@@ -47,6 +48,7 @@ pub struct WorkflowCoordinator {
 impl WorkflowCoordinator {
     pub fn new(
         rx: mpsc::Receiver<TransitionRequest>,
+        cancel_rx: mpsc::Receiver<String>,
         ctx: WorkflowContext,
         handler_entries: &[HandlerEntry],
         max_attempts: i32,
@@ -57,6 +59,7 @@ impl WorkflowCoordinator {
         }
         Self {
             rx,
+            cancel_rx,
             ctx,
             handlers,
             in_flight: HashMap::new(),
@@ -127,6 +130,14 @@ impl WorkflowCoordinator {
                         return;
                     }
                 }
+                cancel_msg = self.cancel_rx.recv() => {
+                    match cancel_msg {
+                        Some(ticket_id) => self.handle_cancel(&ticket_id),
+                        None => {
+                            info!("workflow coordinator cancel channel closed");
+                        }
+                    }
+                }
                 msg = self.rx.recv() => {
                     match msg {
                         Some(request) => self.handle_request(request).await,
@@ -177,6 +188,20 @@ impl WorkflowCoordinator {
         self.spawn_handler_task(request.ticket_id.clone(), request.target_status);
     }
 
+    /// Cancel any in-flight or pending handler for a ticket.
+    ///
+    /// Aborts the running task and removes the ticket from `in_flight`.
+    /// Database cleanup (deleting workflow and intents) is handled by the caller.
+    fn handle_cancel(&mut self, ticket_id: &str) {
+        if let Some(slot) = self.in_flight.remove(ticket_id) {
+            slot.handle.abort();
+            info!(
+                ticket_id = %ticket_id,
+                "cancelled in-flight workflow handler"
+            );
+        }
+    }
+
     /// Spawn a handler task for a ticket and track it in `in_flight`.
     fn spawn_handler_task(&mut self, ticket_id: String, target_status: LifecycleStatus) {
         let ctx = self.ctx.clone();
@@ -198,7 +223,7 @@ impl WorkflowCoordinator {
         self.in_flight.insert(
             ticket_id,
             TicketSlot {
-                _handle: handle,
+                handle,
                 pending: None,
             },
         );
@@ -379,6 +404,13 @@ pub fn channel(
     mpsc::channel(buffer)
 }
 
+/// Create a channel for sending workflow cancellation requests.
+///
+/// The sender is cloned into gRPC handlers; the receiver goes to the coordinator.
+pub fn cancel_channel(buffer: usize) -> (mpsc::Sender<String>, mpsc::Receiver<String>) {
+    mpsc::channel(buffer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,7 +547,8 @@ mod tests {
         )];
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let coordinator = WorkflowCoordinator::new(rx, ctx, &handlers, 3);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
         let join = coordinator.spawn(shutdown_rx);
 
         tx.send(TransitionRequest {
@@ -564,7 +597,8 @@ mod tests {
         )];
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let coordinator = WorkflowCoordinator::new(rx, ctx, &handlers, 3);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
         let join = coordinator.spawn(shutdown_rx);
 
         // Give recovery time to run.
@@ -607,7 +641,8 @@ mod tests {
         )];
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let coordinator = WorkflowCoordinator::new(rx, ctx, &handlers, 3);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
         let join = coordinator.spawn(shutdown_rx);
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

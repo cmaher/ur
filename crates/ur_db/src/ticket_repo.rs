@@ -852,6 +852,16 @@ impl TicketRepo {
         Ok(())
     }
 
+    /// Delete all workflow intents for a ticket (used when cancelling a workflow).
+    pub async fn delete_intents_for_ticket(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow_intent WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     /// Increment the attempts counter on a workflow intent (after a failed processing attempt).
     pub async fn increment_intent_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE workflow_intent SET attempts = attempts + 1 WHERE id = ?")

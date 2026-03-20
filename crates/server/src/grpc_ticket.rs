@@ -92,6 +92,51 @@ pub struct TicketServiceHandler {
     /// Optional channel sender for workflow transition requests.
     /// None on the worker server (no workflow engine).
     pub transition_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>>,
+    /// Optional channel sender for workflow cancellation requests.
+    /// None on the worker server (no workflow engine).
+    pub cancel_tx: Option<tokio::sync::mpsc::Sender<String>>,
+}
+
+impl TicketServiceHandler {
+    /// If the ticket has an active workflow, cancel it: signal the coordinator
+    /// to abort the in-flight handler, then delete the workflow and intent rows.
+    async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
+        let workflow = self
+            .ticket_repo
+            .get_workflow_by_ticket(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        if workflow.is_none() {
+            return Ok(());
+        }
+
+        info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
+
+        // Signal the coordinator to abort any in-flight handler task.
+        if let Some(cancel_tx) = &self.cancel_tx
+            && let Err(e) = cancel_tx.send(ticket_id.to_owned()).await
+        {
+            tracing::warn!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to send cancel signal to coordinator (channel closed)"
+            );
+        }
+
+        // Delete intents and workflow from the database.
+        self.ticket_repo
+            .delete_intents_for_ticket(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        self.ticket_repo
+            .delete_workflow(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -385,6 +430,8 @@ impl TicketService for TicketServiceHandler {
                     .into());
                 }
             }
+
+            self.cancel_active_workflow(&req.id).await?;
         }
 
         self.ticket_repo
