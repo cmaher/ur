@@ -6,7 +6,9 @@ use tracing::{info, warn};
 
 use ur_db::TicketRepo;
 use ur_db::model::{AgentStatus, LifecycleStatus};
-use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
+use ur_rpc::error::{
+    self, ALREADY_EXISTS, DOMAIN_CORE, FAILED_PRECONDITION, INTERNAL, INVALID_ARGUMENT, NOT_FOUND,
+};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
@@ -44,6 +46,15 @@ pub enum CoreError {
 
     #[error("send message failed: {reason}")]
     SendMessageFailed { reason: String },
+
+    #[error("ship failed: precondition not met: {reason}")]
+    ShipPreconditionFailed { reason: String },
+
+    #[error("ship failed: worker already has a lifecycle-managed ticket: {ticket_id}")]
+    ShipAlreadyExists { ticket_id: String },
+
+    #[error("ship failed: {reason}")]
+    ShipFailed { reason: String },
 
     #[error("operation not implemented on worker server")]
     Unimplemented,
@@ -99,6 +110,31 @@ impl From<CoreError> for Status {
                 )
             }
             CoreError::SendMessageFailed { .. } => error::status_with_info(
+                Code::Internal,
+                err.to_string(),
+                DOMAIN_CORE,
+                INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::ShipPreconditionFailed { .. } => error::status_with_info(
+                Code::FailedPrecondition,
+                err.to_string(),
+                DOMAIN_CORE,
+                FAILED_PRECONDITION,
+                HashMap::new(),
+            ),
+            CoreError::ShipAlreadyExists { ticket_id } => {
+                let mut meta = HashMap::new();
+                meta.insert("ticket_id".into(), ticket_id.clone());
+                error::status_with_info(
+                    Code::AlreadyExists,
+                    err.to_string(),
+                    DOMAIN_CORE,
+                    ALREADY_EXISTS,
+                    meta,
+                )
+            }
+            CoreError::ShipFailed { .. } => error::status_with_info(
                 Code::Internal,
                 err.to_string(),
                 DOMAIN_CORE,
@@ -454,9 +490,243 @@ impl CoreService for CoreServiceHandler {
 
     async fn ship_worker(
         &self,
-        _req: Request<ShipWorkerRequest>,
+        req: Request<ShipWorkerRequest>,
     ) -> Result<Response<ShipWorkerResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let req = req.into_inner();
+        info!(worker_id = req.worker_id, "ship_worker request received");
+
+        let (worker, ticket_id) = self.ship_worker_inner(&req.worker_id).await?;
+
+        info!(
+            worker_id = req.worker_id,
+            internal_worker_id = worker.worker_id,
+            ticket_id = ticket_id,
+            "ship_worker completed"
+        );
+
+        Ok(Response::new(ShipWorkerResponse { ticket_id }))
+    }
+}
+
+impl CoreServiceHandler {
+    /// Core logic for `ship_worker`, extracted to keep the RPC method short.
+    ///
+    /// Returns the looked-up worker and the newly created ticket ID.
+    async fn ship_worker_inner(
+        &self,
+        process_id: &str,
+    ) -> Result<(ur_db::model::Worker, String), Status> {
+        // 1. Look up worker by process_id — fail if not found or not running.
+        let worker = self.find_running_worker(process_id).await?;
+
+        // 2. Validate agent_status is Idle.
+        if worker.agent_status != ur_rpc::agent_status::IDLE {
+            return Err(CoreError::ShipPreconditionFailed {
+                reason: format!(
+                    "worker {} agent_status is '{}', expected 'idle'",
+                    process_id, worker.agent_status
+                ),
+            }
+            .into());
+        }
+
+        // 3. Check no lifecycle-managed ticket already has this worker.
+        self.check_no_existing_managed_ticket(&worker.worker_id)
+            .await?;
+
+        // 4. Derive title from git log, falling back to "ship: <worker_id>".
+        let title = self.derive_ship_title(process_id, &worker).await;
+
+        // 5-7. Create ticket, set metadata, and transition to Verifying.
+        let ticket_id = self.create_ship_ticket(process_id, &worker, &title).await?;
+
+        Ok((worker, ticket_id))
+    }
+
+    /// Look up a running worker by its CLI-facing process_id.
+    async fn find_running_worker(&self, process_id: &str) -> Result<ur_db::model::Worker, Status> {
+        let workers = self
+            .worker_repo
+            .list_workers_by_container_status("running")
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("db error: {e}"),
+            })?;
+
+        let worker = workers
+            .into_iter()
+            .find(|w| w.process_id == process_id)
+            .ok_or_else(|| {
+                // Check if the worker exists at all but is not running.
+                CoreError::WorkerNotFound {
+                    worker_id: process_id.to_owned(),
+                }
+            })?;
+
+        if worker.container_status != "running" {
+            return Err(CoreError::ShipPreconditionFailed {
+                reason: format!("worker {} is not running", process_id),
+            }
+            .into());
+        }
+
+        Ok(worker)
+    }
+
+    /// Ensure no lifecycle-managed ticket already references this worker.
+    async fn check_no_existing_managed_ticket(
+        &self,
+        internal_worker_id: &str,
+    ) -> Result<(), Status> {
+        let matched = self
+            .ticket_repo
+            .tickets_by_metadata("worker_id", internal_worker_id)
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("db error checking existing tickets: {e}"),
+            })?;
+
+        // Filter to non-closed tickets and check lifecycle_managed on each.
+        let open_matches: Vec<_> = matched.iter().filter(|m| m.status != "closed").collect();
+
+        for m in open_matches {
+            let ticket =
+                self.ticket_repo
+                    .get_ticket(&m.id)
+                    .await
+                    .map_err(|e| CoreError::ShipFailed {
+                        reason: format!("db error: {e}"),
+                    })?;
+            if ticket.is_some_and(|t| t.lifecycle_managed) {
+                return Err(CoreError::ShipAlreadyExists {
+                    ticket_id: m.id.clone(),
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Derive a ship ticket title from git log, falling back to a default.
+    async fn derive_ship_title(&self, process_id: &str, worker: &ur_db::model::Worker) -> String {
+        let fallback = format!("ship: {}", process_id);
+
+        // Need workspace path for git log.
+        let working_dir = match &worker.workspace_path {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => return fallback,
+        };
+
+        let client =
+            match ur_rpc::proto::builder::BuilderdClient::connect(self.builderd_addr.clone()).await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        worker_id = process_id,
+                        error = %e,
+                        "failed to connect to builderd for git log — using fallback title"
+                    );
+                    return fallback;
+                }
+            };
+
+        match client
+            .exec_collect("git", &["log", "-1", "--format=%s"], &working_dir)
+            .await
+        {
+            Ok(result) if result.exit_code == 0 => {
+                let subject = String::from_utf8_lossy(&result.stdout).trim().to_string();
+                if subject.is_empty() {
+                    fallback
+                } else {
+                    subject
+                }
+            }
+            Ok(_) | Err(_) => fallback,
+        }
+    }
+
+    /// Create the ship ticket, set metadata, and transition to Verifying.
+    async fn create_ship_ticket(
+        &self,
+        process_id: &str,
+        worker: &ur_db::model::Worker,
+        title: &str,
+    ) -> Result<String, Status> {
+        let ticket_id = format!("ur-{}", &uuid::Uuid::new_v4().to_string()[..5]);
+
+        // 5. Create ticket with lifecycle_managed=true, lifecycle_status=Open.
+        let new_ticket = ur_db::model::NewTicket {
+            id: ticket_id.clone(),
+            project: worker.project_key.clone(),
+            type_: "task".to_owned(),
+            priority: 2,
+            parent_id: None,
+            title: title.to_owned(),
+            body: format!("Ship ticket for worker {}", process_id),
+            status: None,
+            lifecycle_status: Some(LifecycleStatus::Open),
+            branch: None,
+            created_at: None,
+        };
+
+        self.ticket_repo
+            .create_ticket(&new_ticket)
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("failed to create ticket: {e}"),
+            })?;
+
+        // Set lifecycle_managed=true via update (not available on NewTicket).
+        let update = ur_db::model::TicketUpdate {
+            lifecycle_managed: Some(true),
+            lifecycle_status: None,
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        self.ticket_repo
+            .update_ticket(&ticket_id, &update)
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("failed to set lifecycle_managed: {e}"),
+            })?;
+
+        // 6. Set worker_id metadata on the ticket.
+        self.ticket_repo
+            .set_meta(&ticket_id, "ticket", "worker_id", &worker.worker_id)
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("failed to set worker_id metadata: {e}"),
+            })?;
+
+        // 7. Transition lifecycle_status Open → Verifying.
+        let transition_update = ur_db::model::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::Verifying),
+            lifecycle_managed: None,
+            status: None,
+            type_: None,
+            priority: None,
+            title: None,
+            body: None,
+            branch: None,
+            parent_id: None,
+            project: None,
+        };
+        self.ticket_repo
+            .update_ticket(&ticket_id, &transition_update)
+            .await
+            .map_err(|e| CoreError::ShipFailed {
+                reason: format!("failed to transition to Verifying: {e}"),
+            })?;
+
+        Ok(ticket_id)
     }
 }
 

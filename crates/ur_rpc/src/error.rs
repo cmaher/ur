@@ -14,6 +14,12 @@ pub const PERMISSION_DENIED: &str = "PERMISSION_DENIED";
 pub const UNAVAILABLE: &str = "UNAVAILABLE";
 
 // ---------------------------------------------------------------------------
+// Core reason codes
+// ---------------------------------------------------------------------------
+pub const FAILED_PRECONDITION: &str = "FAILED_PRECONDITION";
+pub const ALREADY_EXISTS: &str = "ALREADY_EXISTS";
+
+// ---------------------------------------------------------------------------
 // Ticket reason codes
 // ---------------------------------------------------------------------------
 pub const TICKET_HAS_OPEN_CHILDREN: &str = "TICKET_HAS_OPEN_CHILDREN";
