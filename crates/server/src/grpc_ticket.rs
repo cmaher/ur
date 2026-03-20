@@ -11,12 +11,13 @@ use ur_rpc::error::{
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
-    AddLinkResponse, CreateTicketRequest, CreateTicketResponse, CreateWorkflowRequest,
-    CreateWorkflowResponse, DeleteMetaRequest, DeleteMetaResponse, DispatchableTicketsRequest,
-    DispatchableTicketsResponse, GetTicketRequest, GetTicketResponse, ListActivitiesRequest,
-    ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, RedriveTicketRequest,
-    RedriveTicketResponse, RemoveBlockRequest, RemoveBlockResponse, RemoveLinkRequest,
-    RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
+    AddLinkResponse, CancelWorkflowRequest, CancelWorkflowResponse, CreateTicketRequest,
+    CreateTicketResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeleteMetaRequest,
+    DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
+    GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
+    ListTicketsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
+    RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
+    UpdateTicketRequest, UpdateTicketResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -669,6 +670,9 @@ impl TicketService for TicketServiceHandler {
             .parse()
             .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.status)))?;
 
+        // Cancel any existing workflow before creating a new one.
+        self.cancel_active_workflow(&req.ticket_id).await?;
+
         // Create the workflow row.
         let workflow = self
             .ticket_repo
@@ -688,6 +692,18 @@ impl TicketService for TicketServiceHandler {
         Ok(Response::new(CreateWorkflowResponse {
             workflow_id: workflow.id,
         }))
+    }
+
+    async fn cancel_workflow(
+        &self,
+        req: Request<CancelWorkflowRequest>,
+    ) -> Result<Response<CancelWorkflowResponse>, Status> {
+        let req = req.into_inner();
+        info!(ticket_id = %req.ticket_id, "cancel_workflow request");
+
+        self.cancel_active_workflow(&req.ticket_id).await?;
+
+        Ok(Response::new(CancelWorkflowResponse {}))
     }
 
     async fn redrive_ticket(

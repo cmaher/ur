@@ -205,6 +205,12 @@ pub enum TicketArgs {
         linked_id: String,
     },
 
+    /// Cancel an active workflow for a ticket
+    CancelWorkflow {
+        /// Ticket ID
+        id: String,
+    },
+
     /// List dispatchable tickets for an epic
     Dispatchable {
         /// Epic ticket ID

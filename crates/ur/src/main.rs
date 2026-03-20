@@ -716,6 +716,22 @@ async fn process_status(
     Ok(())
 }
 
+/// Cancel any active workflow for a ticket via the CancelWorkflow RPC.
+async fn cancel_workflow(port: u16, ticket_id: &str) -> Result<()> {
+    let channel = connection::connect(port).await?;
+    let mut ticket_client = TicketServiceClient::new(channel);
+
+    ticket_client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await
+        .with_status_context("cancel workflow")?;
+
+    info!(ticket_id, "cancelled active workflow");
+    Ok(())
+}
+
 /// Create a workflow for a ticket with status=awaiting_dispatch via the CreateWorkflow RPC.
 async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
     let channel = connection::connect(port).await?;
@@ -1056,6 +1072,7 @@ async fn handle_worker_launch(
     if force {
         debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
         let _ = process_stop(&mut client, &ticket_id, output).await;
+        cancel_workflow(port, &ticket_id).await?;
     }
     if dispatch {
         dispatch_ticket(port, &ticket_id).await?;

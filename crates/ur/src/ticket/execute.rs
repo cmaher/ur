@@ -30,29 +30,8 @@ where
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     match args {
-        TicketArgs::Create {
-            title,
-            project,
-            ticket_type,
-            parent,
-            priority,
-            body,
-            wip,
-            follow_up,
-        } => {
-            execute_create(
-                client,
-                title,
-                project,
-                ticket_type,
-                parent,
-                priority,
-                body,
-                wip,
-                follow_up,
-            )
-            .await
-        }
+        TicketArgs::Create { .. } => dispatch_create(args, client).await,
+        TicketArgs::Update { .. } => dispatch_update(args, client).await,
         TicketArgs::List {
             project,
             all,
@@ -62,39 +41,6 @@ where
             lifecycle,
         } => execute_list(client, project, all, epic, ticket_type, status, lifecycle).await,
         TicketArgs::Show { id } => execute_show(client, id).await,
-        TicketArgs::Update {
-            id,
-            title,
-            body,
-            status,
-            priority,
-            ticket_type,
-            parent,
-            unparent,
-            force,
-            lifecycle,
-            branch,
-            no_branch,
-            project,
-        } => {
-            execute_update(
-                client,
-                id,
-                title,
-                body,
-                status,
-                priority,
-                ticket_type,
-                parent,
-                unparent,
-                force,
-                lifecycle,
-                branch,
-                no_branch,
-                project,
-            )
-            .await
-        }
         TicketArgs::SetMeta { id, key, value } => execute_set_meta(client, id, key, value).await,
         TicketArgs::DeleteMeta { id, key } => execute_delete_meta(client, id, key).await,
         TicketArgs::AddActivity { id, message, meta } => {
@@ -115,6 +61,7 @@ where
         TicketArgs::RemoveLink { id, linked_id } => {
             execute_remove_link(client, id, linked_id).await
         }
+        TicketArgs::CancelWorkflow { id } => execute_cancel_workflow(client, id).await,
         TicketArgs::Approve {
             id,
             feedback_now,
@@ -127,6 +74,94 @@ where
         }
         TicketArgs::Status { project } => execute_status(client, project).await,
     }
+}
+
+/// Destructure and forward `Create` — extracted to keep `execute` under the line limit.
+async fn dispatch_create<T>(
+    args: TicketArgs,
+    client: &mut TicketServiceClient<T>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let TicketArgs::Create {
+        title,
+        project,
+        ticket_type,
+        parent,
+        priority,
+        body,
+        wip,
+        follow_up,
+    } = args
+    else {
+        unreachable!()
+    };
+    execute_create(
+        client,
+        title,
+        project,
+        ticket_type,
+        parent,
+        priority,
+        body,
+        wip,
+        follow_up,
+    )
+    .await
+}
+
+/// Destructure and forward `Update` — extracted to keep `execute` under the line limit.
+async fn dispatch_update<T>(
+    args: TicketArgs,
+    client: &mut TicketServiceClient<T>,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let TicketArgs::Update {
+        id,
+        title,
+        body,
+        status,
+        priority,
+        ticket_type,
+        parent,
+        unparent,
+        force,
+        lifecycle,
+        branch,
+        no_branch,
+        project,
+    } = args
+    else {
+        unreachable!()
+    };
+    execute_update(
+        client,
+        id,
+        title,
+        body,
+        status,
+        priority,
+        ticket_type,
+        parent,
+        unparent,
+        force,
+        lifecycle,
+        branch,
+        no_branch,
+        project,
+    )
+    .await
 }
 
 async fn execute_list<T>(
@@ -365,6 +400,26 @@ where
         .await
         .with_status_context("unlink tickets")?;
     Ok(TicketOutput::LinkRemoved { id, linked_id })
+}
+
+async fn execute_cancel_workflow<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: id.clone(),
+        })
+        .await
+        .with_status_context("cancel workflow")?;
+    Ok(TicketOutput::WorkflowCancelled { id })
 }
 
 async fn execute_dispatchable<T>(
