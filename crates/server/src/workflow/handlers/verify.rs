@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use ur_config::{ResolvedTemplatePath, resolve_template_path};
 use ur_db::model::LifecycleStatus;
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// Handler for the Implementing -> Verifying transition.
 ///
@@ -28,12 +28,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct VerifyHandler;
 
 impl WorkflowHandler for VerifyHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move { run_verification(&ctx, &ticket_id).await })

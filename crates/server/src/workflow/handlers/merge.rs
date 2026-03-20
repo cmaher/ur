@@ -3,7 +3,7 @@ use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
 use tracing::{error, info, warn};
 use ur_db::model::{LifecycleStatus, TicketFilter, TicketUpdate};
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// Handler for the FeedbackCreating → Merging transition.
 ///
@@ -14,12 +14,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct MergeHandler;
 
 impl WorkflowHandler for MergeHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move { execute_merge(&ctx, &ticket_id).await })

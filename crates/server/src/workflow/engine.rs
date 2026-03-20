@@ -8,7 +8,9 @@ use tracing::{error, info, warn};
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
 
-use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
+use ur_db::model::LifecycleStatus;
+
+use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 
 /// Drives workflow transitions by polling the `workflow_event` table and
 /// dispatching to registered handlers.
@@ -18,7 +20,7 @@ use super::{HandlerEntry, TransitionKey, WorkflowContext, WorkflowHandler};
 #[derive(Clone)]
 pub struct WorkflowEngine {
     ctx: WorkflowContext,
-    handlers: HashMap<TransitionKey, Arc<dyn WorkflowHandler>>,
+    handlers: HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>,
     max_attempts: i32,
     poll_interval: Duration,
 }
@@ -42,9 +44,8 @@ impl WorkflowEngine {
             config,
         };
         let mut handlers = HashMap::new();
-        for (from, to, handler) in handler_entries {
-            let key = TransitionKey { from, to };
-            handlers.insert(key, handler);
+        for (target, handler) in handler_entries {
+            handlers.insert(target, handler);
         }
         Self {
             ctx,
@@ -143,46 +144,46 @@ impl WorkflowEngine {
             return;
         }
 
-        let key = TransitionKey {
-            from: event.old_lifecycle_status,
-            to: event.new_lifecycle_status,
-        };
+        let target = event.new_lifecycle_status;
 
-        let handler = match self.handlers.get(&key) {
+        let handler = match self.handlers.get(&target) {
             Some(h) => h,
             None => {
                 warn!(
                     event_id = %event.id,
-                    transition = %key,
-                    "no handler registered for transition — deleting event"
+                    target = %target,
+                    "no handler registered for target status — deleting event"
                 );
                 self.delete_event(&event.id).await;
                 return;
             }
         };
 
-        match handler.handle(&self.ctx, &event.ticket_id, &key).await {
-            Ok(()) => self.handle_success(&event.id, &event.ticket_id, &key).await,
-            Err(handler_err) => self.handle_failure(&event, &key, handler_err).await,
+        match handler.handle(&self.ctx, &event.ticket_id).await {
+            Ok(()) => {
+                self.handle_success(&event.id, &event.ticket_id, target)
+                    .await
+            }
+            Err(handler_err) => self.handle_failure(&event, target, handler_err).await,
         }
     }
 
     /// Clean up after a successful handler execution.
-    async fn handle_success(&self, event_id: &str, ticket_id: &str, transition: &TransitionKey) {
+    async fn handle_success(&self, event_id: &str, ticket_id: &str, target: LifecycleStatus) {
         info!(
             event_id = %event_id,
             ticket_id = %ticket_id,
-            transition = %transition,
-            "workflow transition completed successfully"
+            target = %target,
+            "workflow handler completed successfully"
         );
         self.delete_event(event_id).await;
     }
 
-    /// Handle a failed transition: increment attempts, stall if threshold reached.
+    /// Handle a failed handler: increment attempts, stall if threshold reached.
     async fn handle_failure(
         &self,
         event: &ur_db::model::WorkflowEvent,
-        transition: &TransitionKey,
+        target: LifecycleStatus,
         handler_err: anyhow::Error,
     ) {
         let new_attempts = event.attempts + 1;
@@ -190,10 +191,10 @@ impl WorkflowEngine {
             error!(
                 event_id = %event.id,
                 ticket_id = %event.ticket_id,
-                transition = %transition,
+                target = %target,
                 attempts = new_attempts,
                 error = %handler_err,
-                "workflow transition failed after max attempts — stalling"
+                "workflow handler failed after max attempts — stalling"
             );
             self.stall_ticket(&event.ticket_id, &format!("{handler_err}"))
                 .await;
@@ -203,10 +204,10 @@ impl WorkflowEngine {
             warn!(
                 event_id = %event.id,
                 ticket_id = %event.ticket_id,
-                transition = %transition,
+                target = %target,
                 attempts = new_attempts,
                 error = %handler_err,
-                "workflow transition failed — will retry"
+                "workflow handler failed — will retry"
             );
         }
         if let Err(e) = self
@@ -319,7 +320,6 @@ mod tests {
             &self,
             _ctx: &WorkflowContext,
             _ticket_id: &str,
-            _transition: &TransitionKey,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>,
         > {
@@ -375,7 +375,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
                 Arc::new(CountingHandler {
                     call_count: call_count.clone(),
@@ -434,7 +433,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
                 Arc::new(CountingHandler {
                     call_count: call_count.clone(),
@@ -489,7 +487,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::Open,
                 LifecycleStatus::Implementing,
                 Arc::new(CountingHandler {
                     call_count: call_count.clone(),
@@ -561,7 +558,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::Open,
                 LifecycleStatus::AwaitingDispatch,
                 Arc::new(CountingHandler {
                     call_count: call_count.clone(),
@@ -632,7 +628,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::Open,
                 LifecycleStatus::AwaitingDispatch,
                 Arc::new(CountingHandler {
                     call_count: Arc::new(AtomicU32::new(0)),
@@ -672,7 +667,6 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![(
-                LifecycleStatus::AwaitingDispatch,
                 LifecycleStatus::Implementing,
                 Arc::new(CountingHandler {
                     call_count: call_count.clone(),

@@ -4,7 +4,7 @@ use tracing::{info, warn};
 
 use ur_db::model::LifecycleStatus;
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// Handler for the Verifying → Pushing transition.
 ///
@@ -20,12 +20,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct PushHandler;
 
 impl WorkflowHandler for PushHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move { handle_push(&ctx, &ticket_id).await })

@@ -1,4 +1,4 @@
-// Handler registry for workflow transitions.
+// Handler registry for workflow states.
 
 mod awaiting_dispatch;
 mod dispatch_implement;
@@ -9,7 +9,7 @@ mod review_start;
 mod verify;
 
 pub use awaiting_dispatch::AwaitingDispatchHandler;
-pub use dispatch_implement::DispatchImplementHandler;
+pub use dispatch_implement::ImplementHandler;
 pub use feedback_create::FeedbackCreateHandler;
 pub use merge::MergeHandler;
 pub use push::PushHandler;
@@ -24,62 +24,28 @@ use super::HandlerEntry;
 
 /// Build the list of all workflow handler registrations.
 ///
-/// Returns a `Vec<HandlerEntry>` to be passed to `WorkflowEngine::new()`.
+/// Returns a `Vec<HandlerEntry>` keyed by target `LifecycleStatus`.
 pub fn build_handlers() -> Vec<HandlerEntry> {
     vec![
-        // Open → AwaitingDispatch: no-op (acknowledge and delete event)
-        (
-            LifecycleStatus::Open,
-            LifecycleStatus::AwaitingDispatch,
-            Arc::new(AwaitingDispatchHandler),
-        ),
-        // AwaitingDispatch → Implementing: dispatch worker with implement RPC
+        // AwaitingDispatch: no-op (acknowledge and delete event)
         (
             LifecycleStatus::AwaitingDispatch,
-            LifecycleStatus::Implementing,
-            Arc::new(DispatchImplementHandler),
+            Arc::new(AwaitingDispatchHandler) as Arc<dyn super::WorkflowHandler>,
         ),
-        // Implementing → Verifying: run pre-push verification hook
+        // Implementing: dispatch worker with implement RPC
+        (LifecycleStatus::Implementing, Arc::new(ImplementHandler)),
+        // Verifying: run pre-push verification hook
+        (LifecycleStatus::Verifying, Arc::new(VerifyHandler)),
+        // Pushing: workflow-driven push handler
+        (LifecycleStatus::Pushing, Arc::new(PushHandler)),
+        // FeedbackCreating: dispatch feedback create RPC to worker
         (
-            LifecycleStatus::Implementing,
-            LifecycleStatus::Verifying,
-            Arc::new(VerifyHandler),
-        ),
-        // Verifying → Pushing: workflow-driven push handler
-        (
-            LifecycleStatus::Verifying,
-            LifecycleStatus::Pushing,
-            Arc::new(PushHandler),
-        ),
-        // InReview → FeedbackCreating: dispatch feedback create RPC to worker
-        (
-            LifecycleStatus::InReview,
             LifecycleStatus::FeedbackCreating,
             Arc::new(FeedbackCreateHandler),
         ),
-        // FeedbackCreating → Merging: merge PR (squash), kill worker, close epic, dispatch children
-        (
-            LifecycleStatus::FeedbackCreating,
-            LifecycleStatus::Merging,
-            Arc::new(MergeHandler),
-        ),
-        // Pushing → Implementing: CI failure detected by GitHub poller
-        (
-            LifecycleStatus::Pushing,
-            LifecycleStatus::Implementing,
-            Arc::new(DispatchImplementHandler),
-        ),
-        // Merging → Implementing: merge conflict during PR merge
-        (
-            LifecycleStatus::Merging,
-            LifecycleStatus::Implementing,
-            Arc::new(DispatchImplementHandler),
-        ),
-        // Pushing → InReview: no-op signal handler
-        (
-            LifecycleStatus::Pushing,
-            LifecycleStatus::InReview,
-            Arc::new(ReviewStartHandler),
-        ),
+        // Merging: merge PR (squash), kill worker, close epic, dispatch children
+        (LifecycleStatus::Merging, Arc::new(MergeHandler)),
+        // InReview: no-op signal handler
+        (LifecycleStatus::InReview, Arc::new(ReviewStartHandler)),
     ]
 }
