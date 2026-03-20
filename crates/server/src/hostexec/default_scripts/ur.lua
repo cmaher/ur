@@ -39,7 +39,7 @@ function transform(command, args, working_dir, worker_context)
 
     -- Readonly subcommands for management commands
     local readonly_subcommands = {
-        ["worker"] = { ["list"] = true, ["status"] = true, ["dir"] = true },
+        ["worker"] = { ["list"] = true, ["describe"] = true, ["dir"] = true },
         ["project"] = { ["list"] = true },
         ["proxy"] = { ["list"] = true },
         ["db"] = { ["list"] = true },

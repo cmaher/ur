@@ -269,8 +269,8 @@ enum WorkerCommands {
     List,
     /// Save credentials from a running container for reuse
     SaveCredentials { worker_id: String },
-    /// Show process status
-    Status { worker_id: Option<String> },
+    /// Show detailed worker information
+    Describe { worker_id: Option<String> },
     /// Send a message to a running worker's agent
     Send { worker_id: String, message: String },
     /// Stop a running worker process
@@ -637,12 +637,12 @@ async fn process_list(
 }
 
 #[instrument(skip(client, output))]
-async fn process_status(
+async fn worker_describe(
     client: &mut CoreServiceClient<Channel>,
     worker_id: Option<&str>,
     output: &OutputManager,
 ) -> Result<()> {
-    info!("querying process status");
+    info!("describing worker");
     let resp = client.worker_list(WorkerListRequest {}).await?;
     let workers = resp.into_inner().workers;
 
@@ -666,47 +666,7 @@ async fn process_status(
             if i > 0 {
                 out.push('\n');
             }
-            fn dash(s: &str) -> &str {
-                if s.is_empty() { "-" } else { s }
-            }
-            let fields: Vec<(&str, &str)> = vec![
-                ("Worker", &w.worker_id),
-                ("Container", dash(&w.container_status)),
-                ("Agent", dash(&w.agent_status)),
-                ("Lifecycle", dash(&w.lifecycle_status)),
-                ("Mode", &w.mode),
-                ("Directory", dash(&w.directory)),
-            ];
-
-            // Find max label width for alignment
-            let label_width = fields.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-
-            for (label, value) in &fields {
-                out.push_str(&format!(
-                    "{:>width$}: {}\n",
-                    label,
-                    value,
-                    width = label_width
-                ));
-            }
-
-            if !w.pr_url.is_empty() {
-                out.push_str(&format!(
-                    "{:>width$}: {}\n",
-                    "PR",
-                    w.pr_url,
-                    width = label_width
-                ));
-            }
-
-            if !w.stall_reason.is_empty() {
-                out.push_str(&format!(
-                    "{:>width$}: {}\n",
-                    "Stalled",
-                    w.stall_reason,
-                    width = label_width
-                ));
-            }
+            format_worker_describe(w, &mut out);
         }
         if out.ends_with('\n') {
             out.pop();
@@ -714,6 +674,39 @@ async fn process_status(
         out
     });
     Ok(())
+}
+
+fn format_worker_describe(w: &WorkerSummary, out: &mut String) {
+    fn dash(s: &str) -> &str {
+        if s.is_empty() { "-" } else { s }
+    }
+    let mut fields: Vec<(&str, &str)> = vec![
+        ("Worker", &w.worker_id),
+        ("Container", dash(&w.container_status)),
+        ("Agent", dash(&w.agent_status)),
+        ("Mode", &w.mode),
+        ("Directory", dash(&w.directory)),
+        ("Workflow", dash(&w.workflow_id)),
+        ("Workflow Status", dash(&w.workflow_status)),
+    ];
+
+    if !w.pr_url.is_empty() {
+        fields.push(("PR", &w.pr_url));
+    }
+    if !w.stall_reason.is_empty() {
+        fields.push(("Stalled", &w.stall_reason));
+    }
+
+    let label_width = fields.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+
+    for (label, value) in &fields {
+        out.push_str(&format!(
+            "{:>width$}: {}\n",
+            label,
+            value,
+            width = label_width
+        ));
+    }
 }
 
 /// Cancel any active workflow for a ticket via the CancelWorkflow RPC.
@@ -920,10 +913,10 @@ async fn handle_worker(
             )
             .await
         }
-        WorkerCommands::Status { worker_id } => {
-            debug!(worker_id = ?worker_id, "querying process status");
+        WorkerCommands::Describe { worker_id } => {
+            debug!(worker_id = ?worker_id, "describing worker");
             let mut client = connect(port).await?;
-            process_status(&mut client, worker_id.as_deref(), output).await
+            worker_describe(&mut client, worker_id.as_deref(), output).await
         }
         WorkerCommands::Send { worker_id, message } => {
             handle_worker_send(port, output, worker_id, message).await
@@ -1174,7 +1167,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
         WorkerCommands::Send { .. } => "send",
         WorkerCommands::Launch { .. } => "launch",
-        WorkerCommands::Status { .. } => "status",
+        WorkerCommands::Describe { .. } => "describe",
         WorkerCommands::Stop { .. } => "stop",
         WorkerCommands::Dir { .. } => "dir",
         WorkerCommands::Code { .. } => "code",
