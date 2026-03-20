@@ -97,6 +97,7 @@ pub struct NewTicket {
     pub created_at: Option<String>,
 }
 
+#[derive(Default)]
 pub struct TicketUpdate {
     pub status: Option<String>,
     pub lifecycle_status: Option<LifecycleStatus>,

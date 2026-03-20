@@ -934,6 +934,80 @@ impl TicketRepo {
             )
             .collect())
     }
+
+    /// Return all tickets that have a workflow with the given status.
+    /// Used by GithubPoller to find tickets in pushing/in_review workflow states.
+    pub async fn tickets_by_workflow_status(
+        &self,
+        status: LifecycleStatus,
+    ) -> Result<Vec<Ticket>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at
+             FROM ticket t
+             INNER JOIN workflow w ON w.ticket_id = t.id
+             WHERE w.status = ?
+             ORDER BY t.priority ASC, t.created_at ASC",
+        )
+        .bind(status.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ticket {
+                        id,
+                        project,
+                        type_,
+                        status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
+                        lifecycle_managed,
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        branch,
+                        created_at,
+                        updated_at,
+                    }
+                },
+            )
+            .collect())
+    }
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {

@@ -67,10 +67,10 @@ impl GithubPollerManager {
 
     /// Run one full scan: check all pushing and in_review tickets.
     async fn poll_once(&self) {
-        // Phase 1: Check pushing tickets for CI completion.
+        // Phase 1: Check pushing tickets (by workflow status) for CI completion.
         match self
             .ticket_repo
-            .tickets_by_lifecycle_status(LifecycleStatus::Pushing)
+            .tickets_by_workflow_status(LifecycleStatus::Pushing)
             .await
         {
             Ok(tickets) => {
@@ -80,14 +80,14 @@ impl GithubPollerManager {
                 }
             }
             Err(e) => {
-                error!(error = %e, "failed to query pushing tickets");
+                error!(error = %e, "failed to query pushing workflows");
             }
         }
 
-        // Phase 2: Check in_review tickets for review signals.
+        // Phase 2: Check in_review tickets (by workflow status) for review signals.
         match self
             .ticket_repo
-            .tickets_by_lifecycle_status(LifecycleStatus::InReview)
+            .tickets_by_workflow_status(LifecycleStatus::InReview)
             .await
         {
             Ok(tickets) => {
@@ -97,7 +97,7 @@ impl GithubPollerManager {
                 }
             }
             Err(e) => {
-                error!(error = %e, "failed to query in_review tickets");
+                error!(error = %e, "failed to query in_review workflows");
             }
         }
     }
@@ -304,10 +304,9 @@ impl GithubPollerManager {
                 info!(
                     ticket_id = %ticket.id,
                     pr_number = %pr_number,
-                    "PR closed without merge — reverting ticket to open"
+                    "PR closed without merge — deleting workflow and reverting ticket to open"
                 );
-                self.send_transition(&ticket.id, LifecycleStatus::Open)
-                    .await;
+                self.delete_workflow_and_revert(&ticket.id).await;
             }
             Ok(ReviewSignal::Pending) => {
                 // No actionable signal yet — will check again next scan.
@@ -334,6 +333,30 @@ impl GithubPollerManager {
                 target = %to,
                 error = %e,
                 "failed to send transition request to coordinator"
+            );
+        }
+    }
+
+    /// Delete the workflow for a ticket and revert the ticket status to open.
+    /// Used when a PR is closed without merge.
+    async fn delete_workflow_and_revert(&self, ticket_id: &str) {
+        if let Err(e) = self.ticket_repo.delete_workflow(ticket_id).await {
+            error!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to delete workflow for closed PR"
+            );
+            return;
+        }
+        let update = ur_db::model::TicketUpdate {
+            status: Some("open".to_string()),
+            ..Default::default()
+        };
+        if let Err(e) = self.ticket_repo.update_ticket(ticket_id, &update).await {
+            error!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to revert ticket to open after PR close"
             );
         }
     }
