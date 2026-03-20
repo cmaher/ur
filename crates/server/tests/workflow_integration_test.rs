@@ -348,6 +348,7 @@ struct LifecycleCounters {
     implementing: Arc<AtomicU32>,
     verifying: Arc<AtomicU32>,
     pushing: Arc<AtomicU32>,
+    awaiting_feedback: Arc<AtomicU32>,
     in_review: Arc<AtomicU32>,
     feedback_creating: Arc<AtomicU32>,
     merging: Arc<AtomicU32>,
@@ -355,14 +356,16 @@ struct LifecycleCounters {
 
 /// Build the full set of mock handlers for lifecycle testing.
 ///
-/// Verifying, Pushing, and InReview handlers auto-advance to simulate the real flow.
+/// Verifying, Pushing, AwaitingFeedback, and InReview handlers auto-advance to simulate the real flow.
 fn build_lifecycle_handlers() -> LifecycleCounters {
     let (await_h, await_count, _) = MockHandler::new("awaiting_dispatch");
     let (impl_h, impl_count, _) = MockHandler::new("implementing");
     let (verify_h, verify_count, _) = MockHandler::new("verifying");
     let verify_h = verify_h.with_auto_advance(LifecycleStatus::Pushing);
     let (push_h, push_count, _) = MockHandler::new("pushing");
-    let push_h = push_h.with_auto_advance(LifecycleStatus::InReview);
+    let push_h = push_h.with_auto_advance(LifecycleStatus::AwaitingFeedback);
+    let (awaiting_fb_h, awaiting_fb_count, _) = MockHandler::new("awaiting_feedback");
+    let awaiting_fb_h = awaiting_fb_h.with_auto_advance(LifecycleStatus::InReview);
     let (review_h, review_count, _) = MockHandler::new("in_review");
     let review_h = review_h.with_auto_advance(LifecycleStatus::FeedbackCreating);
     let (feedback_h, feedback_count, _) = MockHandler::new("feedback_creating");
@@ -374,6 +377,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
             (LifecycleStatus::Implementing, Arc::new(impl_h)),
             (LifecycleStatus::Verifying, Arc::new(verify_h)),
             (LifecycleStatus::Pushing, Arc::new(push_h)),
+            (LifecycleStatus::AwaitingFeedback, Arc::new(awaiting_fb_h)),
             (LifecycleStatus::InReview, Arc::new(review_h)),
             (LifecycleStatus::FeedbackCreating, Arc::new(feedback_h)),
             (LifecycleStatus::Merging, Arc::new(merge_h)),
@@ -382,6 +386,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
         implementing: impl_count,
         verifying: verify_count,
         pushing: push_count,
+        awaiting_feedback: awaiting_fb_count,
         in_review: review_count,
         feedback_creating: feedback_count,
         merging: merge_count,
@@ -400,8 +405,8 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
 ///
 /// Flow:
 ///   AwaitingDispatch → (idle signal) → Implementing → (step complete) →
-///   Verifying → (auto) → Pushing → (auto) → InReview → (auto) →
-///   FeedbackCreating → (step complete + feedback_mode=later) → Merging
+///   Verifying → (auto) → Pushing → (auto) → AwaitingFeedback → (auto) →
+///   InReview → (auto) → FeedbackCreating → (step complete + feedback_mode=later) → Merging
 #[tokio::test]
 async fn full_lifecycle_awaiting_dispatch_through_merging() {
     let (_db, ticket_repo, worker_repo) = setup_db().await;
@@ -427,7 +432,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
     assert_eq!(status, LifecycleStatus::Implementing);
     assert_eq!(lc.implementing.load(Ordering::SeqCst), 1);
 
-    // Phase 2: Step complete cascades: Implementing → Verifying → Pushing → InReview → FeedbackCreating
+    // Phase 2: Step complete cascades: Implementing → Verifying → Pushing → AwaitingFeedback → InReview → FeedbackCreating
     h.send_step_complete(worker_id).await;
     let status = h
         .wait_for_status(ticket_id, LifecycleStatus::FeedbackCreating, 3000)
@@ -435,6 +440,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
     assert_eq!(status, LifecycleStatus::FeedbackCreating);
     assert_eq!(lc.verifying.load(Ordering::SeqCst), 1);
     assert_eq!(lc.pushing.load(Ordering::SeqCst), 1);
+    assert_eq!(lc.awaiting_feedback.load(Ordering::SeqCst), 1);
     assert_eq!(lc.in_review.load(Ordering::SeqCst), 1);
     assert_eq!(lc.feedback_creating.load(Ordering::SeqCst), 1);
 

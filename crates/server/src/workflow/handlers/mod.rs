@@ -1,6 +1,7 @@
 // Handler registry for workflow states.
 
 mod awaiting_dispatch;
+mod awaiting_feedback;
 mod dispatch_implement;
 mod feedback_create;
 mod merge;
@@ -9,6 +10,7 @@ mod review_start;
 mod verify;
 
 pub use awaiting_dispatch::AwaitingDispatchHandler;
+pub use awaiting_feedback::AwaitingFeedbackHandler;
 pub use dispatch_implement::ImplementHandler;
 pub use feedback_create::FeedbackCreateHandler;
 pub use merge::MergeHandler;
@@ -38,6 +40,11 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
         (LifecycleStatus::Verifying, Arc::new(VerifyHandler)),
         // Pushing: workflow-driven push handler
         (LifecycleStatus::Pushing, Arc::new(PushHandler)),
+        // AwaitingFeedback: no-op signal (push done, CI being polled)
+        (
+            LifecycleStatus::AwaitingFeedback,
+            Arc::new(AwaitingFeedbackHandler),
+        ),
         // FeedbackCreating: dispatch feedback create RPC to worker
         (
             LifecycleStatus::FeedbackCreating,

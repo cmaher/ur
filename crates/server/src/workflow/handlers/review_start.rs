@@ -2,7 +2,7 @@ use tracing::info;
 
 use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
-/// No-op handler for the Pushing → InReview transition.
+/// No-op handler for the AwaitingFeedback → InReview transition.
 ///
 /// The transition itself is the meaningful signal (e.g., a PR was created).
 /// Future iterations may add TUI/dashboard notifications here.

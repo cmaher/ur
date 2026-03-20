@@ -59,7 +59,7 @@ pub enum TicketArgs {
         #[arg(long)]
         status: Option<String>,
 
-        /// Filter by lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        /// Filter by lifecycle status (design, open, implementing, pushing, awaiting_feedback, in_review, etc.)
         #[arg(long)]
         lifecycle: Option<String>,
     },
@@ -108,7 +108,7 @@ pub enum TicketArgs {
         #[arg(long)]
         force: bool,
 
-        /// New lifecycle status (design, open, implementing, pushing, in_review, etc.)
+        /// New lifecycle status (design, open, implementing, pushing, awaiting_feedback, in_review, etc.)
         #[arg(long)]
         lifecycle: Option<String>,
 

@@ -6,6 +6,7 @@ pub const DESIGN: &str = "design";
 pub const OPEN: &str = "open";
 pub const IMPLEMENTING: &str = "implementing";
 pub const PUSHING: &str = "pushing";
+pub const AWAITING_FEEDBACK: &str = "awaiting_feedback";
 pub const IN_REVIEW: &str = "in_review";
 pub const FEEDBACK_CREATING: &str = "feedback_creating";
 pub const MERGING: &str = "merging";

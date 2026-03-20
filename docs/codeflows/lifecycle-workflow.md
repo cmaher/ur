@@ -28,6 +28,9 @@ The system uses two database tables:
                                            |                    |
                                            |                    v (hook passes)
                                            |                 Pushing
+                                           |                    |
+                                           |                    v (push + PR)
+                                           |              AwaitingFeedback
                                            |                 |    |
                                            |    (CI failure) |    | (CI green)
                                            |  ───────────────┘    v
@@ -55,7 +58,8 @@ The system uses two database tables:
 | `Implementing` | Worker is actively implementing the ticket |
 | `Verifying` | Server runs pre-push verification hook |
 | `Pushing` | Server pushes branch and creates/updates PR |
-| `InReview` | PR is open, waiting for human review signal |
+| `AwaitingFeedback` | Push complete, PR created, waiting for CI checks |
+| `InReview` | CI passed, PR is open, waiting for human review signal |
 | `FeedbackCreating` | Worker creates feedback summary from review |
 | `Merging` | Server merges PR (squash), kills worker, closes epic, dispatches children |
 | `Done` | Terminal state |
@@ -98,7 +102,7 @@ The step router is a pure function mapping `workflow_status` → `NextStepResult
 - `now` (changes requested) → `Implementing`
 - `later` (approved) → `Merging`
 
-The router only handles workerd-driven transitions. Poller-driven transitions (Pushing → InReview, InReview → FeedbackCreating) and handler-driven transitions (Verifying → Pushing) bypass the router entirely.
+The router only handles workerd-driven transitions. Poller-driven transitions (AwaitingFeedback → InReview, InReview → FeedbackCreating) and handler-driven transitions (Verifying → Pushing, Pushing → AwaitingFeedback) bypass the router entirely.
 
 Source: `crates/server/src/workflow/step_router.rs`
 
@@ -112,6 +116,7 @@ Handlers are keyed by **target status**, not by transition. Each handler runs wh
 | `Implementing` | `ImplementHandler` | Sends Implement RPC to workerd (with /clear) |
 | `Verifying` | `VerifyHandler` | Runs pre-push verification hook via builderd |
 | `Pushing` | `PushHandler` | Pushes branch, creates/updates PR |
+| `AwaitingFeedback` | `AwaitingFeedbackHandler` | No-op signal (push done, CI being polled) |
 | `InReview` | `ReviewStartHandler` | No-op signal handler |
 | `FeedbackCreating` | `FeedbackCreateHandler` | Promotes to epic, sends feedback create RPC to worker |
 | `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes epic, dispatches children |
@@ -129,8 +134,9 @@ Different lifecycle transitions are triggered by different sources:
 | Implementing → Verifying | Worker step complete (`WorkflowStepComplete` RPC) |
 | Verifying → Pushing | VerifyHandler (hook passes or not configured) |
 | Verifying → Implementing | VerifyHandler (hook fails, under fix limit) |
-| Pushing → InReview | GithubPollerManager (CI green or no checks) |
-| Pushing → Implementing | GithubPollerManager (CI failure) |
+| Pushing → AwaitingFeedback | PushHandler (push success + PR created) |
+| AwaitingFeedback → InReview | GithubPollerManager (CI green or no checks) |
+| AwaitingFeedback → Implementing | GithubPollerManager (CI failure) |
 | InReview → FeedbackCreating | GithubPollerManager (review signal or autoapprove) |
 | FeedbackCreating → Implementing | Worker step complete + `feedback_mode=now` |
 | FeedbackCreating → Merging | Worker step complete + `feedback_mode=later` |
@@ -189,7 +195,7 @@ ur-server main()
 │   └── engine.spawn(shutdown_rx)        // polls workflow_event table (legacy)
 │
 ├── GithubPollerManager::new(...)
-│   └── poller.spawn(shutdown_rx)        // scans pushing/in_review every 30s
+│   └── poller.spawn(shutdown_rx)        // scans awaiting_feedback/in_review every 30s
 │
 ├── serve_grpc(host_addr, ...)           // host CLI gRPC server
 │
@@ -306,9 +312,9 @@ Source: `crates/server/src/workflow/handlers/merge.rs`
 
 ## GithubPollerManager
 
-Scans every 30s for tickets in `pushing` or `in_review` workflow states:
+Scans every 30s for tickets in `awaiting_feedback` or `in_review` workflow states:
 
-### Pushing tickets
+### AwaitingFeedback tickets
 - Queries GitHub CI status via `GhBackend::check_runs()`
 - **All green / No checks**: Transition to `InReview`
 - **Failed**: Record failing checks as activity, transition to `Implementing`

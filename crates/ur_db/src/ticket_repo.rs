@@ -982,7 +982,7 @@ impl TicketRepo {
     }
 
     /// Return all tickets with the given lifecycle status.
-    /// Used by GithubPoller to find tickets in pushing/in_review states.
+    /// Used by GithubPoller to find tickets in awaiting_feedback/in_review states.
     pub async fn tickets_by_lifecycle_status(
         &self,
         status: LifecycleStatus,
@@ -1055,7 +1055,7 @@ impl TicketRepo {
     }
 
     /// Return all tickets that have a workflow with the given status.
-    /// Used by GithubPoller to find tickets in pushing/in_review workflow states.
+    /// Used by GithubPoller to find tickets in awaiting_feedback/in_review workflow states.
     pub async fn tickets_by_workflow_status(
         &self,
         status: LifecycleStatus,

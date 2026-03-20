@@ -12,7 +12,7 @@ use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, Workflo
 /// parses the result, and transitions accordingly:
 ///
 /// - **Success / ForcePushed / UpToDate**: create a PR if none exists, then
-///   transition to InReview.
+///   transition to AwaitingFeedback.
 /// - **Rejected (non-fast-forward)** on a non-protected branch: retry with
 ///   `force_push` (force-with-lease).
 /// - **Rejected (non-fast-forward)** on a protected branch: stall the agent.
@@ -138,7 +138,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     }
 }
 
-/// Handle a successful push: record activity, create PR, advance to InReview.
+/// Handle a successful push: record activity, create PR, advance to AwaitingFeedback.
 async fn handle_push_success(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -150,7 +150,7 @@ async fn handle_push_success(
     let result_label = push_status_label(&push_result.status);
     add_push_activity(ctx, ticket_id, result_label, &push_result.summary).await?;
     ensure_pr(ctx, ticket_id, branch, title, body).await?;
-    advance_to_in_review(ctx, ticket_id).await
+    advance_to_awaiting_feedback(ctx, ticket_id).await
 }
 
 /// Parameters for handling a rejected push, grouped to keep argument count manageable.
@@ -229,7 +229,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
             )
             .await?;
             ensure_pr(ctx, ticket_id, branch, title, body).await?;
-            advance_to_in_review(ctx, ticket_id).await
+            advance_to_awaiting_feedback(ctx, ticket_id).await
         }
         PushStatus::Rejected {
             reason: retry_reason,
@@ -518,15 +518,18 @@ async fn resolve_gh_repo(
     Ok(derived)
 }
 
-/// Send a transition request to InReview via the coordinator channel.
-async fn advance_to_in_review(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
+/// Send a transition request to AwaitingFeedback via the coordinator channel.
+async fn advance_to_awaiting_feedback(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+) -> anyhow::Result<()> {
     ctx.transition_tx
         .send(TransitionRequest {
             ticket_id: ticket_id.to_owned(),
-            target_status: LifecycleStatus::InReview,
+            target_status: LifecycleStatus::AwaitingFeedback,
         })
         .await
-        .map_err(|e| anyhow::anyhow!("failed to send InReview transition: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to send AwaitingFeedback transition: {e}"))?;
     Ok(())
 }
 

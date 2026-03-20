@@ -15,7 +15,7 @@ use super::TransitionRequest;
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
 
 /// Polls GitHub for CI status and PR review signals on tickets in
-/// `pushing` and `in_review` lifecycle states.
+/// `awaiting_feedback` and `in_review` lifecycle states.
 ///
 /// Runs as a separate tokio task from the workflow engine. Sends
 /// transition requests to the WorkflowCoordinator via an mpsc channel
@@ -65,22 +65,22 @@ impl GithubPollerManager {
         }
     }
 
-    /// Run one full scan: check all pushing and in_review tickets.
+    /// Run one full scan: check all awaiting_feedback and in_review tickets.
     async fn poll_once(&self) {
-        // Phase 1: Check pushing tickets (by workflow status) for CI completion.
+        // Phase 1: Check awaiting_feedback tickets (by workflow status) for CI completion.
         match self
             .ticket_repo
-            .tickets_by_workflow_status(LifecycleStatus::Pushing)
+            .tickets_by_workflow_status(LifecycleStatus::AwaitingFeedback)
             .await
         {
             Ok(tickets) => {
                 for ticket in &tickets {
-                    self.check_pushing_ticket(ticket).await;
+                    self.check_awaiting_feedback_ticket(ticket).await;
                     tokio::time::sleep(API_CALL_DELAY).await;
                 }
             }
             Err(e) => {
-                error!(error = %e, "failed to query pushing workflows");
+                error!(error = %e, "failed to query awaiting_feedback workflows");
             }
         }
 
@@ -149,7 +149,7 @@ impl GithubPollerManager {
             .await;
     }
 
-    async fn check_pushing_ticket(&self, ticket: &Ticket) {
+    async fn check_awaiting_feedback_ticket(&self, ticket: &Ticket) {
         let meta = match self.ticket_repo.get_meta(&ticket.id, "ticket").await {
             Ok(m) => m,
             Err(e) => {
@@ -165,7 +165,7 @@ impl GithubPollerManager {
         info!(
             ticket_id = %ticket.id,
             pr_number = pr_number,
-            "checking CI status for pushing ticket"
+            "checking CI status for awaiting_feedback ticket"
         );
 
         let backend = GhBackend {
