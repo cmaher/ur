@@ -1246,15 +1246,7 @@ fn scenario_dispatch_creates_workflow(env: &TestEnv) {
         // CreateWorkflow for the same ticket should fail.
         let dup_output = run_cmd(
             &env.ur,
-            &[
-                "worker",
-                "launch",
-                "-p",
-                env.project_key,
-                "-d",
-                "-f",
-                &ticket_id,
-            ],
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
             &env_slice,
         );
         assert!(
@@ -1352,15 +1344,7 @@ fn scenario_ticket_close_cancels_workflow(env: &TestEnv) {
         // should reject closed tickets.
         let dispatch_closed_output = run_cmd(
             &env.ur,
-            &[
-                "worker",
-                "launch",
-                "-p",
-                env.project_key,
-                "-d",
-                "-f",
-                &ticket_id,
-            ],
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
             &env_slice,
         );
         assert!(
