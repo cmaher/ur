@@ -112,7 +112,7 @@ impl TestHarness {
             transition_tx: transition_tx.clone(),
         };
 
-        let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let coord_handle = coordinator.spawn(shutdown_rx);
 
@@ -245,9 +245,11 @@ fn dummy_config() -> Arc<ur_config::Config> {
         server: ur_config::ServerConfig {
             container_command: "docker".into(),
             stale_worker_ttl_days: 7,
-            max_transition_attempts: 3,
+            max_implement_cycles: Some(6),
             poll_interval_ms: 500,
             github_scan_interval_secs: 30,
+            builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+            builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
         projects: std::collections::HashMap::new(),
     })

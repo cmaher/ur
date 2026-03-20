@@ -17,6 +17,9 @@ use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 ///
 /// Implements `Clone` and follows the manager pattern: holds references to
 /// dependencies injected via the constructor.
+/// Default maximum event-level retries for the polling engine.
+const ENGINE_MAX_EVENT_ATTEMPTS: i32 = 3;
+
 #[derive(Clone)]
 pub struct WorkflowEngine {
     ctx: WorkflowContext,
@@ -35,7 +38,7 @@ impl WorkflowEngine {
         handler_entries: Vec<HandlerEntry>,
         transition_tx: tokio::sync::mpsc::Sender<super::TransitionRequest>,
     ) -> Self {
-        let max_attempts = config.server.max_transition_attempts;
+        let max_attempts = ENGINE_MAX_EVENT_ATTEMPTS;
         let poll_interval = Duration::from_millis(config.server.poll_interval_ms);
         let ctx = WorkflowContext {
             ticket_repo,
@@ -304,9 +307,11 @@ mod tests {
             server: ur_config::ServerConfig {
                 container_command: "docker".into(),
                 stale_worker_ttl_days: 7,
-                max_transition_attempts: 3,
+                max_implement_cycles: Some(6),
                 poll_interval_ms: 500,
                 github_scan_interval_secs: 30,
+                builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+                builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
             },
             projects: std::collections::HashMap::new(),
         })

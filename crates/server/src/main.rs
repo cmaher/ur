@@ -302,7 +302,6 @@ async fn serve_grpc_servers(
         cancel_rx,
         coordinator_ctx,
         &handlers,
-        config.server.max_transition_attempts,
     );
     let coordinator_handle = coordinator.spawn(workflow_shutdown_rx.clone());
 

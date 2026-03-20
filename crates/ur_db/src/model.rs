@@ -207,6 +207,12 @@ pub struct Workflow {
     pub id: String,
     pub ticket_id: String,
     pub status: LifecycleStatus,
+    pub stalled: bool,
+    pub stall_reason: String,
+    pub implement_cycles: i32,
+    pub worker_id: String,
+    pub noverify: bool,
+    pub feedback_mode: String,
     pub created_at: String,
 }
 
@@ -215,7 +221,6 @@ pub struct WorkflowIntent {
     pub id: String,
     pub ticket_id: String,
     pub target_status: LifecycleStatus,
-    pub attempts: i32,
     pub created_at: String,
 }
 
