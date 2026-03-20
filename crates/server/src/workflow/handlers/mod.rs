@@ -39,6 +39,12 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             LifecycleStatus::Implementing,
             Arc::new(DispatchImplementHandler),
         ),
+        // Open → Verifying: direct verification for shipped work (skips dispatch)
+        (
+            LifecycleStatus::Open,
+            LifecycleStatus::Verifying,
+            Arc::new(VerifyHandler),
+        ),
         // Implementing → Verifying: run pre-push verification hook
         (
             LifecycleStatus::Implementing,
@@ -82,4 +88,21 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             Arc::new(ReviewStartHandler),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_to_verifying_transition_registered() {
+        let handlers = build_handlers();
+        let found = handlers.iter().any(|(from, to, _)| {
+            *from == LifecycleStatus::Open && *to == LifecycleStatus::Verifying
+        });
+        assert!(
+            found,
+            "Open → Verifying transition should be registered in build_handlers()"
+        );
+    }
 }
