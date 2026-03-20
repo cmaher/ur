@@ -3,6 +3,7 @@ pub mod backup;
 pub mod config;
 pub mod grpc;
 pub mod grpc_hostexec;
+pub mod grpc_knowledge;
 pub mod grpc_remote_repo;
 pub mod grpc_server;
 pub mod grpc_ticket;

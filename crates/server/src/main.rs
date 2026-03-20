@@ -7,7 +7,9 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
+use ur_db::{
+    DatabaseManager, GraphManager, KnowledgeRepo, SnapshotManager, TicketRepo, WorkerRepo,
+};
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -179,12 +181,20 @@ async fn init_and_serve(
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
 
+    let valid_projects: std::collections::HashSet<String> = cfg.projects.keys().cloned().collect();
+
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
-        valid_projects: cfg.projects.keys().cloned().collect(),
+        valid_projects: valid_projects.clone(),
         workflow_dispatcher: None, // set in serve_grpc_servers after builderd connects
         transition_tx: None,       // set in serve_grpc_servers after builderd connects
         cancel_tx: None,           // set in serve_grpc_servers after builderd connects
+    };
+
+    let knowledge_repo = KnowledgeRepo::new(db.pool().clone());
+    let knowledge_handler = ur_server::grpc_knowledge::KnowledgeServiceHandler {
+        knowledge_repo,
+        valid_projects,
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -208,6 +218,7 @@ async fn init_and_serve(
         grpc_handler,
         rag_handler,
         ticket_handler,
+        knowledge_handler,
         worker_manager,
         worker_repo,
         ticket_repo,
@@ -228,6 +239,7 @@ async fn serve_grpc_servers(
     grpc_handler: ur_server::grpc::CoreServiceHandler,
     rag_handler: ur_server::rag::RagServiceHandler,
     mut ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
+    knowledge_handler: ur_server::grpc_knowledge::KnowledgeServiceHandler,
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
@@ -319,6 +331,7 @@ async fn serve_grpc_servers(
         grpc_handler,
         rag_handler.clone(),
         ticket_handler.clone(),
+        knowledge_handler.clone(),
     );
 
     let remote_repo_handler = {
@@ -341,6 +354,7 @@ async fn serve_grpc_servers(
         host_workspace,
         rag_handler,
         ticket_handler,
+        knowledge_handler,
         remote_repo_handler,
         transition_tx,
     );

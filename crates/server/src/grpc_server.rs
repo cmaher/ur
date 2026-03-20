@@ -6,6 +6,7 @@ use ur_db::{TicketRepo, WorkerRepo};
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
+use ur_rpc::proto::knowledge::knowledge_service_server::KnowledgeServiceServer;
 use ur_rpc::proto::rag::rag_service_server::RagServiceServer;
 use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoServiceServer;
 use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
@@ -22,13 +23,15 @@ pub async fn serve_grpc(
     handler: CoreServiceHandler,
     rag_handler: crate::rag::RagServiceHandler,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+    knowledge_handler: crate::grpc_knowledge::KnowledgeServiceHandler,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "host gRPC server listening");
 
     let router = Server::builder()
         .add_service(CoreServiceServer::new(handler))
         .add_service(RagServiceServer::new(rag_handler))
-        .add_service(TicketServiceServer::new(ticket_handler));
+        .add_service(TicketServiceServer::new(ticket_handler))
+        .add_service(KnowledgeServiceServer::new(knowledge_handler));
 
     router.serve(addr).await?;
 
@@ -53,6 +56,7 @@ pub async fn serve_worker_grpc(
     host_workspace: std::path::PathBuf,
     rag_handler: crate::rag::RagServiceHandler,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
+    knowledge_handler: crate::grpc_knowledge::KnowledgeServiceHandler,
     remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
     transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> anyhow::Result<()> {
@@ -103,6 +107,11 @@ pub async fn serve_worker_grpc(
 
     routes.add_service(RemoteRepoServiceServer::with_interceptor(
         remote_repo_handler,
+        interceptor.clone(),
+    ));
+
+    routes.add_service(KnowledgeServiceServer::with_interceptor(
+        knowledge_handler,
         interceptor.clone(),
     ));
 
