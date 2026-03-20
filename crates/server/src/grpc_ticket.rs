@@ -428,8 +428,6 @@ impl TicketService for TicketServiceHandler {
                     .into());
                 }
             }
-
-            self.cancel_active_workflow(&req.id).await?;
         }
 
         self.ticket_repo

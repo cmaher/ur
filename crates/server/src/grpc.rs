@@ -694,10 +694,11 @@ async fn handle_workflow_step_complete(
     use ur_db::model::LifecycleStatus;
 
     // 1. Find the ticket assigned to this worker via workflow table.
+    // Don't filter by ticket status — closed tickets still need their workflow
+    // advanced (e.g., implementing → pushing) so the branch gets pushed and PR'd.
     let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
-    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
-    if assigned.is_empty() {
+    if matched.is_empty() {
         info!(
             worker_id = %worker_id,
             "workflow_step_complete: worker has no assigned ticket — no-op"
@@ -705,7 +706,7 @@ async fn handle_workflow_step_complete(
         return Ok(());
     }
 
-    let ticket_id = &assigned[0].id;
+    let ticket_id = &matched[0].id;
 
     // 2. Look up the workflow status for this ticket.
     let workflow = ticket_repo
@@ -768,13 +769,12 @@ async fn handle_awaiting_dispatch_readiness(
     use ur_db::model::LifecycleStatus;
 
     let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
-    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
-    if assigned.is_empty() {
+    if matched.is_empty() {
         return Ok(());
     }
 
-    let ticket_id = &assigned[0].id;
+    let ticket_id = &matched[0].id;
 
     // Check the workflow table for an awaiting_dispatch workflow.
     let workflow = ticket_repo.get_workflow_by_ticket(ticket_id).await?;
@@ -818,9 +818,7 @@ async fn handle_request_human_activity(
 ) -> Result<(), anyhow::Error> {
     let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
 
-    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
-
-    if assigned.is_empty() {
+    if matched.is_empty() {
         warn!(
             worker_id = %worker_id,
             "request-human: worker has no assigned ticket — cannot record activity"
@@ -828,7 +826,7 @@ async fn handle_request_human_activity(
         return Ok(());
     }
 
-    let ticket_id = &assigned[0].id;
+    let ticket_id = &matched[0].id;
 
     let activity = ticket_repo
         .add_activity(ticket_id, "agent", message)
