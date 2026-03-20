@@ -344,7 +344,7 @@ async fn stop_server(
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
     let port = config.server_port;
-    if let Some(channel) = connection::try_connect(port).await {
+    if let Some(channel) = connection::try_connect(port) {
         let mut client = CoreServiceClient::new(channel);
         info!("server reachable — stopping workers via gRPC");
         log.info("ur stop: stopping workers via gRPC");

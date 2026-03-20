@@ -9,7 +9,7 @@ pub use format::{format_ticket_detail, format_ticket_list};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
@@ -140,11 +140,10 @@ pub fn format_output(output: &TicketOutput) -> String {
 
 async fn connect_ticket(port: u16) -> Result<TicketServiceClient<Channel>> {
     let addr = format!("http://127.0.0.1:{port}");
-    let channel = Endpoint::try_from(addr)?
-        .connect()
-        .await
-        .context("server is not running — run 'ur server start' first")?;
-    Ok(TicketServiceClient::new(channel))
+    let retry_channel =
+        ur_rpc::retry::RetryChannel::new(&addr, ur_rpc::retry::RetryConfig::default())
+            .context("invalid server address")?;
+    Ok(TicketServiceClient::new(retry_channel.channel().clone()))
 }
 
 /// Extract the project prefix from a ticket ID (format: `{project}-{hash}`).

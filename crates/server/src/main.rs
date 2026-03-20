@@ -241,11 +241,12 @@ async fn serve_grpc_servers(
     // Create shutdown channel for workflow engine and github poller.
     let (workflow_shutdown_tx, workflow_shutdown_rx) = watch::channel(false);
 
-    // Connect a BuilderdClient for the workflow engine and github poller.
+    // Create a BuilderdClient for the workflow engine and github poller via retry channel.
+    let workflow_retry_channel =
+        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
+            .expect("failed to create builderd retry channel for workflow engine");
     let workflow_builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
-            .await
-            .expect("failed to connect to builderd for workflow engine");
+        ur_rpc::proto::builder::BuilderdClient::new(workflow_retry_channel.channel().clone());
 
     // Clone repos before they are moved into gRPC server handlers.
     let engine_ticket_repo = ticket_repo.clone();
@@ -309,10 +310,11 @@ async fn serve_grpc_servers(
     );
 
     let remote_repo_handler = {
+        let retry_channel =
+            ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
+                .expect("failed to create builderd retry channel for remote_repo service");
         let builderd_client =
-            ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
-                .await
-                .expect("failed to connect to builderd for remote_repo service");
+            ur_rpc::proto::builder::BuilderdClient::new(retry_channel.channel().clone());
         ur_server::grpc_remote_repo::RemoteRepoServiceHandler { builderd_client }
     };
 
@@ -388,9 +390,11 @@ async fn main() -> anyhow::Result<()> {
     let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
 
-    let builderd_client = ur_rpc::proto::builder::BuilderdClient::connect(builderd_addr.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to connect to builderd: {e}"))?;
+    let builderd_retry_channel =
+        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
+            .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
+    let builderd_client =
+        ur_rpc::proto::builder::BuilderdClient::new(builderd_retry_channel.channel().clone());
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };

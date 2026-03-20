@@ -3,6 +3,7 @@ use ur_db::WorkerRepo;
 use ur_db::model::AgentStatus;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{CreateFeedbackRequest, ImplementRequest, SendMessageRequest};
+use ur_rpc::retry::{RetryChannel, RetryConfig};
 
 /// Thin client for sending messages to a workerd instance inside a worker container.
 ///
@@ -14,8 +15,8 @@ use ur_rpc::proto::workerd::{CreateFeedbackRequest, ImplementRequest, SendMessag
 /// update the worker's agent status to `Working`.
 #[derive(Clone)]
 pub struct WorkerdClient {
-    /// gRPC address of the workerd daemon (e.g., `http://ur-worker-alice:9120`).
-    addr: String,
+    /// Lazy retry channel for connecting to the workerd daemon.
+    retry_channel: RetryChannel,
     /// Optional worker repo + ID for automatic agent status updates.
     status_tracking: Option<StatusTracking>,
 }
@@ -28,8 +29,10 @@ struct StatusTracking {
 
 impl WorkerdClient {
     pub fn new(addr: String) -> Self {
+        let retry_channel =
+            RetryChannel::new(&addr, RetryConfig::default()).expect("invalid workerd address");
         Self {
-            addr,
+            retry_channel,
             status_tracking: None,
         }
     }
@@ -37,8 +40,10 @@ impl WorkerdClient {
     /// Create a client that automatically sets agent status to Working after
     /// each successful dispatch.
     pub fn with_status_tracking(addr: String, worker_repo: WorkerRepo, worker_id: String) -> Self {
+        let retry_channel =
+            RetryChannel::new(&addr, RetryConfig::default()).expect("invalid workerd address");
         Self {
-            addr,
+            retry_channel,
             status_tracking: Some(StatusTracking {
                 worker_repo,
                 worker_id,
@@ -68,9 +73,7 @@ impl WorkerdClient {
     /// Returns `Ok(())` on success, or `Err(reason)` if workerd reports failure
     /// or is unreachable.
     pub async fn send_message(&self, message: &str) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::connect(self.addr.clone())
-            .await
-            .map_err(|e| format!("workerd unavailable at {}: {e}", self.addr))?;
+        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
         let req = SendMessageRequest {
             message: message.to_string(),
@@ -92,9 +95,7 @@ impl WorkerdClient {
 
     /// Fire-and-forget: send an /implement skill invocation to the worker.
     pub async fn implement(&self, ticket_id: &str) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::connect(self.addr.clone())
-            .await
-            .map_err(|e| format!("workerd unavailable at {}: {e}", self.addr))?;
+        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
         let req = ImplementRequest {
             ticket_id: ticket_id.to_string(),
@@ -115,9 +116,7 @@ impl WorkerdClient {
         ticket_id: &str,
         pr_number: u32,
     ) -> Result<(), String> {
-        let mut client = WorkerDaemonServiceClient::connect(self.addr.clone())
-            .await
-            .map_err(|e| format!("workerd unavailable at {}: {e}", self.addr))?;
+        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
         let req = CreateFeedbackRequest {
             ticket_id: ticket_id.to_string(),
