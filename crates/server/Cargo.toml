@@ -27,7 +27,7 @@ serde = { workspace = true }
 toml = "0.8"
 rag = { path = "../rag" }
 remote_repo = { path = "../remote_repo" }
-ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
+ur_rpc = { path = "../ur_rpc", features = ["stream", "error", "retry"] }
 ur_utils = { path = "../ur_utils" }
 serde_json.workspace = true
 

@@ -1,6 +1,6 @@
 use anyhow::bail;
 use local_repo::LocalRepo;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
@@ -32,6 +32,16 @@ impl WorkflowHandler for ImplementHandler {
 }
 
 async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
+    // 0. Check implement cycle limit before doing any work.
+    if check_cycle_limit(ctx, ticket_id).await? {
+        return Ok(());
+    }
+
+    // 0b. Increment implement_cycles for this transition.
+    ctx.ticket_repo
+        .increment_implement_cycles(ticket_id)
+        .await?;
+
     // 1. Load ticket to check branch field.
     let ticket = ctx
         .ticket_repo
@@ -39,11 +49,18 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-    // 2. Resolve the assigned worker from ticket metadata.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot dispatch implement")
-    })?;
+    // 2. Resolve the assigned worker from workflow table.
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!(
+            "no worker_id on workflow for ticket {ticket_id} — cannot dispatch implement"
+        );
+    }
+    let worker_id = &workflow.worker_id;
 
     // 3. Look up the worker to get process_id for container name derivation.
     let worker = ctx
@@ -156,4 +173,41 @@ async fn read_worker_branch(
     }
 
     Ok(branch)
+}
+
+/// Check whether the implement cycle limit has been reached for this workflow.
+///
+/// Returns `true` if the limit was reached and the workflow was stalled (caller
+/// should return `Ok(())` without dispatching). Returns `false` if dispatch
+/// should proceed.
+async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<bool> {
+    let max_cycles = match ctx.config.server.max_implement_cycles {
+        Some(max) => max,
+        None => return Ok(false), // No limit configured.
+    };
+
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+
+    if workflow.implement_cycles >= max_cycles {
+        let reason = format!(
+            "implement cycle limit reached ({}/{})",
+            workflow.implement_cycles, max_cycles
+        );
+        warn!(
+            ticket_id = %ticket_id,
+            implement_cycles = workflow.implement_cycles,
+            max_cycles = max_cycles,
+            "implement cycle limit reached — stalling workflow"
+        );
+        ctx.ticket_repo
+            .set_workflow_stalled(ticket_id, &reason)
+            .await?;
+        return Ok(true);
+    }
+
+    Ok(false)
 }

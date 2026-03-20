@@ -306,12 +306,12 @@ impl CoreService for CoreServiceHandler {
                 reason: e.to_string(),
             })?;
 
-        // Bind the ticket to its worker for workflow handler lookups.
+        // Bind the ticket to its worker on the workflow table (if a workflow exists).
         self.ticket_repo
-            .set_meta(&process_id, "ticket", "worker_id", &worker_id_str)
+            .set_workflow_worker_id(&process_id, &worker_id_str)
             .await
             .map_err(|e| CoreError::RunFailed {
-                reason: format!("failed to set worker_id metadata: {e}"),
+                reason: format!("failed to set workflow worker_id: {e}"),
             })?;
 
         // Pool slots check out a branch named after the worker ID; persist
@@ -375,25 +375,29 @@ impl CoreService for CoreServiceHandler {
                 .as_ref()
                 .map(|t| t.lifecycle_status.to_string())
                 .unwrap_or_default();
-            let (stall_reason, pr_url) = if ticket.is_some() {
+            let pr_url = if ticket.is_some() {
                 let mut meta = self
                     .ticket_repo
                     .get_meta(&s.process_id, "ticket")
                     .await
                     .unwrap_or_default();
-                (
-                    meta.remove("stall_reason").unwrap_or_default(),
-                    meta.remove("pr_url").unwrap_or_default(),
-                )
+                meta.remove("pr_url").unwrap_or_default()
             } else {
-                (String::new(), String::new())
+                String::new()
             };
-            let (workflow_id, workflow_status) = self
+            let workflow = self
                 .ticket_repo
                 .get_workflow_by_ticket(&s.process_id)
                 .await
                 .ok()
-                .flatten()
+                .flatten();
+            let workflow_stalled = workflow.as_ref().map(|w| w.stalled).unwrap_or(false);
+            let workflow_stall_reason = workflow
+                .as_ref()
+                .map(|w| w.stall_reason.clone())
+                .unwrap_or_default();
+            let stall_reason = workflow_stall_reason.clone();
+            let (workflow_id, workflow_status) = workflow
                 .map(|w| (w.id, w.status.to_string()))
                 .unwrap_or_default();
             workers.push(WorkerSummary {
@@ -411,6 +415,8 @@ impl CoreService for CoreServiceHandler {
                 pr_url,
                 workflow_id,
                 workflow_status,
+                workflow_stalled,
+                workflow_stall_reason,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))
@@ -687,10 +693,8 @@ async fn handle_workflow_step_complete(
     use crate::workflow::{NextStepResult, WorkerdNextStepRouter};
     use ur_db::model::LifecycleStatus;
 
-    // 1. Find the ticket assigned to this worker via metadata.
-    let matched = ticket_repo
-        .tickets_by_metadata("worker_id", worker_id)
-        .await?;
+    // 1. Find the ticket assigned to this worker via workflow table.
+    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
     let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
     if assigned.is_empty() {
@@ -725,9 +729,8 @@ async fn handle_workflow_step_complete(
             send_transition(transition_tx, ticket_id, to).await
         }
         NextStepResult::AdvanceByFeedbackMode => {
-            let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
-            let feedback_mode = meta.get("feedback_mode").map(|s| s.as_str()).unwrap_or("");
-            let to = match feedback_mode {
+            let feedback_mode = &workflow.feedback_mode;
+            let to = match feedback_mode.as_str() {
                 ur_rpc::feedback_mode::NOW => LifecycleStatus::Implementing,
                 _ => LifecycleStatus::Merging,
             };
@@ -764,9 +767,7 @@ async fn handle_awaiting_dispatch_readiness(
 ) -> Result<(), anyhow::Error> {
     use ur_db::model::LifecycleStatus;
 
-    let matched = ticket_repo
-        .tickets_by_metadata("worker_id", worker_id)
-        .await?;
+    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
     let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
     if assigned.is_empty() {
@@ -815,9 +816,7 @@ async fn handle_request_human_activity(
     ticket_repo: &TicketRepo,
     message: &str,
 ) -> Result<(), anyhow::Error> {
-    let matched = ticket_repo
-        .tickets_by_metadata("worker_id", worker_id)
-        .await?;
+    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
 
     let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 

@@ -44,7 +44,6 @@ pub struct WorkflowCoordinator {
     ctx: WorkflowContext,
     handlers: HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>,
     in_flight: HashMap<String, TicketSlot>,
-    max_attempts: i32,
 }
 
 impl WorkflowCoordinator {
@@ -53,7 +52,6 @@ impl WorkflowCoordinator {
         cancel_rx: mpsc::Receiver<String>,
         ctx: WorkflowContext,
         handler_entries: &[HandlerEntry],
-        max_attempts: i32,
     ) -> Self {
         let mut handlers = HashMap::new();
         for (target, handler) in handler_entries {
@@ -68,7 +66,6 @@ impl WorkflowCoordinator {
             ctx,
             handlers,
             in_flight: HashMap::new(),
-            max_attempts,
         }
     }
 
@@ -103,19 +100,26 @@ impl WorkflowCoordinator {
         );
 
         for intent in intents {
-            if intent.attempts >= self.max_attempts {
+            // Check if the workflow is already stalled.
+            let stalled = match self
+                .ctx
+                .ticket_repo
+                .get_workflow_by_ticket(&intent.ticket_id)
+                .await
+            {
+                Ok(Some(wf)) => wf.stalled,
+                _ => false,
+            };
+
+            if stalled {
                 warn!(
                     intent_id = %intent.id,
                     ticket_id = %intent.ticket_id,
-                    attempts = intent.attempts,
-                    "skipping stalled intent (max attempts reached)"
+                    "skipping stalled workflow intent on recovery"
                 );
-                self.stall_and_delete(
-                    &intent.ticket_id,
-                    &intent.id,
-                    "max attempts reached on recovery",
-                )
-                .await;
+                let _ = self.ctx.ticket_repo.delete_intent(&intent.id).await.map_err(
+                    |e| error!(error = %e, intent_id = %intent.id, "failed to delete stalled intent"),
+                );
                 continue;
             }
 
@@ -228,19 +232,11 @@ impl WorkflowCoordinator {
     fn spawn_handler_task(&mut self, ticket_id: String, target_status: LifecycleStatus) {
         let ctx = self.ctx.clone();
         let handler = self.handlers.get(&target_status).cloned();
-        let max_attempts = self.max_attempts;
         let completion_ticket_id = ticket_id.clone();
         let completion_tx = self.completion_tx.clone();
 
         let handle = tokio::spawn(async move {
-            run_handler(
-                ctx,
-                handler,
-                &completion_ticket_id,
-                target_status,
-                max_attempts,
-            )
-            .await;
+            run_handler(ctx, handler, &completion_ticket_id, target_status).await;
             // Notify coordinator that this ticket's handler is done.
             let _ = completion_tx.send(completion_ticket_id).await;
         });
@@ -253,33 +249,17 @@ impl WorkflowCoordinator {
             },
         );
     }
-
-    /// Stall a ticket and delete its intent.
-    async fn stall_and_delete(&self, ticket_id: &str, intent_id: &str, reason: &str) {
-        if let Err(e) = self
-            .ctx
-            .ticket_repo
-            .set_meta(ticket_id, "ticket", "stall_reason", reason)
-            .await
-        {
-            error!(error = %e, "failed to set stall_reason metadata");
-        }
-        if let Err(e) = self.ctx.ticket_repo.delete_intent(intent_id).await {
-            error!(error = %e, intent_id = %intent_id, "failed to delete stalled intent");
-        }
-    }
 }
 
 /// Execute a handler for a ticket transition, managing intent lifecycle.
 ///
 /// This runs inside a spawned task. On success, deletes the intent.
-/// On failure, increments attempts and stalls if max is reached.
+/// On failure, stalls the workflow.
 async fn run_handler(
     ctx: WorkflowContext,
     handler: Option<Arc<dyn WorkflowHandler>>,
     ticket_id: &str,
     target_status: LifecycleStatus,
-    max_attempts: i32,
 ) {
     // Update workflow status in DB.
     if let Err(e) = ctx
@@ -325,14 +305,7 @@ async fn run_handler(
             cleanup_intent(&ctx.ticket_repo, ticket_id).await;
         }
         Err(handler_err) => {
-            handle_failure(
-                &ctx.ticket_repo,
-                ticket_id,
-                target_status,
-                handler_err,
-                max_attempts,
-            )
-            .await;
+            handle_failure(&ctx.ticket_repo, ticket_id, target_status, handler_err).await;
         }
     }
 }
@@ -356,67 +329,28 @@ async fn cleanup_intent(ticket_repo: &TicketRepo, ticket_id: &str) {
     }
 }
 
-/// Handle a failed handler execution: increment attempts, stall if over max.
+/// Handle a failed handler execution: stall the workflow and clean up the intent.
 async fn handle_failure(
     ticket_repo: &TicketRepo,
     ticket_id: &str,
     target_status: LifecycleStatus,
     handler_err: anyhow::Error,
-    max_attempts: i32,
 ) {
-    let intents = match ticket_repo.list_intents().await {
-        Ok(i) => i,
-        Err(e) => {
-            error!(error = %e, "failed to list intents for failure handling");
-            return;
-        }
-    };
+    error!(
+        ticket_id = %ticket_id,
+        target = %target_status,
+        error = %handler_err,
+        "workflow handler failed — stalling workflow"
+    );
 
-    let intent = intents.into_iter().find(|i| i.ticket_id == ticket_id);
-    let intent = match intent {
-        Some(i) => i,
-        None => {
-            error!(ticket_id = %ticket_id, "no intent found for failed handler");
-            return;
-        }
-    };
-
-    let new_attempts = intent.attempts + 1;
-
-    if new_attempts >= max_attempts {
-        error!(
-            ticket_id = %ticket_id,
-            target = %target_status,
-            attempts = new_attempts,
-            error = %handler_err,
-            "workflow handler failed after max attempts — stalling"
-        );
-        if let Err(e) = ticket_repo
-            .set_meta(
-                ticket_id,
-                "ticket",
-                "stall_reason",
-                &format!("{handler_err}"),
-            )
-            .await
-        {
-            error!(error = %e, "failed to set stall_reason metadata");
-        }
-        if let Err(e) = ticket_repo.delete_intent(&intent.id).await {
-            error!(error = %e, "failed to delete stalled intent");
-        }
-    } else {
-        warn!(
-            ticket_id = %ticket_id,
-            target = %target_status,
-            attempts = new_attempts,
-            error = %handler_err,
-            "workflow handler failed — will retry"
-        );
-        if let Err(e) = ticket_repo.increment_intent_attempts(&intent.id).await {
-            error!(error = %e, "failed to increment intent attempts");
-        }
+    if let Err(e) = ticket_repo
+        .set_workflow_stalled(ticket_id, &format!("{handler_err}"))
+        .await
+    {
+        error!(error = %e, "failed to set workflow stalled");
     }
+
+    cleanup_intent(ticket_repo, ticket_id).await;
 }
 
 /// Create a clonable sender for submitting transition requests.
@@ -497,9 +431,11 @@ mod tests {
             server: ur_config::ServerConfig {
                 container_command: "docker".into(),
                 stale_worker_ttl_days: 7,
-                max_transition_attempts: 3,
+                max_implement_cycles: Some(6),
                 poll_interval_ms: 500,
                 github_scan_interval_secs: 30,
+                builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+                builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
             },
             projects: std::collections::HashMap::new(),
         })
@@ -573,7 +509,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_cancel_tx, cancel_rx) = cancel_channel(16);
-        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
         tx.send(TransitionRequest {
@@ -623,7 +559,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_cancel_tx, cancel_rx) = cancel_channel(16);
-        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
         // Give recovery time to run.
@@ -640,18 +576,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_stalls_after_max_attempts_on_recovery() {
+    async fn coordinator_skips_stalled_workflow_on_recovery() {
         let (_tmp, repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-stall1").await;
 
-        // Pre-create an intent already at max attempts.
-        let intent = repo
-            .create_intent("ur-stall1", LifecycleStatus::Implementing)
+        // Pre-create a workflow and mark it stalled.
+        repo.create_workflow("ur-stall1", LifecycleStatus::Implementing)
             .await
             .unwrap();
-        for _ in 0..3 {
-            repo.increment_intent_attempts(&intent.id).await.unwrap();
-        }
+        repo.set_workflow_stalled("ur-stall1", "previous failure")
+            .await
+            .unwrap();
+
+        // Pre-create an intent to simulate crash recovery.
+        repo.create_intent("ur-stall1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
         let (_tx, rx) = channel(16);
@@ -667,27 +607,30 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_cancel_tx, cancel_rx) = cancel_channel(16);
-        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Handler should NOT be called — intent was already stalled.
+        // Handler should NOT be called — workflow is stalled.
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             0,
-            "stalled intent should not trigger handler"
+            "stalled workflow intent should not trigger handler"
         );
 
-        // Intent should be deleted and stall_reason set.
+        // Intent should be deleted.
         let intents = repo.list_intents().await.unwrap();
         assert!(intents.is_empty(), "stalled intent should be deleted");
 
-        let meta = repo.get_meta("ur-stall1", "ticket").await.unwrap();
-        assert!(
-            meta.contains_key("stall_reason"),
-            "stall_reason should be set"
-        );
+        // Workflow should still be stalled.
+        let wf = repo
+            .get_workflow_by_ticket("ur-stall1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wf.stalled, "workflow should remain stalled");
+        assert_eq!(wf.stall_reason, "previous failure");
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -723,7 +666,7 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_cancel_tx, cancel_rx) = cancel_channel(16);
-        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
         // Send both transitions back-to-back: the second should be queued
@@ -754,6 +697,65 @@ mod tests {
             implement_count.load(Ordering::SeqCst),
             1,
             "implementing handler should run after awaiting_dispatch completes"
+        );
+
+        shutdown_tx.send(true).unwrap();
+        join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn coordinator_stalls_workflow_on_handler_failure() {
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        create_test_ticket(&repo, "ur-fail1").await;
+
+        // Create a workflow row so set_workflow_stalled has something to update.
+        repo.create_workflow("ur-fail1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let (tx, rx) = channel(16);
+        let ctx = make_ctx(repo.clone(), worker_repo);
+
+        let handlers: Vec<HandlerEntry> = vec![(
+            LifecycleStatus::Implementing,
+            Arc::new(CountingHandler {
+                call_count: call_count.clone(),
+                should_fail: true,
+            }) as Arc<dyn WorkflowHandler>,
+        )];
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
+        let join = coordinator.spawn(shutdown_rx);
+
+        tx.send(TransitionRequest {
+            ticket_id: "ur-fail1".to_string(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .unwrap();
+
+        // Give the handler time to run.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Workflow should be stalled with the error message.
+        let wf = repo
+            .get_workflow_by_ticket("ur-fail1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wf.stalled, "workflow should be stalled after failure");
+        assert_eq!(wf.stall_reason, "intentional test failure");
+
+        // Intent should be cleaned up.
+        let intents = repo.list_intents().await.unwrap();
+        assert!(
+            intents.is_empty(),
+            "intents should be cleaned up after failure"
         );
 
         shutdown_tx.send(true).unwrap();

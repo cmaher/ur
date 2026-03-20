@@ -708,6 +708,12 @@ impl TicketRepo {
             id,
             ticket_id: ticket_id.to_owned(),
             status,
+            stalled: false,
+            stall_reason: String::new(),
+            implement_cycles: 0,
+            worker_id: String::new(),
+            noverify: false,
+            feedback_mode: String::new(),
             created_at: now,
         })
     }
@@ -717,19 +723,53 @@ impl TicketRepo {
         &self,
         ticket_id: &str,
     ) -> Result<Option<Workflow>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT id, ticket_id, status, created_at FROM workflow WHERE ticket_id = ?",
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                bool,
+                String,
+                i32,
+                String,
+                bool,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+             FROM workflow WHERE ticket_id = ?",
         )
         .bind(ticket_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|(id, ticket_id, status_str, created_at)| Workflow {
-            id,
-            ticket_id,
-            status: status_str.parse::<LifecycleStatus>().unwrap_or_default(),
-            created_at,
-        }))
+        Ok(row.map(
+            |(
+                id,
+                ticket_id,
+                status_str,
+                stalled,
+                stall_reason,
+                implement_cycles,
+                worker_id,
+                noverify,
+                feedback_mode,
+                created_at,
+            )| Workflow {
+                id,
+                ticket_id,
+                status: status_str.parse::<LifecycleStatus>().unwrap_or_default(),
+                stalled,
+                stall_reason,
+                implement_cycles,
+                worker_id,
+                noverify,
+                feedback_mode,
+                created_at,
+            },
+        ))
     }
 
     /// Update the status of a workflow.
@@ -757,6 +797,88 @@ impl TicketRepo {
         Ok(())
     }
 
+    /// Mark a workflow as stalled with a reason.
+    pub async fn set_workflow_stalled(
+        &self,
+        ticket_id: &str,
+        reason: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET stalled = 1, stall_reason = ? WHERE ticket_id = ?")
+            .bind(reason)
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Clear a workflow stall (reset stalled flag and reason).
+    pub async fn clear_workflow_stall(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET stalled = 0, stall_reason = '' WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Increment the implement_cycles counter on a workflow.
+    pub async fn increment_implement_cycles(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE workflow SET implement_cycles = implement_cycles + 1 WHERE ticket_id = ?",
+        )
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Set the worker_id on a workflow.
+    pub async fn set_workflow_worker_id(
+        &self,
+        ticket_id: &str,
+        worker_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET worker_id = ? WHERE ticket_id = ?")
+            .bind(worker_id)
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Set the noverify flag on a workflow.
+    pub async fn set_workflow_noverify(
+        &self,
+        ticket_id: &str,
+        noverify: bool,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET noverify = ? WHERE ticket_id = ?")
+            .bind(noverify)
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Set the feedback_mode on a workflow.
+    pub async fn set_workflow_feedback_mode(
+        &self,
+        ticket_id: &str,
+        feedback_mode: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET feedback_mode = ? WHERE ticket_id = ?")
+            .bind(feedback_mode)
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
     // ============================================================
     // WorkflowIntent CRUD
     // ============================================================
@@ -771,8 +893,8 @@ impl TicketRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "INSERT INTO workflow_intent (id, ticket_id, target_status, attempts, created_at)
-             VALUES (?, ?, ?, 0, ?)",
+            "INSERT INTO workflow_intent (id, ticket_id, target_status, created_at)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(ticket_id)
@@ -785,7 +907,6 @@ impl TicketRepo {
             id,
             ticket_id: ticket_id.to_owned(),
             target_status,
-            attempts: 0,
             created_at: now,
         })
     }
@@ -793,8 +914,8 @@ impl TicketRepo {
     /// Poll the oldest unprocessed workflow intent.
     /// Returns `None` if no intents are pending.
     pub async fn poll_intent(&self) -> Result<Option<WorkflowIntent>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, i32, String)>(
-            "SELECT id, ticket_id, target_status, attempts, created_at
+        let row = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT id, ticket_id, target_status, created_at
              FROM workflow_intent
              ORDER BY created_at ASC
              LIMIT 1",
@@ -803,13 +924,12 @@ impl TicketRepo {
         .await?;
 
         Ok(row.map(
-            |(id, ticket_id, target_status_str, attempts, created_at)| WorkflowIntent {
+            |(id, ticket_id, target_status_str, created_at)| WorkflowIntent {
                 id,
                 ticket_id,
                 target_status: target_status_str
                     .parse::<LifecycleStatus>()
                     .unwrap_or_default(),
-                attempts,
                 created_at,
             },
         ))
@@ -818,8 +938,8 @@ impl TicketRepo {
     /// List all workflow intents, ordered by creation time (oldest first).
     /// Used for startup recovery to re-spawn handlers for incomplete intents.
     pub async fn list_intents(&self) -> Result<Vec<WorkflowIntent>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, i32, String)>(
-            "SELECT id, ticket_id, target_status, attempts, created_at
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT id, ticket_id, target_status, created_at
              FROM workflow_intent
              ORDER BY created_at ASC",
         )
@@ -829,13 +949,12 @@ impl TicketRepo {
         Ok(rows
             .into_iter()
             .map(
-                |(id, ticket_id, target_status_str, attempts, created_at)| WorkflowIntent {
+                |(id, ticket_id, target_status_str, created_at)| WorkflowIntent {
                     id,
                     ticket_id,
                     target_status: target_status_str
                         .parse::<LifecycleStatus>()
                         .unwrap_or_default(),
-                    attempts,
                     created_at,
                 },
             )
@@ -856,16 +975,6 @@ impl TicketRepo {
     pub async fn delete_intents_for_ticket(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM workflow_intent WHERE ticket_id = ?")
             .bind(ticket_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Increment the attempts counter on a workflow intent (after a failed processing attempt).
-    pub async fn increment_intent_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow_intent SET attempts = attempts + 1 WHERE id = ?")
-            .bind(id)
             .execute(&self.pool)
             .await?;
 
@@ -1016,6 +1125,36 @@ impl TicketRepo {
                     }
                 },
             )
+            .collect())
+    }
+
+    /// Return all tickets that have a workflow with the given worker_id.
+    /// Used to look up which ticket is assigned to a specific worker.
+    pub async fn tickets_by_workflow_worker_id(
+        &self,
+        worker_id: &str,
+    ) -> Result<Vec<MetadataMatchTicket>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT t.id, t.title, t.type, t.status
+             FROM ticket t
+             INNER JOIN workflow w ON w.ticket_id = t.id
+             WHERE w.worker_id = ?
+             ORDER BY t.priority ASC",
+        )
+        .bind(worker_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, type_, status)| MetadataMatchTicket {
+                id,
+                title,
+                type_,
+                status,
+                key: "worker_id".to_string(),
+                value: worker_id.to_string(),
+            })
             .collect())
     }
 }

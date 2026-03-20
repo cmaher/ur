@@ -5,6 +5,9 @@ pub mod agent_status;
 pub mod feedback_mode;
 pub mod lifecycle;
 
+#[cfg(feature = "retry")]
+pub mod retry;
+
 #[cfg(feature = "stream")]
 pub mod stream;
 

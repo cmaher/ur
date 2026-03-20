@@ -28,12 +28,18 @@ async fn execute_merge(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), any
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-    // 2. Read metadata.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
+    // 2. Read worker_id from workflow table, pr_number/gh_repo from ticket metadata.
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!("no worker_id on workflow for ticket {ticket_id} — cannot merge");
+    }
+    let worker_id = &workflow.worker_id;
 
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot merge")
-    })?;
+    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
 
     let pr_number = meta.get("pr_number").ok_or_else(|| {
         anyhow::anyhow!("no pr_number metadata on ticket {ticket_id} — cannot merge PR")

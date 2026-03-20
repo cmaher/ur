@@ -43,10 +43,15 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     let project_key = &ticket.project;
 
     // 2. Resolve worker and slot to get the working directory.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run push")
-    })?;
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!("no worker_id on workflow for ticket {ticket_id} — cannot run push");
+    }
+    let worker_id = &workflow.worker_id;
 
     let worker_slot = ctx
         .worker_repo
@@ -86,7 +91,6 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     // 4. Handle based on push status.
     match &push_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
-            reset_fix_attempts(ctx, ticket_id).await?;
             handle_push_success(
                 ctx,
                 ticket_id,
@@ -216,7 +220,6 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
 
     match &force_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
-            reset_fix_attempts(ctx, ticket_id).await?;
             let result_label = push_status_label(&force_result.status);
             add_push_activity(
                 ctx,
@@ -543,14 +546,6 @@ async fn add_push_activity(
     );
     ctx.ticket_repo
         .add_activity(ticket_id, "workflow", &message)
-        .await?;
-    Ok(())
-}
-
-/// Reset `fix_attempt_count` metadata to 0 on successful push.
-async fn reset_fix_attempts(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    ctx.ticket_repo
-        .set_meta(ticket_id, "ticket", "fix_attempt_count", "0")
         .await?;
     Ok(())
 }

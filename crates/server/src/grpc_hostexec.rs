@@ -11,7 +11,7 @@ use ur_rpc::error::{
     self, BUILDERD_UNAVAILABLE, COMMAND_NOT_ALLOWED, DOMAIN_HOSTEXEC, INTERNAL, INVALID_ARGUMENT,
     NOT_FOUND, TRANSFORM_REJECTED,
 };
-use ur_rpc::proto::builder::builder_daemon_service_client::BuilderDaemonServiceClient;
+use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::proto::builder::builder_exec_message::Payload as BuilderPayload;
 use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
@@ -135,7 +135,7 @@ pub struct HostExecServiceHandler {
     pub lua: LuaTransformManager,
     pub worker_manager: WorkerManager,
     pub projects: HashMap<String, ur_config::ProjectConfig>,
-    pub builderd_addr: String,
+    pub builderd_client: BuilderdClient,
     pub host_workspace: std::path::PathBuf,
 }
 
@@ -221,7 +221,7 @@ impl HostExecService for HostExecServiceHandler {
         );
 
         forward_to_builderd(
-            &self.builderd_addr,
+            &self.builderd_client,
             transform_result,
             cmd_config.long_lived,
             is_bidi,
@@ -270,15 +270,13 @@ async fn forward_stdin_to_builder(
 }
 
 async fn forward_to_builderd(
-    builderd_addr: &str,
+    builderd_client: &BuilderdClient,
     transform_result: crate::hostexec::lua_transform::TransformResult,
     long_lived: bool,
     is_bidi: bool,
     inbound: Streaming<HostExecMessage>,
 ) -> Result<Response<CommandOutputStream>, Status> {
-    let mut client = BuilderDaemonServiceClient::connect(builderd_addr.to_owned())
-        .await
-        .map_err(|_| HostExecError::BuilderdUnavailable)?;
+    let mut client = builderd_client.clone();
 
     let builder_req = BuilderExecRequest {
         command: transform_result.command,

@@ -344,7 +344,7 @@ async fn stop_server(
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
     let port = config.server_port;
-    if let Some(channel) = connection::try_connect(port).await {
+    if let Some(channel) = connection::try_connect(port) {
         let mut client = CoreServiceClient::new(channel);
         info!("server reachable — stopping workers via gRPC");
         log.info("ur stop: stopping workers via gRPC");
@@ -693,8 +693,14 @@ fn format_worker_describe(w: &WorkerSummary, out: &mut String) {
     if !w.pr_url.is_empty() {
         fields.push(("PR", &w.pr_url));
     }
-    if !w.stall_reason.is_empty() {
-        fields.push(("Stalled", &w.stall_reason));
+    let stall_display;
+    if w.workflow_stalled {
+        stall_display = if w.workflow_stall_reason.is_empty() {
+            "yes".to_owned()
+        } else {
+            format!("yes \u{2014} {}", w.workflow_stall_reason)
+        };
+        fields.push(("Stalled", &stall_display));
     }
 
     let label_width = fields.iter().map(|(l, _)| l.len()).max().unwrap_or(0);

@@ -139,10 +139,10 @@ impl GithubPollerManager {
     async fn set_feedback_mode_and_transition(&self, ticket_id: &str, feedback_mode: &str) {
         if let Err(e) = self
             .ticket_repo
-            .set_meta(ticket_id, "ticket", "feedback_mode", feedback_mode)
+            .set_workflow_feedback_mode(ticket_id, feedback_mode)
             .await
         {
-            error!(ticket_id = %ticket_id, error = %e, "failed to set feedback_mode");
+            error!(ticket_id = %ticket_id, error = %e, "failed to set workflow feedback_mode");
             return;
         }
         self.send_transition(ticket_id, LifecycleStatus::FeedbackCreating)

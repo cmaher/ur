@@ -66,9 +66,11 @@ async fn make_components_with_db(
         server: ur_config::ServerConfig {
             container_command: "docker".into(),
             stale_worker_ttl_days: 7,
-            max_transition_attempts: 3,
+            max_implement_cycles: Some(6),
             poll_interval_ms: 500,
             github_scan_interval_secs: 30,
+            builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+            builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
         projects: HashMap::new(),
     };

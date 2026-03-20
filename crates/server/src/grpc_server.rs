@@ -76,12 +76,17 @@ pub async fn serve_worker_grpc(
     ));
 
     {
+        let hostexec_retry_channel =
+            ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
+                .expect("failed to create builderd retry channel for hostexec");
+        let hostexec_builderd_client =
+            ur_rpc::proto::builder::BuilderdClient::new(hostexec_retry_channel.channel().clone());
         let hostexec_handler = crate::grpc_hostexec::HostExecServiceHandler {
             config: hostexec_config,
             lua: crate::hostexec::LuaTransformManager::new(),
             worker_manager,
             projects,
-            builderd_addr,
+            builderd_client: hostexec_builderd_client,
             host_workspace,
         };
 

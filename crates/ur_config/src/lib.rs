@@ -435,9 +435,11 @@ struct RawBackupConfig {
 struct RawServerConfig {
     container_command: Option<String>,
     stale_worker_ttl_days: Option<u64>,
-    max_transition_attempts: Option<i32>,
+    max_implement_cycles: Option<i32>,
     poll_interval_ms: Option<u64>,
     github_scan_interval_secs: Option<u64>,
+    builderd_retry_count: Option<u32>,
+    builderd_retry_backoff_ms: Option<u64>,
 }
 
 /// Environment variable: container runtime command override (e.g. "nerdctl").
@@ -450,14 +452,20 @@ pub const DEFAULT_CONTAINER_COMMAND: &str = "docker";
 /// Default number of days before a stale worker is cleaned up.
 pub const DEFAULT_STALE_WORKER_TTL_DAYS: u64 = 7;
 
-/// Default maximum number of lifecycle transition attempts before giving up.
-pub const DEFAULT_MAX_TRANSITION_ATTEMPTS: i32 = 3;
+/// Default maximum number of implement cycles before stalling a workflow.
+pub const DEFAULT_MAX_IMPLEMENT_CYCLES: i32 = 6;
 
 /// Default poll interval in milliseconds for background polling loops.
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 /// Default GitHub scan interval in seconds for the poller.
 pub const DEFAULT_GITHUB_SCAN_INTERVAL_SECS: u64 = 30;
+
+/// Default number of builderd retry attempts.
+pub const DEFAULT_BUILDERD_RETRY_COUNT: u32 = 3;
+
+/// Default base backoff in milliseconds for builderd retries.
+pub const DEFAULT_BUILDERD_RETRY_BACKOFF_MS: u64 = 200;
 
 /// Server runtime configuration from the `[server]` section of `ur.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,12 +475,18 @@ pub struct ServerConfig {
     pub container_command: String,
     /// Number of days before stale workers are cleaned up (default: 7).
     pub stale_worker_ttl_days: u64,
-    /// Maximum number of lifecycle transition attempts (default: 3).
-    pub max_transition_attempts: i32,
+    /// Maximum number of implement cycles before stalling (default: 6).
+    /// `None` means no limit.
+    pub max_implement_cycles: Option<i32>,
     /// Poll interval in milliseconds for background loops (default: 500).
     pub poll_interval_ms: u64,
     /// GitHub scan interval in seconds for the poller (default: 30).
     pub github_scan_interval_secs: u64,
+    /// Maximum number of builderd gRPC retry attempts (default: 3).
+    pub builderd_retry_count: u32,
+    /// Base backoff in milliseconds for builderd retries (default: 200).
+    /// Each retry doubles this value (exponential backoff).
+    pub builderd_retry_backoff_ms: u64,
 }
 
 /// Default maximum number of fix loop iterations before stalling an agent.
@@ -922,20 +936,28 @@ fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
             stale_worker_ttl_days: s
                 .stale_worker_ttl_days
                 .unwrap_or(DEFAULT_STALE_WORKER_TTL_DAYS),
-            max_transition_attempts: s
-                .max_transition_attempts
-                .unwrap_or(DEFAULT_MAX_TRANSITION_ATTEMPTS),
+            max_implement_cycles: s
+                .max_implement_cycles
+                .or(Some(DEFAULT_MAX_IMPLEMENT_CYCLES)),
             poll_interval_ms: s.poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS),
             github_scan_interval_secs: s
                 .github_scan_interval_secs
                 .unwrap_or(DEFAULT_GITHUB_SCAN_INTERVAL_SECS),
+            builderd_retry_count: s
+                .builderd_retry_count
+                .unwrap_or(DEFAULT_BUILDERD_RETRY_COUNT),
+            builderd_retry_backoff_ms: s
+                .builderd_retry_backoff_ms
+                .unwrap_or(DEFAULT_BUILDERD_RETRY_BACKOFF_MS),
         },
         None => ServerConfig {
             container_command,
             stale_worker_ttl_days: DEFAULT_STALE_WORKER_TTL_DAYS,
-            max_transition_attempts: DEFAULT_MAX_TRANSITION_ATTEMPTS,
+            max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
             poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
             github_scan_interval_secs: DEFAULT_GITHUB_SCAN_INTERVAL_SECS,
+            builderd_retry_count: DEFAULT_BUILDERD_RETRY_COUNT,
+            builderd_retry_backoff_ms: DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
     }
 }
@@ -2159,8 +2181,8 @@ ports = ["8080:notaport"]
             DEFAULT_STALE_WORKER_TTL_DAYS
         );
         assert_eq!(
-            cfg.server.max_transition_attempts,
-            DEFAULT_MAX_TRANSITION_ATTEMPTS
+            cfg.server.max_implement_cycles,
+            Some(DEFAULT_MAX_IMPLEMENT_CYCLES)
         );
         assert_eq!(cfg.server.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
         assert_eq!(
@@ -2185,8 +2207,8 @@ ports = ["8080:notaport"]
             DEFAULT_STALE_WORKER_TTL_DAYS
         );
         assert_eq!(
-            cfg.server.max_transition_attempts,
-            DEFAULT_MAX_TRANSITION_ATTEMPTS
+            cfg.server.max_implement_cycles,
+            Some(DEFAULT_MAX_IMPLEMENT_CYCLES)
         );
         assert_eq!(cfg.server.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
         assert_eq!(
@@ -2208,8 +2230,8 @@ ports = ["8080:notaport"]
         assert_eq!(cfg.server.container_command, DEFAULT_CONTAINER_COMMAND);
         assert_eq!(cfg.server.stale_worker_ttl_days, 14);
         assert_eq!(
-            cfg.server.max_transition_attempts,
-            DEFAULT_MAX_TRANSITION_ATTEMPTS
+            cfg.server.max_implement_cycles,
+            Some(DEFAULT_MAX_IMPLEMENT_CYCLES)
         );
         assert_eq!(cfg.server.poll_interval_ms, 1000);
         assert_eq!(
@@ -2227,7 +2249,7 @@ ports = ["8080:notaport"]
 [server]
 container_command = "nerdctl"
 stale_worker_ttl_days = 30
-max_transition_attempts = 5
+max_implement_cycles = 5
 poll_interval_ms = 2000
 github_scan_interval_secs = 60
 "#,
@@ -2236,7 +2258,7 @@ github_scan_interval_secs = 60
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.server.container_command, "nerdctl");
         assert_eq!(cfg.server.stale_worker_ttl_days, 30);
-        assert_eq!(cfg.server.max_transition_attempts, 5);
+        assert_eq!(cfg.server.max_implement_cycles, Some(5));
         assert_eq!(cfg.server.poll_interval_ms, 2000);
         assert_eq!(cfg.server.github_scan_interval_secs, 60);
     }

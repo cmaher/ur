@@ -12,7 +12,6 @@ pub use engine::WorkflowEngine;
 pub use github_poller::GithubPollerManager;
 pub use step_router::{NextStepResult, WorkerdNextStepRouter};
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -54,46 +53,10 @@ pub struct WorkflowContext {
 /// Each handler is keyed by the target `LifecycleStatus` it handles.
 /// Implementations perform side effects (e.g., launching a worker, creating a
 /// PR) and return `Ok(())` on success. The engine deletes the event on success
-/// and increments attempts on failure.
+/// and stalls the workflow on failure.
 pub trait WorkflowHandler: Send + Sync {
     fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_>;
 }
 
 /// A handler registration entry: `(target_status, handler)`.
 pub type HandlerEntry = (LifecycleStatus, Arc<dyn WorkflowHandler>);
-
-/// Shared dispatcher that can trigger lifecycle handlers directly (without events).
-/// Used by the redrive endpoint to re-execute a handler for a given target status.
-#[derive(Clone)]
-pub struct WorkflowDispatcher {
-    ctx: WorkflowContext,
-    handlers: Arc<HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>>,
-}
-
-impl WorkflowDispatcher {
-    pub fn new(ctx: WorkflowContext, handler_entries: &[HandlerEntry]) -> Self {
-        let mut handlers = HashMap::new();
-        for (target, handler) in handler_entries {
-            handlers.insert(*target, handler.clone());
-        }
-        Self {
-            ctx,
-            handlers: Arc::new(handlers),
-        }
-    }
-
-    /// Execute the handler registered for `target_status`.
-    /// "Redrive to verifying" runs the VerifyHandler, not the PushHandler.
-    pub async fn trigger(
-        &self,
-        ticket_id: &str,
-        target_status: LifecycleStatus,
-    ) -> Result<LifecycleStatus, anyhow::Error> {
-        let handler = self
-            .handlers
-            .get(&target_status)
-            .ok_or_else(|| anyhow::anyhow!("no handler registered for '{target_status}'"))?;
-        handler.handle(&self.ctx, ticket_id).await?;
-        Ok(target_status)
-    }
-}

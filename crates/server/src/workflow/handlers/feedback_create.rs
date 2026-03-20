@@ -52,14 +52,20 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
             }
 
-            // 2. Read metadata: worker_id and pr_number.
-            let meta = ctx.ticket_repo.get_meta(&ticket_id, "ticket").await?;
+            // 2. Read worker_id from workflow table, pr_number from ticket metadata.
+            let workflow = ctx
+                .ticket_repo
+                .get_workflow_by_ticket(&ticket_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+            if workflow.worker_id.is_empty() {
+                anyhow::bail!(
+                    "no worker_id on workflow for ticket {ticket_id} — cannot dispatch feedback create"
+                );
+            }
+            let worker_id = &workflow.worker_id;
 
-            let worker_id = meta.get("worker_id").ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no worker_id metadata on ticket {ticket_id} — cannot dispatch feedback create"
-                )
-            })?;
+            let meta = ctx.ticket_repo.get_meta(&ticket_id, "ticket").await?;
 
             let pr_number_str = meta.get("pr_number").ok_or_else(|| {
                 anyhow::anyhow!(

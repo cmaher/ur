@@ -1292,7 +1292,6 @@ async fn create_and_poll_intent() {
         .unwrap();
     assert_eq!(intent.ticket_id, "int-t1");
     assert_eq!(intent.target_status, LifecycleStatus::Implementing);
-    assert_eq!(intent.attempts, 0);
 
     let polled = repo.poll_intent().await.unwrap().unwrap();
     assert_eq!(polled.id, intent.id);
@@ -1337,36 +1336,6 @@ async fn delete_intent() {
 
     let polled = repo.poll_intent().await.unwrap();
     assert!(polled.is_none());
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn increment_intent_attempts() {
-    let db = TestDb::new().await;
-    let repo = repo(&db);
-
-    repo.create_ticket(&NewTicket {
-        id: "int-inc".into(),
-        type_: "task".into(),
-        priority: 1,
-        title: "Inc intent".into(),
-        project: "test".into(),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-
-    let intent = repo
-        .create_intent("int-inc", LifecycleStatus::InReview)
-        .await
-        .unwrap();
-
-    repo.increment_intent_attempts(&intent.id).await.unwrap();
-    repo.increment_intent_attempts(&intent.id).await.unwrap();
-
-    let polled = repo.poll_intent().await.unwrap().unwrap();
-    assert_eq!(polled.attempts, 2);
 
     db.cleanup().await;
 }
@@ -1472,6 +1441,238 @@ async fn hierarchy_top_level_tickets() {
     assert!(top_level.contains(&"epic-2"));
     assert!(top_level.contains(&"standalone"));
     assert_eq!(top_level.len(), 3);
+
+    db.cleanup().await;
+}
+
+// ============================================================
+// Workflow stall and lifecycle column tests
+// ============================================================
+
+#[tokio::test]
+async fn workflow_new_has_default_stall_fields() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-stall1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Stall test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let wf = repo
+        .create_workflow("wf-stall1", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    assert!(!wf.stalled);
+    assert_eq!(wf.stall_reason, "");
+    assert_eq!(wf.implement_cycles, 0);
+    assert_eq!(wf.worker_id, "");
+    assert!(!wf.noverify);
+    assert_eq!(wf.feedback_mode, "");
+
+    // Verify defaults are returned by get_workflow_by_ticket too.
+    let fetched = repo
+        .get_workflow_by_ticket("wf-stall1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!fetched.stalled);
+    assert_eq!(fetched.implement_cycles, 0);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn set_and_clear_workflow_stall() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-stall2".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Stall set/clear".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-stall2", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    repo.set_workflow_stalled("wf-stall2", "handler failed: timeout")
+        .await
+        .unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-stall2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(wf.stalled);
+    assert_eq!(wf.stall_reason, "handler failed: timeout");
+
+    repo.clear_workflow_stall("wf-stall2").await.unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-stall2")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!wf.stalled);
+    assert_eq!(wf.stall_reason, "");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn increment_implement_cycles() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-cyc1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Cycle test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-cyc1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
+    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
+    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-cyc1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wf.implement_cycles, 3);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn set_workflow_worker_id() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-wid1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Worker id test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-wid1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    repo.set_workflow_worker_id("wf-wid1", "worker-abc123")
+        .await
+        .unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-wid1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wf.worker_id, "worker-abc123");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn set_workflow_noverify() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-nv1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Noverify test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-nv1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    repo.set_workflow_noverify("wf-nv1", true).await.unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-nv1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(wf.noverify);
+
+    repo.set_workflow_noverify("wf-nv1", false).await.unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-nv1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!wf.noverify);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn set_workflow_feedback_mode() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-fb1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Feedback mode test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-fb1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    repo.set_workflow_feedback_mode("wf-fb1", "inline")
+        .await
+        .unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-fb1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wf.feedback_mode, "inline");
 
     db.cleanup().await;
 }

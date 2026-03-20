@@ -112,7 +112,7 @@ impl TestHarness {
             transition_tx: transition_tx.clone(),
         };
 
-        let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers, 3);
+        let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let coord_handle = coordinator.spawn(shutdown_rx);
 
@@ -245,9 +245,11 @@ fn dummy_config() -> Arc<ur_config::Config> {
         server: ur_config::ServerConfig {
             container_command: "docker".into(),
             stale_worker_ttl_days: 7,
-            max_transition_attempts: 3,
+            max_implement_cycles: Some(6),
             poll_interval_ms: 500,
             github_scan_interval_secs: 30,
+            builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+            builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
         projects: std::collections::HashMap::new(),
     })
@@ -334,7 +336,7 @@ async fn seed_ticket_and_worker(
     worker_repo.insert_worker(&worker).await.unwrap();
 
     ticket_repo
-        .set_meta(ticket_id, "ticket", "worker_id", worker_id)
+        .set_workflow_worker_id(ticket_id, worker_id)
         .await
         .unwrap();
 }
@@ -409,12 +411,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 
     seed_ticket_and_worker(&ticket_repo, &worker_repo, ticket_id, worker_id).await;
     ticket_repo
-        .set_meta(
-            ticket_id,
-            "ticket",
-            "feedback_mode",
-            ur_rpc::feedback_mode::LATER,
-        )
+        .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::LATER)
         .await
         .unwrap();
 
@@ -467,12 +464,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
         .await
         .unwrap();
     ticket_repo
-        .set_meta(
-            ticket_id,
-            "ticket",
-            "feedback_mode",
-            ur_rpc::feedback_mode::NOW,
-        )
+        .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::NOW)
         .await
         .unwrap();
 
