@@ -388,6 +388,14 @@ impl CoreService for CoreServiceHandler {
             } else {
                 (String::new(), String::new())
             };
+            let (workflow_id, workflow_status) = self
+                .ticket_repo
+                .get_workflow_by_ticket(&s.process_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|w| (w.id, w.status.to_string()))
+                .unwrap_or_default();
             workers.push(WorkerSummary {
                 worker_id: s.process_id,
                 worker_id_full: s.worker_id,
@@ -401,6 +409,8 @@ impl CoreService for CoreServiceHandler {
                 lifecycle_status,
                 stall_reason,
                 pr_url,
+                workflow_id,
+                workflow_status,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))

@@ -1721,7 +1721,7 @@ mod tests {
     fn test_ur_allows_readonly_worker_commands() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/ur.lua");
-        for sub in &["list", "status", "dir"] {
+        for sub in &["list", "describe", "dir"] {
             let args: Vec<String> = vec!["worker".into(), (*sub).into()];
             let result = mgr
                 .run_transform(script, "ur", &args, "/workspace", None)
