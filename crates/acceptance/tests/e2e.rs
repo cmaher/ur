@@ -504,7 +504,7 @@ fn e2e_all() {
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
         scenario_dispatch_creates_workflow(&env);
-        scenario_ticket_close_cancels_workflow(&env);
+        scenario_ticket_close_preserves_workflow(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -1273,11 +1273,10 @@ fn scenario_dispatch_creates_workflow(env: &TestEnv) {
     }
 }
 
-/// Ticket close cancels workflow: dispatch a ticket (creating a workflow), then
-/// close the ticket. Verify the ticket is closed and that re-dispatching it after
-/// close fails (closed tickets cannot have workflows). This exercises the
-/// cancel_active_workflow path in the UpdateTicket handler.
-fn scenario_ticket_close_cancels_workflow(env: &TestEnv) {
+/// Ticket close preserves workflow: dispatch a ticket (creating a workflow), then
+/// close the ticket. Verify the ticket is closed, the workflow still exists (so
+/// the push/PR phase can still run), and that re-dispatching a closed ticket fails.
+fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
@@ -1321,7 +1320,7 @@ fn scenario_ticket_close_cancels_workflow(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Close the ticket (should cancel the active workflow) ----
+        // ---- Close the ticket (workflow should survive) ----
         let close_output = run_cmd(&env.ur, &["ticket", "close", &ticket_id], &env_slice);
         assert!(
             close_output.status.success(),
@@ -1338,10 +1337,21 @@ fn scenario_ticket_close_cancels_workflow(env: &TestEnv) {
             "ticket should be closed after ur ticket close.\nticket_id: {ticket_id}"
         );
 
+        // ---- Verify workflow still exists (cancel-workflow succeeds) ----
+        let cancel_output = run_cmd(
+            &env.ur,
+            &["ticket", "cancel-workflow", &ticket_id],
+            &env_slice,
+        );
+        assert!(
+            cancel_output.status.success(),
+            "cancel-workflow should succeed (workflow preserved after close).\n\
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&cancel_output.stdout),
+            String::from_utf8_lossy(&cancel_output.stderr),
+        );
+
         // ---- Verify dispatching a closed ticket fails ----
-        // Re-open the ticket first so we can test the "can't dispatch closed" path.
-        // Actually, try dispatching without reopening — the CreateWorkflow RPC
-        // should reject closed tickets.
         let dispatch_closed_output = run_cmd(
             &env.ur,
             &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
