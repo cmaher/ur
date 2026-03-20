@@ -716,44 +716,20 @@ async fn process_status(
     Ok(())
 }
 
-/// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "awaiting_dispatch".
+/// Create a workflow for a ticket with status=awaiting_dispatch via the CreateWorkflow RPC.
 async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
     let channel = connection::connect(port).await?;
     let mut ticket_client = TicketServiceClient::new(channel);
 
-    let resp = ticket_client
-        .get_ticket(GetTicketRequest {
-            id: ticket_id.to_owned(),
-        })
-        .await
-        .with_status_context("get ticket for dispatch")?;
-
-    let ticket = resp
-        .into_inner()
-        .ticket
-        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
-
-    if ticket.status == "closed" {
-        bail!("ticket {ticket_id} has status 'closed', expected 'open'",);
-    }
-
     ticket_client
-        .update_ticket(UpdateTicketRequest {
-            id: ticket_id.to_owned(),
-            status: None,
-            priority: None,
-            title: None,
-            body: None,
-            force: false,
-            ticket_type: None,
-            parent_id: None,
-            branch: None,
-            project: None,
+        .create_workflow(CreateWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+            status: ur_rpc::lifecycle::AWAITING_DISPATCH.to_owned(),
         })
         .await
-        .with_status_context("transition ticket to implementing")?;
+        .with_status_context("create workflow for dispatch")?;
 
-    info!(ticket_id, "dispatched ticket to implementing");
+    info!(ticket_id, "created workflow with awaiting_dispatch status");
     Ok(())
 }
 

@@ -332,6 +332,13 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<ur_rpc::proto::ticket::RedriveTicketResponse>, Status> {
         Err(Status::unimplemented("not implemented in mock"))
     }
+
+    async fn create_workflow(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::CreateWorkflowRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::CreateWorkflowResponse>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
 }
 
 // --- Test helpers ---

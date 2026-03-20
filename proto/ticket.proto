@@ -17,6 +17,7 @@ service TicketService {
   rpc ListActivities(ListActivitiesRequest) returns (ListActivitiesResponse);
   rpc DispatchableTickets(DispatchableTicketsRequest) returns (DispatchableTicketsResponse);
   rpc RedriveTicket(RedriveTicketRequest) returns (RedriveTicketResponse);
+  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
 }
 
 // --- Shared messages ---
@@ -238,4 +239,15 @@ message RedriveTicketRequest {
 
 message RedriveTicketResponse {
   string lifecycle_status = 1;
+}
+
+// --- CreateWorkflow ---
+
+message CreateWorkflowRequest {
+  string ticket_id = 1;
+  string status = 2;
+}
+
+message CreateWorkflowResponse {
+  string workflow_id = 1;
 }

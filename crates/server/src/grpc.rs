@@ -702,6 +702,9 @@ async fn handle_workflow_step_complete(
 }
 
 /// Check if a worker's idle signal should trigger AwaitingDispatch -> Implementing.
+///
+/// Queries the workflow table for a workflow with status=awaiting_dispatch
+/// for the worker's assigned ticket, instead of checking ticket.lifecycle_status.
 async fn handle_awaiting_dispatch_readiness(
     worker_id: &str,
     ticket_repo: &TicketRepo,
@@ -719,16 +722,17 @@ async fn handle_awaiting_dispatch_readiness(
     }
 
     let ticket_id = &assigned[0].id;
-    let ticket = ticket_repo
-        .get_ticket(ticket_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
 
-    if ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch {
+    // Check the workflow table for an awaiting_dispatch workflow.
+    let workflow = ticket_repo.get_workflow_by_ticket(ticket_id).await?;
+
+    if let Some(wf) = workflow
+        && wf.status == LifecycleStatus::AwaitingDispatch
+    {
         info!(
             worker_id = %worker_id,
             ticket_id = %ticket_id,
-            "worker idle with awaiting_dispatch ticket — sending transition to implementing"
+            "worker idle with awaiting_dispatch workflow — sending transition to implementing"
         );
         send_transition(transition_tx, ticket_id, LifecycleStatus::Implementing).await?;
     }

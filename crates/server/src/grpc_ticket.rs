@@ -11,12 +11,12 @@ use ur_rpc::error::{
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
-    AddLinkResponse, CreateTicketRequest, CreateTicketResponse, DeleteMetaRequest,
-    DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
-    GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
-    ListTicketsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
-    RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    UpdateTicketRequest, UpdateTicketResponse,
+    AddLinkResponse, CreateTicketRequest, CreateTicketResponse, CreateWorkflowRequest,
+    CreateWorkflowResponse, DeleteMetaRequest, DeleteMetaResponse, DispatchableTicketsRequest,
+    DispatchableTicketsResponse, GetTicketRequest, GetTicketResponse, ListActivitiesRequest,
+    ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, RedriveTicketRequest,
+    RedriveTicketResponse, RemoveBlockRequest, RemoveBlockResponse, RemoveLinkRequest,
+    RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +89,9 @@ pub struct TicketServiceHandler {
     /// Optional workflow dispatcher for redrive support.
     /// None on the worker server (no workflow engine).
     pub workflow_dispatcher: Option<crate::workflow::WorkflowDispatcher>,
+    /// Optional channel sender for workflow transition requests.
+    /// None on the worker server (no workflow engine).
+    pub transition_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>>,
 }
 
 #[tonic::async_trait]
@@ -580,6 +583,63 @@ impl TicketService for TicketServiceHandler {
 
         Ok(Response::new(DispatchableTicketsResponse {
             tickets: proto_tickets,
+        }))
+    }
+
+    async fn create_workflow(
+        &self,
+        req: Request<CreateWorkflowRequest>,
+    ) -> Result<Response<CreateWorkflowResponse>, Status> {
+        let req = req.into_inner();
+        info!(ticket_id = %req.ticket_id, status = %req.status, "create_workflow request");
+
+        let transition_tx = self.transition_tx.as_ref().ok_or_else(|| {
+            Status::unavailable(
+                "workflow creation not available on this server (no workflow engine)",
+            )
+        })?;
+
+        // Validate the ticket exists and is not closed.
+        let ticket = self
+            .ticket_repo
+            .get_ticket(&req.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .ok_or_else(|| TicketError::NotFound {
+                id: req.ticket_id.clone(),
+            })?;
+
+        if ticket.status == "closed" {
+            return Err(TicketError::Validation(format!(
+                "ticket {} has status 'closed', cannot create workflow",
+                req.ticket_id,
+            ))
+            .into());
+        }
+
+        let status: LifecycleStatus = req
+            .status
+            .parse()
+            .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.status)))?;
+
+        // Create the workflow row.
+        let workflow = self
+            .ticket_repo
+            .create_workflow(&req.ticket_id, status)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        // Send the transition request to the coordinator.
+        transition_tx
+            .send(crate::workflow::TransitionRequest {
+                ticket_id: req.ticket_id.clone(),
+                target_status: status,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("failed to send transition request: {e}")))?;
+
+        Ok(Response::new(CreateWorkflowResponse {
+            workflow_id: workflow.id,
         }))
     }
 

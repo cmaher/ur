@@ -183,6 +183,7 @@ async fn init_and_serve(
         ticket_repo: ticket_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
         workflow_dispatcher: None, // set in serve_grpc_servers after builderd connects
+        transition_tx: None,       // set in serve_grpc_servers after builderd connects
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -268,6 +269,7 @@ async fn serve_grpc_servers(
     };
     let dispatcher = ur_server::workflow::WorkflowDispatcher::new(dispatcher_ctx, &handlers);
     ticket_handler.workflow_dispatcher = Some(dispatcher);
+    ticket_handler.transition_tx = Some(transition_tx.clone());
 
     let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
     let engine = WorkflowEngine::new(
