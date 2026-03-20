@@ -477,6 +477,9 @@ pub struct WorkerCoreServiceHandler {
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     pub worker_prefix: String,
     pub step_router: crate::workflow::LifecycleStepRouter,
+    /// Channel sender for submitting transition requests to the
+    /// WorkflowCoordinator.
+    pub transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 }
 
 #[tonic::async_trait]
@@ -567,6 +570,7 @@ impl CoreService for WorkerCoreServiceHandler {
             let ticket_repo = self.ticket_repo.clone();
             let agent_status = inner.status.clone();
             let wid = worker_id.clone();
+            let transition_tx = self.transition_tx.clone();
             tokio::spawn(async move {
                 if let Err(e) = handle_agent_status_routed(
                     &wid,
@@ -575,6 +579,7 @@ impl CoreService for WorkerCoreServiceHandler {
                     &worker_repo,
                     &ticket_repo,
                     &worker_prefix,
+                    &transition_tx,
                 )
                 .await
                 {
@@ -623,6 +628,7 @@ async fn handle_agent_status_routed(
     worker_repo: &WorkerRepo,
     ticket_repo: &TicketRepo,
     worker_prefix: &str,
+    transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
     use crate::workflow::StepAction;
 
@@ -664,18 +670,17 @@ async fn handle_agent_status_routed(
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
 
     // 2b. Worker readiness trigger: when a worker reports idle and its
-    // assigned ticket is in AwaitingDispatch, transition directly to
-    // Implementing. This fires the SQLite trigger which creates a
-    // workflow event for the AwaitingDispatch→Implementing handler.
+    // assigned ticket is in AwaitingDispatch, send a transition request
+    // to the coordinator to move to Implementing.
     if agent_status == ur_rpc::agent_status::IDLE
         && ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch
     {
         info!(
             worker_id = %worker_id,
             ticket_id = %ticket_id,
-            "worker idle with awaiting_dispatch ticket — transitioning to implementing"
+            "worker idle with awaiting_dispatch ticket — sending transition to implementing"
         );
-        advance_lifecycle(ticket_repo, ticket_id, LifecycleStatus::Implementing).await?;
+        send_transition(transition_tx, ticket_id, LifecycleStatus::Implementing).await?;
         return Ok(());
     }
 
@@ -701,7 +706,7 @@ async fn handle_agent_status_routed(
                 to = %to,
                 "step router: advancing lifecycle"
             );
-            advance_lifecycle(ticket_repo, ticket_id, to).await
+            send_transition(transition_tx, ticket_id, to).await
         }
         StepAction::AdvanceByFeedbackMode => {
             let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
@@ -718,7 +723,7 @@ async fn handle_agent_status_routed(
                 to = %to,
                 "step router: advancing by feedback_mode"
             );
-            advance_lifecycle(ticket_repo, ticket_id, to).await
+            send_transition(transition_tx, ticket_id, to).await
         }
         StepAction::Redispatch { reminder } => {
             handle_redispatch(
@@ -735,25 +740,19 @@ async fn handle_agent_status_routed(
     }
 }
 
-/// Update a ticket's lifecycle_status to the given value.
-async fn advance_lifecycle(
-    ticket_repo: &TicketRepo,
+/// Send a transition request to the WorkflowCoordinator.
+async fn send_transition(
+    transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
     ticket_id: &str,
     to: LifecycleStatus,
 ) -> Result<(), anyhow::Error> {
-    let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(to),
-        lifecycle_managed: None,
-        status: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ticket_repo.update_ticket(ticket_id, &update).await?;
+    transition_tx
+        .send(crate::workflow::TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: to,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send transition request: {e}"))?;
     Ok(())
 }
 

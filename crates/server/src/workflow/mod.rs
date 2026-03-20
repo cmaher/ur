@@ -14,6 +14,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
+
 use ur_config::Config;
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
@@ -38,6 +40,10 @@ pub struct WorkflowContext {
     /// Resolved server configuration, providing access to per-project
     /// settings (workflow hooks, fix attempt limits, etc.).
     pub config: Arc<Config>,
+    /// Channel sender for submitting transition requests to the
+    /// WorkflowCoordinator. Handlers use this instead of directly
+    /// updating lifecycle_status in the database.
+    pub transition_tx: mpsc::Sender<TransitionRequest>,
 }
 
 /// Trait for handling a lifecycle state entry.

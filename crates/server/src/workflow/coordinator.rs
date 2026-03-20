@@ -449,12 +449,14 @@ mod tests {
     }
 
     fn make_ctx(ticket_repo: TicketRepo, worker_repo: WorkerRepo) -> WorkflowContext {
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         WorkflowContext {
             ticket_repo,
             worker_repo,
             worker_prefix: "ur-worker-".to_string(),
             builderd_client: dummy_builderd_client(),
             config: dummy_config(),
+            transition_tx: tx,
         }
     }
 

@@ -33,6 +33,7 @@ impl WorkflowEngine {
         builderd_client: ur_rpc::proto::builder::BuilderdClient,
         config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
+        transition_tx: tokio::sync::mpsc::Sender<super::TransitionRequest>,
     ) -> Self {
         let max_attempts = config.server.max_transition_attempts;
         let poll_interval = Duration::from_millis(config.server.poll_interval_ms);
@@ -42,6 +43,7 @@ impl WorkflowEngine {
             worker_prefix,
             builderd_client,
             config,
+            transition_tx,
         };
         let mut handlers = HashMap::new();
         for (target, handler) in handler_entries {
@@ -310,6 +312,11 @@ mod tests {
         })
     }
 
+    fn dummy_transition_tx() -> tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest> {
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        tx
+    }
+
     struct CountingHandler {
         call_count: Arc<AtomicU32>,
         should_fail: bool,
@@ -381,6 +388,7 @@ mod tests {
                     should_fail: false,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
 
         engine.poll_once().await;
@@ -439,6 +447,7 @@ mod tests {
                     should_fail: true,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
 
         engine.poll_once().await;
@@ -493,6 +502,7 @@ mod tests {
                     should_fail: true,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
 
         let max_attempts = engine.max_attempts;
@@ -564,6 +574,7 @@ mod tests {
                     should_fail: false,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
 
         engine.poll_once().await;
@@ -634,6 +645,7 @@ mod tests {
                     should_fail: false,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
         noop_engine.poll_once().await;
 
@@ -673,6 +685,7 @@ mod tests {
                     should_fail: false,
                 }) as Arc<dyn WorkflowHandler>,
             )],
+            dummy_transition_tx(),
         );
 
         engine.poll_once().await;
@@ -728,6 +741,7 @@ mod tests {
             dummy_builderd_client(),
             dummy_config(),
             vec![],
+            dummy_transition_tx(),
         );
 
         engine.poll_once().await;

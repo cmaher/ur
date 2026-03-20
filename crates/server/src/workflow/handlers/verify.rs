@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use ur_config::{ResolvedTemplatePath, resolve_template_path};
 use ur_db::model::LifecycleStatus;
 
-use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
 /// Handler for the Implementing -> Verifying transition.
 ///
@@ -212,39 +212,27 @@ async fn handle_hook_failure(
     Ok(())
 }
 
-/// Transition the ticket's lifecycle status to Pushing.
+/// Send a transition request to Pushing via the coordinator channel.
 async fn advance_to_pushing(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Pushing),
-        status: None,
-        lifecycle_managed: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::Pushing,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send Pushing transition: {e}"))?;
     Ok(())
 }
 
-/// Transition the ticket's lifecycle status to Implementing.
+/// Send a transition request to Implementing via the coordinator channel.
 async fn advance_to_implementing(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Implementing),
-        status: None,
-        lifecycle_managed: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send Implementing transition: {e}"))?;
     Ok(())
 }
 
