@@ -77,6 +77,16 @@ digraph brainstorming {
 **Understanding the idea:**
 
 - Check out the current project state first (files, docs, recent commits). Pay particular attention to relevant CLAUDE.md files — they contain crate-specific conventions, constraints, and architectural decisions that should inform the design.
+- **Check the knowledge base** for documented architectural decisions, complex flows, and design rationale. Use the two-hop lookup pattern:
+  1. List available tags for both project-scoped and shared knowledge:
+     - `ur knowledge list-tags -p <project> --output json`
+     - `ur knowledge list-tags --shared --output json`
+  2. Pick tags relevant to the design topic, then list entries by tag:
+     - `ur knowledge list -p <project> --tag <tag> --output json`
+     - `ur knowledge list --shared --tag <tag> --output json`
+  3. Read the full content of relevant entries:
+     - `ur knowledge read <id> --output json`
+  This ensures you have access to documented complex flows and past architectural decisions before proposing new designs.
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
 - If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own epic.
 - For appropriately-scoped projects, ask questions one at a time to refine the idea
