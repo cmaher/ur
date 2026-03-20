@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, builder::PossibleValuesParser};
+use ur_db::model::TicketType;
 
 /// Ticket management subcommands matching all TicketService RPCs.
 #[derive(Debug, Subcommand)]
@@ -12,8 +13,8 @@ pub enum TicketArgs {
         #[arg(short, long)]
         project: Option<String>,
 
-        /// Ticket type (epic or task)
-        #[arg(long = "type", default_value = "task")]
+        /// Ticket type (task or design)
+        #[arg(long = "type", default_value = "task", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: String,
 
         /// Parent ticket ID
@@ -51,8 +52,8 @@ pub enum TicketArgs {
         #[arg(long, short = 'e')]
         epic: Option<String>,
 
-        /// Filter by ticket type
-        #[arg(long = "type")]
+        /// Filter by ticket type (task or design)
+        #[arg(long = "type", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: Option<String>,
 
         /// Filter by status
@@ -92,8 +93,8 @@ pub enum TicketArgs {
         #[arg(long)]
         priority: Option<i64>,
 
-        /// New ticket type
-        #[arg(long = "type")]
+        /// New ticket type (task or design)
+        #[arg(long = "type", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: Option<String>,
 
         /// New parent ticket ID

@@ -307,11 +307,11 @@ mod tests {
         let cmd = parse(&[
             "ticket",
             "create",
-            "Epic title",
+            "Design doc title",
             "-p",
             "myproj",
             "--type",
-            "epic",
+            "design",
             "--parent",
             "ur-abc12",
             "--priority",
@@ -330,9 +330,9 @@ mod tests {
                 wip,
                 follow_up,
             } => {
-                assert_eq!(title, "Epic title");
+                assert_eq!(title, "Design doc title");
                 assert_eq!(project.as_deref(), Some("myproj"));
-                assert_eq!(ticket_type, "epic");
+                assert_eq!(ticket_type, "design");
                 assert_eq!(parent.as_deref(), Some("ur-abc12"));
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
@@ -341,6 +341,18 @@ mod tests {
             }
             other => panic!("expected Create, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_create_rejects_epic_type() {
+        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "epic"]);
+        assert!(result.is_err(), "epic type should be rejected");
+    }
+
+    #[test]
+    fn test_create_rejects_bug_type() {
+        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "bug"]);
+        assert!(result.is_err(), "bug type should be rejected");
     }
 
     #[test]
@@ -666,9 +678,9 @@ mod tests {
         let cmd = parse(&[
             "ticket",
             "create",
-            "Follow-up epic",
+            "Follow-up task",
             "--type",
-            "epic",
+            "task",
             "--follow-up",
             "ur-orig1",
         ]);
@@ -676,7 +688,7 @@ mod tests {
             super::TicketArgs::Create {
                 title, follow_up, ..
             } => {
-                assert_eq!(title, "Follow-up epic");
+                assert_eq!(title, "Follow-up task");
                 assert_eq!(follow_up.as_deref(), Some("ur-orig1"));
             }
             other => panic!("expected Create, got {other:?}"),

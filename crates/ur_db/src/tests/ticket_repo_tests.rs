@@ -55,7 +55,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
 async fn seed_epics_and_children(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: "epic-1".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Epic One".into(),
@@ -68,7 +68,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: "epic-2".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 2,
         parent_id: None,
         title: "Epic Two".into(),
@@ -284,7 +284,7 @@ async fn create_ticket_with_parent() {
 
     repo.create_ticket(&NewTicket {
         id: "parent".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Parent".into(),
@@ -368,8 +368,8 @@ async fn update_ticket_clear_parent() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "epic".into(),
-        type_: "epic".into(),
+        id: "task".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "E".into(),
@@ -384,7 +384,7 @@ async fn update_ticket_clear_parent() {
         id: "child".into(),
         type_: "task".into(),
         priority: 1,
-        parent_id: Some("epic".into()),
+        parent_id: Some("task".into()),
         title: "C".into(),
         body: "".into(),
         project: "test".into(),
@@ -503,7 +503,7 @@ async fn list_tickets_filter_by_type() {
         .list_tickets(&TicketFilter {
             project: None,
             status: None,
-            type_: Some("epic".into()),
+            type_: Some("task".into()),
             parent_id: None,
             lifecycle_status: None,
         })
@@ -1000,7 +1000,7 @@ async fn dispatchable_tickets_empty_epic() {
 
     repo.create_ticket(&NewTicket {
         id: "empty-epic".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Empty".into(),
@@ -1069,7 +1069,7 @@ async fn epic_all_children_closed_true_for_no_children() {
 
     repo.create_ticket(&NewTicket {
         id: "childless".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "No kids".into(),
@@ -1113,7 +1113,7 @@ async fn close_open_children_returns_zero_when_already_closed() {
 
     repo.create_ticket(&NewTicket {
         id: "epic-no-kids".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "No kids".into(),

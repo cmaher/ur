@@ -133,7 +133,7 @@ fn format_list_multiple() {
         Ticket {
             priority: 3,
             status: "closed".to_owned(),
-            ticket_type: "epic".to_owned(),
+            ticket_type: "design".to_owned(),
             ..sample_ticket("ur-def34", "Second ticket")
         },
     ];
@@ -144,7 +144,7 @@ fn format_list_multiple() {
     assert!(out.contains("Second ticket"));
     assert!(out.contains("2 ticket(s)"));
     // Verify column values appear
-    assert!(out.contains("epic"));
+    assert!(out.contains("design"));
     assert!(out.contains("closed"));
 }
 

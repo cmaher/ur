@@ -844,12 +844,12 @@ async fn execute_create_with_follow_up() {
         state.tickets.keys().next().unwrap().clone()
     };
 
-    // Create a follow-up epic linked to the original ticket
+    // Create a follow-up task linked to the original ticket
     super::execute(
         TicketArgs::Create {
-            title: "Follow-up epic".into(),
+            title: "Follow-up task".into(),
             project: Some("test".into()),
-            ticket_type: "epic".into(),
+            ticket_type: "task".into(),
             parent: None,
             priority: 1,
             body: String::new(),
@@ -935,12 +935,12 @@ async fn execute_dispatchable() {
     let (addr, store) = start_mock_server().await;
     let mut client = connect(addr).await;
 
-    // Create an epic
+    // Create a parent task (any task can have children)
     super::execute(
         TicketArgs::Create {
-            title: "My Epic".into(),
+            title: "My Parent".into(),
             project: Some("test".into()),
-            ticket_type: "epic".into(),
+            ticket_type: "task".into(),
             parent: None,
             priority: 0,
             body: String::new(),

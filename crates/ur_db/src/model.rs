@@ -62,6 +62,47 @@ impl fmt::Display for LifecycleStatus {
     }
 }
 
+/// Valid ticket types.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TicketType {
+    #[default]
+    Task,
+    Design,
+}
+
+impl TicketType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Task => "task",
+            Self::Design => "design",
+        }
+    }
+
+    /// All valid ticket type strings.
+    pub const VALID: &[&str] = &["task", "design"];
+}
+
+impl FromStr for TicketType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "task" => Ok(Self::Task),
+            "design" => Ok(Self::Design),
+            _ => Err(format!(
+                "invalid ticket type '{s}': valid types are {}",
+                Self::VALID.join(", ")
+            )),
+        }
+    }
+}
+
+impl fmt::Display for TicketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 pub struct Ticket {
     pub id: String,
     pub project: String,
@@ -347,5 +388,32 @@ mod tests {
         let result = "bogus".parse::<TicketStatus>();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown ticket status"));
+    }
+
+    #[test]
+    fn ticket_type_roundtrip() {
+        for tt in [TicketType::Task, TicketType::Design] {
+            let s = tt.as_str();
+            let parsed: TicketType = s.parse().unwrap();
+            assert_eq!(parsed, tt);
+            assert_eq!(tt.to_string(), s);
+        }
+    }
+
+    #[test]
+    fn ticket_type_rejects_removed_types() {
+        for invalid in ["epic", "bug", "feature", "chore"] {
+            let result = invalid.parse::<TicketType>();
+            assert!(result.is_err(), "should reject '{invalid}'");
+            assert!(
+                result.unwrap_err().contains("invalid ticket type"),
+                "error message for '{invalid}'"
+            );
+        }
+    }
+
+    #[test]
+    fn ticket_type_valid_list() {
+        assert_eq!(TicketType::VALID, &["task", "design"]);
     }
 }

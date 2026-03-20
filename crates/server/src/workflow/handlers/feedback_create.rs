@@ -1,6 +1,5 @@
 use anyhow::bail;
 use tracing::info;
-use ur_db::model::TicketUpdate;
 
 use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
@@ -23,34 +22,14 @@ impl WorkflowHandler for FeedbackCreateHandler {
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move {
             // 1. Load ticket to verify it exists.
-            let ticket = ctx
+            let _ticket = ctx
                 .ticket_repo
                 .get_ticket(&ticket_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-            // 1b. Promote to epic if not already, so child feedback tickets
-            // can be parented under this ticket.
-            if ticket.type_ != "epic" {
-                info!(
-                    ticket_id = %ticket_id,
-                    current_type = %ticket.type_,
-                    "promoting ticket to epic for feedback child tickets"
-                );
-                let update = TicketUpdate {
-                    type_: Some("epic".to_owned()),
-                    lifecycle_status: None,
-                    lifecycle_managed: None,
-                    status: None,
-                    priority: None,
-                    title: None,
-                    body: None,
-                    branch: None,
-                    parent_id: None,
-                    project: None,
-                };
-                ctx.ticket_repo.update_ticket(&ticket_id, &update).await?;
-            }
+            // Note: "epic" is no longer a ticket type — any ticket can have
+            // children, so no type promotion is needed.
 
             // 2. Read worker_id from workflow table, pr_number from ticket metadata.
             let workflow = ctx
