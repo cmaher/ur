@@ -505,6 +505,7 @@ fn e2e_all() {
         scenario_project_add_image_flag(&env);
         scenario_dispatch_creates_workflow(&env);
         scenario_ticket_close_preserves_workflow(&env);
+        scenario_flow_list_and_cancel(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -1183,6 +1184,116 @@ fn get_ticket_status(ur: &Path, envs: &[(&str, &str)], ticket_id: &str) -> Optio
         .map(|s| s.to_owned())
 }
 
+/// Helper: create a ticket and return its ID.
+fn create_test_ticket(env: &TestEnv, title: &str) -> String {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let create_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            title,
+            "-p",
+            env.project_key,
+        ],
+        &env_slice,
+    );
+    assert!(
+        create_output.status.success(),
+        "ur ticket create failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+    parse_ticket_id_from_create(&create_output.stdout)
+}
+
+/// Helper: launch a worker with dispatch (-d) and wait for it to become healthy.
+fn launch_dispatched_worker(env: &TestEnv, ticket_id: &str, container_name: &str) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let launch_output = run_cmd(
+        &env.ur,
+        &["worker", "launch", "-p", env.project_key, "-d", ticket_id],
+        &env_slice,
+    );
+    assert!(
+        launch_output.status.success(),
+        "ur worker launch -p {} -d failed.\nstdout: {}\nstderr: {}",
+        env.project_key,
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+    wait_for_healthy(&env.runtime, container_name);
+}
+
+/// Helper: run `ur flow show` and return the parsed JSON, or None if the command failed.
+fn flow_show(env: &TestEnv, ticket_id: &str) -> Option<serde_json::Value> {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let output = run_cmd(
+        &env.ur,
+        &["--output", "json", "flow", "show", ticket_id],
+        &env_slice,
+    );
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+/// Helper: run `ur flow list` and return the parsed JSON value.
+fn flow_list(env: &TestEnv) -> serde_json::Value {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let output = run_cmd(&env.ur, &["--output", "json", "flow", "list"], &env_slice);
+    assert!(
+        output.status.success(),
+        "ur flow list failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    serde_json::from_slice(&output.stdout).expect("flow list should return valid JSON")
+}
+
+/// Helper: run `ur flow cancel` and assert it succeeds.
+fn flow_cancel(env: &TestEnv, ticket_id: &str) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let output = run_cmd(
+        &env.ur,
+        &["--output", "json", "flow", "cancel", ticket_id],
+        &env_slice,
+    );
+    assert!(
+        output.status.success(),
+        "ur flow cancel failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("flow cancel should return valid JSON");
+    assert_eq!(
+        json["data"]["kind"].as_str(),
+        Some("cancelled"),
+        "flow cancel should return 'cancelled' kind.\nJSON: {json}"
+    );
+}
+
+/// Helper: check if a workflow for a given ticket_id exists in `ur flow list` output.
+fn flow_list_contains(list_json: &serde_json::Value, ticket_id: &str) -> bool {
+    list_json["data"]["workflows"]
+        .as_array()
+        .map(|workflows| {
+            workflows
+                .iter()
+                .any(|w| w["ticket_id"].as_str() == Some(ticket_id))
+        })
+        .unwrap_or(false)
+}
+
 /// Dispatch creates workflow: create a ticket, launch a worker with `-d` (dispatch),
 /// verify the launch succeeds (which implies the CreateWorkflow RPC succeeded and a
 /// workflow row was created in the database).
@@ -1273,52 +1384,28 @@ fn scenario_dispatch_creates_workflow(env: &TestEnv) {
     }
 }
 
-/// Ticket close preserves workflow: dispatch a ticket (creating a workflow), then
-/// close the ticket. Verify the ticket is closed, the workflow still exists (so
-/// the push/PR phase can still run), and that re-dispatching a closed ticket fails.
+/// Ticket close preserves workflow: dispatch a ticket (creating a workflow), use
+/// `ur flow show` to verify the workflow exists, then close the ticket. Verify
+/// the ticket is closed, the workflow still exists (so the push/PR phase can
+/// still run), and that re-dispatching a closed ticket fails.
 fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
-    // ---- Create a ticket via the ticket service ----
-    let create_output = run_cmd(
-        &env.ur,
-        &[
-            "--output",
-            "json",
-            "ticket",
-            "create",
-            "Close workflow test",
-            "-p",
-            env.project_key,
-        ],
-        &env_slice,
-    );
-    assert!(
-        create_output.status.success(),
-        "ur ticket create failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&create_output.stdout),
-        String::from_utf8_lossy(&create_output.stderr),
-    );
-    let ticket_id = parse_ticket_id_from_create(&create_output.stdout);
+    let ticket_id = create_test_ticket(env, "Close workflow test");
     let container_name = env.container_name(&ticket_id);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch worker with dispatch (-d) ----
-        let launch_output = run_cmd(
-            &env.ur,
-            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
-            &env_slice,
-        );
-        assert!(
-            launch_output.status.success(),
-            "ur worker launch -p {} -d failed.\nstdout: {}\nstderr: {}",
-            env.project_key,
-            String::from_utf8_lossy(&launch_output.stdout),
-            String::from_utf8_lossy(&launch_output.stderr),
-        );
+        launch_dispatched_worker(env, &ticket_id, &container_name);
 
-        wait_for_healthy(&env.runtime, &container_name);
+        // ---- Verify workflow exists via ur flow show ----
+        let flow_json =
+            flow_show(env, &ticket_id).expect("ur flow show should succeed after dispatch");
+        assert_eq!(
+            flow_json["data"]["workflow"]["ticket_id"].as_str(),
+            Some(ticket_id.as_str()),
+            "flow show workflow should reference the dispatched ticket.\nJSON: {flow_json}"
+        );
 
         // ---- Close the ticket (workflow should survive) ----
         let close_output = run_cmd(&env.ur, &["ticket", "close", &ticket_id], &env_slice);
@@ -1337,18 +1424,10 @@ fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
             "ticket should be closed after ur ticket close.\nticket_id: {ticket_id}"
         );
 
-        // ---- Verify workflow still exists (cancel-workflow succeeds) ----
-        let cancel_output = run_cmd(
-            &env.ur,
-            &["ticket", "cancel-workflow", &ticket_id],
-            &env_slice,
-        );
+        // ---- Verify workflow still exists after ticket close ----
         assert!(
-            cancel_output.status.success(),
-            "cancel-workflow should succeed (workflow preserved after close).\n\
-             stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&cancel_output.stdout),
-            String::from_utf8_lossy(&cancel_output.stderr),
+            flow_show(env, &ticket_id).is_some(),
+            "ur flow show should succeed after ticket close (workflow preserved)"
         );
 
         // ---- Verify dispatching a closed ticket fails ----
@@ -1362,6 +1441,58 @@ fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
             "dispatching a closed ticket should fail.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&dispatch_closed_output.stdout),
             String::from_utf8_lossy(&dispatch_closed_output.stderr),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Flow list and cancel: dispatch a ticket (creating a workflow), verify the
+/// workflow appears in `ur flow list`, cancel it with `ur flow cancel`, and
+/// verify it no longer appears in the list.
+fn scenario_flow_list_and_cancel(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let ticket_id = create_test_ticket(env, "Flow list cancel test");
+    let container_name = env.container_name(&ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        launch_dispatched_worker(env, &ticket_id, &container_name);
+
+        // ---- Verify workflow appears in ur flow list ----
+        let list_json = flow_list(env);
+        assert!(
+            flow_list_contains(&list_json, &ticket_id),
+            "flow list should include workflow for ticket {ticket_id}.\nJSON: {list_json}"
+        );
+
+        // ---- Cancel workflow via ur flow cancel ----
+        flow_cancel(env, &ticket_id);
+
+        // ---- Verify workflow no longer appears in ur flow list ----
+        let list_after = flow_list(env);
+        assert!(
+            !flow_list_contains(&list_after, &ticket_id),
+            "flow list should not include cancelled workflow for {ticket_id}.\nJSON: {list_after}"
+        );
+
+        // ---- Verify ur flow show also fails after cancel ----
+        assert!(
+            flow_show(env, &ticket_id).is_none(),
+            "ur flow show should fail after cancel (workflow deleted)"
         );
 
         // ---- Stop worker ----

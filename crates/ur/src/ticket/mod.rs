@@ -67,9 +67,6 @@ pub enum TicketOutput {
         id: String,
         linked_id: String,
     },
-    WorkflowCancelled {
-        id: String,
-    },
     Approved {
         id: String,
         feedback_mode: String,
@@ -121,7 +118,6 @@ pub fn format_output(output: &TicketOutput) -> String {
         }
         TicketOutput::LinkAdded { id, linked_id } => format!("Linked {id} <-> {linked_id}"),
         TicketOutput::LinkRemoved { id, linked_id } => format!("Unlinked {id} <-> {linked_id}"),
-        TicketOutput::WorkflowCancelled { id } => format!("Cancelled workflow for {id}"),
         TicketOutput::Approved { id, feedback_mode } => {
             format!("Approved {id} (feedback_mode={feedback_mode})")
         }

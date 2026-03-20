@@ -5,6 +5,7 @@ pub(crate) mod connection;
 mod credential;
 mod db;
 mod describe;
+mod flow;
 mod init;
 mod input;
 mod lifecycle_log;
@@ -99,6 +100,11 @@ enum Commands {
     Ticket {
         #[command(subcommand)]
         command: crate::ticket::TicketArgs,
+    },
+    /// Manage workflows
+    Flow {
+        #[command(subcommand)]
+        command: crate::flow::FlowArgs,
     },
     /// Manage workers
     Worker {
@@ -1364,6 +1370,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
+        Commands::Flow { command } => flow::handle(port, command, output).await?,
         Commands::Worker { command } => {
             handle_worker(
                 command,
