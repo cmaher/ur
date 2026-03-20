@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::graph::GraphManager;
 use crate::model::{
     Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Ticket, TicketFilter, TicketUpdate, WorkflowEvent,
+    Ticket, TicketFilter, TicketUpdate, Workflow, WorkflowEvent, WorkflowIntent,
 };
 
 #[derive(Clone)]
@@ -676,6 +676,158 @@ impl TicketRepo {
     /// Increment the attempts counter on a workflow event (after a failed processing attempt).
     pub async fn increment_workflow_event_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE workflow_event SET attempts = attempts + 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    // ============================================================
+    // Workflow CRUD
+    // ============================================================
+
+    /// Create a new workflow for a ticket. Returns error if one already exists (ticket_id is UNIQUE).
+    pub async fn create_workflow(
+        &self,
+        ticket_id: &str,
+        status: LifecycleStatus,
+    ) -> Result<Workflow, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query("INSERT INTO workflow (id, ticket_id, status, created_at) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(ticket_id)
+            .bind(status.as_str())
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(Workflow {
+            id,
+            ticket_id: ticket_id.to_owned(),
+            status,
+            created_at: now,
+        })
+    }
+
+    /// Get the workflow for a ticket, if one exists.
+    pub async fn get_workflow_by_ticket(
+        &self,
+        ticket_id: &str,
+    ) -> Result<Option<Workflow>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT id, ticket_id, status, created_at FROM workflow WHERE ticket_id = ?",
+        )
+        .bind(ticket_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(id, ticket_id, status_str, created_at)| Workflow {
+            id,
+            ticket_id,
+            status: status_str.parse::<LifecycleStatus>().unwrap_or_default(),
+            created_at,
+        }))
+    }
+
+    /// Update the status of a workflow.
+    pub async fn update_workflow_status(
+        &self,
+        ticket_id: &str,
+        status: LifecycleStatus,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow SET status = ? WHERE ticket_id = ?")
+            .bind(status.as_str())
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Delete the workflow for a ticket.
+    pub async fn delete_workflow(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow WHERE ticket_id = ?")
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    // ============================================================
+    // WorkflowIntent CRUD
+    // ============================================================
+
+    /// Create a new workflow intent for a ticket.
+    pub async fn create_intent(
+        &self,
+        ticket_id: &str,
+        target_status: LifecycleStatus,
+    ) -> Result<WorkflowIntent, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO workflow_intent (id, ticket_id, target_status, attempts, created_at)
+             VALUES (?, ?, ?, 0, ?)",
+        )
+        .bind(&id)
+        .bind(ticket_id)
+        .bind(target_status.as_str())
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(WorkflowIntent {
+            id,
+            ticket_id: ticket_id.to_owned(),
+            target_status,
+            attempts: 0,
+            created_at: now,
+        })
+    }
+
+    /// Poll the oldest unprocessed workflow intent.
+    /// Returns `None` if no intents are pending.
+    pub async fn poll_intent(&self) -> Result<Option<WorkflowIntent>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String, String, String, i32, String)>(
+            "SELECT id, ticket_id, target_status, attempts, created_at
+             FROM workflow_intent
+             ORDER BY id ASC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(
+            |(id, ticket_id, target_status_str, attempts, created_at)| WorkflowIntent {
+                id,
+                ticket_id,
+                target_status: target_status_str
+                    .parse::<LifecycleStatus>()
+                    .unwrap_or_default(),
+                attempts,
+                created_at,
+            },
+        ))
+    }
+
+    /// Delete a workflow intent by ID (after successful processing).
+    pub async fn delete_intent(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM workflow_intent WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Increment the attempts counter on a workflow intent (after a failed processing attempt).
+    pub async fn increment_intent_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workflow_intent SET attempts = attempts + 1 WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
