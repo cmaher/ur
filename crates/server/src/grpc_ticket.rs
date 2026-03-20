@@ -14,10 +14,11 @@ use ur_rpc::proto::ticket::{
     AddLinkResponse, CancelWorkflowRequest, CancelWorkflowResponse, CreateTicketRequest,
     CreateTicketResponse, CreateWorkflowRequest, CreateWorkflowResponse, DeleteMetaRequest,
     DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
-    GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
-    ListTicketsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
+    GetTicketResponse, GetWorkflowRequest, GetWorkflowResponse, ListActivitiesRequest,
+    ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
+    ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    UpdateTicketRequest, UpdateTicketResponse,
+    UpdateTicketRequest, UpdateTicketResponse, WorkflowInfo,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -778,15 +779,67 @@ impl TicketService for TicketServiceHandler {
 
     async fn get_workflow(
         &self,
-        _req: Request<ur_rpc::proto::ticket::GetWorkflowRequest>,
-    ) -> Result<Response<ur_rpc::proto::ticket::GetWorkflowResponse>, Status> {
-        Err(Status::unimplemented("get_workflow not yet implemented"))
+        req: Request<GetWorkflowRequest>,
+    ) -> Result<Response<GetWorkflowResponse>, Status> {
+        let ticket_id = &req.get_ref().ticket_id;
+        let workflow = self
+            .ticket_repo
+            .get_workflow_by_ticket(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        match workflow {
+            Some(wf) => Ok(Response::new(GetWorkflowResponse {
+                workflow: Some(workflow_to_proto(wf)),
+            })),
+            None => {
+                let mut meta = HashMap::new();
+                meta.insert("ticket_id".into(), ticket_id.clone());
+                Err(error::status_with_info(
+                    Code::NotFound,
+                    format!("no workflow for ticket {ticket_id}"),
+                    DOMAIN_TICKET,
+                    NOT_FOUND,
+                    meta,
+                ))
+            }
+        }
     }
 
     async fn list_workflows(
         &self,
-        _req: Request<ur_rpc::proto::ticket::ListWorkflowsRequest>,
-    ) -> Result<Response<ur_rpc::proto::ticket::ListWorkflowsResponse>, Status> {
-        Err(Status::unimplemented("list_workflows not yet implemented"))
+        req: Request<ListWorkflowsRequest>,
+    ) -> Result<Response<ListWorkflowsResponse>, Status> {
+        let status_filter = match req.get_ref().status.as_deref() {
+            Some(s) => Some(
+                s.parse::<LifecycleStatus>()
+                    .map_err(|e| Status::new(Code::InvalidArgument, e))?,
+            ),
+            None => None,
+        };
+
+        let workflows = self
+            .ticket_repo
+            .list_workflows(status_filter)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        Ok(Response::new(ListWorkflowsResponse {
+            workflows: workflows.into_iter().map(workflow_to_proto).collect(),
+        }))
+    }
+}
+
+fn workflow_to_proto(wf: ur_db::Workflow) -> WorkflowInfo {
+    WorkflowInfo {
+        id: wf.id,
+        ticket_id: wf.ticket_id,
+        status: wf.status.to_string(),
+        stalled: wf.stalled,
+        stall_reason: wf.stall_reason,
+        implement_cycles: i64::from(wf.implement_cycles),
+        worker_id: wf.worker_id,
+        feedback_mode: wf.feedback_mode,
+        created_at: wf.created_at,
     }
 }
