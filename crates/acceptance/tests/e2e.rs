@@ -1185,6 +1185,22 @@ fn scenario_ship_worker(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
+        // The SessionStart hook fires `workertools notify-idle` when Claude Code
+        // starts, so the worker is already idle by the time we get here. Set it to
+        // a non-idle state (stalled) before testing the ship failure case.
+        let stall_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["workertools", "agent", "request-human", "acceptance test"],
+        );
+        assert_exec_success(
+            &stall_output,
+            "workertools agent request-human should succeed",
+        );
+
+        // Wait briefly for the stalled status to propagate to the server
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
         // ---- Error case: non-idle worker ----
         assert_ship_fails_not_idle(env, ticket_id, &env_slice);
 
