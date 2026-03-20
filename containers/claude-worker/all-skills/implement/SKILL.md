@@ -1,13 +1,21 @@
 ---
 name: implement
-description: Use when implementing a ticket, epic, or set of tickets — dispatches regularly for a single ticket, uses subagents for epics or multiple tickets
+description: Use when implementing a ticket — works directly for a single ticket, dispatches subagents for epics (tickets with open descendants)
 ---
 
 # Implement Tickets
 
-Implement one or more tickets. For a **single ticket**, work on it directly. For an **epic or multiple tickets**, dispatch subagents — one per ticket, sequential by default.
+Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
 
 **If the ticket description and codebase do not provide enough context to implement confidently, run `workertools agent request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
+
+## Detect Mode — Single Ticket vs Epic
+
+After reading the ticket, determine which mode to use:
+
+1. `ur ticket list --tree <id> --status open --output json` — check for open descendants
+2. If the result contains **any open descendants** → this ticket is an **epic** → use **Subagent Dispatch** mode
+3. If **no open descendants** (empty list or only the ticket itself) → use **Single Ticket** mode
 
 ## Error Recovery — Check Before Starting
 
@@ -22,11 +30,11 @@ Before doing any implementation work, check for unaddressed workflow error activ
    - The server sends `/clear` before every dispatch, so you start with a clean conversation — the ticket activities are your only source of prior context
 5. If no workflow error activities exist, proceed normally
 
-This applies to both single-ticket and epic flows. For epics, fix any errors on the epic ticket itself before dispatching children.
+This applies to both single-ticket and epic flows. For epics (tickets with open descendants), fix any errors on the epic ticket itself before dispatching children.
 
 ## Single Ticket
 
-When given a single non-epic ticket:
+When the ticket has no open descendants:
 
 1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
 2. `ur ticket --output json update <id> --status in_progress` — claim it
@@ -53,7 +61,7 @@ Do NOT push, create PRs, or advance lifecycle status — that happens automatica
 
 No subagents needed. Just do the work.
 
-## Epic or Multiple Tickets — Subagent Dispatch
+## Epic (Ticket with Open Descendants) — Subagent Dispatch
 
 **Core principle:** The parent orchestrates via `ur ticket`; subagents do the work. Only essential outcomes flow back.
 
@@ -61,7 +69,7 @@ No subagents needed. Just do the work.
 
 Dispatch all dispatchable tickets as subagents in parallel. Each subagent commits independently on the working branch.
 
-1. Check for workflow error activities on the epic (see Error Recovery above) — fix before dispatching
+1. Check for workflow error activities on the epic ticket (see Error Recovery above) — fix before dispatching
 2. `ur ticket --output json dispatchable <epic-id>` — get all unblocked tickets
 3. Dispatch all subagents in parallel (each subagent claims its own ticket via the prompt template)
 4. Each subagent closes its ticket when done
