@@ -1127,6 +1127,36 @@ impl TicketRepo {
             )
             .collect())
     }
+
+    /// Return all tickets that have a workflow with the given worker_id.
+    /// Used to look up which ticket is assigned to a specific worker.
+    pub async fn tickets_by_workflow_worker_id(
+        &self,
+        worker_id: &str,
+    ) -> Result<Vec<MetadataMatchTicket>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT t.id, t.title, t.type, t.status
+             FROM ticket t
+             INNER JOIN workflow w ON w.ticket_id = t.id
+             WHERE w.worker_id = ?
+             ORDER BY t.priority ASC",
+        )
+        .bind(worker_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, type_, status)| MetadataMatchTicket {
+                id,
+                title,
+                type_,
+                status,
+                key: "worker_id".to_string(),
+                value: worker_id.to_string(),
+            })
+            .collect())
+    }
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {

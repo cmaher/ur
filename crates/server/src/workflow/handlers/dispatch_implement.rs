@@ -49,11 +49,18 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-    // 2. Resolve the assigned worker from ticket metadata.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot dispatch implement")
-    })?;
+    // 2. Resolve the assigned worker from workflow table.
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!(
+            "no worker_id on workflow for ticket {ticket_id} — cannot dispatch implement"
+        );
+    }
+    let worker_id = &workflow.worker_id;
 
     // 3. Look up the worker to get process_id for container name derivation.
     let worker = ctx

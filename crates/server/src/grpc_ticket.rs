@@ -447,10 +447,28 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(ticket_id = %req.ticket_id, key = %req.key, "set_meta request");
 
-        self.ticket_repo
-            .set_meta(&req.ticket_id, "ticket", &req.key, &req.value)
-            .await
-            .map_err(|e| TicketError::Db(e.to_string()))?;
+        // Route workflow-owned keys to the workflow table instead of ticket metadata.
+        match req.key.as_str() {
+            "noverify" => {
+                let noverify = req.value == "true" || req.value == "1";
+                self.ticket_repo
+                    .set_workflow_noverify(&req.ticket_id, noverify)
+                    .await
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
+            }
+            "feedback_mode" => {
+                self.ticket_repo
+                    .set_workflow_feedback_mode(&req.ticket_id, &req.value)
+                    .await
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
+            }
+            _ => {
+                self.ticket_repo
+                    .set_meta(&req.ticket_id, "ticket", &req.key, &req.value)
+                    .await
+                    .map_err(|e| TicketError::Db(e.to_string()))?;
+            }
+        }
 
         Ok(Response::new(SetMetaResponse {}))
     }
@@ -722,13 +740,7 @@ impl TicketService for TicketServiceHandler {
         // 1. Clear workflow stall (stalled flag + stall_reason on workflow table).
         let _ = self.ticket_repo.clear_workflow_stall(&req.id).await;
 
-        // 2. Clear legacy stall_reason metadata.
-        let _ = self
-            .ticket_repo
-            .delete_meta(&req.id, "ticket", "stall_reason")
-            .await;
-
-        // 3. Set lifecycle to the target status.
+        // 2. Set lifecycle to the target status.
         let update = TicketUpdate {
             lifecycle_status: Some(to_status),
             status: None,

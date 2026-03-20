@@ -336,7 +336,7 @@ async fn seed_ticket_and_worker(
     worker_repo.insert_worker(&worker).await.unwrap();
 
     ticket_repo
-        .set_meta(ticket_id, "ticket", "worker_id", worker_id)
+        .set_workflow_worker_id(ticket_id, worker_id)
         .await
         .unwrap();
 }
@@ -411,12 +411,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 
     seed_ticket_and_worker(&ticket_repo, &worker_repo, ticket_id, worker_id).await;
     ticket_repo
-        .set_meta(
-            ticket_id,
-            "ticket",
-            "feedback_mode",
-            ur_rpc::feedback_mode::LATER,
-        )
+        .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::LATER)
         .await
         .unwrap();
 
@@ -469,12 +464,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
         .await
         .unwrap();
     ticket_repo
-        .set_meta(
-            ticket_id,
-            "ticket",
-            "feedback_mode",
-            ur_rpc::feedback_mode::NOW,
-        )
+        .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::NOW)
         .await
         .unwrap();
 

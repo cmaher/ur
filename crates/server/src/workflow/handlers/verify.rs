@@ -104,10 +104,15 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
 
     // 5. Process hook result.
     let output_summary = build_output_summary(&hook_result.stdout, &hook_result.stderr);
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run verification")
-    })?;
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!("no worker_id on workflow for ticket {ticket_id} — cannot run verification");
+    }
+    let worker_id = &workflow.worker_id;
 
     if hook_result.success() {
         info!(ticket_id = %ticket_id, "pre-push hook passed — advancing to pushing");
@@ -150,10 +155,15 @@ async fn resolve_hook_context(
     let resolved = resolve_template_path(hooks_dir_template, &ctx.config.config_dir)?;
 
     // Resolve worker and slot to get the working directory.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run verification")
-    })?;
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!("no worker_id on workflow for ticket {ticket_id} — cannot run verification");
+    }
+    let worker_id = &workflow.worker_id;
 
     let worker_slot = ctx
         .worker_repo

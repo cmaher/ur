@@ -43,10 +43,15 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     let project_key = &ticket.project;
 
     // 2. Resolve worker and slot to get the working directory.
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    let worker_id = meta.get("worker_id").ok_or_else(|| {
-        anyhow::anyhow!("no worker_id metadata on ticket {ticket_id} — cannot run push")
-    })?;
+    let workflow = ctx
+        .ticket_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
+    if workflow.worker_id.is_empty() {
+        anyhow::bail!("no worker_id on workflow for ticket {ticket_id} — cannot run push");
+    }
+    let worker_id = &workflow.worker_id;
 
     let worker_slot = ctx
         .worker_repo
