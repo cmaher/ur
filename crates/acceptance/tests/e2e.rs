@@ -503,6 +503,7 @@ fn e2e_all() {
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
+        scenario_ship_worker(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -512,6 +513,7 @@ fn e2e_all() {
         "design-test-1",
         "design-test-2",
         "rust-image-test",
+        "ship-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -1156,5 +1158,161 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         "project remove failed.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&remove_output.stdout),
         String::from_utf8_lossy(&remove_output.stderr),
+    );
+}
+
+/// Verify that shipping a non-idle worker and an already-managed worker both fail,
+/// and that shipping an idle unmanaged worker creates a lifecycle-managed ticket.
+fn scenario_ship_worker(env: &TestEnv) {
+    let ticket_id = "ship-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Error case: non-idle worker ----
+        assert_ship_fails_not_idle(env, ticket_id, &env_slice);
+
+        // ---- Make worker idle via workertools notify-idle ----
+        let idle_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["workertools", "notify-idle"],
+        );
+        assert_exec_success(&idle_output, "workertools notify-idle should succeed");
+
+        // Wait briefly for the idle status to propagate to the server
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // ---- Happy path: ship the idle worker ----
+        let created_ticket_id = assert_ship_creates_ticket(env, ticket_id, &env_slice);
+
+        // ---- Verify ticket properties via ur ticket show ----
+        assert_ship_ticket_properties(env, &created_ticket_id, &env_slice);
+
+        // ---- Error case: already-managed worker ----
+        assert_ship_fails_already_managed(env, ticket_id, &env_slice);
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Assert that shipping a non-idle worker fails with a message mentioning "idle".
+fn assert_ship_fails_not_idle(env: &TestEnv, ticket_id: &str, env_slice: &[(&str, &str)]) {
+    let ship_not_idle = run_cmd(&env.ur, &["worker", "ship", ticket_id], env_slice);
+    assert!(
+        !ship_not_idle.status.success(),
+        "ship should fail for non-idle worker.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ship_not_idle.stdout),
+        String::from_utf8_lossy(&ship_not_idle.stderr),
+    );
+    let not_idle_stderr = String::from_utf8_lossy(&ship_not_idle.stderr);
+    assert!(
+        not_idle_stderr.contains("idle"),
+        "error should mention 'idle'.\nstderr: {not_idle_stderr}"
+    );
+}
+
+/// Assert that shipping an idle worker succeeds and returns a ticket ID.
+fn assert_ship_creates_ticket(
+    env: &TestEnv,
+    ticket_id: &str,
+    env_slice: &[(&str, &str)],
+) -> String {
+    let ship_output = run_cmd(&env.ur, &["worker", "ship", ticket_id], env_slice);
+    assert!(
+        ship_output.status.success(),
+        "ur worker ship failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ship_output.stdout),
+        String::from_utf8_lossy(&ship_output.stderr),
+    );
+
+    let ship_stdout = String::from_utf8_lossy(&ship_output.stdout);
+    assert!(
+        ship_stdout.contains("ticket") || ship_stdout.contains("ur-"),
+        "ship output should mention the created ticket.\nGot: {ship_stdout}"
+    );
+
+    ship_stdout
+        .split_whitespace()
+        .find(|w| w.starts_with("ur-"))
+        .expect("ship output should contain a ticket ID starting with 'ur-'")
+        .to_owned()
+}
+
+/// Assert the shipped ticket has lifecycle_managed=true and lifecycle_status=verifying.
+fn assert_ship_ticket_properties(
+    env: &TestEnv,
+    created_ticket_id: &str,
+    env_slice: &[(&str, &str)],
+) {
+    let show_output = run_cmd(
+        &env.ur,
+        &["ticket", "--output", "json", "show", created_ticket_id],
+        env_slice,
+    );
+    assert!(
+        show_output.status.success(),
+        "ur ticket show failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&show_output.stdout),
+        String::from_utf8_lossy(&show_output.stderr),
+    );
+
+    let show_json: serde_json::Value =
+        serde_json::from_slice(&show_output.stdout).expect("ticket show output should be JSON");
+    let ticket = &show_json["data"]["ticket"];
+
+    assert_eq!(
+        ticket["lifecycle_managed"],
+        serde_json::Value::Bool(true),
+        "ticket should have lifecycle_managed=true.\nTicket: {ticket}"
+    );
+    assert_eq!(
+        ticket["lifecycle_status"].as_str(),
+        Some("verifying"),
+        "ticket should have lifecycle_status=verifying.\nTicket: {ticket}"
+    );
+}
+
+/// Assert that shipping an already-managed worker fails with a descriptive error.
+fn assert_ship_fails_already_managed(env: &TestEnv, ticket_id: &str, env_slice: &[(&str, &str)]) {
+    let ship_again = run_cmd(&env.ur, &["worker", "ship", ticket_id], env_slice);
+    assert!(
+        !ship_again.status.success(),
+        "shipping an already-managed worker should fail.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&ship_again.stdout),
+        String::from_utf8_lossy(&ship_again.stderr),
+    );
+    let already_stderr = String::from_utf8_lossy(&ship_again.stderr);
+    assert!(
+        already_stderr.contains("already") || already_stderr.contains("lifecycle"),
+        "error should mention 'already' or 'lifecycle'.\nstderr: {already_stderr}"
     );
 }
