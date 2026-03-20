@@ -5,7 +5,7 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{info, warn};
 
 use ur_db::TicketRepo;
-use ur_db::model::{AgentStatus, LifecycleStatus};
+use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
@@ -462,13 +462,11 @@ impl CoreService for CoreServiceHandler {
     }
 }
 
-/// Maximum number of idle re-dispatches before a ticket is reverted to open.
-const MAX_IDLE_REDISPATCH: i32 = 3;
-
 /// Lightweight CoreService for the worker gRPC server.
 ///
-/// Implements `Ping` (health check) and `UpdateAgentStatus` (worker status
-/// updates); worker management RPCs return `Unimplemented` because they are
+/// Implements `Ping` (health check), `UpdateAgentStatus` (worker status
+/// updates), and `WorkflowStepComplete` (workerd-driven step completion);
+/// worker management RPCs return `Unimplemented` because they are
 /// host-only operations.
 #[derive(Clone)]
 pub struct WorkerCoreServiceHandler {
@@ -476,7 +474,6 @@ pub struct WorkerCoreServiceHandler {
     pub ticket_repo: TicketRepo,
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     pub worker_prefix: String,
-    pub step_router: crate::workflow::LifecycleStepRouter,
     /// Channel sender for submitting transition requests to the
     /// WorkflowCoordinator.
     pub transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
@@ -527,9 +524,33 @@ impl CoreService for WorkerCoreServiceHandler {
 
     async fn workflow_step_complete(
         &self,
-        _req: Request<WorkflowStepCompleteRequest>,
+        req: Request<WorkflowStepCompleteRequest>,
     ) -> Result<Response<WorkflowStepCompleteResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let metadata = req.metadata();
+        let worker_id = metadata
+            .get(ur_config::WORKER_ID_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
+            .to_str()
+            .map_err(|_| Status::invalid_argument("invalid ur-worker-id header encoding"))?
+            .to_owned();
+
+        info!(worker_id = %worker_id, "workflow_step_complete request received");
+
+        let ticket_repo = self.ticket_repo.clone();
+        let transition_tx = self.transition_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                handle_workflow_step_complete(&worker_id, &ticket_repo, &transition_tx).await
+            {
+                warn!(
+                    worker_id = %worker_id,
+                    error = %e,
+                    "workflow step complete handling failed"
+                );
+            }
+        });
+
+        Ok(Response::new(WorkflowStepCompleteResponse {}))
     }
 
     async fn update_agent_status(
@@ -562,31 +583,20 @@ impl CoreService for WorkerCoreServiceHandler {
             .await
             .map_err(|e| Status::internal(format!("failed to update agent status: {e}")))?;
 
-        // Delegate routing to LifecycleStepRouter for lifecycle-aware actions.
-        {
-            let step_router = self.step_router.clone();
-            let worker_prefix = self.worker_prefix.clone();
-            let worker_repo = self.worker_repo.clone();
+        // AwaitingDispatch readiness trigger: when a worker reports idle and
+        // its assigned ticket is in AwaitingDispatch, transition to Implementing.
+        if inner.status == ur_rpc::agent_status::IDLE {
             let ticket_repo = self.ticket_repo.clone();
-            let agent_status = inner.status.clone();
-            let wid = worker_id.clone();
             let transition_tx = self.transition_tx.clone();
+            let wid = worker_id.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_agent_status_routed(
-                    &wid,
-                    &agent_status,
-                    &step_router,
-                    &worker_repo,
-                    &ticket_repo,
-                    &worker_prefix,
-                    &transition_tx,
-                )
-                .await
+                if let Err(e) =
+                    handle_awaiting_dispatch_readiness(&wid, &ticket_repo, &transition_tx).await
                 {
                     warn!(
                         worker_id = %wid,
                         error = %e,
-                        "agent status routing failed"
+                        "awaiting dispatch readiness check failed"
                     );
                 }
             });
@@ -612,103 +622,57 @@ impl CoreService for WorkerCoreServiceHandler {
     }
 }
 
-/// Route an agent status update through the `LifecycleStepRouter` and execute
-/// the resulting `StepAction`.
+/// Handle a WorkflowStepComplete signal from a worker.
 ///
-/// Looks up the worker's assigned ticket, consults the router for the
-/// `(lifecycle_status, agent_status)` pair, and performs the action:
-/// - `Advance`: emits a workflow event to transition the ticket.
-/// - `Redispatch`: re-sends the phase-appropriate workerd RPC (with idle
-///   re-dispatch counting and threshold enforcement).
-/// - `Ignore`: no-op.
-async fn handle_agent_status_routed(
+/// Looks up the worker's assigned ticket, consults the `WorkerdNextStepRouter`
+/// for the current workflow status, and sends a transition request to the
+/// coordinator.
+async fn handle_workflow_step_complete(
     worker_id: &str,
-    agent_status: &str,
-    step_router: &crate::workflow::LifecycleStepRouter,
-    worker_repo: &WorkerRepo,
     ticket_repo: &TicketRepo,
-    worker_prefix: &str,
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
-    use crate::workflow::StepAction;
+    use crate::workflow::{NextStepResult, WorkerdNextStepRouter};
+    use ur_db::model::LifecycleStatus;
 
     // 1. Find the ticket assigned to this worker via metadata.
     let matched = ticket_repo
         .tickets_by_metadata("worker_id", worker_id)
         .await?;
-
-    // Filter to non-closed tickets only.
     let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
 
-    let has_ticket = !assigned.is_empty();
-
-    if !has_ticket {
-        // Consult router even with no ticket — it returns Ignore for cold starts.
-        let action = step_router.route(LifecycleStatus::Open, agent_status, false);
-        if action != StepAction::Ignore {
-            warn!(
-                worker_id = %worker_id,
-                agent_status = %agent_status,
-                ?action,
-                "unexpected non-ignore action for worker with no ticket"
-            );
-        }
+    if assigned.is_empty() {
         info!(
             worker_id = %worker_id,
-            "worker has no assigned ticket — no-op"
+            "workflow_step_complete: worker has no assigned ticket — no-op"
         );
         return Ok(());
     }
 
-    // Use the first (highest-priority) assigned ticket.
     let ticket_id = &assigned[0].id;
 
-    // 2. Load the full ticket to get lifecycle_status.
-    let ticket = ticket_repo
-        .get_ticket(ticket_id)
+    // 2. Look up the workflow status for this ticket.
+    let workflow = ticket_repo
+        .get_workflow_by_ticket(ticket_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
-
-    // 2b. Worker readiness trigger: when a worker reports idle and its
-    // assigned ticket is in AwaitingDispatch, send a transition request
-    // to the coordinator to move to Implementing.
-    if agent_status == ur_rpc::agent_status::IDLE
-        && ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch
-    {
-        info!(
-            worker_id = %worker_id,
-            ticket_id = %ticket_id,
-            "worker idle with awaiting_dispatch ticket — sending transition to implementing"
-        );
-        send_transition(transition_tx, ticket_id, LifecycleStatus::Implementing).await?;
-        return Ok(());
-    }
+        .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
 
     // 3. Consult the router.
-    let action = step_router.route(ticket.lifecycle_status, agent_status, true);
+    let router = WorkerdNextStepRouter;
+    let result = router.route(workflow.status);
 
-    match action {
-        StepAction::Ignore => {
+    match result {
+        NextStepResult::Advance { to } => {
             info!(
                 worker_id = %worker_id,
                 ticket_id = %ticket_id,
-                lifecycle_status = %ticket.lifecycle_status,
-                agent_status = %agent_status,
-                "step router returned Ignore — no action"
-            );
-            Ok(())
-        }
-        StepAction::Advance { to } => {
-            info!(
-                worker_id = %worker_id,
-                ticket_id = %ticket_id,
-                from = %ticket.lifecycle_status,
+                from = %workflow.status,
                 to = %to,
-                "step router: advancing lifecycle"
+                "step complete: advancing lifecycle"
             );
             send_transition(transition_tx, ticket_id, to).await
         }
-        StepAction::AdvanceByFeedbackMode => {
+        NextStepResult::AdvanceByFeedbackMode => {
             let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
             let feedback_mode = meta.get("feedback_mode").map(|s| s.as_str()).unwrap_or("");
             let to = match feedback_mode {
@@ -719,32 +683,64 @@ async fn handle_agent_status_routed(
                 worker_id = %worker_id,
                 ticket_id = %ticket_id,
                 feedback_mode = %feedback_mode,
-                from = %ticket.lifecycle_status,
+                from = %workflow.status,
                 to = %to,
-                "step router: advancing by feedback_mode"
+                "step complete: advancing by feedback_mode"
             );
             send_transition(transition_tx, ticket_id, to).await
         }
-        StepAction::Redispatch { reminder } => {
-            handle_redispatch(
-                worker_id,
-                ticket_id,
-                &ticket.lifecycle_status,
-                reminder,
-                worker_repo,
-                ticket_repo,
-                worker_prefix,
-            )
-            .await
+        NextStepResult::Ignore => {
+            info!(
+                worker_id = %worker_id,
+                ticket_id = %ticket_id,
+                workflow_status = %workflow.status,
+                "step complete: no routing for current status — ignoring"
+            );
+            Ok(())
         }
     }
+}
+
+/// Check if a worker's idle signal should trigger AwaitingDispatch -> Implementing.
+async fn handle_awaiting_dispatch_readiness(
+    worker_id: &str,
+    ticket_repo: &TicketRepo,
+    transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
+) -> Result<(), anyhow::Error> {
+    use ur_db::model::LifecycleStatus;
+
+    let matched = ticket_repo
+        .tickets_by_metadata("worker_id", worker_id)
+        .await?;
+    let assigned: Vec<_> = matched.iter().filter(|t| t.status != "closed").collect();
+
+    if assigned.is_empty() {
+        return Ok(());
+    }
+
+    let ticket_id = &assigned[0].id;
+    let ticket = ticket_repo
+        .get_ticket(ticket_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+
+    if ticket.lifecycle_status == LifecycleStatus::AwaitingDispatch {
+        info!(
+            worker_id = %worker_id,
+            ticket_id = %ticket_id,
+            "worker idle with awaiting_dispatch ticket — sending transition to implementing"
+        );
+        send_transition(transition_tx, ticket_id, LifecycleStatus::Implementing).await?;
+    }
+
+    Ok(())
 }
 
 /// Send a transition request to the WorkflowCoordinator.
 async fn send_transition(
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
     ticket_id: &str,
-    to: LifecycleStatus,
+    to: ur_db::model::LifecycleStatus,
 ) -> Result<(), anyhow::Error> {
     transition_tx
         .send(crate::workflow::TransitionRequest {
@@ -753,121 +749,6 @@ async fn send_transition(
         })
         .await
         .map_err(|e| anyhow::anyhow!("failed to send transition request: {e}"))?;
-    Ok(())
-}
-
-/// Execute a redispatch: re-send the phase-appropriate workerd RPC.
-///
-/// Tracks re-dispatch count and reverts the ticket to open after
-/// `MAX_IDLE_REDISPATCH` failures.
-async fn handle_redispatch(
-    worker_id: &str,
-    ticket_id: &str,
-    lifecycle_status: &LifecycleStatus,
-    reminder: bool,
-    worker_repo: &WorkerRepo,
-    ticket_repo: &TicketRepo,
-    worker_prefix: &str,
-) -> Result<(), anyhow::Error> {
-    // Determine the RPC kind from the lifecycle status.
-    let rpc_kind = match lifecycle_status {
-        LifecycleStatus::Implementing => "implement",
-        LifecycleStatus::FeedbackCreating => "create_feedback_tickets",
-        _ => {
-            info!(
-                worker_id = %worker_id,
-                ticket_id = %ticket_id,
-                lifecycle_status = %lifecycle_status,
-                reminder = reminder,
-                "redispatch requested but no RPC mapping for lifecycle status — skipping"
-            );
-            return Ok(());
-        }
-    };
-
-    // Increment re-dispatch count and check threshold (only for non-reminder redispatches).
-    if !reminder {
-        let count = worker_repo
-            .increment_idle_redispatch_count(worker_id)
-            .await?;
-
-        if count > MAX_IDLE_REDISPATCH {
-            warn!(
-                worker_id = %worker_id,
-                ticket_id = %ticket_id,
-                count = count,
-                "idle re-dispatch count exceeded threshold — reverting ticket to open"
-            );
-            let update = ur_db::model::TicketUpdate {
-                lifecycle_status: Some(LifecycleStatus::Open),
-                lifecycle_managed: None,
-                status: None,
-                type_: None,
-                priority: None,
-                title: None,
-                body: None,
-                branch: None,
-                parent_id: None,
-                project: None,
-            };
-            ticket_repo.update_ticket(ticket_id, &update).await?;
-            return Ok(());
-        }
-    }
-
-    // Look up worker to derive workerd address.
-    let worker = worker_repo
-        .get_worker(worker_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found"))?;
-
-    if worker.container_status != "running" {
-        return Ok(());
-    }
-
-    let container_name = format!("{}{}", worker_prefix, worker.process_id);
-    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
-    let workerd_client = crate::WorkerdClient::with_status_tracking(
-        workerd_addr,
-        worker_repo.clone(),
-        worker_id.to_string(),
-    );
-
-    info!(
-        worker_id = %worker_id,
-        ticket_id = %ticket_id,
-        rpc_kind = %rpc_kind,
-        reminder = reminder,
-        "re-dispatching workerd RPC"
-    );
-
-    // Re-send the appropriate RPC.
-    match rpc_kind {
-        "implement" => {
-            workerd_client
-                .implement(ticket_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("re-dispatch implement failed: {e}"))?;
-        }
-        "create_feedback_tickets" => {
-            let meta = ticket_repo.get_meta(ticket_id, "ticket").await?;
-            let pr_number: u32 = meta
-                .get("pr_number")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no pr_number metadata on ticket {ticket_id} for feedback re-dispatch"
-                    )
-                })?
-                .parse()
-                .map_err(|e| anyhow::anyhow!("invalid pr_number: {e}"))?;
-            workerd_client
-                .create_feedback_tickets(ticket_id, pr_number)
-                .await
-                .map_err(|e| anyhow::anyhow!("re-dispatch create_feedback_tickets failed: {e}"))?;
-        }
-        _ => unreachable!(),
-    }
-
     Ok(())
 }
 

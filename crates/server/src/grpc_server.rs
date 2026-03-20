@@ -62,7 +62,6 @@ pub async fn serve_worker_grpc(
         worker_repo: worker_repo.clone(),
         ticket_repo,
         worker_prefix,
-        step_router: crate::workflow::LifecycleStepRouter::new(),
         transition_tx,
     };
     let interceptor = crate::auth::worker_auth_interceptor(worker_repo);

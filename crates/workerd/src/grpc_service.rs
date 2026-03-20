@@ -63,27 +63,61 @@ impl WorkerDaemonServiceImpl {
                 message: String::new(),
             });
 
-            // Inject auth headers
-            if let Ok(val) =
-                worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            {
-                request
-                    .metadata_mut()
-                    .insert(ur_config::WORKER_ID_HEADER, val);
-            }
-            if let Ok(val) =
-                worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            {
-                request
-                    .metadata_mut()
-                    .insert(ur_config::WORKER_SECRET_HEADER, val);
-            }
+            inject_auth_headers(request.metadata_mut(), &worker_id, &worker_secret);
 
             match client.update_agent_status(request).await {
                 Ok(_) => info!("agent status updated to idle on server"),
                 Err(e) => warn!(error = %e, "failed to update agent status on server"),
             }
         });
+    }
+
+    /// Fire-and-forget: send WorkflowStepComplete RPC to the ur-server.
+    fn send_workflow_step_complete(&self) {
+        let addr = format!("http://{}", self.server_addr);
+        let worker_id = self.worker_id.clone();
+        let worker_secret = self.worker_secret.clone();
+
+        tokio::spawn(async move {
+            let channel = match tonic::transport::Endpoint::try_from(addr.clone())
+                .map(|ep| ep.connect_lazy())
+            {
+                Ok(ch) => ch,
+                Err(e) => {
+                    warn!(error = %e, "failed to create channel for WorkflowStepComplete");
+                    return;
+                }
+            };
+
+            let mut client = CoreServiceClient::new(channel);
+
+            let mut request =
+                tonic::Request::new(ur_rpc::proto::core::WorkflowStepCompleteRequest {
+                    worker_id: worker_id.clone(),
+                });
+
+            inject_auth_headers(request.metadata_mut(), &worker_id, &worker_secret);
+
+            match client.workflow_step_complete(request).await {
+                Ok(_) => info!("workflow step complete sent to server"),
+                Err(e) => warn!(error = %e, "failed to send workflow step complete to server"),
+            }
+        });
+    }
+}
+
+/// Inject worker auth headers into gRPC request metadata.
+fn inject_auth_headers(
+    metadata: &mut tonic::metadata::MetadataMap,
+    worker_id: &str,
+    worker_secret: &str,
+) {
+    if let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
+        metadata.insert(ur_config::WORKER_ID_HEADER, val);
+    }
+    if let Ok(val) = worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        metadata.insert(ur_config::WORKER_SECRET_HEADER, val);
     }
 }
 
@@ -140,15 +174,15 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             return Ok(Response::new(NotifyIdleResponse {}));
         }
 
-        // Case 2: Buffer empty + step_complete — clear state and forward idle to server
+        // Case 2: Buffer empty + step_complete — clear state and send WorkflowStepComplete RPC
         if buf.step_complete {
-            info!("Buffer drained and step complete, forwarding idle to server");
+            info!("Buffer drained and step complete, sending WorkflowStepComplete to server");
             buf.commands.clear();
             buf.step_complete = false;
             buf.lifecycle_step = String::new();
             drop(buf);
 
-            self.forward_idle_to_server();
+            self.send_workflow_step_complete();
             return Ok(Response::new(NotifyIdleResponse {}));
         }
 
