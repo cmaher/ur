@@ -10,9 +10,9 @@ use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
-    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
-    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    ShipWorkerRequest, ShipWorkerResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
+    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
 };
 
 use ur_db::WorkerRepo;
@@ -451,6 +451,13 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
+
+    async fn ship_worker(
+        &self,
+        _req: Request<ShipWorkerRequest>,
+    ) -> Result<Response<ShipWorkerResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
 }
 
 /// Maximum number of idle re-dispatches before a ticket is reverted to open.
@@ -588,6 +595,13 @@ impl CoreService for WorkerCoreServiceHandler {
         }
 
         Ok(Response::new(UpdateAgentStatusResponse {}))
+    }
+
+    async fn ship_worker(
+        &self,
+        _req: Request<ShipWorkerRequest>,
+    ) -> Result<Response<ShipWorkerResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
     }
 }
 

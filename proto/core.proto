@@ -23,6 +23,7 @@ service CoreService {
   rpc WorkerList(WorkerListRequest) returns (WorkerListResponse);
   rpc SendWorkerMessage(SendWorkerMessageRequest) returns (SendWorkerMessageResponse);
   rpc UpdateAgentStatus(UpdateAgentStatusRequest) returns (UpdateAgentStatusResponse);
+  rpc ShipWorker(ShipWorkerRequest) returns (ShipWorkerResponse);
 }
 
 message PingRequest {}
@@ -88,6 +89,14 @@ message UpdateAgentStatusRequest {
 }
 
 message UpdateAgentStatusResponse {}
+
+message ShipWorkerRequest {
+  string worker_id = 1;
+}
+
+message ShipWorkerResponse {
+  string ticket_id = 1;
+}
 
 message WorkerSummary {
   string worker_id = 1;
