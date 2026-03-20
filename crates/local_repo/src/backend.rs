@@ -111,6 +111,13 @@ impl GitBackend {
 
 #[async_trait]
 impl LocalRepo for GitBackend {
+    async fn current_branch(&self, working_dir: &str) -> Result<String> {
+        let output = self
+            .exec_git_checked(&["rev-parse", "--abbrev-ref", "HEAD"], working_dir)
+            .await?;
+        Ok(output.trim().to_string())
+    }
+
     async fn push(&self, branch: &str, working_dir: &str) -> Result<PushResult> {
         let completed = self
             .exec_git(

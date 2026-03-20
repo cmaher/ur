@@ -12,6 +12,9 @@ pub trait LocalRepo: Send + Sync {
     // Hook execution
     async fn run_hook(&self, script_path: &str, working_dir: &str) -> Result<HookResult>;
 
+    // Branch queries
+    async fn current_branch(&self, working_dir: &str) -> Result<String>;
+
     // Pool operations
     async fn clone(&self, url: &str, path: &str, parent_dir: &str) -> Result<()>;
     async fn fetch(&self, working_dir: &str) -> Result<()>;
