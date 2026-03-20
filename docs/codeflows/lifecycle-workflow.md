@@ -8,9 +8,10 @@ The workflow system drives tickets through an automated state machine: dispatch,
 2. **WorkerdNextStepRouter** -- pure-function router mapping `workflow_status` to the next action
 3. **GithubPollerManager** -- polls GitHub for CI status and review signals, advancing external-wait states
 
-The system uses two database tables:
+The system uses three database tables:
 - **`workflow`** -- tracks the current workflow state for each ticket (status, timestamps)
 - **`workflow_intent`** -- records pending intents (target status) for crash recovery
+- **`workflow_comments`** -- tracks seen PR comments for deduplication across feedback cycles
 
 ## State Machine
 
@@ -57,7 +58,7 @@ The system uses two database tables:
 | `Pushing` | Server pushes branch and creates/updates PR |
 | `InReview` | PR is open, waiting for human review signal |
 | `FeedbackCreating` | Worker creates feedback summary from review |
-| `Merging` | Server merges PR (squash), kills worker, closes epic, dispatches children |
+| `Merging` | Server merges PR (squash), kills worker, closes ticket, dispatches follow-up children |
 | `Done` | Terminal state |
 
 ## Architecture
@@ -113,8 +114,8 @@ Handlers are keyed by **target status**, not by transition. Each handler runs wh
 | `Verifying` | `VerifyHandler` | Runs pre-push verification hook via builderd |
 | `Pushing` | `PushHandler` | Pushes branch, creates/updates PR |
 | `InReview` | `ReviewStartHandler` | No-op signal handler |
-| `FeedbackCreating` | `FeedbackCreateHandler` | Promotes to epic, sends feedback create RPC to worker |
-| `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes epic, dispatches children |
+| `FeedbackCreating` | `FeedbackCreateHandler` | Queries pending comments, sends feedback create RPC to worker |
+| `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes ticket, dispatches follow-up children |
 
 Source: `crates/server/src/workflow/handlers/mod.rs` (`build_handlers()`)
 
@@ -224,6 +225,27 @@ Source: `crates/server/src/main.rs`
 
 The intent table provides crash recovery: if the server crashes mid-transition, on restart the coordinator replays pending intents. Intents are deleted after successful execution.
 
+### workflow_comments
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `ticket_id` | TEXT | References tickets.id (composite PK) |
+| `comment_id` | TEXT | GitHub PR comment ID (composite PK) |
+| `feedback_created` | INTEGER | 0 = seen but pending, 1 = feedback ticket created |
+| `created_at` | TEXT | When the comment was first seen |
+
+The `workflow_comments` table enables two-phase comment handling for deduplication across feedback cycles. Phase 1 (poller): the `GithubPollerManager` inserts unseen comment IDs with `feedback_created = 0` when it detects new review comments. Phase 2 (step complete): after the worker finishes creating feedback tickets, `mark_feedback_created` flips `feedback_created` to 1 for all pending comments. This ensures that if the worker dies mid-way, comments remain pending (`feedback_created = 0`) and will be re-processed on the next feedback cycle. Already-handled comment IDs (`feedback_created = 1`) are passed to the worker so it skips comments that already have feedback tickets.
+
+Source: `crates/ur_db/migrations/011_workflow_comments.sql`
+
+## Ticket Types and Tree Structure
+
+Tickets have two types: **task** and **design**. Tasks are the default work unit; design tickets represent pre-implementation planning.
+
+Tickets form a tree hierarchy via parent-child relationships. Any ticket can have children -- there is no separate "epic" type. The `--tree` flag on list queries performs a recursive tree walk from a root ticket, returning the root and all descendants with a `depth` field indicating hierarchy level. The `dispatchable` command walks the full tree to find open tickets with no open blockers.
+
+The tree structure is used by the workflow system: the `MergeHandler` finds follow-up children via `follow_up` edges and dispatches them as independent work after a successful merge.
+
 ## Dispatch Flow
 
 When the user runs `ur worker launch --dispatch <ticket-id>`:
@@ -276,19 +298,37 @@ On successful push (handled by `PushHandler`), `fix_attempt_count` is reset to 0
 
 Source: `crates/server/src/workflow/handlers/verify.rs`, `crates/server/src/workflow/handlers/push.rs`
 
-## Epic Promotion and Feedback Flow
+## Two-Phase Comment Handling and Feedback Flow
+
+The feedback flow uses two-phase comment tracking to deduplicate PR comments across multiple feedback cycles (e.g., when a ticket goes through Implementing -> Pushing -> InReview -> FeedbackCreating multiple times).
+
+### Phase 1: Comment Discovery (GithubPollerManager)
+
+When scanning `InReview` tickets, the poller:
+
+1. Fetches all seen comment IDs from `workflow_comments` for the ticket
+2. Retrieves PR comments from GitHub
+3. Filters out already-seen comments
+4. Evaluates only unseen comments for review signals (approval/changes-requested)
+5. Inserts new comment IDs into `workflow_comments` with `feedback_created = 0`
+
+This ensures that comments from previous review rounds do not re-trigger transitions.
+
+### Phase 2: Feedback Creation (FeedbackCreateHandler)
 
 When a ticket reaches `FeedbackCreating`, the `FeedbackCreateHandler`:
 
-1. **Promotes the ticket to an epic** (if not already) so child feedback tickets can be parented under it
-2. Sends the `CreateFeedbackTickets(ticket_id, pr_number)` RPC to the worker
-3. The worker creates child tickets from PR review comments and signals step complete
-4. Workerd sends `WorkflowStepComplete` RPC to the server
+1. Queries `workflow_comments` for pending comments (`feedback_created = 0`) and handled comments (`feedback_created = 1`)
+2. Sends the `CreateFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC to the worker, passing handled IDs so the worker skips comments that already have feedback tickets
+3. The worker creates child tickets from new PR review comments and signals step complete
+4. On step completion, `WorkerCoreServiceHandler` calls `mark_feedback_created` to flip all pending comments to `feedback_created = 1`
 5. The step router routes via `AdvanceByFeedbackMode`:
    - `feedback_mode=now` (changes requested): transitions to `Implementing` to address feedback
    - `feedback_mode=later` (approved/merged): transitions to `Merging` to complete the PR
 
-Source: `crates/server/src/workflow/handlers/feedback_create.rs`, `crates/server/src/workflow/step_router.rs`
+If the worker dies before step completion, pending comments remain at `feedback_created = 0` and will be re-processed on recovery.
+
+Source: `crates/server/src/workflow/handlers/feedback_create.rs`, `crates/server/src/workflow/step_router.rs`, `crates/server/src/grpc.rs`
 
 ## Merge Flow
 
@@ -297,8 +337,8 @@ The `MergeHandler` (→ Merging) performs:
 1. Kills the worker and releases its slot
 2. Merges the PR via `GhBackend::merge_pr` (squash strategy)
 3. Closes the original ticket (status → Done)
-4. Finds the follow-up epic via `follow_up` edge and closes it
-5. Dispatches follow-up epic children as independent work (branch cleared)
+4. Finds the follow-up ticket via `follow_up` edge and closes it
+5. Dispatches follow-up ticket's children as independent work (branch cleared)
 
 If the merge fails due to a conflict, the handler transitions back to `Implementing` with an activity recording the failure.
 
@@ -316,11 +356,13 @@ Scans every 30s for tickets in `pushing` or `in_review` workflow states:
 
 ### InReview tickets
 - Check for `autoapprove` metadata -- if set, auto-advance to `FeedbackCreating` with `feedback_mode=later`
-- Otherwise, check latest PR comment for emoji signals:
+- Fetch seen comment IDs from `workflow_comments` to filter out already-processed comments
+- Evaluate only unseen comments for emoji signals:
   - Approval (checkmark/rocket/ship/:shipit:): Transition to `FeedbackCreating` with `feedback_mode=later`
   - Changes requested (construction): Transition to `FeedbackCreating` with `feedback_mode=now`
+- Insert new comment IDs into `workflow_comments` with `feedback_created = 0` (phase 1 of two-phase comment handling)
 - Check PR state: merged → `FeedbackCreating`, closed → revert to `Open`
-- Only the latest comment counts, and only if no commits were pushed after it
+- Only the latest unseen comment counts, and only if no commits were pushed after it
 
 Source: `crates/server/src/workflow/github_poller.rs`
 
