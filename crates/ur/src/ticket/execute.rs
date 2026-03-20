@@ -115,6 +115,7 @@ where
         TicketArgs::RemoveLink { id, linked_id } => {
             execute_remove_link(client, id, linked_id).await
         }
+        TicketArgs::CancelWorkflow { id } => execute_cancel_workflow(client, id).await,
         TicketArgs::Approve {
             id,
             feedback_now,
@@ -365,6 +366,26 @@ where
         .await
         .with_status_context("unlink tickets")?;
     Ok(TicketOutput::LinkRemoved { id, linked_id })
+}
+
+async fn execute_cancel_workflow<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+) -> Result<TicketOutput>
+where
+    T: tonic::client::GrpcService<tonic::body::Body> + Send,
+    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
+    <T::ResponseBody as http_body::Body>::Error:
+        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: id.clone(),
+        })
+        .await
+        .with_status_context("cancel workflow")?;
+    Ok(TicketOutput::WorkflowCancelled { id })
 }
 
 async fn execute_dispatchable<T>(
