@@ -183,6 +183,8 @@ async fn init_and_serve(
         ticket_repo: ticket_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
         workflow_dispatcher: None, // set in serve_grpc_servers after builderd connects
+        transition_tx: None,       // set in serve_grpc_servers after builderd connects
+        cancel_tx: None,           // set in serve_grpc_servers after builderd connects
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -254,6 +256,9 @@ async fn serve_grpc_servers(
 
     let handlers = build_handlers();
 
+    // Create the coordinator channel for transition requests.
+    let (transition_tx, coordinator_rx) = ur_server::workflow::coordinator_channel(256);
+
     // Build a workflow dispatcher for the redrive endpoint (shares handlers with engine).
     let dispatcher_ctx = ur_server::workflow::WorkflowContext {
         ticket_repo: ticket_repo.clone(),
@@ -261,9 +266,15 @@ async fn serve_grpc_servers(
         worker_prefix: network_prefix.clone(),
         builderd_client: workflow_builderd_client.clone(),
         config: config.clone(),
+        transition_tx: transition_tx.clone(),
     };
     let dispatcher = ur_server::workflow::WorkflowDispatcher::new(dispatcher_ctx, &handlers);
+    // Create the cancel channel for workflow cancellation requests.
+    let (cancel_tx, cancel_rx) = ur_server::workflow::coordinator_cancel_channel(256);
+
     ticket_handler.workflow_dispatcher = Some(dispatcher);
+    ticket_handler.transition_tx = Some(transition_tx.clone());
+    ticket_handler.cancel_tx = Some(cancel_tx);
 
     let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
     let engine = WorkflowEngine::new(
@@ -271,12 +282,36 @@ async fn serve_grpc_servers(
         engine_worker_repo,
         network_prefix.clone(),
         workflow_builderd_client,
-        config,
-        handlers,
+        config.clone(),
+        handlers.clone(),
+        transition_tx.clone(),
     );
     let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
-    let poller =
-        GithubPollerManager::new(poller_ticket_repo, poller_builderd_client, scan_interval);
+
+    // Spawn the workflow coordinator for intent-based transitions.
+    let coordinator_ctx = ur_server::workflow::WorkflowContext {
+        ticket_repo: poller_ticket_repo.clone(),
+        worker_repo: worker_repo.clone(),
+        worker_prefix: network_prefix.clone(),
+        builderd_client: poller_builderd_client.clone(),
+        config: config.clone(),
+        transition_tx: transition_tx.clone(),
+    };
+    let coordinator = ur_server::workflow::WorkflowCoordinator::new(
+        coordinator_rx,
+        cancel_rx,
+        coordinator_ctx,
+        &handlers,
+        config.server.max_transition_attempts,
+    );
+    let coordinator_handle = coordinator.spawn(workflow_shutdown_rx.clone());
+
+    let poller = GithubPollerManager::new(
+        poller_ticket_repo,
+        poller_builderd_client,
+        scan_interval,
+        transition_tx.clone(),
+    );
     let poller_handle = poller.spawn(workflow_shutdown_rx);
 
     let host_server = ur_server::grpc_server::serve_grpc(
@@ -307,13 +342,15 @@ async fn serve_grpc_servers(
         rag_handler,
         ticket_handler,
         remote_repo_handler,
+        transition_tx,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
 
-    // Signal workflow engine and github poller to shut down.
+    // Signal workflow engine, coordinator, and github poller to shut down.
     let _ = workflow_shutdown_tx.send(true);
     let _ = engine_handle.await;
+    let _ = coordinator_handle.await;
     let _ = poller_handle.await;
 
     server_result

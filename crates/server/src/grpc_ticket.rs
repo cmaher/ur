@@ -11,12 +11,12 @@ use ur_rpc::error::{
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
     AddActivityRequest, AddActivityResponse, AddBlockRequest, AddBlockResponse, AddLinkRequest,
-    AddLinkResponse, CreateTicketRequest, CreateTicketResponse, DeleteMetaRequest,
-    DeleteMetaResponse, DispatchableTicketsRequest, DispatchableTicketsResponse, GetTicketRequest,
-    GetTicketResponse, ListActivitiesRequest, ListActivitiesResponse, ListTicketsRequest,
-    ListTicketsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
-    RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    UpdateTicketRequest, UpdateTicketResponse,
+    AddLinkResponse, CreateTicketRequest, CreateTicketResponse, CreateWorkflowRequest,
+    CreateWorkflowResponse, DeleteMetaRequest, DeleteMetaResponse, DispatchableTicketsRequest,
+    DispatchableTicketsResponse, GetTicketRequest, GetTicketResponse, ListActivitiesRequest,
+    ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, RedriveTicketRequest,
+    RedriveTicketResponse, RemoveBlockRequest, RemoveBlockResponse, RemoveLinkRequest,
+    RemoveLinkResponse, SetMetaRequest, SetMetaResponse, UpdateTicketRequest, UpdateTicketResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +89,54 @@ pub struct TicketServiceHandler {
     /// Optional workflow dispatcher for redrive support.
     /// None on the worker server (no workflow engine).
     pub workflow_dispatcher: Option<crate::workflow::WorkflowDispatcher>,
+    /// Optional channel sender for workflow transition requests.
+    /// None on the worker server (no workflow engine).
+    pub transition_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>>,
+    /// Optional channel sender for workflow cancellation requests.
+    /// None on the worker server (no workflow engine).
+    pub cancel_tx: Option<tokio::sync::mpsc::Sender<String>>,
+}
+
+impl TicketServiceHandler {
+    /// If the ticket has an active workflow, cancel it: signal the coordinator
+    /// to abort the in-flight handler, then delete the workflow and intent rows.
+    async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
+        let workflow = self
+            .ticket_repo
+            .get_workflow_by_ticket(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        if workflow.is_none() {
+            return Ok(());
+        }
+
+        info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
+
+        // Signal the coordinator to abort any in-flight handler task.
+        if let Some(cancel_tx) = &self.cancel_tx
+            && let Err(e) = cancel_tx.send(ticket_id.to_owned()).await
+        {
+            tracing::warn!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to send cancel signal to coordinator (channel closed)"
+            );
+        }
+
+        // Delete intents and workflow from the database.
+        self.ticket_repo
+            .delete_intents_for_ticket(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        self.ticket_repo
+            .delete_workflow(ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -186,9 +234,7 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
-                        lifecycle_status: String::new(),
                         branch: String::new(),
-                        lifecycle_managed: false,
                     })
                     .collect()
             }
@@ -211,24 +257,17 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
-                        lifecycle_status: String::new(),
                         branch: String::new(),
-                        lifecycle_managed: false,
                     })
                     .collect()
             }
             _ => {
-                let lifecycle_status = req
-                    .lifecycle_status
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| s.parse::<LifecycleStatus>().ok());
-
                 let filter = TicketFilter {
                     project: req.project.filter(|s| !s.is_empty()),
                     status: req.status.filter(|s| !s.is_empty()),
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
                     parent_id: req.parent_id.filter(|s| !s.is_empty()),
-                    lifecycle_status,
+                    lifecycle_status: None,
                 };
 
                 let db_tickets = self
@@ -250,9 +289,7 @@ impl TicketService for TicketServiceHandler {
                         created_at: t.created_at,
                         updated_at: t.updated_at,
                         project: t.project,
-                        lifecycle_status: t.lifecycle_status.to_string(),
                         branch: t.branch.unwrap_or_default(),
-                        lifecycle_managed: t.lifecycle_managed,
                     })
                     .collect()
             }
@@ -298,9 +335,7 @@ impl TicketService for TicketServiceHandler {
             created_at: t.created_at,
             updated_at: t.updated_at,
             project: t.project,
-            lifecycle_status: t.lifecycle_status.to_string(),
             branch: t.branch.unwrap_or_default(),
-            lifecycle_managed: t.lifecycle_managed,
         };
 
         let metadata: Vec<_> = meta
@@ -338,15 +373,6 @@ impl TicketService for TicketServiceHandler {
             Some(s) => Some(Some(s)),
         };
 
-        let lifecycle_status = req
-            .lifecycle_status
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                s.parse::<LifecycleStatus>()
-                    .map_err(TicketError::Validation)
-            })
-            .transpose()?;
-
         let branch = match req.branch {
             None => None,
             Some(ref s) if s == "NONE" => Some(None),
@@ -373,8 +399,8 @@ impl TicketService for TicketServiceHandler {
 
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
-            lifecycle_status,
-            lifecycle_managed: req.lifecycle_managed,
+            lifecycle_status: None,
+            lifecycle_managed: None,
             type_: req.ticket_type.filter(|s| !s.is_empty()),
             priority: req.priority.map(|p| p as i32),
             title: req.title.filter(|s| !s.is_empty()),
@@ -404,6 +430,8 @@ impl TicketService for TicketServiceHandler {
                     .into());
                 }
             }
+
+            self.cancel_active_workflow(&req.id).await?;
         }
 
         self.ticket_repo
@@ -602,6 +630,63 @@ impl TicketService for TicketServiceHandler {
 
         Ok(Response::new(DispatchableTicketsResponse {
             tickets: proto_tickets,
+        }))
+    }
+
+    async fn create_workflow(
+        &self,
+        req: Request<CreateWorkflowRequest>,
+    ) -> Result<Response<CreateWorkflowResponse>, Status> {
+        let req = req.into_inner();
+        info!(ticket_id = %req.ticket_id, status = %req.status, "create_workflow request");
+
+        let transition_tx = self.transition_tx.as_ref().ok_or_else(|| {
+            Status::unavailable(
+                "workflow creation not available on this server (no workflow engine)",
+            )
+        })?;
+
+        // Validate the ticket exists and is not closed.
+        let ticket = self
+            .ticket_repo
+            .get_ticket(&req.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .ok_or_else(|| TicketError::NotFound {
+                id: req.ticket_id.clone(),
+            })?;
+
+        if ticket.status == "closed" {
+            return Err(TicketError::Validation(format!(
+                "ticket {} has status 'closed', cannot create workflow",
+                req.ticket_id,
+            ))
+            .into());
+        }
+
+        let status: LifecycleStatus = req
+            .status
+            .parse()
+            .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.status)))?;
+
+        // Create the workflow row.
+        let workflow = self
+            .ticket_repo
+            .create_workflow(&req.ticket_id, status)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        // Send the transition request to the coordinator.
+        transition_tx
+            .send(crate::workflow::TransitionRequest {
+                ticket_id: req.ticket_id.clone(),
+                target_status: status,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("failed to send transition request: {e}")))?;
+
+        Ok(Response::new(CreateWorkflowResponse {
+            workflow_id: workflow.id,
         }))
     }
 

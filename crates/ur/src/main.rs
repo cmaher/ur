@@ -25,7 +25,6 @@ use container::{ContainerId, ContainerRuntime};
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument, warn};
 use ur_rpc::error::StatusResultExt;
-use ur_rpc::lifecycle;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::*;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
@@ -717,50 +716,20 @@ async fn process_status(
     Ok(())
 }
 
-/// Validate a ticket exists and is in "open" lifecycle_status, then transition it to "awaiting_dispatch".
+/// Create a workflow for a ticket with status=awaiting_dispatch via the CreateWorkflow RPC.
 async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
     let channel = connection::connect(port).await?;
     let mut ticket_client = TicketServiceClient::new(channel);
 
-    let resp = ticket_client
-        .get_ticket(GetTicketRequest {
-            id: ticket_id.to_owned(),
-        })
-        .await
-        .with_status_context("get ticket for dispatch")?;
-
-    let ticket = resp
-        .into_inner()
-        .ticket
-        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
-
-    if ticket.lifecycle_status != lifecycle::OPEN {
-        bail!(
-            "ticket {ticket_id} has lifecycle_status '{}', expected '{}'",
-            ticket.lifecycle_status,
-            lifecycle::OPEN,
-        );
-    }
-
     ticket_client
-        .update_ticket(UpdateTicketRequest {
-            id: ticket_id.to_owned(),
-            status: None,
-            priority: None,
-            title: None,
-            body: None,
-            force: false,
-            ticket_type: None,
-            parent_id: None,
-            lifecycle_status: Some(lifecycle::AWAITING_DISPATCH.to_owned()),
-            branch: None,
-            project: None,
-            lifecycle_managed: Some(true),
+        .create_workflow(CreateWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+            status: ur_rpc::lifecycle::AWAITING_DISPATCH.to_owned(),
         })
         .await
-        .with_status_context("transition ticket to implementing")?;
+        .with_status_context("create workflow for dispatch")?;
 
-    info!(ticket_id, "dispatched ticket to implementing");
+    info!(ticket_id, "created workflow with awaiting_dispatch status");
     Ok(())
 }
 

@@ -18,9 +18,6 @@ pub fn format_ticket_detail(
     writeln!(out, "Title:    {}", ticket.title).unwrap();
     writeln!(out, "Type:     {}", ticket.ticket_type).unwrap();
     writeln!(out, "Status:   {}", ticket.status).unwrap();
-    if !ticket.lifecycle_status.is_empty() {
-        writeln!(out, "Lifecycle: {}", ticket.lifecycle_status).unwrap();
-    }
     writeln!(out, "Priority: {}", ticket.priority).unwrap();
     if !ticket.parent_id.is_empty() {
         writeln!(out, "Parent:   {}", ticket.parent_id).unwrap();
@@ -57,49 +54,22 @@ pub fn format_ticket_detail(
 
 /// Format a table of tickets (used by `list`).
 pub fn format_ticket_list(tickets: &[Ticket]) -> String {
-    // Show lifecycle column only if any ticket has a non-empty lifecycle_status
-    let show_lifecycle = tickets.iter().any(|t| !t.lifecycle_status.is_empty());
-
     let mut out = String::new();
-    if show_lifecycle {
+    writeln!(
+        out,
+        "{:<20} {:<10} {:<14} {:<4} TITLE",
+        "ID", "TYPE", "STATUS", "PRI"
+    )
+    .unwrap();
+    let separator: String = std::iter::repeat_n('-', 72).collect();
+    writeln!(out, "{separator}").unwrap();
+    for t in tickets {
         writeln!(
             out,
-            "{:<20} {:<10} {:<14} {:<18} {:<4} TITLE",
-            "ID", "TYPE", "STATUS", "LIFECYCLE", "PRI"
+            "{:<20} {:<10} {:<14} {:<4} {}",
+            t.id, t.ticket_type, t.status, t.priority, t.title
         )
         .unwrap();
-        let separator: String = std::iter::repeat_n('-', 90).collect();
-        writeln!(out, "{separator}").unwrap();
-        for t in tickets {
-            let lifecycle = if t.lifecycle_status.is_empty() {
-                "-"
-            } else {
-                &t.lifecycle_status
-            };
-            writeln!(
-                out,
-                "{:<20} {:<10} {:<14} {:<18} {:<4} {}",
-                t.id, t.ticket_type, t.status, lifecycle, t.priority, t.title
-            )
-            .unwrap();
-        }
-    } else {
-        writeln!(
-            out,
-            "{:<20} {:<10} {:<14} {:<4} TITLE",
-            "ID", "TYPE", "STATUS", "PRI"
-        )
-        .unwrap();
-        let separator: String = std::iter::repeat_n('-', 72).collect();
-        writeln!(out, "{separator}").unwrap();
-        for t in tickets {
-            writeln!(
-                out,
-                "{:<20} {:<10} {:<14} {:<4} {}",
-                t.id, t.ticket_type, t.status, t.priority, t.title
-            )
-            .unwrap();
-        }
     }
     write!(out, "\n{} ticket(s)", tickets.len()).unwrap();
     out

@@ -1,7 +1,7 @@
 // Tests for TicketRepo.
 
 use crate::graph::GraphManager;
-use crate::model::{EdgeKind, NewTicket, TicketFilter, TicketUpdate};
+use crate::model::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketUpdate};
 use crate::tests::TestDb;
 use crate::ticket_repo::TicketRepo;
 
@@ -1126,6 +1126,294 @@ async fn close_open_children_returns_zero_when_already_closed() {
 
     let closed = repo.close_open_children("epic-no-kids").await.unwrap();
     assert_eq!(closed, 0);
+
+    db.cleanup().await;
+}
+
+// ============================================================
+// Workflow CRUD tests
+// ============================================================
+
+#[tokio::test]
+async fn create_and_get_workflow() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-t1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Workflow test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let wf = repo
+        .create_workflow("wf-t1", LifecycleStatus::Open)
+        .await
+        .unwrap();
+    assert_eq!(wf.ticket_id, "wf-t1");
+    assert_eq!(wf.status, LifecycleStatus::Open);
+    assert!(!wf.id.is_empty());
+
+    let fetched = repo.get_workflow_by_ticket("wf-t1").await.unwrap().unwrap();
+    assert_eq!(fetched.id, wf.id);
+    assert_eq!(fetched.status, LifecycleStatus::Open);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_workflow_returns_none_when_missing() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    let result = repo.get_workflow_by_ticket("no-such").await.unwrap();
+    assert!(result.is_none());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn create_workflow_fails_duplicate_ticket() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-dup".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Dup test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-dup", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    let result = repo
+        .create_workflow("wf-dup", LifecycleStatus::Implementing)
+        .await;
+    assert!(result.is_err());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn update_workflow_status() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-upd".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Update wf".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-upd", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    repo.update_workflow_status("wf-upd", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+
+    let wf = repo
+        .get_workflow_by_ticket("wf-upd")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wf.status, LifecycleStatus::Implementing);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn delete_workflow() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-del".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Del wf".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_workflow("wf-del", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    repo.delete_workflow("wf-del").await.unwrap();
+
+    let result = repo.get_workflow_by_ticket("wf-del").await.unwrap();
+    assert!(result.is_none());
+
+    db.cleanup().await;
+}
+
+// ============================================================
+// WorkflowIntent CRUD tests
+// ============================================================
+
+#[tokio::test]
+async fn create_and_poll_intent() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "int-t1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Intent test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let intent = repo
+        .create_intent("int-t1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+    assert_eq!(intent.ticket_id, "int-t1");
+    assert_eq!(intent.target_status, LifecycleStatus::Implementing);
+    assert_eq!(intent.attempts, 0);
+
+    let polled = repo.poll_intent().await.unwrap().unwrap();
+    assert_eq!(polled.id, intent.id);
+    assert_eq!(polled.target_status, LifecycleStatus::Implementing);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn poll_intent_returns_none_when_empty() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    let result = repo.poll_intent().await.unwrap();
+    assert!(result.is_none());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn delete_intent() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "int-del".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Del intent".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let intent = repo
+        .create_intent("int-del", LifecycleStatus::Pushing)
+        .await
+        .unwrap();
+
+    repo.delete_intent(&intent.id).await.unwrap();
+
+    let polled = repo.poll_intent().await.unwrap();
+    assert!(polled.is_none());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn increment_intent_attempts() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "int-inc".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Inc intent".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let intent = repo
+        .create_intent("int-inc", LifecycleStatus::InReview)
+        .await
+        .unwrap();
+
+    repo.increment_intent_attempts(&intent.id).await.unwrap();
+    repo.increment_intent_attempts(&intent.id).await.unwrap();
+
+    let polled = repo.poll_intent().await.unwrap().unwrap();
+    assert_eq!(polled.attempts, 2);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn poll_intent_returns_oldest_first() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "int-ord1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Order 1".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_ticket(&NewTicket {
+        id: "int-ord2".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Order 2".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let first = repo
+        .create_intent("int-ord1", LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+    repo.create_intent("int-ord2", LifecycleStatus::Pushing)
+        .await
+        .unwrap();
+
+    let polled = repo.poll_intent().await.unwrap().unwrap();
+    assert_eq!(polled.id, first.id);
+    assert_eq!(polled.ticket_id, "int-ord1");
+
+    // Delete first, poll should return second
+    repo.delete_intent(&first.id).await.unwrap();
+    let polled2 = repo.poll_intent().await.unwrap().unwrap();
+    assert_eq!(polled2.ticket_id, "int-ord2");
 
     db.cleanup().await;
 }

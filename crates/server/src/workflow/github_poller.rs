@@ -1,13 +1,15 @@
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use remote_repo::{GhBackend, RemoteRepo};
 use ur_db::TicketRepo;
-use ur_db::model::{LifecycleStatus, Ticket, TicketUpdate};
+use ur_db::model::{LifecycleStatus, Ticket};
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
+
+use super::TransitionRequest;
 
 /// Delay between individual GitHub API calls to avoid rate limiting.
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
@@ -15,14 +17,15 @@ const API_CALL_DELAY: Duration = Duration::from_secs(2);
 /// Polls GitHub for CI status and PR review signals on tickets in
 /// `pushing` and `in_review` lifecycle states.
 ///
-/// Runs as a separate tokio task from the workflow engine. Updates
-/// lifecycle_status via TicketRepo (which triggers the SQLite trigger
-/// → workflow_event for downstream handlers).
+/// Runs as a separate tokio task from the workflow engine. Sends
+/// transition requests to the WorkflowCoordinator via an mpsc channel
+/// instead of directly updating lifecycle_status in the database.
 #[derive(Clone)]
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
     builderd_client: BuilderdClient,
     scan_interval: Duration,
+    transition_tx: mpsc::Sender<TransitionRequest>,
 }
 
 impl GithubPollerManager {
@@ -30,11 +33,13 @@ impl GithubPollerManager {
         ticket_repo: TicketRepo,
         builderd_client: BuilderdClient,
         scan_interval: Duration,
+        transition_tx: mpsc::Sender<TransitionRequest>,
     ) -> Self {
         Self {
             ticket_repo,
             builderd_client,
             scan_interval,
+            transition_tx,
         }
     }
 
@@ -62,10 +67,10 @@ impl GithubPollerManager {
 
     /// Run one full scan: check all pushing and in_review tickets.
     async fn poll_once(&self) {
-        // Phase 1: Check pushing tickets for CI completion.
+        // Phase 1: Check pushing tickets (by workflow status) for CI completion.
         match self
             .ticket_repo
-            .tickets_by_lifecycle_status(LifecycleStatus::Pushing)
+            .tickets_by_workflow_status(LifecycleStatus::Pushing)
             .await
         {
             Ok(tickets) => {
@@ -75,14 +80,14 @@ impl GithubPollerManager {
                 }
             }
             Err(e) => {
-                error!(error = %e, "failed to query pushing tickets");
+                error!(error = %e, "failed to query pushing workflows");
             }
         }
 
-        // Phase 2: Check in_review tickets for review signals.
+        // Phase 2: Check in_review tickets (by workflow status) for review signals.
         match self
             .ticket_repo
-            .tickets_by_lifecycle_status(LifecycleStatus::InReview)
+            .tickets_by_workflow_status(LifecycleStatus::InReview)
             .await
         {
             Ok(tickets) => {
@@ -92,7 +97,7 @@ impl GithubPollerManager {
                 }
             }
             Err(e) => {
-                error!(error = %e, "failed to query in_review tickets");
+                error!(error = %e, "failed to query in_review workflows");
             }
         }
     }
@@ -140,7 +145,7 @@ impl GithubPollerManager {
             error!(ticket_id = %ticket_id, error = %e, "failed to set feedback_mode");
             return;
         }
-        self.transition_lifecycle(ticket_id, LifecycleStatus::FeedbackCreating)
+        self.send_transition(ticket_id, LifecycleStatus::FeedbackCreating)
             .await;
     }
 
@@ -175,7 +180,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "CI all green — transitioning to in_review"
                 );
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::InReview)
+                self.send_transition(&ticket.id, LifecycleStatus::InReview)
                     .await;
             }
             Ok(CiStatus::Pending) => {
@@ -209,7 +214,7 @@ impl GithubPollerManager {
                     return;
                 }
 
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::Implementing)
+                self.send_transition(&ticket.id, LifecycleStatus::Implementing)
                     .await;
             }
             Ok(CiStatus::NoChecks) => {
@@ -219,7 +224,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "no CI checks found — transitioning to in_review"
                 );
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::InReview)
+                self.send_transition(&ticket.id, LifecycleStatus::InReview)
                     .await;
             }
             Err(e) => {
@@ -299,10 +304,9 @@ impl GithubPollerManager {
                 info!(
                     ticket_id = %ticket.id,
                     pr_number = %pr_number,
-                    "PR closed without merge — reverting ticket to open"
+                    "PR closed without merge — deleting workflow and reverting ticket to open"
                 );
-                self.transition_lifecycle(&ticket.id, LifecycleStatus::Open)
-                    .await;
+                self.delete_workflow_and_revert(&ticket.id).await;
             }
             Ok(ReviewSignal::Pending) => {
                 // No actionable signal yet — will check again next scan.
@@ -317,26 +321,42 @@ impl GithubPollerManager {
         }
     }
 
-    /// Transition a ticket's lifecycle_status, which fires the SQLite trigger.
-    async fn transition_lifecycle(&self, ticket_id: &str, to: LifecycleStatus) {
-        let update = TicketUpdate {
-            lifecycle_status: Some(to),
-            lifecycle_managed: None,
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+    /// Send a transition request to the WorkflowCoordinator.
+    async fn send_transition(&self, ticket_id: &str, to: LifecycleStatus) {
+        let request = TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: to,
         };
-        if let Err(e) = self.ticket_repo.update_ticket(ticket_id, &update).await {
+        if let Err(e) = self.transition_tx.send(request).await {
             error!(
                 ticket_id = %ticket_id,
                 target = %to,
                 error = %e,
-                "failed to transition lifecycle status"
+                "failed to send transition request to coordinator"
+            );
+        }
+    }
+
+    /// Delete the workflow for a ticket and revert the ticket status to open.
+    /// Used when a PR is closed without merge.
+    async fn delete_workflow_and_revert(&self, ticket_id: &str) {
+        if let Err(e) = self.ticket_repo.delete_workflow(ticket_id).await {
+            error!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to delete workflow for closed PR"
+            );
+            return;
+        }
+        let update = ur_db::model::TicketUpdate {
+            status: Some("open".to_string()),
+            ..Default::default()
+        };
+        if let Err(e) = self.ticket_repo.update_ticket(ticket_id, &update).await {
+            error!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to revert ticket to open after PR close"
             );
         }
     }

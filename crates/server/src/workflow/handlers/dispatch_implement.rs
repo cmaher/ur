@@ -1,7 +1,7 @@
 use anyhow::bail;
 use tracing::info;
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// Handler for all transitions into Implementing.
 ///
@@ -20,15 +20,10 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 /// Then resolves the assigned worker (via `worker_id` metadata) and sends
 /// the `Implement(ticket_id)` RPC to the worker's workerd daemon. The workerd
 /// handler sends /clear before /implement to ensure a fresh agent context.
-pub struct DispatchImplementHandler;
+pub struct ImplementHandler;
 
-impl WorkflowHandler for DispatchImplementHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+impl WorkflowHandler for ImplementHandler {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move {

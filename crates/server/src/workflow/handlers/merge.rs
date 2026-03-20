@@ -3,7 +3,7 @@ use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
 use tracing::{error, info, warn};
 use ur_db::model::{LifecycleStatus, TicketFilter, TicketUpdate};
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
 /// Handler for the FeedbackCreating → Merging transition.
 ///
@@ -14,12 +14,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct MergeHandler;
 
 impl WorkflowHandler for MergeHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move { execute_merge(&ctx, &ticket_id).await })
@@ -64,11 +59,16 @@ async fn execute_merge(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), any
     // 5. Merge the PR via GhBackend through builderd.
     merge_pr(ctx, ticket_id, pr_number, gh_repo).await?;
 
-    // 6. Close original ticket and follow-up epic.
+    // 6. Delete workflow row (no further transitions for this ticket).
+    if let Err(e) = ctx.ticket_repo.delete_workflow(ticket_id).await {
+        warn!(ticket_id = %ticket_id, error = %e, "failed to delete workflow row");
+    }
+
+    // 7. Close original ticket and follow-up epic.
     close_ticket(ctx, ticket_id).await?;
     close_ticket(ctx, &follow_up_epic_id).await?;
 
-    // 7. Dispatch follow-up epic children as independent work.
+    // 8. Dispatch follow-up epic children as independent work.
     dispatch_children(ctx, ticket_id, &follow_up_epic_id).await
 }
 
@@ -255,7 +255,7 @@ async fn handle_merge_conflict(
         ticket_id = %ticket_id,
         pr_number = %pr_number,
         error = %error_message,
-        "merge failed due to conflicts — transitioning to implementing"
+        "merge failed due to conflicts — sending transition to implementing"
     );
 
     let message = format!(
@@ -273,18 +273,12 @@ async fn handle_merge_conflict(
         error!(ticket_id = %ticket_id, error = %e, "failed to add merge conflict activity");
     }
 
-    let update = TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Implementing),
-        lifecycle_managed: None,
-        status: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send Implementing transition: {e}"))?;
     Ok(())
 }

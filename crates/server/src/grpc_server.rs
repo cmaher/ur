@@ -54,6 +54,7 @@ pub async fn serve_worker_grpc(
     rag_handler: crate::rag::RagServiceHandler,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
     remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
+    transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
 
@@ -61,7 +62,7 @@ pub async fn serve_worker_grpc(
         worker_repo: worker_repo.clone(),
         ticket_repo,
         worker_prefix,
-        step_router: crate::workflow::LifecycleStepRouter::new(),
+        transition_tx,
     };
     let interceptor = crate::auth::worker_auth_interceptor(worker_repo);
 

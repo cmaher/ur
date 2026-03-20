@@ -8,7 +8,6 @@ use tonic::{Code, Request, Response, Status};
 use ur_rpc::error::{
     self, DOMAIN_CORE, DOMAIN_TICKET, NOT_FOUND, StatusResultExt, UNAUTHENTICATED,
 };
-use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::ticket_service_server::{TicketService, TicketServiceServer};
 use ur_rpc::proto::ticket::*;
@@ -59,13 +58,7 @@ impl TicketService for MockTicketStore {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             project: req.project,
-            lifecycle_status: if req.wip {
-                lifecycle::DESIGN.into()
-            } else {
-                lifecycle::OPEN.into()
-            },
             branch: String::new(),
-            lifecycle_managed: false,
         };
         self.inner
             .lock()
@@ -187,11 +180,6 @@ impl TicketService for MockTicketStore {
             Some(ref s) if s == "NONE" => ticket.parent_id = String::new(),
             Some(pid) => ticket.parent_id = pid,
             None => {}
-        }
-        if let Some(ls) = req.lifecycle_status
-            && !ls.is_empty()
-        {
-            ticket.lifecycle_status = ls;
         }
         match req.branch {
             Some(ref s) if s == "NONE" => ticket.branch = String::new(),
@@ -342,6 +330,13 @@ impl TicketService for MockTicketStore {
         &self,
         _req: Request<ur_rpc::proto::ticket::RedriveTicketRequest>,
     ) -> Result<Response<ur_rpc::proto::ticket::RedriveTicketResponse>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
+
+    async fn create_workflow(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::CreateWorkflowRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::CreateWorkflowResponse>, Status> {
         Err(Status::unimplemented("not implemented in mock"))
     }
 }

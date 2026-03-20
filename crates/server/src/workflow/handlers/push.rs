@@ -4,7 +4,7 @@ use tracing::{info, warn};
 
 use ur_db::model::LifecycleStatus;
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
 /// Handler for the Verifying → Pushing transition.
 ///
@@ -20,12 +20,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct PushHandler;
 
 impl WorkflowHandler for PushHandler {
-    fn handle(
-        &self,
-        ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move { handle_push(&ctx, &ticket_id).await })
@@ -260,7 +255,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
     }
 }
 
-/// Handle a pre-push hook failure: record activity and transition to Implementing.
+/// Handle a pre-push hook failure: record activity and send transition to Implementing.
 async fn handle_hook_failed(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -270,22 +265,16 @@ async fn handle_hook_failed(
     warn!(
         ticket_id = %ticket_id,
         branch = %branch,
-        "pre-push hook failed — transitioning to implementing"
+        "pre-push hook failed — sending transition to implementing"
     );
     add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
-    let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::Implementing),
-        status: None,
-        lifecycle_managed: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send Implementing transition: {e}"))?;
     Ok(())
 }
 
@@ -526,21 +515,15 @@ async fn resolve_gh_repo(
     Ok(derived)
 }
 
-/// Transition the ticket's lifecycle status to InReview.
+/// Send a transition request to InReview via the coordinator channel.
 async fn advance_to_in_review(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    let update = ur_db::model::TicketUpdate {
-        lifecycle_status: Some(LifecycleStatus::InReview),
-        status: None,
-        lifecycle_managed: None,
-        type_: None,
-        priority: None,
-        title: None,
-        body: None,
-        branch: None,
-        parent_id: None,
-        project: None,
-    };
-    ctx.ticket_repo.update_ticket(ticket_id, &update).await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::InReview,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send InReview transition: {e}"))?;
     Ok(())
 }
 

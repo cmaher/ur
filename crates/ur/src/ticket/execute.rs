@@ -146,6 +146,7 @@ where
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     let project_filter = if all { None } else { project };
+    let _ = lifecycle; // lifecycle filtering removed from proto; reserved for future use
     let resp = client
         .list_tickets(ListTicketsRequest {
             project: project_filter,
@@ -154,7 +155,6 @@ where
             parent_id: epic,
             meta_key: None,
             meta_value: None,
-            lifecycle_status: lifecycle,
         })
         .await
         .with_status_context("list tickets")?;
@@ -474,6 +474,7 @@ where
     } else {
         branch
     };
+    let _ = lifecycle; // lifecycle_status removed from proto; reserved for future use
     client
         .update_ticket(UpdateTicketRequest {
             id: id.clone(),
@@ -484,10 +485,8 @@ where
             force,
             ticket_type,
             parent_id,
-            lifecycle_status: lifecycle,
             branch: branch_value,
             project,
-            lifecycle_managed: None,
         })
         .await
         .with_status_context("update ticket")?;
@@ -535,10 +534,8 @@ where
             force: false,
             ticket_type: None,
             parent_id: None,
-            lifecycle_status: Some(lifecycle::FEEDBACK_CREATING.to_owned()),
             branch: None,
             project: None,
-            lifecycle_managed: None,
         })
         .await
         .with_status_context("transition lifecycle to feedback_creating")?;
@@ -568,10 +565,8 @@ where
             force,
             ticket_type: None,
             parent_id: None,
-            lifecycle_status: None,
             branch: None,
             project: None,
-            lifecycle_managed: None,
         })
         .await
         .with_status_context("close ticket")?;
@@ -596,10 +591,8 @@ where
             force: false,
             ticket_type: None,
             parent_id: None,
-            lifecycle_status: None,
             branch: None,
             project: None,
-            lifecycle_managed: None,
         })
         .await
         .with_status_context("open ticket")?;
@@ -625,7 +618,6 @@ where
             parent_id: None,
             meta_key: None,
             meta_value: None,
-            lifecycle_status: None,
         })
         .await
         .with_status_context("list tickets")?;

@@ -8,17 +8,6 @@ use ur_rpc::proto::ticket::*;
 use crate::connection;
 use crate::output::OutputManager;
 
-/// Map a lifecycle status to its natural next state (what --continue does).
-fn next_lifecycle_status(current: &str) -> Option<&'static str> {
-    match current {
-        "awaiting_dispatch" => Some("implementing"),
-        "implementing" => Some("verifying"),
-        "verifying" => Some("pushing"),
-        "pushing" => Some("in_review"),
-        _ => None,
-    }
-}
-
 /// Admin subcommands — privileged operations blocked from workers via hostexec.
 #[derive(Debug, Subcommand)]
 pub enum AdminCommands {
@@ -137,18 +126,11 @@ async fn handle_redrive(
     advance: bool,
 ) -> Result<()> {
     let to = if advance {
-        let resp = client
-            .get_ticket(GetTicketRequest { id: id.clone() })
-            .await
-            .with_status_context("get ticket for --continue")?;
-        let ticket = resp
-            .into_inner()
-            .ticket
-            .ok_or_else(|| anyhow::anyhow!("ticket {id} not found"))?;
-        let current = &ticket.lifecycle_status;
-        next_lifecycle_status(current)
-            .ok_or_else(|| anyhow::anyhow!("no natural next state from '{current}' — use --to"))?
-            .to_string()
+        // lifecycle_status has been removed from the proto Ticket message;
+        // look up the worker's lifecycle_status via WorkerList instead.
+        bail!(
+            "--continue is not yet supported after proto migration — use --to <status> explicitly"
+        );
     } else {
         to.unwrap()
     };

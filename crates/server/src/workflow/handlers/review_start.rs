@@ -1,6 +1,6 @@
 use tracing::info;
 
-use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHandler};
+use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// No-op handler for the Pushing → InReview transition.
 ///
@@ -9,12 +9,7 @@ use crate::workflow::{HandlerFuture, TransitionKey, WorkflowContext, WorkflowHan
 pub struct ReviewStartHandler;
 
 impl WorkflowHandler for ReviewStartHandler {
-    fn handle(
-        &self,
-        _ctx: &WorkflowContext,
-        ticket_id: &str,
-        _transition: &TransitionKey,
-    ) -> HandlerFuture<'_> {
+    fn handle(&self, _ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ticket_id = ticket_id.to_owned();
         Box::pin(async move {
             info!(

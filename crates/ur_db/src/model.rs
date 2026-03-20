@@ -97,6 +97,7 @@ pub struct NewTicket {
     pub created_at: Option<String>,
 }
 
+#[derive(Default)]
 pub struct TicketUpdate {
     pub status: Option<String>,
     pub lifecycle_status: Option<LifecycleStatus>,
@@ -159,6 +160,61 @@ pub struct WorkflowEvent {
     pub ticket_id: String,
     pub old_lifecycle_status: LifecycleStatus,
     pub new_lifecycle_status: LifecycleStatus,
+    pub attempts: i32,
+    pub created_at: String,
+}
+
+/// Ticket status enum for workflow-driven tickets.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TicketStatus {
+    #[default]
+    Open,
+    InProgress,
+    Closed,
+}
+
+impl TicketStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::InProgress => "in_progress",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+impl FromStr for TicketStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(Self::Open),
+            "in_progress" => Ok(Self::InProgress),
+            "closed" => Ok(Self::Closed),
+            _ => Err(format!("unknown ticket status: {s}")),
+        }
+    }
+}
+
+impl fmt::Display for TicketStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A workflow tracks the lifecycle state machine for a single ticket.
+pub struct Workflow {
+    pub id: String,
+    pub ticket_id: String,
+    pub status: LifecycleStatus,
+    pub created_at: String,
+}
+
+/// A workflow intent represents a desired state transition for a ticket.
+pub struct WorkflowIntent {
+    pub id: String,
+    pub ticket_id: String,
+    pub target_status: LifecycleStatus,
     pub attempts: i32,
     pub created_at: String,
 }
@@ -265,5 +321,26 @@ mod tests {
         let result = "bogus_status".parse::<LifecycleStatus>();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown lifecycle status"));
+    }
+
+    #[test]
+    fn ticket_status_roundtrip() {
+        for status in [
+            TicketStatus::Open,
+            TicketStatus::InProgress,
+            TicketStatus::Closed,
+        ] {
+            let s = status.as_str();
+            let parsed: TicketStatus = s.parse().unwrap();
+            assert_eq!(parsed, status);
+            assert_eq!(status.to_string(), s);
+        }
+    }
+
+    #[test]
+    fn ticket_status_rejects_unknown() {
+        let result = "bogus".parse::<TicketStatus>();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown ticket status"));
     }
 }

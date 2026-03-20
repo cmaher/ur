@@ -503,6 +503,8 @@ fn e2e_all() {
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
+        scenario_dispatch_creates_workflow(&env);
+        scenario_ticket_close_cancels_workflow(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -1157,4 +1159,213 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         String::from_utf8_lossy(&remove_output.stdout),
         String::from_utf8_lossy(&remove_output.stderr),
     );
+}
+
+/// Helper: parse the ticket ID from `ur ticket create --output json` output.
+fn parse_ticket_id_from_create(stdout: &[u8]) -> String {
+    let json: serde_json::Value =
+        serde_json::from_slice(stdout).expect("ticket create output should be valid JSON");
+    json["data"]["id"]
+        .as_str()
+        .expect("ticket create output should have data.id")
+        .to_owned()
+}
+
+/// Helper: get the ticket status from `ur ticket show --output json`.
+fn get_ticket_status(ur: &Path, envs: &[(&str, &str)], ticket_id: &str) -> Option<String> {
+    let output = run_cmd(ur, &["--output", "json", "ticket", "show", ticket_id], envs);
+    if !output.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    json["data"]["ticket"]["status"]
+        .as_str()
+        .map(|s| s.to_owned())
+}
+
+/// Dispatch creates workflow: create a ticket, launch a worker with `-d` (dispatch),
+/// verify the launch succeeds (which implies the CreateWorkflow RPC succeeded and a
+/// workflow row was created in the database).
+fn scenario_dispatch_creates_workflow(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // ---- Create a ticket via the ticket service ----
+    let create_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "Dispatch workflow test",
+            "-p",
+            env.project_key,
+        ],
+        &env_slice,
+    );
+    assert!(
+        create_output.status.success(),
+        "ur ticket create failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+    let ticket_id = parse_ticket_id_from_create(&create_output.stdout);
+    let container_name = env.container_name(&ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch worker with dispatch (-d) ----
+        // The -d flag calls CreateWorkflow RPC before launching.
+        // If the workflow creation fails, the launch command itself fails.
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} -d failed (workflow creation should succeed).\n\
+             stdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify ticket is still open (dispatch does not close it) ----
+        let status = get_ticket_status(&env.ur, &env_slice, &ticket_id);
+        assert_eq!(
+            status.as_deref(),
+            Some("open"),
+            "ticket should still be open after dispatch.\nticket_id: {ticket_id}"
+        );
+
+        // ---- Verify dispatching the same ticket again fails ----
+        // The workflow table has a UNIQUE constraint on ticket_id, so a second
+        // CreateWorkflow for the same ticket should fail.
+        let dup_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
+            &env_slice,
+        );
+        assert!(
+            !dup_output.status.success(),
+            "second dispatch of the same ticket should fail (workflow already exists).\n\
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&dup_output.stdout),
+            String::from_utf8_lossy(&dup_output.stderr),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Ticket close cancels workflow: dispatch a ticket (creating a workflow), then
+/// close the ticket. Verify the ticket is closed and that re-dispatching it after
+/// close fails (closed tickets cannot have workflows). This exercises the
+/// cancel_active_workflow path in the UpdateTicket handler.
+fn scenario_ticket_close_cancels_workflow(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // ---- Create a ticket via the ticket service ----
+    let create_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "Close workflow test",
+            "-p",
+            env.project_key,
+        ],
+        &env_slice,
+    );
+    assert!(
+        create_output.status.success(),
+        "ur ticket create failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+    let ticket_id = parse_ticket_id_from_create(&create_output.stdout);
+    let container_name = env.container_name(&ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch worker with dispatch (-d) ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} -d failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Close the ticket (should cancel the active workflow) ----
+        let close_output = run_cmd(&env.ur, &["ticket", "close", &ticket_id], &env_slice);
+        assert!(
+            close_output.status.success(),
+            "ur ticket close failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&close_output.stdout),
+            String::from_utf8_lossy(&close_output.stderr),
+        );
+
+        // ---- Verify ticket is now closed ----
+        let status = get_ticket_status(&env.ur, &env_slice, &ticket_id);
+        assert_eq!(
+            status.as_deref(),
+            Some("closed"),
+            "ticket should be closed after ur ticket close.\nticket_id: {ticket_id}"
+        );
+
+        // ---- Verify dispatching a closed ticket fails ----
+        // Re-open the ticket first so we can test the "can't dispatch closed" path.
+        // Actually, try dispatching without reopening — the CreateWorkflow RPC
+        // should reject closed tickets.
+        let dispatch_closed_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, "-d", &ticket_id],
+            &env_slice,
+        );
+        assert!(
+            !dispatch_closed_output.status.success(),
+            "dispatching a closed ticket should fail.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&dispatch_closed_output.stdout),
+            String::from_utf8_lossy(&dispatch_closed_output.stderr),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
 }

@@ -23,6 +23,8 @@ service CoreService {
   rpc WorkerList(WorkerListRequest) returns (WorkerListResponse);
   rpc SendWorkerMessage(SendWorkerMessageRequest) returns (SendWorkerMessageResponse);
   rpc UpdateAgentStatus(UpdateAgentStatusRequest) returns (UpdateAgentStatusResponse);
+  // Signal that a workflow step has completed for the given worker.
+  rpc WorkflowStepComplete(WorkflowStepCompleteRequest) returns (WorkflowStepCompleteResponse);
 }
 
 message PingRequest {}
@@ -103,3 +105,9 @@ message WorkerSummary {
   string stall_reason = 11;
   string pr_url = 12;
 }
+
+message WorkflowStepCompleteRequest {
+  string worker_id = 1;
+}
+
+message WorkflowStepCompleteResponse {}
