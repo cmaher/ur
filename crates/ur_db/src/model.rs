@@ -290,6 +290,53 @@ pub struct WorkerSlot {
     pub created_at: String,
 }
 
+// ============================================================
+// Knowledge types
+// ============================================================
+
+pub struct Knowledge {
+    pub id: String,
+    pub project: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub body: String,
+    pub tags: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Summary view of a knowledge doc (no body).
+pub struct KnowledgeSummary {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Default)]
+pub struct NewKnowledge {
+    pub project: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub body: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Default)]
+pub struct KnowledgeUpdate {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub body: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Default)]
+pub struct KnowledgeFilter {
+    pub project: Option<String>,
+    pub shared: bool,
+    pub tag: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
