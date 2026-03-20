@@ -4350,6 +4350,7 @@ dependencies = [
  "tonic 0.13.1",
  "tonic-build",
  "tonic-types",
+ "tower 0.5.3",
  "tracing",
 ]
 
