@@ -1157,6 +1157,78 @@ impl TicketRepo {
             })
             .collect())
     }
+
+    // ============================================================
+    // WorkflowComments CRUD
+    // ============================================================
+
+    /// Bulk-insert comment IDs as seen for a ticket. Existing rows are ignored.
+    pub async fn insert_workflow_comments(
+        &self,
+        ticket_id: &str,
+        comment_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        for comment_id in comment_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO workflow_comments (ticket_id, comment_id) VALUES (?, ?)",
+            )
+            .bind(ticket_id)
+            .bind(comment_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Return comment IDs where feedback has not yet been created.
+    pub async fn get_pending_feedback_comments(
+        &self,
+        ticket_id: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT comment_id FROM workflow_comments
+             WHERE ticket_id = ? AND feedback_created = 0
+             ORDER BY created_at ASC",
+        )
+        .bind(ticket_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Mark the given comment IDs as having had feedback tickets created.
+    pub async fn mark_feedback_created(
+        &self,
+        ticket_id: &str,
+        comment_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        for comment_id in comment_ids {
+            sqlx::query(
+                "UPDATE workflow_comments SET feedback_created = 1
+                 WHERE ticket_id = ? AND comment_id = ?",
+            )
+            .bind(ticket_id)
+            .bind(comment_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Return all comment IDs that have been seen for a ticket.
+    pub async fn get_seen_comment_ids(&self, ticket_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT comment_id FROM workflow_comments
+             WHERE ticket_id = ?
+             ORDER BY created_at ASC",
+        )
+        .bind(ticket_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {
