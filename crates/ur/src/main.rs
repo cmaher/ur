@@ -7,6 +7,7 @@ mod db;
 mod describe;
 mod init;
 mod input;
+mod knowledge;
 mod lifecycle_log;
 mod logging;
 mod output;
@@ -94,6 +95,11 @@ enum Commands {
     Server {
         #[command(subcommand)]
         command: ServerCommands,
+    },
+    /// Manage knowledge documents
+    Knowledge {
+        #[command(subcommand)]
+        command: crate::knowledge::KnowledgeArgs,
     },
     /// Manage tickets
     Ticket {
@@ -1347,6 +1353,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Start => start_server(&config, &compose, output)?,
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
+        Commands::Knowledge { command } => knowledge::handle(port, command, output).await?,
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
         Commands::Worker { command } => {
             handle_worker(
