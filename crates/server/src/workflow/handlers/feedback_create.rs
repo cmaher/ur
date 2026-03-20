@@ -5,13 +5,19 @@ use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
 /// Handler for the InReview → FeedbackCreating transition.
 ///
-/// Promotes the ticket to an epic (if not already) so child feedback tickets
-/// can be parented under it, then resolves the existing worker and sends
-/// the `CreateFeedbackTickets(ticket_id, pr_number)` RPC. The worker creates
-/// child tickets from PR comments and goes idle. The step router detects
-/// Idle + FeedbackCreating and routes by `feedback_mode` metadata:
+/// Queries `workflow_comments` for comment IDs that have been seen but not
+/// yet processed into feedback tickets, then sends the
+/// `CreateFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC
+/// to the assigned worker. The worker creates child tickets from new PR
+/// comments (skipping already-handled ones) and goes idle. The step router
+/// detects Idle + FeedbackCreating and routes by `feedback_mode` metadata:
 /// - `now` → Implementing
 /// - `later` → Merging
+///
+/// On successful step completion, `mark_feedback_created` is called by the
+/// step-complete handler to mark pending comments as processed. If the worker
+/// dies mid-way, comments remain `feedback_created = 0` and will be
+/// re-processed on recovery.
 ///
 /// `pr_number` is expected as metadata on the ticket (set by the push workflow handler).
 pub struct FeedbackCreateHandler;
@@ -27,9 +33,6 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 .get_ticket(&ticket_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
-
-            // Note: "epic" is no longer a ticket type — any ticket can have
-            // children, so no type promotion is needed.
 
             // 2. Read worker_id from workflow table, pr_number from ticket metadata.
             let workflow = ctx
@@ -61,7 +64,33 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 )
             })?;
 
-            // 3. Look up the worker record and verify it is running.
+            // 3. Query pending comments (seen but not yet feedback_created) and
+            //    already-handled comments (feedback_created = 1).
+            //    Pending comments are tracked so mark_feedback_created can be called
+            //    on step completion. Handled IDs are passed to the worker so it
+            //    skips comments that already have feedback tickets.
+            let pending_comments = ctx
+                .ticket_repo
+                .get_pending_feedback_comments(&ticket_id)
+                .await?;
+
+            let all_seen = ctx.ticket_repo.get_seen_comment_ids(&ticket_id).await?;
+
+            let pending_set: std::collections::HashSet<&str> =
+                pending_comments.iter().map(|s| s.as_str()).collect();
+            let handled_comment_ids: Vec<String> = all_seen
+                .into_iter()
+                .filter(|id| !pending_set.contains(id.as_str()))
+                .collect();
+
+            info!(
+                ticket_id = %ticket_id,
+                pending_count = pending_comments.len(),
+                handled_count = handled_comment_ids.len(),
+                "queried workflow_comments for feedback create"
+            );
+
+            // 4. Look up the worker record and verify it is running.
             let worker = ctx
                 .worker_repo
                 .get_worker(worker_id)
@@ -77,7 +106,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 );
             }
 
-            // 4. Derive workerd gRPC address and send CreateFeedbackTickets RPC.
+            // 5. Derive workerd gRPC address and send CreateFeedbackTickets RPC.
             let container_name = format!("{}{}", ctx.worker_prefix, worker.process_id);
             let workerd_addr =
                 format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
@@ -96,7 +125,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 worker_id.clone(),
             );
             workerd_client
-                .create_feedback_tickets(&ticket_id, pr_number)
+                .create_feedback_tickets(&ticket_id, pr_number, handled_comment_ids)
                 .await
                 .map_err(|e| anyhow::anyhow!("workerd create_feedback_tickets RPC failed: {e}"))?;
 

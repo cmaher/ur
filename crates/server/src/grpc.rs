@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tonic::{Code, Request, Response, Status};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use ur_db::TicketRepo;
 use ur_db::model::AgentStatus;
@@ -730,6 +730,11 @@ async fn handle_workflow_step_complete(
             send_transition(transition_tx, ticket_id, to).await
         }
         NextStepResult::AdvanceByFeedbackMode => {
+            // Mark pending comments as feedback_created before advancing.
+            // If this fails, we log and continue — the comments will be
+            // re-processed on the next FeedbackCreating cycle (safe retry).
+            mark_pending_feedback_comments(ticket_repo, ticket_id).await;
+
             let feedback_mode = &workflow.feedback_mode;
             let to = match feedback_mode.as_str() {
                 ur_rpc::feedback_mode::NOW => LifecycleStatus::Implementing,
@@ -753,6 +758,46 @@ async fn handle_workflow_step_complete(
                 "step complete: no routing for current status — ignoring"
             );
             Ok(())
+        }
+    }
+}
+
+/// Mark all pending feedback comments as created for the given ticket.
+///
+/// Called on successful FeedbackCreating step completion. Queries pending
+/// comment IDs (`feedback_created = 0`) and marks them as created. If the
+/// worker dies before step completion, comments remain unmarked and will be
+/// re-processed on the next FeedbackCreating cycle.
+async fn mark_pending_feedback_comments(ticket_repo: &TicketRepo, ticket_id: &str) {
+    match ticket_repo.get_pending_feedback_comments(ticket_id).await {
+        Ok(pending) if pending.is_empty() => {
+            info!(
+                ticket_id = %ticket_id,
+                "no pending feedback comments to mark"
+            );
+        }
+        Ok(pending) => {
+            let count = pending.len();
+            if let Err(e) = ticket_repo.mark_feedback_created(ticket_id, &pending).await {
+                error!(
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to mark feedback comments as created"
+                );
+            } else {
+                info!(
+                    ticket_id = %ticket_id,
+                    count = count,
+                    "marked pending feedback comments as created"
+                );
+            }
+        }
+        Err(e) => {
+            error!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "failed to query pending feedback comments"
+            );
         }
     }
 }
