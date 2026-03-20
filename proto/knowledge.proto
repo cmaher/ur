@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package ur.knowledge;
+
+service KnowledgeService {
+  rpc CreateKnowledge(CreateKnowledgeRequest) returns (CreateKnowledgeResponse);
+  rpc GetKnowledge(GetKnowledgeRequest) returns (GetKnowledgeResponse);
+  rpc UpdateKnowledge(UpdateKnowledgeRequest) returns (UpdateKnowledgeResponse);
+  rpc DeleteKnowledge(DeleteKnowledgeRequest) returns (DeleteKnowledgeResponse);
+  rpc ListKnowledge(ListKnowledgeRequest) returns (ListKnowledgeResponse);
+  rpc ListTags(ListTagsRequest) returns (ListTagsResponse);
+}
+
+// --- Shared messages ---
+
+message KnowledgeDoc {
+  string id = 1;
+  string title = 2;
+  string content = 3;
+  string source = 4;
+  repeated string tags = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message KnowledgeSummary {
+  string id = 1;
+  string title = 2;
+  string source = 3;
+  repeated string tags = 4;
+  string created_at = 5;
+  string updated_at = 6;
+}
+
+// --- CreateKnowledge ---
+
+message CreateKnowledgeRequest {
+  string title = 1;
+  string content = 2;
+  string source = 3;
+  repeated string tags = 4;
+}
+
+message CreateKnowledgeResponse {
+  string id = 1;
+}
+
+// --- GetKnowledge ---
+
+message GetKnowledgeRequest {
+  string id = 1;
+}
+
+message GetKnowledgeResponse {
+  KnowledgeDoc doc = 1;
+}
+
+// --- UpdateKnowledge ---
+
+message UpdateKnowledgeRequest {
+  string id = 1;
+  optional string title = 2;
+  optional string content = 3;
+  optional string source = 4;
+  repeated string tags = 5;
+  // When true, the tags field is applied (even if empty, which clears all tags).
+  // When false, the tags field is ignored and existing tags are preserved.
+  bool update_tags = 6;
+}
+
+message UpdateKnowledgeResponse {}
+
+// --- DeleteKnowledge ---
+
+message DeleteKnowledgeRequest {
+  string id = 1;
+}
+
+message DeleteKnowledgeResponse {}
+
+// --- ListKnowledge ---
+
+message ListKnowledgeRequest {
+  optional string tag = 1;
+  optional string source = 2;
+}
+
+message ListKnowledgeResponse {
+  repeated KnowledgeSummary docs = 1;
+}
+
+// --- ListTags ---
+
+message ListTagsRequest {}
+
+message ListTagsResponse {
+  repeated string tags = 1;
+}

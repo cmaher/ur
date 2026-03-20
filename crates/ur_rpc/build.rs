@@ -11,6 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=../../proto/ticket.proto");
     println!("cargo:rerun-if-changed=../../proto/workerd.proto");
     println!("cargo:rerun-if-changed=../../proto/remote_repo.proto");
+    println!("cargo:rerun-if-changed=../../proto/knowledge.proto");
 
     let protos = vec![
         proto_dir.join("core.proto"),
@@ -20,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_dir.join("ticket.proto"),
         proto_dir.join("workerd.proto"),
         proto_dir.join("remote_repo.proto"),
+        proto_dir.join("knowledge.proto"),
     ];
 
     tonic_build::configure()

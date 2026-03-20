@@ -45,4 +45,8 @@ pub mod proto {
     pub mod remote_repo {
         tonic::include_proto!("ur.remote_repo");
     }
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+    pub mod knowledge {
+        tonic::include_proto!("ur.knowledge");
+    }
 }
