@@ -280,6 +280,7 @@ impl CoreService for CoreServiceHandler {
 
         let process_id = req.worker_id.clone();
         let worker_id_str = worker_id.to_string();
+        let has_pool_slot = slot_id.is_some();
         let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
@@ -312,6 +313,12 @@ impl CoreService for CoreServiceHandler {
             .map_err(|e| CoreError::RunFailed {
                 reason: format!("failed to set worker_id metadata: {e}"),
             })?;
+
+        // Pool slots check out a branch named after the worker ID; persist
+        // that on the ticket so the push handler knows which branch to push.
+        if has_pool_slot {
+            persist_pool_branch(&self.ticket_repo, &process_id, &worker_id_str).await?;
+        }
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
@@ -624,6 +631,41 @@ impl CoreService for WorkerCoreServiceHandler {
 
 /// Handle a WorkflowStepComplete signal from a worker.
 ///
+/// Persist the pool-slot branch name on the ticket so the push handler knows
+/// which branch to push. No-ops if the ticket does not exist (e.g. a bare
+/// pool launch without a dispatched ticket).
+async fn persist_pool_branch(
+    ticket_repo: &TicketRepo,
+    ticket_id: &str,
+    branch: &str,
+) -> Result<(), Status> {
+    let ticket = ticket_repo
+        .get_ticket(ticket_id)
+        .await
+        .map_err(|e| CoreError::RunFailed {
+            reason: format!("failed to look up ticket: {e}"),
+        })?;
+    if ticket.is_none() {
+        return Ok(());
+    }
+    let branch_update = ur_db::model::TicketUpdate {
+        branch: Some(Some(branch.to_owned())),
+        ..Default::default()
+    };
+    ticket_repo
+        .update_ticket(ticket_id, &branch_update)
+        .await
+        .map_err(|e| CoreError::RunFailed {
+            reason: format!("failed to set branch on ticket: {e}"),
+        })?;
+    info!(
+        ticket_id = %ticket_id,
+        branch = %branch,
+        "persisted branch name on ticket"
+    );
+    Ok(())
+}
+
 /// Looks up the worker's assigned ticket, consults the `WorkerdNextStepRouter`
 /// for the current workflow status, and sends a transition request to the
 /// coordinator.
