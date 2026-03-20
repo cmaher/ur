@@ -12,7 +12,8 @@ use ur_rpc::proto::core::{
     PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
     UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
     WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
+    WorkflowStepCompleteResponse,
 };
 
 use ur_db::WorkerRepo;
@@ -451,6 +452,14 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<UpdateAgentStatusResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
+
+    async fn workflow_step_complete(
+        &self,
+        _req: Request<WorkflowStepCompleteRequest>,
+    ) -> Result<Response<WorkflowStepCompleteResponse>, Status> {
+        // Server-side handler will be implemented in a separate ticket (ur-a9b62).
+        Err(CoreError::Unimplemented.into())
+    }
 }
 
 /// Maximum number of idle re-dispatches before a ticket is reverted to open.
@@ -510,6 +519,13 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         _req: Request<SendWorkerMessageRequest>,
     ) -> Result<Response<SendWorkerMessageResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn workflow_step_complete(
+        &self,
+        _req: Request<WorkflowStepCompleteRequest>,
+    ) -> Result<Response<WorkflowStepCompleteResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
 

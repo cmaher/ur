@@ -32,9 +32,9 @@ message Ticket {
   string created_at = 8;
   string updated_at = 9;
   string project = 10;
-  string lifecycle_status = 11;
+  // Field 11 removed (was lifecycle_status).
   string branch = 12;
-  bool lifecycle_managed = 13;
+  // Field 13 removed (was lifecycle_managed).
 }
 
 message MetadataEntry {
@@ -96,7 +96,7 @@ message ListTicketsRequest {
   optional string parent_id = 4;
   optional string meta_key = 5;
   optional string meta_value = 6;
-  optional string lifecycle_status = 7;
+  // Field 7 removed (was lifecycle_status).
 }
 
 message ListTicketsResponse {
@@ -130,10 +130,10 @@ message UpdateTicketRequest {
   //   "NONE" → clear parent (set to NULL)
   //   any other value → re-parent to that ticket ID
   optional string parent_id = 8;
-  optional string lifecycle_status = 9;
+  // Field 9 removed (was lifecycle_status).
   optional string branch = 10;
   optional string project = 11;
-  optional bool lifecycle_managed = 12;
+  // Field 12 removed (was lifecycle_managed).
 }
 
 message UpdateTicketResponse {}

@@ -186,9 +186,7 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
-                        lifecycle_status: String::new(),
                         branch: String::new(),
-                        lifecycle_managed: false,
                     })
                     .collect()
             }
@@ -211,24 +209,17 @@ impl TicketService for TicketServiceHandler {
                         created_at: String::new(),
                         updated_at: String::new(),
                         project: String::new(),
-                        lifecycle_status: String::new(),
                         branch: String::new(),
-                        lifecycle_managed: false,
                     })
                     .collect()
             }
             _ => {
-                let lifecycle_status = req
-                    .lifecycle_status
-                    .filter(|s| !s.is_empty())
-                    .and_then(|s| s.parse::<LifecycleStatus>().ok());
-
                 let filter = TicketFilter {
                     project: req.project.filter(|s| !s.is_empty()),
                     status: req.status.filter(|s| !s.is_empty()),
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
                     parent_id: req.parent_id.filter(|s| !s.is_empty()),
-                    lifecycle_status,
+                    lifecycle_status: None,
                 };
 
                 let db_tickets = self
@@ -250,9 +241,7 @@ impl TicketService for TicketServiceHandler {
                         created_at: t.created_at,
                         updated_at: t.updated_at,
                         project: t.project,
-                        lifecycle_status: t.lifecycle_status.to_string(),
                         branch: t.branch.unwrap_or_default(),
-                        lifecycle_managed: t.lifecycle_managed,
                     })
                     .collect()
             }
@@ -298,9 +287,7 @@ impl TicketService for TicketServiceHandler {
             created_at: t.created_at,
             updated_at: t.updated_at,
             project: t.project,
-            lifecycle_status: t.lifecycle_status.to_string(),
             branch: t.branch.unwrap_or_default(),
-            lifecycle_managed: t.lifecycle_managed,
         };
 
         let metadata: Vec<_> = meta
@@ -338,15 +325,6 @@ impl TicketService for TicketServiceHandler {
             Some(s) => Some(Some(s)),
         };
 
-        let lifecycle_status = req
-            .lifecycle_status
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                s.parse::<LifecycleStatus>()
-                    .map_err(TicketError::Validation)
-            })
-            .transpose()?;
-
         let branch = match req.branch {
             None => None,
             Some(ref s) if s == "NONE" => Some(None),
@@ -373,8 +351,8 @@ impl TicketService for TicketServiceHandler {
 
         let update = TicketUpdate {
             status: req.status.filter(|s| !s.is_empty()),
-            lifecycle_status,
-            lifecycle_managed: req.lifecycle_managed,
+            lifecycle_status: None,
+            lifecycle_managed: None,
             type_: req.ticket_type.filter(|s| !s.is_empty()),
             priority: req.priority.map(|p| p as i32),
             title: req.title.filter(|s| !s.is_empty()),

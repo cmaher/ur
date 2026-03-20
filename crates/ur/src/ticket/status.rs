@@ -146,16 +146,7 @@ fn render_orphans(out: &mut String, items: &[&Ticket], data: &ReportData<'_>) {
     if !orphans.is_empty() {
         writeln!(out, "[Orphaned]").unwrap();
         for o in &orphans {
-            if o.lifecycle_status.is_empty() {
-                writeln!(out, "  {:<12} {:<7} {}", o.id, o.status, o.title).unwrap();
-            } else {
-                writeln!(
-                    out,
-                    "  {:<12} {:<7} {:<18} {}",
-                    o.id, o.status, o.lifecycle_status, o.title
-                )
-                .unwrap();
-            }
+            writeln!(out, "  {:<12} {:<7} {}", o.id, o.status, o.title).unwrap();
         }
         writeln!(out).unwrap();
     }
@@ -202,9 +193,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             project: "test".to_owned(),
-            lifecycle_status: String::new(),
             branch: String::new(),
-            lifecycle_managed: false,
         }
     }
 
