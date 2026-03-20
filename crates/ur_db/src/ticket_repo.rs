@@ -681,16 +681,28 @@ impl TicketRepo {
     ) -> Result<Vec<DispatchableTicket>, sqlx::Error> {
         let (query, binds): (String, Vec<String>) = match project {
             Some(p) => (
-                "SELECT id, title, priority, type FROM ticket
-                 WHERE parent_id = ? AND status = 'open' AND project = ?
-                 ORDER BY priority ASC"
+                "WITH RECURSIVE descendants(id, title, priority, type) AS (
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    UNION ALL
+                    SELECT t.id, t.title, t.priority, t.type
+                    FROM ticket t JOIN descendants d ON t.parent_id = d.id
+                )
+                SELECT id, title, priority, type FROM descendants
+                WHERE id IN (SELECT id FROM ticket WHERE status = 'open' AND project = ?)
+                ORDER BY priority ASC"
                     .to_owned(),
                 vec![epic_id.to_owned(), p.to_owned()],
             ),
             None => (
-                "SELECT id, title, priority, type FROM ticket
-                 WHERE parent_id = ? AND status = 'open'
-                 ORDER BY priority ASC"
+                "WITH RECURSIVE descendants(id, title, priority, type) AS (
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    UNION ALL
+                    SELECT t.id, t.title, t.priority, t.type
+                    FROM ticket t JOIN descendants d ON t.parent_id = d.id
+                )
+                SELECT id, title, priority, type FROM descendants
+                WHERE id IN (SELECT id FROM ticket WHERE status = 'open')
+                ORDER BY priority ASC"
                     .to_owned(),
                 vec![epic_id.to_owned()],
             ),
