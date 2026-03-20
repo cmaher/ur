@@ -48,9 +48,9 @@ pub enum TicketArgs {
         #[arg(long)]
         all: bool,
 
-        /// Filter by parent epic ID
-        #[arg(long, short = 'e')]
-        epic: Option<String>,
+        /// Show a ticket and all its descendants as a tree
+        #[arg(long, short = 't')]
+        tree: Option<String>,
 
         /// Filter by ticket type (task or design)
         #[arg(long = "type", value_parser = PossibleValuesParser::new(TicketType::VALID))]

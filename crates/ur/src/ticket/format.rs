@@ -54,6 +54,12 @@ pub fn format_ticket_detail(
 
 /// Format a table of tickets (used by `list`).
 pub fn format_ticket_list(tickets: &[Ticket]) -> String {
+    // If any ticket has depth > 0, render as a tree with indentation.
+    let is_tree = tickets.iter().any(|t| t.depth > 0);
+    if is_tree {
+        return format_ticket_tree(tickets);
+    }
+
     let mut out = String::new();
     writeln!(
         out,
@@ -68,6 +74,30 @@ pub fn format_ticket_list(tickets: &[Ticket]) -> String {
             out,
             "{:<20} {:<10} {:<14} {:<4} {}",
             t.id, t.ticket_type, t.status, t.priority, t.title
+        )
+        .unwrap();
+    }
+    write!(out, "\n{} ticket(s)", tickets.len()).unwrap();
+    out
+}
+
+/// Format tickets as an indented tree (used by `list --tree`).
+fn format_ticket_tree(tickets: &[Ticket]) -> String {
+    let mut out = String::new();
+    writeln!(
+        out,
+        "{:<20} {:<10} {:<14} {:<4} TITLE",
+        "ID", "TYPE", "STATUS", "PRI"
+    )
+    .unwrap();
+    let separator: String = std::iter::repeat_n('-', 72).collect();
+    writeln!(out, "{separator}").unwrap();
+    for t in tickets {
+        let indent = "  ".repeat(t.depth as usize);
+        writeln!(
+            out,
+            "{:<20} {:<10} {:<14} {:<4} {}{}",
+            t.id, t.ticket_type, t.status, t.priority, indent, t.title
         )
         .unwrap();
     }

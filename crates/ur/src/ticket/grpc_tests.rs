@@ -59,6 +59,7 @@ impl TicketService for MockTicketStore {
             updated_at: "2026-01-01T00:00:00Z".into(),
             project: req.project,
             branch: String::new(),
+            depth: 0,
         };
         self.inner
             .lock()
@@ -87,12 +88,6 @@ impl TicketService for MockTicketStore {
                 if let Some(ref tt) = req.ticket_type
                     && !tt.is_empty()
                     && t.ticket_type != *tt
-                {
-                    return false;
-                }
-                if let Some(ref pid) = req.parent_id
-                    && !pid.is_empty()
-                    && t.parent_id != *pid
                 {
                     return false;
                 }
@@ -405,7 +400,7 @@ async fn execute_create_and_show() {
         TicketArgs::List {
             project: None,
             all: true,
-            epic: None,
+            tree: None,
             ticket_type: None,
             status: None,
             lifecycle: None,
@@ -466,7 +461,7 @@ async fn execute_create_and_list_filtered() {
         TicketArgs::List {
             project: None,
             all: true,
-            epic: None,
+            tree: None,
             ticket_type: None,
             status: Some("open".into()),
             lifecycle: None,
@@ -1041,7 +1036,7 @@ async fn execute_list_empty() {
         TicketArgs::List {
             project: None,
             all: true,
-            epic: None,
+            tree: None,
             ticket_type: None,
             status: None,
             lifecycle: None,

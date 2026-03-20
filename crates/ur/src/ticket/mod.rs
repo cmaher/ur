@@ -210,22 +210,22 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
         TicketArgs::List {
             project,
             all,
-            epic,
+            tree,
             ticket_type,
             status,
             lifecycle,
         } => {
             let resolved = if all {
                 None
-            } else if project.is_none() && epic.is_some() {
-                epic.as_deref().and_then(project_from_ticket_id)
+            } else if project.is_none() && tree.is_some() {
+                tree.as_deref().and_then(project_from_ticket_id)
             } else {
                 Some(resolve_project(project)?)
             };
             Ok(TicketArgs::List {
                 project: resolved,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
@@ -362,14 +362,14 @@ mod tests {
             super::TicketArgs::List {
                 project,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
-                assert!(epic.is_none());
+                assert!(tree.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
                 assert!(lifecycle.is_none());
@@ -381,21 +381,21 @@ mod tests {
     #[test]
     fn test_list_with_filters() {
         let cmd = parse(&[
-            "ticket", "list", "-p", "myproj", "--epic", "ur-e1", "--type", "task", "--status",
+            "ticket", "list", "-p", "myproj", "--tree", "ur-e1", "--type", "task", "--status",
             "open",
         ]);
         match cmd.command {
             super::TicketArgs::List {
                 project,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
-                assert_eq!(epic.as_deref(), Some("ur-e1"));
+                assert_eq!(tree.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
                 assert!(lifecycle.is_none());

@@ -242,6 +242,7 @@ mod tests {
             updated_at: String::new(),
             project: "test".to_owned(),
             branch: String::new(),
+            depth: 0,
         }
     }
 

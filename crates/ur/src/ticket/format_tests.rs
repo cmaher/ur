@@ -15,6 +15,7 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
         updated_at: "2026-03-15T10:00:00Z".to_owned(),
         project: "test".to_owned(),
         branch: String::new(),
+        depth: 0,
     }
 }
 
