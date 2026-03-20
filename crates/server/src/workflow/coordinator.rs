@@ -702,4 +702,63 @@ mod tests {
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn coordinator_stalls_workflow_on_handler_failure() {
+        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        create_test_ticket(&repo, "ur-fail1").await;
+
+        // Create a workflow row so set_workflow_stalled has something to update.
+        repo.create_workflow("ur-fail1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let (tx, rx) = channel(16);
+        let ctx = make_ctx(repo.clone(), worker_repo);
+
+        let handlers: Vec<HandlerEntry> = vec![(
+            LifecycleStatus::Implementing,
+            Arc::new(CountingHandler {
+                call_count: call_count.clone(),
+                should_fail: true,
+            }) as Arc<dyn WorkflowHandler>,
+        )];
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_cancel_tx, cancel_rx) = cancel_channel(16);
+        let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
+        let join = coordinator.spawn(shutdown_rx);
+
+        tx.send(TransitionRequest {
+            ticket_id: "ur-fail1".to_string(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .unwrap();
+
+        // Give the handler time to run.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+        // Workflow should be stalled with the error message.
+        let wf = repo
+            .get_workflow_by_ticket("ur-fail1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wf.stalled, "workflow should be stalled after failure");
+        assert_eq!(wf.stall_reason, "intentional test failure");
+
+        // Intent should be cleaned up.
+        let intents = repo.list_intents().await.unwrap();
+        assert!(
+            intents.is_empty(),
+            "intents should be cleaned up after failure"
+        );
+
+        shutdown_tx.send(true).unwrap();
+        join.await.unwrap();
+    }
 }

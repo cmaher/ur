@@ -17,14 +17,10 @@ use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 ///
 /// Implements `Clone` and follows the manager pattern: holds references to
 /// dependencies injected via the constructor.
-/// Default maximum event-level retries for the polling engine.
-const ENGINE_MAX_EVENT_ATTEMPTS: i32 = 3;
-
 #[derive(Clone)]
 pub struct WorkflowEngine {
     ctx: WorkflowContext,
     handlers: HashMap<LifecycleStatus, Arc<dyn WorkflowHandler>>,
-    max_attempts: i32,
     poll_interval: Duration,
 }
 
@@ -38,7 +34,6 @@ impl WorkflowEngine {
         handler_entries: Vec<HandlerEntry>,
         transition_tx: tokio::sync::mpsc::Sender<super::TransitionRequest>,
     ) -> Self {
-        let max_attempts = ENGINE_MAX_EVENT_ATTEMPTS;
         let poll_interval = Duration::from_millis(config.server.poll_interval_ms);
         let ctx = WorkflowContext {
             ticket_repo,
@@ -55,7 +50,6 @@ impl WorkflowEngine {
         Self {
             ctx,
             handlers,
-            max_attempts,
             poll_interval,
         }
     }
@@ -184,64 +178,37 @@ impl WorkflowEngine {
         self.delete_event(event_id).await;
     }
 
-    /// Handle a failed handler: increment attempts, stall if threshold reached.
+    /// Handle a failed handler: stall the workflow immediately.
     async fn handle_failure(
         &self,
         event: &ur_db::model::WorkflowEvent,
         target: LifecycleStatus,
         handler_err: anyhow::Error,
     ) {
-        let new_attempts = event.attempts + 1;
-        if new_attempts >= self.max_attempts {
-            error!(
-                event_id = %event.id,
-                ticket_id = %event.ticket_id,
-                target = %target,
-                attempts = new_attempts,
-                error = %handler_err,
-                "workflow handler failed after max attempts — stalling"
-            );
-            self.stall_ticket(&event.ticket_id, &format!("{handler_err}"))
-                .await;
-            self.delete_event(&event.id).await;
-            return;
-        } else {
-            warn!(
-                event_id = %event.id,
-                ticket_id = %event.ticket_id,
-                target = %target,
-                attempts = new_attempts,
-                error = %handler_err,
-                "workflow handler failed — will retry"
-            );
-        }
+        error!(
+            event_id = %event.id,
+            ticket_id = %event.ticket_id,
+            target = %target,
+            error = %handler_err,
+            "workflow handler failed — stalling workflow"
+        );
+
         if let Err(e) = self
             .ctx
             .ticket_repo
-            .increment_workflow_event_attempts(&event.id)
+            .set_workflow_stalled(&event.ticket_id, &format!("{handler_err}"))
             .await
         {
-            error!(error = %e, "failed to increment workflow event attempts");
+            error!(error = %e, "failed to set workflow stalled");
         }
+
+        self.delete_event(&event.id).await;
     }
 
     /// Delete a workflow event, logging any errors.
     async fn delete_event(&self, event_id: &str) {
         if let Err(e) = self.ctx.ticket_repo.delete_workflow_event(event_id).await {
             error!(error = %e, event_id = %event_id, "failed to delete workflow event");
-        }
-    }
-
-    /// Stall a ticket by setting `stall_reason` metadata and deleting the workflow event.
-    /// The ticket stays in its current lifecycle state — use `ur admin redrive` to retry.
-    async fn stall_ticket(&self, ticket_id: &str, reason: &str) {
-        if let Err(e) = self
-            .ctx
-            .ticket_repo
-            .set_meta(ticket_id, "ticket", "stall_reason", reason)
-            .await
-        {
-            error!(error = %e, "failed to set stall_reason metadata");
         }
     }
 }
@@ -409,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_increments_attempts_on_failure() {
+    async fn engine_stalls_workflow_on_failure() {
         let (_tmp, repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
@@ -423,6 +390,11 @@ mod tests {
             ..Default::default()
         };
         repo.create_ticket(&ticket).await.unwrap();
+
+        // Create a workflow row so set_workflow_stalled has something to update.
+        repo.create_workflow("ur-test2", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
 
         let update = ur_db::model::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
@@ -458,72 +430,18 @@ mod tests {
         engine.poll_once().await;
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
-        let event = repo.poll_workflow_event().await.unwrap();
-        assert!(event.is_some(), "event should still exist after failure");
-        assert_eq!(event.unwrap().attempts, 1);
-    }
-
-    #[tokio::test]
-    async fn engine_stalls_after_max_attempts() {
-        let (_tmp, repo, worker_repo) = setup_test_db().await;
-
-        let ticket = NewTicket {
-            id: "ur-test3".to_string(),
-            project: "ur".to_string(),
-            type_: "task".to_string(),
-            priority: 2,
-            title: "Test ticket".to_string(),
-            body: String::new(),
-            lifecycle_status: Some(LifecycleStatus::Open),
-            ..Default::default()
-        };
-        repo.create_ticket(&ticket).await.unwrap();
-
-        let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Implementing),
-            lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        repo.update_ticket("ur-test3", &update).await.unwrap();
-
-        let call_count = Arc::new(AtomicU32::new(0));
-        let engine = WorkflowEngine::new(
-            repo.clone(),
-            worker_repo.clone(),
-            "ur-worker-".to_string(),
-            dummy_builderd_client(),
-            dummy_config(),
-            vec![(
-                LifecycleStatus::Implementing,
-                Arc::new(CountingHandler {
-                    call_count: call_count.clone(),
-                    should_fail: true,
-                }) as Arc<dyn WorkflowHandler>,
-            )],
-            dummy_transition_tx(),
-        );
-
-        let max_attempts = engine.max_attempts;
-        for _ in 0..max_attempts {
-            engine.poll_once().await;
-        }
-
-        assert_eq!(call_count.load(Ordering::SeqCst), max_attempts as u32);
+        // Workflow should be stalled with the error message.
+        let wf = repo
+            .get_workflow_by_ticket("ur-test2")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wf.stalled, "workflow should be stalled after failure");
+        assert_eq!(wf.stall_reason, "intentional test failure");
 
         // Ticket stays in its current lifecycle state (not reverted to open).
-        let t = repo.get_ticket("ur-test3").await.unwrap().unwrap();
+        let t = repo.get_ticket("ur-test2").await.unwrap().unwrap();
         assert_eq!(t.lifecycle_status, LifecycleStatus::Implementing);
-
-        // stall_reason metadata is set with the error message.
-        let meta = repo.get_meta("ur-test3", "ticket").await.unwrap();
-        assert!(meta.contains_key("stall_reason"));
 
         // Workflow event is deleted (engine won't retry).
         let event = repo.poll_workflow_event().await.unwrap();

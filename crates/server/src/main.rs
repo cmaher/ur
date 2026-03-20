@@ -182,9 +182,8 @@ async fn init_and_serve(
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
-        workflow_dispatcher: None, // set in serve_grpc_servers after builderd connects
-        transition_tx: None,       // set in serve_grpc_servers after builderd connects
-        cancel_tx: None,           // set in serve_grpc_servers after builderd connects
+        transition_tx: None, // set in serve_grpc_servers after builderd connects
+        cancel_tx: None,     // set in serve_grpc_servers after builderd connects
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -259,20 +258,9 @@ async fn serve_grpc_servers(
     // Create the coordinator channel for transition requests.
     let (transition_tx, coordinator_rx) = ur_server::workflow::coordinator_channel(256);
 
-    // Build a workflow dispatcher for the redrive endpoint (shares handlers with engine).
-    let dispatcher_ctx = ur_server::workflow::WorkflowContext {
-        ticket_repo: ticket_repo.clone(),
-        worker_repo: worker_repo.clone(),
-        worker_prefix: network_prefix.clone(),
-        builderd_client: workflow_builderd_client.clone(),
-        config: config.clone(),
-        transition_tx: transition_tx.clone(),
-    };
-    let dispatcher = ur_server::workflow::WorkflowDispatcher::new(dispatcher_ctx, &handlers);
     // Create the cancel channel for workflow cancellation requests.
     let (cancel_tx, cancel_rx) = ur_server::workflow::coordinator_cancel_channel(256);
 
-    ticket_handler.workflow_dispatcher = Some(dispatcher);
     ticket_handler.transition_tx = Some(transition_tx.clone());
     ticket_handler.cancel_tx = Some(cancel_tx);
 

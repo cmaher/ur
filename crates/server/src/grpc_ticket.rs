@@ -87,9 +87,6 @@ impl From<TicketError> for Status {
 pub struct TicketServiceHandler {
     pub ticket_repo: TicketRepo,
     pub valid_projects: HashSet<String>,
-    /// Optional workflow dispatcher for redrive support.
-    /// None on the worker server (no workflow engine).
-    pub workflow_dispatcher: Option<crate::workflow::WorkflowDispatcher>,
     /// Optional channel sender for workflow transition requests.
     /// None on the worker server (no workflow engine).
     pub transition_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>>,
@@ -713,8 +710,8 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(id = %req.id, to_status = %req.to_status, "redrive_ticket request");
 
-        let dispatcher = self.workflow_dispatcher.as_ref().ok_or_else(|| {
-            Status::unavailable("redrive not available on this server (no workflow engine)")
+        let transition_tx = self.transition_tx.as_ref().ok_or_else(|| {
+            Status::unavailable("redrive not available on this server (no workflow coordinator)")
         })?;
 
         let to_status: LifecycleStatus = req
@@ -722,13 +719,16 @@ impl TicketService for TicketServiceHandler {
             .parse()
             .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.to_status)))?;
 
-        // 1. Clear stall_reason metadata.
+        // 1. Clear workflow stall (stalled flag + stall_reason on workflow table).
+        let _ = self.ticket_repo.clear_workflow_stall(&req.id).await;
+
+        // 2. Clear legacy stall_reason metadata.
         let _ = self
             .ticket_repo
             .delete_meta(&req.id, "ticket", "stall_reason")
             .await;
 
-        // 2. Set lifecycle to the target status.
+        // 3. Set lifecycle to the target status.
         let update = TicketUpdate {
             lifecycle_status: Some(to_status),
             status: None,
@@ -746,36 +746,20 @@ impl TicketService for TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        // 3. Delete any stale workflow events for this ticket (from the trigger).
+        // 4. Delete any stale workflow events for this ticket (from the trigger).
         self.ticket_repo
             .delete_workflow_events_for_ticket(&req.id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        // 4. Spawn the handler in the background and return immediately.
-        let dispatcher = dispatcher.clone();
-        let ticket_id = req.id.clone();
-        let target = to_status;
-        tokio::spawn(async move {
-            match dispatcher.trigger(&ticket_id, target).await {
-                Ok(result) => {
-                    info!(
-                        id = %ticket_id,
-                        target = %target,
-                        result = %result,
-                        "redrive handler completed"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        id = %ticket_id,
-                        target = %target,
-                        error = %e,
-                        "redrive handler failed"
-                    );
-                }
-            }
-        });
+        // 5. Submit transition to the coordinator for processing.
+        transition_tx
+            .send(crate::workflow::TransitionRequest {
+                ticket_id: req.id.clone(),
+                target_status: to_status,
+            })
+            .await
+            .map_err(|e| Status::internal(format!("failed to submit redrive transition: {e}")))?;
 
         Ok(Response::new(RedriveTicketResponse {
             lifecycle_status: to_status.to_string(),
