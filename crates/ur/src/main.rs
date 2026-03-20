@@ -276,6 +276,8 @@ enum WorkerCommands {
     Send { worker_id: String, message: String },
     /// Stop a running worker process
     Stop { worker_id: String },
+    /// Ship a worker: create a ticket for the worker's completed work
+    Ship { worker_id: String },
     /// Open the host directory for a running process in VS Code
     Code { worker_id: String },
 }
@@ -948,6 +950,7 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             process_stop(&mut client, &worker_id, output).await
         }
+        WorkerCommands::Ship { worker_id } => handle_worker_ship(port, output, &worker_id).await,
         WorkerCommands::Dir { worker_id } => handle_worker_dir(port, output, &worker_id).await,
         WorkerCommands::Code { worker_id } => handle_worker_code(port, &worker_id).await,
     }
@@ -1022,6 +1025,27 @@ async fn handle_worker_send(
         ));
     } else {
         println!("Message sent to {worker_id}.");
+    }
+    Ok(())
+}
+
+async fn handle_worker_ship(port: u16, output: &OutputManager, worker_id: &str) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    let mut client = connect(port).await?;
+    info!(worker_id = %worker_id, "shipping worker");
+    let resp = client
+        .ship_worker(ShipWorkerRequest {
+            worker_id: worker_id.to_owned(),
+        })
+        .await
+        .with_status_context("ship worker")?;
+    let ticket_id = resp.into_inner().ticket_id;
+    if output.is_json() {
+        output.print_text(&format!(
+            "{{\"worker_id\":\"{worker_id}\",\"ticket_id\":\"{ticket_id}\"}}"
+        ));
+    } else {
+        println!("Created ticket {ticket_id}");
     }
     Ok(())
 }
@@ -1190,6 +1214,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Launch { .. } => "launch",
         WorkerCommands::Status { .. } => "status",
         WorkerCommands::Stop { .. } => "stop",
+        WorkerCommands::Ship { .. } => "ship",
         WorkerCommands::Dir { .. } => "dir",
         WorkerCommands::Code { .. } => "code",
     }
