@@ -796,7 +796,7 @@ impl TicketRepo {
         let row = sqlx::query_as::<_, (String, String, String, i32, String)>(
             "SELECT id, ticket_id, target_status, attempts, created_at
              FROM workflow_intent
-             ORDER BY id ASC
+             ORDER BY created_at ASC
              LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -821,7 +821,7 @@ impl TicketRepo {
         let rows = sqlx::query_as::<_, (String, String, String, i32, String)>(
             "SELECT id, ticket_id, target_status, attempts, created_at
              FROM workflow_intent
-             ORDER BY id ASC",
+             ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await?;
