@@ -3,6 +3,7 @@ mod engine;
 pub mod github_poller;
 pub mod handlers;
 mod step_router;
+pub mod ticket_client;
 
 pub use coordinator::{
     TransitionRequest, WorkflowCoordinator, cancel_channel as coordinator_cancel_channel,
