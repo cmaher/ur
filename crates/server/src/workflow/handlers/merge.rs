@@ -65,9 +65,13 @@ async fn execute_merge(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), any
     // 5. Merge the PR via GhBackend through builderd.
     merge_pr(ctx, ticket_id, pr_number, gh_repo).await?;
 
-    // 6. Delete workflow row (no further transitions for this ticket).
-    if let Err(e) = ctx.ticket_repo.delete_workflow(ticket_id).await {
-        warn!(ticket_id = %ticket_id, error = %e, "failed to delete workflow row");
+    // 6. Mark workflow as done (no further transitions for this ticket).
+    if let Err(e) = ctx
+        .ticket_repo
+        .update_workflow_status(ticket_id, LifecycleStatus::Done)
+        .await
+    {
+        warn!(ticket_id = %ticket_id, error = %e, "failed to mark workflow as done");
     }
 
     // 7. Close original ticket and follow-up epic.

@@ -306,7 +306,7 @@ impl GithubPollerManager {
                     pr_number = %pr_number,
                     "PR closed without merge — deleting workflow and reverting ticket to open"
                 );
-                self.delete_workflow_and_revert(&ticket.id).await;
+                self.mark_workflow_done_and_revert(&ticket.id).await;
             }
             Ok(ReviewSignal::Pending) => {
                 // No actionable signal yet — will check again next scan.
@@ -337,14 +337,18 @@ impl GithubPollerManager {
         }
     }
 
-    /// Delete the workflow for a ticket and revert the ticket status to open.
+    /// Mark the workflow as done and revert the ticket status to open.
     /// Used when a PR is closed without merge.
-    async fn delete_workflow_and_revert(&self, ticket_id: &str) {
-        if let Err(e) = self.ticket_repo.delete_workflow(ticket_id).await {
+    async fn mark_workflow_done_and_revert(&self, ticket_id: &str) {
+        if let Err(e) = self
+            .ticket_repo
+            .update_workflow_status(ticket_id, LifecycleStatus::Done)
+            .await
+        {
             error!(
                 ticket_id = %ticket_id,
                 error = %e,
-                "failed to delete workflow for closed PR"
+                "failed to mark workflow as done for closed PR"
             );
             return;
         }

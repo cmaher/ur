@@ -1239,29 +1239,35 @@ async fn update_workflow_status() {
 }
 
 #[tokio::test]
-async fn delete_workflow() {
+async fn mark_workflow_done() {
     let db = TestDb::new().await;
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-del".into(),
+        id: "wf-done".into(),
         type_: "task".into(),
         priority: 1,
-        title: "Del wf".into(),
+        title: "Done wf".into(),
         project: "test".into(),
         ..Default::default()
     })
     .await
     .unwrap();
 
-    repo.create_workflow("wf-del", LifecycleStatus::Open)
+    repo.create_workflow("wf-done", LifecycleStatus::Open)
         .await
         .unwrap();
 
-    repo.delete_workflow("wf-del").await.unwrap();
+    repo.update_workflow_status("wf-done", LifecycleStatus::Done)
+        .await
+        .unwrap();
 
-    let result = repo.get_workflow_by_ticket("wf-del").await.unwrap();
-    assert!(result.is_none());
+    let result = repo
+        .get_workflow_by_ticket("wf-done")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, LifecycleStatus::Done);
 
     db.cleanup().await;
 }
