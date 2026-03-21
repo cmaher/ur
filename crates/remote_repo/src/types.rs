@@ -40,6 +40,7 @@ pub struct CheckRun {
     pub status: String,
     pub conclusion: String,
     pub details_url: String,
+    pub completed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -261,6 +261,9 @@ pub struct Workflow {
     pub worker_id: String,
     pub noverify: bool,
     pub feedback_mode: String,
+    pub ci_status: String,
+    pub mergeable: String,
+    pub review_status: String,
     pub created_at: String,
 }
 

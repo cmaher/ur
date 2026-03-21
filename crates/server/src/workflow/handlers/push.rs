@@ -1,8 +1,10 @@
 use local_repo::{LocalRepo, PushResult, PushStatus};
 use remote_repo::{CreatePrOpts, GhBackend, RemoteRepo};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use ur_db::model::LifecycleStatus;
+use ur_rpc::workflow_condition;
+use ur_rpc::workflow_event::WorkflowEvent;
 
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
@@ -142,7 +144,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     }
 }
 
-/// Handle a successful push: record activity, create PR, advance to InReview.
+/// Handle a successful push: record activity, create PR, initialize conditions, advance to InReview.
 async fn handle_push_success(
     ctx: &WorkflowContext,
     ticket_id: &str,
@@ -154,7 +156,60 @@ async fn handle_push_success(
     let result_label = push_status_label(&push_result.status);
     add_push_activity(ctx, ticket_id, result_label, &push_result.summary).await?;
     ensure_pr(ctx, ticket_id, branch, title, body).await?;
+    initialize_conditions_and_emit_event(ctx, ticket_id).await?;
     advance_to_in_review(ctx, ticket_id).await
+}
+
+/// Initialize workflow conditions and emit a pr_created event after PR creation.
+///
+/// Sets ci_status=pending, mergeable=unknown, review_status=pending (or approved
+/// if the ticket has "autoapprove" metadata set).
+async fn initialize_conditions_and_emit_event(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+) -> anyhow::Result<()> {
+    ctx.ticket_repo
+        .initialize_workflow_conditions(ticket_id)
+        .await?;
+
+    // Check autoapprove metadata — if set, override review_status to approved.
+    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
+    if meta.contains_key(ur_rpc::ticket_meta::AUTOAPPROVE) {
+        ctx.ticket_repo
+            .update_workflow_condition(
+                ticket_id,
+                workflow_condition::WorkflowCondition::ReviewStatus,
+                workflow_condition::review_status::APPROVED,
+            )
+            .await?;
+        info!(ticket_id = %ticket_id, "autoapprove set — review_status initialized to approved");
+    }
+
+    // Emit pr_created workflow event.
+    let workflow = ctx.ticket_repo.get_workflow_by_ticket(ticket_id).await?;
+    match workflow {
+        Some(w) => {
+            if let Err(e) = ctx
+                .ticket_repo
+                .insert_workflow_event(&w.id, WorkflowEvent::PrCreated)
+                .await
+            {
+                error!(
+                    error = %e,
+                    ticket_id = %ticket_id,
+                    "failed to insert pr_created workflow event"
+                );
+            }
+        }
+        None => {
+            error!(
+                ticket_id = %ticket_id,
+                "no workflow found when emitting pr_created event"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Parameters for handling a rejected push, grouped to keep argument count manageable.
@@ -228,16 +283,20 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
 
     match &force_result.status {
         PushStatus::Success | PushStatus::ForcePushed | PushStatus::UpToDate => {
-            let result_label = push_status_label(&force_result.status);
-            add_push_activity(
+            let force_result_with_context = PushResult {
+                status: force_result.status.clone(),
+                ref_name: force_result.ref_name.clone(),
+                summary: format!("Force push after rejection: {}", force_result.summary),
+            };
+            handle_push_success(
                 ctx,
                 ticket_id,
-                result_label,
-                &format!("Force push after rejection: {}", force_result.summary),
+                branch,
+                title,
+                body,
+                &force_result_with_context,
             )
-            .await?;
-            ensure_pr(ctx, ticket_id, branch, title, body).await?;
-            advance_to_in_review(ctx, ticket_id).await
+            .await
         }
         PushStatus::Rejected {
             reason: retry_reason,

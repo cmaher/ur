@@ -21,11 +21,12 @@ use std::sync::Arc;
 use ur_db::model::LifecycleStatus;
 
 use super::HandlerEntry;
+use super::ticket_client::TicketClient;
 
 /// Build the list of all workflow handler registrations.
 ///
 /// Returns a `Vec<HandlerEntry>` keyed by target `LifecycleStatus`.
-pub fn build_handlers() -> Vec<HandlerEntry> {
+pub fn build_handlers(ticket_client: TicketClient) -> Vec<HandlerEntry> {
     vec![
         // AwaitingDispatch: no-op (acknowledge and delete event)
         (
@@ -44,7 +45,10 @@ pub fn build_handlers() -> Vec<HandlerEntry> {
             Arc::new(FeedbackCreateHandler),
         ),
         // Merging: merge PR (squash), kill worker, close epic, dispatch children
-        (LifecycleStatus::Merging, Arc::new(MergeHandler)),
+        (
+            LifecycleStatus::Merging,
+            Arc::new(MergeHandler { ticket_client }),
+        ),
         // InReview: no-op signal handler
         (LifecycleStatus::InReview, Arc::new(ReviewStartHandler)),
     ]

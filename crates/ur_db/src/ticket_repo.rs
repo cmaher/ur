@@ -864,6 +864,9 @@ impl TicketRepo {
             worker_id: String::new(),
             noverify: false,
             feedback_mode: String::new(),
+            ci_status: ur_rpc::workflow_condition::ci_status::PENDING.to_owned(),
+            mergeable: ur_rpc::workflow_condition::mergeable::UNKNOWN.to_owned(),
+            review_status: ur_rpc::workflow_condition::review_status::PENDING.to_owned(),
             created_at: now,
         })
     }
@@ -890,10 +893,10 @@ impl TicketRepo {
         active_only: bool,
     ) -> Result<Option<Workflow>, sqlx::Error> {
         let query = if active_only {
-            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
              FROM workflow WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
         } else {
-            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
              FROM workflow WHERE ticket_id = ? ORDER BY created_at DESC LIMIT 1"
         };
         let row = sqlx::query_as::<
@@ -907,6 +910,9 @@ impl TicketRepo {
                 i32,
                 String,
                 bool,
+                String,
+                String,
+                String,
                 String,
                 String,
             ),
@@ -927,9 +933,9 @@ impl TicketRepo {
             Some(s) => {
                 sqlx::query_as::<
                     _,
-                    (String, String, String, bool, String, i32, String, bool, String, String),
+                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String),
                 >(
-                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
                      FROM workflow WHERE status = ? ORDER BY created_at",
                 )
                 .bind(s.as_str())
@@ -939,9 +945,9 @@ impl TicketRepo {
             None => {
                 sqlx::query_as::<
                     _,
-                    (String, String, String, bool, String, i32, String, bool, String, String),
+                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String),
                 >(
-                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
                      FROM workflow WHERE status NOT IN ('done', 'cancelled') ORDER BY created_at",
                 )
                 .fetch_all(&self.pool)
@@ -1057,6 +1063,103 @@ impl TicketRepo {
             .bind(ticket_id)
             .execute(&self.pool)
             .await?;
+
+        Ok(())
+    }
+
+    /// Update a single workflow condition (ci_status, mergeable, or review_status).
+    ///
+    /// Values should use constants from `ur_rpc::workflow_condition`.
+    pub async fn update_workflow_condition(
+        &self,
+        ticket_id: &str,
+        condition: ur_rpc::workflow_condition::WorkflowCondition,
+        value: &str,
+    ) -> Result<(), sqlx::Error> {
+        let query = match condition {
+            ur_rpc::workflow_condition::WorkflowCondition::CiStatus => {
+                "UPDATE workflow SET ci_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+            }
+            ur_rpc::workflow_condition::WorkflowCondition::Mergeable => {
+                "UPDATE workflow SET mergeable = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+            }
+            ur_rpc::workflow_condition::WorkflowCondition::ReviewStatus => {
+                "UPDATE workflow SET review_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+            }
+        };
+
+        sqlx::query(query)
+            .bind(value)
+            .bind(ticket_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Initialize all three workflow conditions to their default values.
+    /// Called when a workflow transitions to InReview.
+    pub async fn initialize_workflow_conditions(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE workflow SET ci_status = ?, mergeable = ?, review_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
+        )
+        .bind(ur_rpc::workflow_condition::ci_status::PENDING)
+        .bind(ur_rpc::workflow_condition::mergeable::UNKNOWN)
+        .bind(ur_rpc::workflow_condition::review_status::PENDING)
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Insert a workflow event into the workflow_events table.
+    ///
+    /// Records a `WorkflowEvent` variant with the current server timestamp
+    /// for the given workflow.
+    pub async fn insert_workflow_event(
+        &self,
+        workflow_id: &str,
+        event: ur_rpc::workflow_event::WorkflowEvent,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(workflow_id)
+        .bind(event.as_str())
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Insert a workflow event with a custom timestamp.
+    ///
+    /// Like `insert_workflow_event`, but uses the provided `created_at` instead
+    /// of the current server time. Used for CI events where the GitHub API
+    /// `completed_at` timestamp is the authoritative event time.
+    pub async fn insert_workflow_event_at(
+        &self,
+        workflow_id: &str,
+        event: ur_rpc::workflow_event::WorkflowEvent,
+        created_at: &str,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+
+        sqlx::query(
+            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(workflow_id)
+        .bind(event.as_str())
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -1427,6 +1530,7 @@ fn edge_kind_from_str(s: &str) -> EdgeKind {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn row_to_workflow(
     (
         id,
@@ -1438,6 +1542,9 @@ fn row_to_workflow(
         worker_id,
         noverify,
         feedback_mode,
+        ci_status,
+        mergeable,
+        review_status,
         created_at,
     ): (
         String,
@@ -1448,6 +1555,9 @@ fn row_to_workflow(
         i32,
         String,
         bool,
+        String,
+        String,
+        String,
         String,
         String,
     ),
@@ -1462,6 +1572,9 @@ fn row_to_workflow(
         worker_id,
         noverify,
         feedback_mode,
+        ci_status,
+        mergeable,
+        review_status,
         created_at,
     }
 }
