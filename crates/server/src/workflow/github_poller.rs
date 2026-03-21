@@ -17,6 +17,22 @@ use super::ticket_client::{self, TicketClient};
 /// Delay between individual GitHub API calls to avoid rate limiting.
 const API_CALL_DELAY: Duration = Duration::from_secs(2);
 
+/// Constants for GitHub check run status and conclusion values.
+mod check_run {
+    /// Check run status values (from GitHub REST and GraphQL APIs).
+    pub mod status {
+        pub const COMPLETED: &str = "completed";
+    }
+
+    /// Check run conclusion values (from GitHub REST and GraphQL APIs).
+    pub mod conclusion {
+        pub const SUCCESS: &str = "success";
+        pub const FAILURE: &str = "failure";
+        pub const NEUTRAL: &str = "neutral";
+        pub const SKIPPED: &str = "skipped";
+    }
+}
+
 /// Polls GitHub for CI status, mergeability, and review signals on tickets
 /// in the `in_review` lifecycle state.
 ///
@@ -790,21 +806,20 @@ fn evaluate_ci_runs(runs: &[CheckRun]) -> CiCheckResult {
 /// Determine whether a check run is completed based on its status and conclusion fields.
 fn is_check_completed(status: &str, conclusion: &str) -> bool {
     status.is_empty()
-        || status == "completed"
-        || status == "SUCCESS"
-        || status == "FAILURE"
-        || status == "NEUTRAL"
-        || status == "SKIPPED"
+        || status.eq_ignore_ascii_case(check_run::status::COMPLETED)
+        || status.eq_ignore_ascii_case(check_run::conclusion::SUCCESS)
+        || status.eq_ignore_ascii_case(check_run::conclusion::FAILURE)
+        || status.eq_ignore_ascii_case(check_run::conclusion::NEUTRAL)
+        || status.eq_ignore_ascii_case(check_run::conclusion::SKIPPED)
         || !conclusion.is_empty()
 }
 
 /// Determine whether a completed check run has failed.
 fn is_check_failed(conclusion: &str) -> bool {
     !conclusion.is_empty()
-        && !matches!(
-            conclusion,
-            "success" | "SUCCESS" | "skipped" | "SKIPPED" | "neutral" | "NEUTRAL"
-        )
+        && !conclusion.eq_ignore_ascii_case(check_run::conclusion::SUCCESS)
+        && !conclusion.eq_ignore_ascii_case(check_run::conclusion::SKIPPED)
+        && !conclusion.eq_ignore_ascii_case(check_run::conclusion::NEUTRAL)
 }
 
 /// Collect a summary string of failing check runs for ticket body.
