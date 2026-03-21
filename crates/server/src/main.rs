@@ -254,7 +254,9 @@ async fn serve_grpc_servers(
     let poller_ticket_repo = ticket_repo.clone();
     let poller_builderd_client = workflow_builderd_client.clone();
 
-    let handlers = build_handlers();
+    let workflow_ticket_client =
+        ur_server::workflow::ticket_client::TicketClient::new(ticket_handler.clone());
+    let handlers = build_handlers(workflow_ticket_client);
 
     // Create the coordinator channel for transition requests.
     let (transition_tx, coordinator_rx) = ur_server::workflow::coordinator_channel(256);
