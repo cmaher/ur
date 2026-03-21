@@ -506,8 +506,36 @@ mod tests {
         })
     }
 
+    fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
+        let builderd_client = dummy_builderd_client();
+        let config = dummy_config();
+        let local_repo = local_repo::GitBackend {
+            client: builderd_client.clone(),
+        };
+        let pool = crate::RepoPoolManager::new(
+            &config,
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            builderd_client,
+            local_repo,
+            worker_repo.clone(),
+        );
+        let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+        crate::WorkerManager::new(
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            std::path::PathBuf::from("/tmp/test"),
+            pool,
+            network_manager,
+            config.network.clone(),
+            config.worker_port,
+            Default::default(),
+            worker_repo,
+        )
+    }
+
     fn make_ctx(ticket_repo: TicketRepo, worker_repo: WorkerRepo) -> WorkflowContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let worker_manager = dummy_worker_manager(worker_repo.clone());
         WorkflowContext {
             ticket_repo,
             worker_repo,
@@ -515,6 +543,7 @@ mod tests {
             builderd_client: dummy_builderd_client(),
             config: dummy_config(),
             transition_tx: tx,
+            worker_manager,
         }
     }
 

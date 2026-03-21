@@ -10,6 +10,8 @@ use ur_db::WorkerRepo;
 
 use ur_db::model::LifecycleStatus;
 
+use crate::WorkerManager;
+
 use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 
 /// Drives workflow transitions by polling the `workflow_event` table and
@@ -25,6 +27,7 @@ pub struct WorkflowEngine {
 }
 
 impl WorkflowEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ticket_repo: TicketRepo,
         worker_repo: WorkerRepo,
@@ -33,6 +36,7 @@ impl WorkflowEngine {
         config: Arc<ur_config::Config>,
         handler_entries: Vec<HandlerEntry>,
         transition_tx: tokio::sync::mpsc::Sender<super::TransitionRequest>,
+        worker_manager: WorkerManager,
     ) -> Self {
         let poll_interval = Duration::from_millis(config.server.poll_interval_ms);
         let ctx = WorkflowContext {
@@ -42,6 +46,7 @@ impl WorkflowEngine {
             builderd_client,
             config,
             transition_tx,
+            worker_manager,
         };
         let mut handlers = HashMap::new();
         for (target, handler) in handler_entries {
@@ -289,6 +294,33 @@ mod tests {
         tx
     }
 
+    fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
+        let builderd_client = dummy_builderd_client();
+        let config = dummy_config();
+        let local_repo = local_repo::GitBackend {
+            client: builderd_client.clone(),
+        };
+        let pool = crate::RepoPoolManager::new(
+            &config,
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            builderd_client,
+            local_repo,
+            worker_repo.clone(),
+        );
+        let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+        crate::WorkerManager::new(
+            std::path::PathBuf::from("/tmp/test/workspace"),
+            std::path::PathBuf::from("/tmp/test"),
+            pool,
+            network_manager,
+            config.network.clone(),
+            config.worker_port,
+            Default::default(),
+            worker_repo,
+        )
+    }
+
     struct CountingHandler {
         call_count: Arc<AtomicU32>,
         should_fail: bool,
@@ -361,6 +393,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -425,6 +458,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -498,6 +532,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -569,6 +604,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
         noop_engine.poll_once().await;
 
@@ -609,6 +645,7 @@ mod tests {
                 }) as Arc<dyn WorkflowHandler>,
             )],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;
@@ -665,6 +702,7 @@ mod tests {
             dummy_config(),
             vec![],
             dummy_transition_tx(),
+            dummy_worker_manager(worker_repo.clone()),
         );
 
         engine.poll_once().await;

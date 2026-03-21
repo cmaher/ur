@@ -110,6 +110,7 @@ impl TestHarness {
             builderd_client: dummy_builderd_client(),
             config: dummy_config(),
             transition_tx: transition_tx.clone(),
+            worker_manager: dummy_worker_manager(worker_repo.clone()),
         };
 
         let coordinator = WorkflowCoordinator::new(transition_rx, cancel_rx, ctx, &handlers);
@@ -204,6 +205,33 @@ async fn setup_db() -> (DatabaseManager, TicketRepo, WorkerRepo) {
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph);
     let worker_repo = WorkerRepo::new(db.pool().clone());
     (db, ticket_repo, worker_repo)
+}
+
+fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
+    let builderd_client = dummy_builderd_client();
+    let config = dummy_config();
+    let local_repo = local_repo::GitBackend {
+        client: builderd_client.clone(),
+    };
+    let pool = ur_server::RepoPoolManager::new(
+        &config,
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        builderd_client,
+        local_repo,
+        worker_repo.clone(),
+    );
+    let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+    ur_server::WorkerManager::new(
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        std::path::PathBuf::from("/tmp/test"),
+        pool,
+        network_manager,
+        config.network.clone(),
+        config.worker_port,
+        Default::default(),
+        worker_repo,
+    )
 }
 
 fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
