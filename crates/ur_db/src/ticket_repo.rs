@@ -868,11 +868,34 @@ impl TicketRepo {
         })
     }
 
-    /// Get the workflow for a ticket, if one exists.
+    /// Get the active (non-terminal) workflow for a ticket, if one exists.
     pub async fn get_workflow_by_ticket(
         &self,
         ticket_id: &str,
     ) -> Result<Option<Workflow>, sqlx::Error> {
+        self.get_workflow_by_ticket_inner(ticket_id, true).await
+    }
+
+    /// Get the most recent workflow for a ticket regardless of status.
+    pub async fn get_latest_workflow_by_ticket(
+        &self,
+        ticket_id: &str,
+    ) -> Result<Option<Workflow>, sqlx::Error> {
+        self.get_workflow_by_ticket_inner(ticket_id, false).await
+    }
+
+    async fn get_workflow_by_ticket_inner(
+        &self,
+        ticket_id: &str,
+        active_only: bool,
+    ) -> Result<Option<Workflow>, sqlx::Error> {
+        let query = if active_only {
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+             FROM workflow WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+        } else {
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
+             FROM workflow WHERE ticket_id = ? ORDER BY created_at DESC LIMIT 1"
+        };
         let row = sqlx::query_as::<
             _,
             (
@@ -887,39 +910,12 @@ impl TicketRepo {
                 String,
                 String,
             ),
-        >(
-            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
-             FROM workflow WHERE ticket_id = ?",
-        )
+        >(query)
         .bind(ticket_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(
-            |(
-                id,
-                ticket_id,
-                status_str,
-                stalled,
-                stall_reason,
-                implement_cycles,
-                worker_id,
-                noverify,
-                feedback_mode,
-                created_at,
-            )| Workflow {
-                id,
-                ticket_id,
-                status: status_str.parse::<LifecycleStatus>().unwrap_or_default(),
-                stalled,
-                stall_reason,
-                implement_cycles,
-                worker_id,
-                noverify,
-                feedback_mode,
-                created_at,
-            },
-        ))
+        Ok(row.map(row_to_workflow))
     }
 
     /// List all workflows, optionally filtered by status.
@@ -946,7 +942,7 @@ impl TicketRepo {
                     (String, String, String, bool, String, i32, String, bool, String, String),
                 >(
                     "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, created_at
-                     FROM workflow ORDER BY created_at",
+                     FROM workflow WHERE status NOT IN ('done', 'cancelled') ORDER BY created_at",
                 )
                 .fetch_all(&self.pool)
                 .await?
@@ -962,7 +958,7 @@ impl TicketRepo {
         ticket_id: &str,
         status: LifecycleStatus,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET status = ? WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(status.as_str())
             .bind(ticket_id)
             .execute(&self.pool)
@@ -977,7 +973,7 @@ impl TicketRepo {
         ticket_id: &str,
         reason: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET stalled = 1, stall_reason = ? WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET stalled = 1, stall_reason = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(reason)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -988,7 +984,7 @@ impl TicketRepo {
 
     /// Clear a workflow stall (reset stalled flag and reason).
     pub async fn clear_workflow_stall(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET stalled = 0, stall_reason = '' WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET stalled = 0, stall_reason = '' WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(ticket_id)
             .execute(&self.pool)
             .await?;
@@ -999,7 +995,7 @@ impl TicketRepo {
     /// Increment the implement_cycles counter on a workflow.
     pub async fn increment_implement_cycles(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workflow SET implement_cycles = implement_cycles + 1 WHERE ticket_id = ?",
+            "UPDATE workflow SET implement_cycles = implement_cycles + 1 WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
         )
         .bind(ticket_id)
         .execute(&self.pool)
@@ -1014,7 +1010,7 @@ impl TicketRepo {
         ticket_id: &str,
         worker_id: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET worker_id = ? WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET worker_id = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(worker_id)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -1029,7 +1025,7 @@ impl TicketRepo {
         ticket_id: &str,
         noverify: bool,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET noverify = ? WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET noverify = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(noverify)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -1044,7 +1040,7 @@ impl TicketRepo {
         ticket_id: &str,
         feedback_mode: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET feedback_mode = ? WHERE ticket_id = ?")
+        sqlx::query("UPDATE workflow SET feedback_mode = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
             .bind(feedback_mode)
             .bind(ticket_id)
             .execute(&self.pool)

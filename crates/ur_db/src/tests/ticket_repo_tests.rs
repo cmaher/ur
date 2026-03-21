@@ -1178,7 +1178,7 @@ async fn get_workflow_returns_none_when_missing() {
 }
 
 #[tokio::test]
-async fn create_workflow_fails_duplicate_ticket() {
+async fn create_workflow_allows_multiple_per_ticket() {
     let db = TestDb::new().await;
     let repo = repo(&db);
 
@@ -1193,14 +1193,28 @@ async fn create_workflow_fails_duplicate_ticket() {
     .await
     .unwrap();
 
+    // First workflow — mark it done (terminal).
     repo.create_workflow("wf-dup", LifecycleStatus::Open)
         .await
         .unwrap();
+    repo.update_workflow_status("wf-dup", LifecycleStatus::Done)
+        .await
+        .unwrap();
 
-    let result = repo
+    // Second workflow for the same ticket should succeed.
+    let wf2 = repo
         .create_workflow("wf-dup", LifecycleStatus::Implementing)
-        .await;
-    assert!(result.is_err());
+        .await
+        .unwrap();
+    assert_eq!(wf2.status, LifecycleStatus::Implementing);
+
+    // Active-only query should return the new (non-terminal) workflow.
+    let active = repo
+        .get_workflow_by_ticket("wf-dup")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.id, wf2.id);
 
     db.cleanup().await;
 }
@@ -1263,12 +1277,17 @@ async fn mark_workflow_done() {
         .await
         .unwrap();
 
-    let result = repo
-        .get_workflow_by_ticket("wf-done")
+    // Active-only query should return None for terminal workflows.
+    let active = repo.get_workflow_by_ticket("wf-done").await.unwrap();
+    assert!(active.is_none());
+
+    // Latest query should still return the Done workflow.
+    let latest = repo
+        .get_latest_workflow_by_ticket("wf-done")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(result.status, LifecycleStatus::Done);
+    assert_eq!(latest.status, LifecycleStatus::Done);
 
     db.cleanup().await;
 }
