@@ -33,13 +33,16 @@ The system uses three database tables:
                                            |    (CI failure) |    | (CI green)
                                            |  ───────────────┘    v
                                            |                   InReview
-                                           |                      |
-                                           |                      v
-                                           |               FeedbackCreating
-                                           |                /           \
-                                           |     (mode=now)/             \(mode=later)
-                                           |              /               \
-                                           └─────────────┘               Merging
+                                           |                   /      \
+                                           |  (approve-only)  /        \(changes or
+                                           |                 /          other comments)
+                                           |                /            v
+                                           |               |      FeedbackCreating
+                                           |               |       /           \
+                                           |               | (now)/             \(later)
+                                           |               |    /               |
+                                           └───────────────┘                    v
+                                                                             Merging
                                                                         /      \
                                                               (conflict)/        \(success)
                                                   ──────────────────────┘         v
@@ -58,7 +61,7 @@ The system uses three database tables:
 | `Pushing` | Server pushes branch and creates/updates PR |
 | `InReview` | PR is open, waiting for human review signal |
 | `FeedbackCreating` | Worker creates feedback summary from review |
-| `Merging` | Server merges PR (squash), kills worker, closes ticket, dispatches follow-up children |
+| `Merging` | Server merges PR (squash), kills worker, closes ticket |
 | `Done` | Terminal state |
 
 ## Architecture
@@ -115,7 +118,7 @@ Handlers are keyed by **target status**, not by transition. Each handler runs wh
 | `Pushing` | `PushHandler` | Pushes branch, creates/updates PR |
 | `InReview` | `ReviewStartHandler` | No-op signal handler |
 | `FeedbackCreating` | `FeedbackCreateHandler` | Queries pending comments, sends feedback create RPC to worker |
-| `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes ticket, dispatches follow-up children |
+| `Merging` | `MergeHandler` | Merges PR (squash), kills worker, closes ticket |
 
 Source: `crates/server/src/workflow/handlers/mod.rs` (`build_handlers()`)
 
@@ -132,7 +135,8 @@ Different lifecycle transitions are triggered by different sources:
 | Verifying → Implementing | VerifyHandler (hook fails, under fix limit) |
 | Pushing → InReview | GithubPollerManager (CI green or no checks) |
 | Pushing → Implementing | GithubPollerManager (CI failure) |
-| InReview → FeedbackCreating | GithubPollerManager (review signal or autoapprove) |
+| InReview → FeedbackCreating | GithubPollerManager (review signal with other unseen comments, or autoapprove) |
+| InReview → Merging | GithubPollerManager (approve-only: approve is the only unseen comment) |
 | FeedbackCreating → Implementing | Worker step complete + `feedback_mode=now` |
 | FeedbackCreating → Merging | Worker step complete + `feedback_mode=later` |
 | Merging → Implementing | MergeHandler (merge conflict) |
@@ -244,7 +248,7 @@ Tickets have two types: **task** and **design**. Tasks are the default work unit
 
 Tickets form a tree hierarchy via parent-child relationships. Any ticket can have children -- there is no separate "epic" type. The `--tree` flag on list queries performs a recursive tree walk from a root ticket, returning the root and all descendants with a `depth` field indicating hierarchy level. The `dispatchable` command walks the full tree to find open tickets with no open blockers.
 
-The tree structure is used by the workflow system: the `MergeHandler` finds follow-up children via `follow_up` edges and dispatches them as independent work after a successful merge.
+The tree structure is used by the workflow system for dependency tracking (blockers, dispatchable queries).
 
 ## Dispatch Flow
 
@@ -336,9 +340,7 @@ The `MergeHandler` (→ Merging) performs:
 
 1. Kills the worker and releases its slot
 2. Merges the PR via `GhBackend::merge_pr` (squash strategy)
-3. Closes the original ticket (status → Done)
-4. Finds the follow-up ticket via `follow_up` edge and closes it
-5. Dispatches follow-up ticket's children as independent work (branch cleared)
+3. Marks workflow as done and closes the ticket (status → Done)
 
 If the merge fails due to a conflict, the handler transitions back to `Implementing` with an activity recording the failure.
 
@@ -357,9 +359,9 @@ Scans every 30s for tickets in `pushing` or `in_review` workflow states:
 ### InReview tickets
 - Check for `autoapprove` metadata -- if set, auto-advance to `FeedbackCreating` with `feedback_mode=later`
 - Fetch seen comment IDs from `workflow_comments` to filter out already-processed comments
-- Evaluate only unseen comments for emoji signals:
-  - Approval (checkmark/rocket/ship/:shipit:): Transition to `FeedbackCreating` with `feedback_mode=later`
-  - Changes requested (construction): Transition to `FeedbackCreating` with `feedback_mode=now`
+- Evaluate only unseen comments for review commands:
+  - Approval (`ur approve`): If the approve is the **only** unseen comment, skip `FeedbackCreating` and transition directly to `Merging` with `feedback_mode=later`. If there are other unseen comments, transition to `FeedbackCreating` with `feedback_mode=later` so the worker can process the additional comments.
+  - Changes requested (`ur respond`): Transition to `FeedbackCreating` with `feedback_mode=now`
 - Insert new comment IDs into `workflow_comments` with `feedback_created = 0` (phase 1 of two-phase comment handling)
 - Check PR state: merged → `FeedbackCreating`, closed → revert to `Open`
 - Only the latest unseen comment counts, and only if no commits were pushed after it

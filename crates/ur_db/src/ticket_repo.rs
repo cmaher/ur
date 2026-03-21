@@ -1417,14 +1417,12 @@ fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {
     match kind {
         EdgeKind::Blocks => "blocks",
         EdgeKind::RelatesTo => "relates_to",
-        EdgeKind::FollowUp => "follow_up",
     }
 }
 
 fn edge_kind_from_str(s: &str) -> EdgeKind {
     match s {
         "blocks" => EdgeKind::Blocks,
-        "follow_up" => EdgeKind::FollowUp,
         _ => EdgeKind::RelatesTo,
     }
 }

@@ -136,7 +136,12 @@ impl GithubPollerManager {
         Some((pr_number, gh_repo))
     }
 
-    async fn set_feedback_mode_and_transition(&self, ticket_id: &str, feedback_mode: &str) {
+    async fn set_feedback_mode_and_transition(
+        &self,
+        ticket_id: &str,
+        feedback_mode: &str,
+        target: LifecycleStatus,
+    ) {
         if let Err(e) = self
             .ticket_repo
             .set_workflow_feedback_mode(ticket_id, feedback_mode)
@@ -145,8 +150,7 @@ impl GithubPollerManager {
             error!(ticket_id = %ticket_id, error = %e, "failed to set workflow feedback_mode");
             return;
         }
-        self.send_transition(ticket_id, LifecycleStatus::FeedbackCreating)
-            .await;
+        self.send_transition(ticket_id, target).await;
     }
 
     async fn check_pushing_ticket(&self, ticket: &Ticket) {
@@ -257,8 +261,12 @@ impl GithubPollerManager {
                 pr_number = pr_number,
                 "autoapprove set — transitioning to feedback_creating with feedback_mode=later"
             );
-            self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::LATER)
-                .await;
+            self.set_feedback_mode_and_transition(
+                &ticket.id,
+                ur_rpc::feedback_mode::LATER,
+                LifecycleStatus::FeedbackCreating,
+            )
+            .await;
             return;
         }
 
@@ -298,22 +306,49 @@ impl GithubPollerManager {
     async fn handle_review_signal(
         &self,
         ticket_id: &str,
-        signal_result: Result<(ReviewSignal, Option<String>), anyhow::Error>,
+        signal_result: Result<ReviewCheckResult, anyhow::Error>,
         backend: &GhBackend,
         pr_number: i64,
     ) {
-        match signal_result {
-            Ok((ReviewSignal::Approve, _)) => {
-                self.record_comments_and_transition(
-                    ticket_id,
-                    backend,
-                    pr_number,
-                    ur_rpc::feedback_mode::LATER,
-                    "approval signal — transitioning to feedback_creating (mode=later)",
-                )
-                .await;
+        let result = match signal_result {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to check review signal"
+                );
+                return;
             }
-            Ok((ReviewSignal::RequestChanges, _)) => {
+        };
+
+        match result.signal {
+            ReviewSignal::Approve => {
+                // If the approve command is the only unseen comment, skip
+                // feedback creation and go directly to merging.
+                if result.unseen_count <= 1 {
+                    self.record_comments_and_transition(
+                        ticket_id,
+                        backend,
+                        pr_number,
+                        ur_rpc::feedback_mode::LATER,
+                        LifecycleStatus::Merging,
+                        "approval signal (approve-only) — skipping feedback, transitioning to merging",
+                    )
+                    .await;
+                } else {
+                    self.record_comments_and_transition(
+                        ticket_id,
+                        backend,
+                        pr_number,
+                        ur_rpc::feedback_mode::LATER,
+                        LifecycleStatus::FeedbackCreating,
+                        "approval signal — transitioning to feedback_creating (mode=later)",
+                    )
+                    .await;
+                }
+            }
+            ReviewSignal::RequestChanges => {
                 if let Err(e) = self.ticket_repo.reset_implement_cycles(ticket_id).await {
                     warn!(
                         ticket_id = %ticket_id,
@@ -326,20 +361,25 @@ impl GithubPollerManager {
                     backend,
                     pr_number,
                     ur_rpc::feedback_mode::NOW,
+                    LifecycleStatus::FeedbackCreating,
                     "changes requested — resetting cycles and transitioning to feedback_creating (mode=now)",
                 )
                 .await;
             }
-            Ok((ReviewSignal::Merged, _)) => {
+            ReviewSignal::Merged => {
                 info!(
                     ticket_id = %ticket_id,
                     pr_number = %pr_number,
                     "PR merged by human — transitioning to feedback_creating (mode=later)"
                 );
-                self.set_feedback_mode_and_transition(ticket_id, ur_rpc::feedback_mode::LATER)
-                    .await;
+                self.set_feedback_mode_and_transition(
+                    ticket_id,
+                    ur_rpc::feedback_mode::LATER,
+                    LifecycleStatus::FeedbackCreating,
+                )
+                .await;
             }
-            Ok((ReviewSignal::Closed, _)) => {
+            ReviewSignal::Closed => {
                 info!(
                     ticket_id = %ticket_id,
                     pr_number = %pr_number,
@@ -347,25 +387,18 @@ impl GithubPollerManager {
                 );
                 self.cancel_workflow_and_revert(ticket_id).await;
             }
-            Ok((ReviewSignal::Pending, _)) => {}
-            Err(e) => {
-                warn!(
-                    ticket_id = %ticket_id,
-                    error = %e,
-                    "failed to check review signal"
-                );
-            }
+            ReviewSignal::Pending => {}
         }
     }
 
-    /// Fetch all current comment IDs, insert them as seen, then trigger a
-    /// feedback-creating transition. Used for Approve and RequestChanges signals.
+    /// Fetch all current comment IDs, insert them as seen, then trigger a transition.
     async fn record_comments_and_transition(
         &self,
         ticket_id: &str,
         backend: &GhBackend,
         pr_number: i64,
         feedback_mode: &str,
+        target: LifecycleStatus,
         log_message: &str,
     ) {
         info!(ticket_id = %ticket_id, pr_number = %pr_number, "{}", log_message);
@@ -398,7 +431,7 @@ impl GithubPollerManager {
             );
         }
 
-        self.set_feedback_mode_and_transition(ticket_id, feedback_mode)
+        self.set_feedback_mode_and_transition(ticket_id, feedback_mode, target)
             .await;
     }
 
@@ -553,25 +586,34 @@ enum ReviewSignal {
     Pending,
 }
 
-/// Check for review signals on a PR: latest unseen comment emoji, merge status, close status.
-///
-/// Returns `(ReviewSignal, Option<String>)` where the second element is the
-/// comment ID (as a string) when the signal originated from a PR comment.
-/// For merge/close/pending signals that don't come from a specific comment,
-/// the comment ID is `None`.
+/// Result of checking a PR for review signals.
+#[allow(dead_code)]
+struct ReviewCheckResult {
+    signal: ReviewSignal,
+    /// The comment ID that triggered the signal, if it originated from a PR comment.
+    comment_id: Option<String>,
+    /// Number of unseen (not-yet-recorded) comments on the PR.
+    unseen_count: usize,
+}
+
+/// Check for review signals on a PR: latest unseen comment, merge status, close status.
 async fn check_review_signal(
     backend: &GhBackend,
     builderd_client: &BuilderdClient,
     gh_repo: &str,
     pr_number: i64,
     seen_comment_ids: &[String],
-) -> Result<(ReviewSignal, Option<String>), anyhow::Error> {
+) -> Result<ReviewCheckResult, anyhow::Error> {
     // First, check PR state (merged/closed).
     let pr = backend.get_pr(pr_number).await?;
 
     if pr.state == "closed" || pr.state == "CLOSED" {
         if pr.state == "MERGED" {
-            return Ok((ReviewSignal::Merged, None));
+            return Ok(ReviewCheckResult {
+                signal: ReviewSignal::Merged,
+                comment_id: None,
+                unseen_count: 0,
+            });
         }
         // Use REST API to distinguish merged vs closed-without-merge.
         let endpoint = format!("repos/{gh_repo}/pulls/{pr_number}");
@@ -585,13 +627,19 @@ async fn check_review_signal(
             .get("merged")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if merged {
-            return Ok((ReviewSignal::Merged, None));
-        }
-        return Ok((ReviewSignal::Closed, None));
+        let signal = if merged {
+            ReviewSignal::Merged
+        } else {
+            ReviewSignal::Closed
+        };
+        return Ok(ReviewCheckResult {
+            signal,
+            comment_id: None,
+            unseen_count: 0,
+        });
     }
 
-    // PR is still open — check latest unseen comment for emoji signal.
+    // PR is still open — check latest unseen comment for review command.
     let comments = backend.get_conversation_comments(pr_number).await?;
 
     // Filter out already-seen comments.
@@ -600,9 +648,17 @@ async fn check_review_signal(
         .filter(|c| !seen_comment_ids.contains(&c.id.to_string()))
         .collect();
 
+    let unseen_count = unseen.len();
+
     let latest_comment = match unseen.last() {
         Some(c) => *c,
-        None => return Ok((ReviewSignal::Pending, None)),
+        None => {
+            return Ok(ReviewCheckResult {
+                signal: ReviewSignal::Pending,
+                comment_id: None,
+                unseen_count: 0,
+            });
+        }
     };
 
     let comment_id_str = latest_comment.id.to_string();
@@ -618,18 +674,27 @@ async fn check_review_signal(
         && completed.exit_code == 0
         && has_commits_after_comment(completed.stdout_text().as_bytes(), comment_created_at)
     {
-        return Ok((ReviewSignal::Pending, None));
+        return Ok(ReviewCheckResult {
+            signal: ReviewSignal::Pending,
+            comment_id: None,
+            unseen_count,
+        });
     }
 
     // Parse the comment body for review commands.
     // The comment must be exactly the command text (whitespace-trimmed).
     let trimmed = comment_body.trim();
     match parse_review_command(trimmed) {
-        Some(ReviewSignal::Approve) => Ok((ReviewSignal::Approve, Some(comment_id_str))),
-        Some(ReviewSignal::RequestChanges) => {
-            Ok((ReviewSignal::RequestChanges, Some(comment_id_str)))
-        }
-        _ => Ok((ReviewSignal::Pending, None)),
+        Some(signal) => Ok(ReviewCheckResult {
+            signal,
+            comment_id: Some(comment_id_str),
+            unseen_count,
+        }),
+        None => Ok(ReviewCheckResult {
+            signal: ReviewSignal::Pending,
+            comment_id: None,
+            unseen_count,
+        }),
     }
 }
 

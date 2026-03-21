@@ -188,7 +188,7 @@ message RemoveBlockResponse {}
 message AddLinkRequest {
   string left_id = 1;
   string right_id = 2;
-  // Edge kind: "relates_to" (default), "follow_up"
+  // Edge kind: "relates_to" (default)
   optional string edge_kind = 3;
 }
 
