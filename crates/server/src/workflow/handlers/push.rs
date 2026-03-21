@@ -177,7 +177,7 @@ async fn initialize_conditions_and_emit_event(
         ctx.ticket_repo
             .update_workflow_condition(
                 ticket_id,
-                "review_status",
+                workflow_condition::WorkflowCondition::ReviewStatus,
                 workflow_condition::review_status::APPROVED,
             )
             .await?;

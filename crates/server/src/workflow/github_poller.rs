@@ -275,7 +275,11 @@ impl GithubPollerManager {
         if new_status != workflow.ci_status {
             if let Err(e) = self
                 .ticket_repo
-                .update_workflow_condition(ticket_id, "ci_status", new_status)
+                .update_workflow_condition(
+                    ticket_id,
+                    workflow_condition::WorkflowCondition::CiStatus,
+                    new_status,
+                )
                 .await
             {
                 error!(ticket_id = %ticket_id, error = %e, "failed to update ci_status");
@@ -313,7 +317,11 @@ impl GithubPollerManager {
         if new_status != workflow.mergeable {
             if let Err(e) = self
                 .ticket_repo
-                .update_workflow_condition(ticket_id, "mergeable", new_status)
+                .update_workflow_condition(
+                    ticket_id,
+                    workflow_condition::WorkflowCondition::Mergeable,
+                    new_status,
+                )
                 .await
             {
                 error!(ticket_id = %ticket_id, error = %e, "failed to update mergeable");
@@ -391,7 +399,11 @@ impl GithubPollerManager {
         if new_status != workflow.review_status {
             if let Err(e) = self
                 .ticket_repo
-                .update_workflow_condition(ticket_id, "review_status", new_status)
+                .update_workflow_condition(
+                    ticket_id,
+                    workflow_condition::WorkflowCondition::ReviewStatus,
+                    new_status,
+                )
                 .await
             {
                 error!(ticket_id = %ticket_id, error = %e, "failed to update review_status");

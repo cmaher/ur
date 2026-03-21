@@ -1067,30 +1067,24 @@ impl TicketRepo {
         Ok(())
     }
 
-    /// Update a single workflow condition column (ci_status, mergeable, or review_status).
+    /// Update a single workflow condition (ci_status, mergeable, or review_status).
     ///
-    /// The `column` parameter must be one of: "ci_status", "mergeable", "review_status".
     /// Values should use constants from `ur_rpc::workflow_condition`.
     pub async fn update_workflow_condition(
         &self,
         ticket_id: &str,
-        column: &str,
+        condition: ur_rpc::workflow_condition::WorkflowCondition,
         value: &str,
     ) -> Result<(), sqlx::Error> {
-        let query = match column {
-            "ci_status" => {
+        let query = match condition {
+            ur_rpc::workflow_condition::WorkflowCondition::CiStatus => {
                 "UPDATE workflow SET ci_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
             }
-            "mergeable" => {
+            ur_rpc::workflow_condition::WorkflowCondition::Mergeable => {
                 "UPDATE workflow SET mergeable = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
             }
-            "review_status" => {
+            ur_rpc::workflow_condition::WorkflowCondition::ReviewStatus => {
                 "UPDATE workflow SET review_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
-            }
-            _ => {
-                return Err(sqlx::Error::Protocol(format!(
-                    "unknown condition column: {column}"
-                )));
             }
         };
 
