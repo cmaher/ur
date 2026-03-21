@@ -4,6 +4,7 @@ use tracing::{error, info, warn};
 use ur_db::model::{LifecycleStatus, TicketUpdate};
 use ur_rpc::workflow_condition;
 
+use crate::WorkerId;
 use crate::workflow::ticket_client::{self, TicketClient};
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
@@ -177,31 +178,12 @@ async fn merge_pr(
     Ok(())
 }
 
-/// Kill the worker and mark it stopped, releasing its slot.
+/// Stop the worker container, release its pool slot, and mark it stopped.
 async fn kill_worker(ctx: &WorkflowContext, worker_id: &str) -> Result<(), anyhow::Error> {
-    let worker = ctx
-        .worker_repo
-        .get_worker(worker_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found in database"))?;
-
-    if worker.container_status == "stopped" {
-        info!(worker_id = %worker_id, "worker already stopped");
-        return Ok(());
-    }
-
-    // Unlink worker from slot to free it for reuse.
-    if let Err(e) = ctx.worker_repo.unlink_worker_slot(worker_id).await {
-        warn!(worker_id = %worker_id, error = %e, "failed to unlink worker slot");
-    }
-
-    // Mark worker as stopped.
-    ctx.worker_repo
-        .update_worker_container_status(worker_id, "stopped")
-        .await?;
-
-    info!(worker_id = %worker_id, "worker stopped and slot released");
-    Ok(())
+    ctx.worker_manager
+        .stop_by_worker_id(&WorkerId(worker_id.to_owned()))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to stop worker {worker_id}: {e}"))
 }
 
 /// Close a ticket by setting status=closed and lifecycle_status=done.

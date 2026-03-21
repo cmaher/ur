@@ -277,6 +277,7 @@ async fn serve_grpc_servers(
         config.clone(),
         handlers.clone(),
         transition_tx.clone(),
+        worker_manager.clone(),
     );
     let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
 
@@ -288,6 +289,7 @@ async fn serve_grpc_servers(
         builderd_client: poller_builderd_client.clone(),
         config: config.clone(),
         transition_tx: transition_tx.clone(),
+        worker_manager: worker_manager.clone(),
     };
     let coordinator = ur_server::workflow::WorkflowCoordinator::new(
         coordinator_rx,

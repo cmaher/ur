@@ -25,6 +25,8 @@ use ur_db::WorkerRepo;
 use ur_db::model::LifecycleStatus;
 use ur_rpc::proto::builder::BuilderdClient;
 
+use crate::WorkerManager;
+
 /// Result future returned by `WorkflowHandler::handle()`.
 pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + 'a>>;
 
@@ -47,6 +49,8 @@ pub struct WorkflowContext {
     /// WorkflowCoordinator. Handlers use this instead of directly
     /// updating lifecycle_status in the database.
     pub transition_tx: mpsc::Sender<TransitionRequest>,
+    /// Worker manager for stopping containers and releasing pool slots.
+    pub worker_manager: WorkerManager,
 }
 
 /// Trait for handling a lifecycle state entry.
