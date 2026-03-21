@@ -290,11 +290,23 @@ impl GithubPollerManager {
         )
         .await;
 
+        self.handle_review_signal(&ticket.id, signal_result, &backend, pr_number)
+            .await;
+    }
+
+    /// Dispatch a review signal to the appropriate handler.
+    async fn handle_review_signal(
+        &self,
+        ticket_id: &str,
+        signal_result: Result<(ReviewSignal, Option<String>), anyhow::Error>,
+        backend: &GhBackend,
+        pr_number: i64,
+    ) {
         match signal_result {
             Ok((ReviewSignal::Approve, _)) => {
                 self.record_comments_and_transition(
-                    &ticket.id,
-                    &backend,
+                    ticket_id,
+                    backend,
                     pr_number,
                     ur_rpc::feedback_mode::LATER,
                     "approval signal — transitioning to feedback_creating (mode=later)",
@@ -302,38 +314,43 @@ impl GithubPollerManager {
                 .await;
             }
             Ok((ReviewSignal::RequestChanges, _)) => {
+                if let Err(e) = self.ticket_repo.reset_implement_cycles(ticket_id).await {
+                    warn!(
+                        ticket_id = %ticket_id,
+                        error = %e,
+                        "failed to reset implement_cycles"
+                    );
+                }
                 self.record_comments_and_transition(
-                    &ticket.id,
-                    &backend,
+                    ticket_id,
+                    backend,
                     pr_number,
                     ur_rpc::feedback_mode::NOW,
-                    "changes requested — transitioning to feedback_creating (mode=now)",
+                    "changes requested — resetting cycles and transitioning to feedback_creating (mode=now)",
                 )
                 .await;
             }
             Ok((ReviewSignal::Merged, _)) => {
                 info!(
-                    ticket_id = %ticket.id,
+                    ticket_id = %ticket_id,
                     pr_number = %pr_number,
                     "PR merged by human — transitioning to feedback_creating (mode=later)"
                 );
-                self.set_feedback_mode_and_transition(&ticket.id, ur_rpc::feedback_mode::LATER)
+                self.set_feedback_mode_and_transition(ticket_id, ur_rpc::feedback_mode::LATER)
                     .await;
             }
             Ok((ReviewSignal::Closed, _)) => {
                 info!(
-                    ticket_id = %ticket.id,
+                    ticket_id = %ticket_id,
                     pr_number = %pr_number,
                     "PR closed without merge — deleting workflow and reverting ticket to open"
                 );
-                self.cancel_workflow_and_revert(&ticket.id).await;
+                self.cancel_workflow_and_revert(ticket_id).await;
             }
-            Ok((ReviewSignal::Pending, _)) => {
-                // No actionable signal yet — will check again next scan.
-            }
+            Ok((ReviewSignal::Pending, _)) => {}
             Err(e) => {
                 warn!(
-                    ticket_id = %ticket.id,
+                    ticket_id = %ticket_id,
                     error = %e,
                     "failed to check review signal"
                 );
@@ -524,9 +541,9 @@ async fn collect_failing_checks(backend: &GhBackend, pr_number: i64) -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReviewSignal {
-    /// Approval emoji (checkmark, rocket, ship, :shipit:)
+    /// `ur approve` — ship it
     Approve,
-    /// Changes requested emoji (construction)
+    /// `ur respond` — changes requested
     RequestChanges,
     /// PR was merged (by a human, not by us)
     Merged,
@@ -604,14 +621,15 @@ async fn check_review_signal(
         return Ok((ReviewSignal::Pending, None));
     }
 
-    // Parse the comment body for emoji signals.
+    // Parse the comment body for review commands.
+    // The comment must be exactly the command text (whitespace-trimmed).
     let trimmed = comment_body.trim();
-    if contains_approval_signal(trimmed) {
-        Ok((ReviewSignal::Approve, Some(comment_id_str)))
-    } else if contains_changes_requested_signal(trimmed) {
-        Ok((ReviewSignal::RequestChanges, Some(comment_id_str)))
-    } else {
-        Ok((ReviewSignal::Pending, None))
+    match parse_review_command(trimmed) {
+        Some(ReviewSignal::Approve) => Ok((ReviewSignal::Approve, Some(comment_id_str))),
+        Some(ReviewSignal::RequestChanges) => {
+            Ok((ReviewSignal::RequestChanges, Some(comment_id_str)))
+        }
+        _ => Ok((ReviewSignal::Pending, None)),
     }
 }
 
@@ -636,20 +654,15 @@ fn has_commits_after_comment(commits_stdout: &[u8], comment_created_at: &str) ->
     !comment_created_at.is_empty() && !commit_date.is_empty() && commit_date > comment_created_at
 }
 
-/// Check if text contains an approval emoji/keyword.
-fn contains_approval_signal(text: &str) -> bool {
-    // Unicode emoji: check mark ✅, rocket 🚀, ship 🚢
-    // Text form: :shipit:
-    text.contains('\u{2705}')       // ✅
-        || text.contains('\u{1F680}') // 🚀
-        || text.contains('\u{1F6A2}') // 🚢
-        || text.contains(":shipit:")
-}
-
-/// Check if text contains a changes-requested signal.
-fn contains_changes_requested_signal(text: &str) -> bool {
-    // Construction emoji: 🚧
-    text.contains('\u{1F6A7}')
+/// Parse a PR comment as a review command.
+/// The comment must be exactly the command text (after trimming whitespace).
+/// Returns `None` if the comment is not a recognized command.
+fn parse_review_command(text: &str) -> Option<ReviewSignal> {
+    match text {
+        "ur approve" => Some(ReviewSignal::Approve),
+        "ur respond" => Some(ReviewSignal::RequestChanges),
+        _ => None,
+    }
 }
 
 /// Execute a `gh` command via a pre-connected builderd client.
@@ -668,24 +681,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn approval_signals_detected() {
-        assert!(contains_approval_signal("\u{2705}"));
-        assert!(contains_approval_signal("looks good \u{1F680}"));
-        assert!(contains_approval_signal("\u{1F6A2} ship it"));
-        assert!(contains_approval_signal(":shipit:"));
-        assert!(!contains_approval_signal("needs work"));
+    fn parse_review_commands() {
+        assert_eq!(
+            parse_review_command("ur approve"),
+            Some(ReviewSignal::Approve)
+        );
+        assert_eq!(
+            parse_review_command("ur respond"),
+            Some(ReviewSignal::RequestChanges)
+        );
     }
 
     #[test]
-    fn changes_requested_signal_detected() {
-        assert!(contains_changes_requested_signal("\u{1F6A7}"));
-        assert!(contains_changes_requested_signal("not ready \u{1F6A7} yet"));
-        assert!(!contains_changes_requested_signal("looks good"));
-    }
-
-    #[test]
-    fn no_signal_in_empty_text() {
-        assert!(!contains_approval_signal(""));
-        assert!(!contains_changes_requested_signal(""));
+    fn parse_review_command_rejects_non_commands() {
+        assert_eq!(parse_review_command(""), None);
+        assert_eq!(parse_review_command("ur approve please"), None);
+        assert_eq!(parse_review_command("looks good"), None);
+        assert_eq!(parse_review_command(":ship:"), None);
+        assert_eq!(parse_review_command("ur"), None);
     }
 }

@@ -1004,6 +1004,18 @@ impl TicketRepo {
         Ok(())
     }
 
+    /// Reset the implement_cycles counter on a workflow to zero.
+    pub async fn reset_implement_cycles(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE workflow SET implement_cycles = 0 WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
+        )
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     /// Set the worker_id on a workflow.
     pub async fn set_workflow_worker_id(
         &self,
