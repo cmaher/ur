@@ -279,7 +279,7 @@ mod tests {
         let ticket = NewTicket {
             id: "ur-001".to_string(),
             project: "ur".to_string(),
-            type_: "epic".to_string(),
+            type_: "task".to_string(),
             priority: 1,
             parent_id: None,
             title: "Test Epic".to_string(),

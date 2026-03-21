@@ -111,16 +111,21 @@ impl WorkerdClient {
     }
 
     /// Fire-and-forget: send a /create-feedback skill invocation to the worker.
+    ///
+    /// `handled_comment_ids` lists comment IDs that already have feedback tickets,
+    /// so the worker can skip them when processing PR comments.
     pub async fn create_feedback_tickets(
         &self,
         ticket_id: &str,
         pr_number: u32,
+        handled_comment_ids: Vec<String>,
     ) -> Result<(), String> {
         let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
         let req = CreateFeedbackRequest {
             ticket_id: ticket_id.to_string(),
             pr_number,
+            handled_comment_ids,
         };
 
         client

@@ -39,6 +39,8 @@ message Ticket {
   // Field 11 removed (was lifecycle_status).
   string branch = 12;
   // Field 13 removed (was lifecycle_managed).
+  // Depth in the tree hierarchy (0 = root). Only set when using --tree queries.
+  int32 depth = 14;
 }
 
 message MetadataEntry {
@@ -97,10 +99,12 @@ message ListTicketsRequest {
   optional string project = 1;
   optional string ticket_type = 2;
   optional string status = 3;
-  optional string parent_id = 4;
+  // Field 4 removed (was parent_id, replaced by tree_root_id).
   optional string meta_key = 5;
   optional string meta_value = 6;
   // Field 7 removed (was lifecycle_status).
+  // When set, return the root ticket and all descendants (recursive tree walk).
+  optional string tree_root_id = 8;
 }
 
 message ListTicketsResponse {

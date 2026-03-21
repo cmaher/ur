@@ -137,6 +137,37 @@ impl TicketServiceHandler {
 
         Ok(())
     }
+
+    /// List a ticket tree: root + all descendants with depth, using a recursive CTE.
+    async fn list_ticket_tree(
+        &self,
+        root_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<ur_rpc::proto::ticket::Ticket>, Status> {
+        let rows = self
+            .ticket_repo
+            .list_ticket_tree(root_id, status_filter)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(t, depth)| ur_rpc::proto::ticket::Ticket {
+                id: t.id,
+                ticket_type: t.type_,
+                status: t.status,
+                priority: t.priority as i64,
+                parent_id: t.parent_id.unwrap_or_default(),
+                title: t.title,
+                body: t.body,
+                created_at: t.created_at,
+                updated_at: t.updated_at,
+                project: t.project,
+                branch: t.branch.unwrap_or_default(),
+                depth,
+            })
+            .collect())
+    }
 }
 
 #[tonic::async_trait]
@@ -212,6 +243,7 @@ impl TicketService for TicketServiceHandler {
 
         let meta_key = req.meta_key.filter(|s| !s.is_empty());
         let meta_value = req.meta_value.filter(|s| !s.is_empty());
+        let tree_root_id = req.tree_root_id.filter(|s| !s.is_empty());
 
         // If metadata filters are provided, use the metadata-based queries
         let tickets = match (&meta_key, &meta_value) {
@@ -235,6 +267,7 @@ impl TicketService for TicketServiceHandler {
                         updated_at: String::new(),
                         project: String::new(),
                         branch: String::new(),
+                        depth: 0,
                     })
                     .collect()
             }
@@ -258,15 +291,22 @@ impl TicketService for TicketServiceHandler {
                         updated_at: String::new(),
                         project: String::new(),
                         branch: String::new(),
+                        depth: 0,
                     })
                     .collect()
+            }
+            _ if tree_root_id.is_some() => {
+                let root_id = tree_root_id.unwrap();
+                let status_filter = req.status.filter(|s| !s.is_empty());
+                self.list_ticket_tree(&root_id, status_filter.as_deref())
+                    .await?
             }
             _ => {
                 let filter = TicketFilter {
                     project: req.project.filter(|s| !s.is_empty()),
                     status: req.status.filter(|s| !s.is_empty()),
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
-                    parent_id: req.parent_id.filter(|s| !s.is_empty()),
+                    parent_id: None,
                     lifecycle_status: None,
                 };
 
@@ -290,6 +330,7 @@ impl TicketService for TicketServiceHandler {
                         updated_at: t.updated_at,
                         project: t.project,
                         branch: t.branch.unwrap_or_default(),
+                        depth: 0,
                     })
                     .collect()
             }
@@ -336,6 +377,7 @@ impl TicketService for TicketServiceHandler {
             updated_at: t.updated_at,
             project: t.project,
             branch: t.branch.unwrap_or_default(),
+            depth: 0,
         };
 
         let metadata: Vec<_> = meta

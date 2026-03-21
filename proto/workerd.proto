@@ -31,6 +31,9 @@ message ImplementResponse {}
 message CreateFeedbackRequest {
   string ticket_id = 1;
   uint32 pr_number = 2;
+  // Comment IDs that have already had feedback tickets created in prior runs.
+  // The worker should skip these when processing PR comments.
+  repeated string handled_comment_ids = 3;
 }
 
 message CreateFeedbackResponse {}

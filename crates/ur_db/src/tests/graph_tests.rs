@@ -86,7 +86,7 @@ async fn transitive_blockers_cross_epic() {
     // Create tickets in two different epics
     repo.create_ticket(&NewTicket {
         id: "epic-x".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Epic X".into(),
@@ -99,7 +99,7 @@ async fn transitive_blockers_cross_epic() {
 
     repo.create_ticket(&NewTicket {
         id: "epic-y".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Epic Y".into(),

@@ -206,22 +206,22 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
         TicketArgs::List {
             project,
             all,
-            epic,
+            tree,
             ticket_type,
             status,
             lifecycle,
         } => {
             let resolved = if all {
                 None
-            } else if project.is_none() && epic.is_some() {
-                epic.as_deref().and_then(project_from_ticket_id)
+            } else if project.is_none() && tree.is_some() {
+                tree.as_deref().and_then(project_from_ticket_id)
             } else {
                 Some(resolve_project(project)?)
             };
             Ok(TicketArgs::List {
                 project: resolved,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
@@ -303,11 +303,11 @@ mod tests {
         let cmd = parse(&[
             "ticket",
             "create",
-            "Epic title",
+            "Design doc title",
             "-p",
             "myproj",
             "--type",
-            "epic",
+            "design",
             "--parent",
             "ur-abc12",
             "--priority",
@@ -326,9 +326,9 @@ mod tests {
                 wip,
                 follow_up,
             } => {
-                assert_eq!(title, "Epic title");
+                assert_eq!(title, "Design doc title");
                 assert_eq!(project.as_deref(), Some("myproj"));
-                assert_eq!(ticket_type, "epic");
+                assert_eq!(ticket_type, "design");
                 assert_eq!(parent.as_deref(), Some("ur-abc12"));
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
@@ -340,20 +340,32 @@ mod tests {
     }
 
     #[test]
+    fn test_create_rejects_epic_type() {
+        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "epic"]);
+        assert!(result.is_err(), "epic type should be rejected");
+    }
+
+    #[test]
+    fn test_create_rejects_bug_type() {
+        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "bug"]);
+        assert!(result.is_err(), "bug type should be rejected");
+    }
+
+    #[test]
     fn test_list_no_filters() {
         let cmd = parse(&["ticket", "list"]);
         match cmd.command {
             super::TicketArgs::List {
                 project,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
-                assert!(epic.is_none());
+                assert!(tree.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
                 assert!(lifecycle.is_none());
@@ -365,21 +377,21 @@ mod tests {
     #[test]
     fn test_list_with_filters() {
         let cmd = parse(&[
-            "ticket", "list", "-p", "myproj", "--epic", "ur-e1", "--type", "task", "--status",
+            "ticket", "list", "-p", "myproj", "--tree", "ur-e1", "--type", "task", "--status",
             "open",
         ]);
         match cmd.command {
             super::TicketArgs::List {
                 project,
                 all,
-                epic,
+                tree,
                 ticket_type,
                 status,
                 lifecycle,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
-                assert_eq!(epic.as_deref(), Some("ur-e1"));
+                assert_eq!(tree.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
                 assert!(lifecycle.is_none());
@@ -662,9 +674,9 @@ mod tests {
         let cmd = parse(&[
             "ticket",
             "create",
-            "Follow-up epic",
+            "Follow-up task",
             "--type",
-            "epic",
+            "task",
             "--follow-up",
             "ur-orig1",
         ]);
@@ -672,7 +684,7 @@ mod tests {
             super::TicketArgs::Create {
                 title, follow_up, ..
             } => {
-                assert_eq!(title, "Follow-up epic");
+                assert_eq!(title, "Follow-up task");
                 assert_eq!(follow_up.as_deref(), Some("ur-orig1"));
             }
             other => panic!("expected Create, got {other:?}"),

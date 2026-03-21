@@ -68,7 +68,7 @@ async fn vacuum_into_data_survives() {
 
     repo.create_ticket(&NewTicket {
         id: "snap-t2".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 2,
         parent_id: None,
         title: "Snapshot ticket two".into(),
@@ -103,7 +103,7 @@ async fn vacuum_into_data_survives() {
 
     let t2 = snap_repo.get_ticket("snap-t2").await.unwrap().unwrap();
     assert_eq!(t2.title, "Snapshot ticket two");
-    assert_eq!(t2.type_, "epic");
+    assert_eq!(t2.type_, "task");
 
     let meta = snap_repo.get_meta("snap-t1", "ticket").await.unwrap();
     assert_eq!(meta.get("env").unwrap(), "prod");
@@ -225,7 +225,7 @@ async fn restore_fails_if_source_missing() {
 async fn seed_integrity_data(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: "int-epic".into(),
-        type_: "epic".into(),
+        type_: "task".into(),
         priority: 1,
         parent_id: None,
         title: "Integrity epic".into(),
@@ -299,7 +299,7 @@ async fn assert_integrity_data(repo: &TicketRepo) {
     assert_eq!(all_tickets.len(), 3);
 
     let epic = repo.get_ticket("int-epic").await.unwrap().unwrap();
-    assert_eq!(epic.type_, "epic");
+    assert_eq!(epic.type_, "task");
     assert_eq!(epic.title, "Integrity epic");
 
     let t1 = repo.get_ticket("int-t1").await.unwrap().unwrap();

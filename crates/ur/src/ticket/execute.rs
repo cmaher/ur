@@ -35,11 +35,11 @@ where
         TicketArgs::List {
             project,
             all,
-            epic,
+            tree,
             ticket_type,
             status,
             lifecycle,
-        } => execute_list(client, project, all, epic, ticket_type, status, lifecycle).await,
+        } => execute_list(client, project, all, tree, ticket_type, status, lifecycle).await,
         TicketArgs::Show { id } => execute_show(client, id).await,
         TicketArgs::SetMeta { id, key, value } => execute_set_meta(client, id, key, value).await,
         TicketArgs::DeleteMeta { id, key } => execute_delete_meta(client, id, key).await,
@@ -167,7 +167,7 @@ async fn execute_list<T>(
     client: &mut TicketServiceClient<T>,
     project: Option<String>,
     all: bool,
-    epic: Option<String>,
+    tree: Option<String>,
     ticket_type: Option<String>,
     status: Option<String>,
     lifecycle: Option<String>,
@@ -186,9 +186,9 @@ where
             project: project_filter,
             ticket_type,
             status,
-            parent_id: epic,
             meta_key: None,
             meta_value: None,
+            tree_root_id: tree,
         })
         .await
         .with_status_context("list tickets")?;
@@ -649,9 +649,9 @@ where
             project: project.clone(),
             ticket_type: None,
             status: None,
-            parent_id: None,
             meta_key: None,
             meta_value: None,
+            tree_root_id: None,
         })
         .await
         .with_status_context("list tickets")?;

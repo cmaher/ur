@@ -292,6 +292,144 @@ impl TicketRepo {
             .collect())
     }
 
+    /// List a ticket tree: root ticket + all descendants via recursive CTE.
+    /// Returns tickets paired with their depth in the tree (0 = root).
+    /// An optional status filter applies to descendants only (root is always included).
+    pub async fn list_ticket_tree(
+        &self,
+        root_id: &str,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<(Ticket, i32)>, sqlx::Error> {
+        if let Some(status) = status_filter {
+            self.list_ticket_tree_with_status(root_id, status).await
+        } else {
+            self.list_ticket_tree_unfiltered(root_id).await
+        }
+    }
+
+    async fn list_ticket_tree_unfiltered(
+        &self,
+        root_id: &str,
+    ) -> Result<Vec<(Ticket, i32)>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String, String, String, String, String, bool, i32,
+                Option<String>, String, String, Option<String>,
+                String, String, i32,
+            ),
+        >(
+            "WITH RECURSIVE tree(id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth) AS (
+                SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, 0
+                FROM ticket WHERE id = ?
+                UNION ALL
+                SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at, tree.depth + 1
+                FROM ticket t JOIN tree ON t.parent_id = tree.id
+            )
+            SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth
+            FROM tree ORDER BY depth ASC, priority ASC, created_at ASC",
+        )
+        .bind(root_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::rows_to_ticket_depth(rows))
+    }
+
+    async fn list_ticket_tree_with_status(
+        &self,
+        root_id: &str,
+        status: &str,
+    ) -> Result<Vec<(Ticket, i32)>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String, String, String, String, String, bool, i32,
+                Option<String>, String, String, Option<String>,
+                String, String, i32,
+            ),
+        >(
+            "WITH RECURSIVE tree(id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth) AS (
+                SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, 0
+                FROM ticket WHERE id = ?
+                UNION ALL
+                SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at, tree.depth + 1
+                FROM ticket t JOIN tree ON t.parent_id = tree.id
+                WHERE t.status = ?
+            )
+            SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth
+            FROM tree ORDER BY depth ASC, priority ASC, created_at ASC",
+        )
+        .bind(root_id)
+        .bind(status)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::rows_to_ticket_depth(rows))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn rows_to_ticket_depth(
+        rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            i32,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            i32,
+        )>,
+    ) -> Vec<(Ticket, i32)> {
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                    depth,
+                )| {
+                    (
+                        Ticket {
+                            id,
+                            project,
+                            type_,
+                            status,
+                            lifecycle_status: lifecycle_status_str
+                                .parse::<LifecycleStatus>()
+                                .unwrap_or_default(),
+                            lifecycle_managed,
+                            priority,
+                            parent_id,
+                            title,
+                            body,
+                            branch,
+                            created_at,
+                            updated_at,
+                        },
+                        depth,
+                    )
+                },
+            )
+            .collect()
+    }
+
     pub async fn set_meta(
         &self,
         entity_id: &str,
@@ -543,16 +681,28 @@ impl TicketRepo {
     ) -> Result<Vec<DispatchableTicket>, sqlx::Error> {
         let (query, binds): (String, Vec<String>) = match project {
             Some(p) => (
-                "SELECT id, title, priority, type FROM ticket
-                 WHERE parent_id = ? AND status = 'open' AND project = ?
-                 ORDER BY priority ASC"
+                "WITH RECURSIVE descendants(id, title, priority, type) AS (
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    UNION ALL
+                    SELECT t.id, t.title, t.priority, t.type
+                    FROM ticket t JOIN descendants d ON t.parent_id = d.id
+                )
+                SELECT id, title, priority, type FROM descendants
+                WHERE id IN (SELECT id FROM ticket WHERE status = 'open' AND project = ?)
+                ORDER BY priority ASC"
                     .to_owned(),
                 vec![epic_id.to_owned(), p.to_owned()],
             ),
             None => (
-                "SELECT id, title, priority, type FROM ticket
-                 WHERE parent_id = ? AND status = 'open'
-                 ORDER BY priority ASC"
+                "WITH RECURSIVE descendants(id, title, priority, type) AS (
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    UNION ALL
+                    SELECT t.id, t.title, t.priority, t.type
+                    FROM ticket t JOIN descendants d ON t.parent_id = d.id
+                )
+                SELECT id, title, priority, type FROM descendants
+                WHERE id IN (SELECT id FROM ticket WHERE status = 'open')
+                ORDER BY priority ASC"
                     .to_owned(),
                 vec![epic_id.to_owned()],
             ),
@@ -1180,6 +1330,78 @@ impl TicketRepo {
                 value: worker_id.to_string(),
             })
             .collect())
+    }
+
+    // ============================================================
+    // WorkflowComments CRUD
+    // ============================================================
+
+    /// Bulk-insert comment IDs as seen for a ticket. Existing rows are ignored.
+    pub async fn insert_workflow_comments(
+        &self,
+        ticket_id: &str,
+        comment_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        for comment_id in comment_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO workflow_comments (ticket_id, comment_id) VALUES (?, ?)",
+            )
+            .bind(ticket_id)
+            .bind(comment_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Return comment IDs where feedback has not yet been created.
+    pub async fn get_pending_feedback_comments(
+        &self,
+        ticket_id: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT comment_id FROM workflow_comments
+             WHERE ticket_id = ? AND feedback_created = 0
+             ORDER BY created_at ASC",
+        )
+        .bind(ticket_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Mark the given comment IDs as having had feedback tickets created.
+    pub async fn mark_feedback_created(
+        &self,
+        ticket_id: &str,
+        comment_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        for comment_id in comment_ids {
+            sqlx::query(
+                "UPDATE workflow_comments SET feedback_created = 1
+                 WHERE ticket_id = ? AND comment_id = ?",
+            )
+            .bind(ticket_id)
+            .bind(comment_id)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Return all comment IDs that have been seen for a ticket.
+    pub async fn get_seen_comment_ids(&self, ticket_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT comment_id FROM workflow_comments
+             WHERE ticket_id = ?
+             ORDER BY created_at ASC",
+        )
+        .bind(ticket_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 }
 
