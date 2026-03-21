@@ -98,7 +98,7 @@ pub struct TicketServiceHandler {
 
 impl TicketServiceHandler {
     /// If the ticket has an active workflow, cancel it: signal the coordinator
-    /// to abort the in-flight handler, then delete the workflow and intent rows.
+    /// to abort the in-flight handler, then delete intent rows and mark the workflow as done.
     async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
         let workflow = self
             .ticket_repo
@@ -106,9 +106,10 @@ impl TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        if workflow.is_none() {
-            return Ok(());
-        }
+        match workflow {
+            Some(wf) if wf.status != ur_db::model::LifecycleStatus::Done => wf,
+            _ => return Ok(()),
+        };
 
         info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
 
@@ -123,14 +124,14 @@ impl TicketServiceHandler {
             );
         }
 
-        // Delete intents and workflow from the database.
+        // Delete intents and mark workflow as done.
         self.ticket_repo
             .delete_intents_for_ticket(ticket_id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         self.ticket_repo
-            .delete_workflow(ticket_id)
+            .update_workflow_status(ticket_id, ur_db::model::LifecycleStatus::Done)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 

@@ -821,16 +821,6 @@ impl TicketRepo {
         Ok(())
     }
 
-    /// Delete the workflow for a ticket.
-    pub async fn delete_workflow(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM workflow WHERE ticket_id = ?")
-            .bind(ticket_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
     /// Mark a workflow as stalled with a reason.
     pub async fn set_workflow_stalled(
         &self,
