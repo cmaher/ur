@@ -17,6 +17,7 @@ pub enum LifecycleStatus {
     Verifying,
     AwaitingDispatch,
     Done,
+    Cancelled,
 }
 
 impl LifecycleStatus {
@@ -32,7 +33,13 @@ impl LifecycleStatus {
             Self::Verifying => "verifying",
             Self::AwaitingDispatch => "awaiting_dispatch",
             Self::Done => "done",
+            Self::Cancelled => "cancelled",
         }
+    }
+
+    /// Returns `true` if this status represents a terminal state (workflow complete).
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Done | Self::Cancelled)
     }
 }
 
@@ -51,6 +58,7 @@ impl FromStr for LifecycleStatus {
             "verifying" => Ok(Self::Verifying),
             "awaiting_dispatch" => Ok(Self::AwaitingDispatch),
             "done" => Ok(Self::Done),
+            "cancelled" => Ok(Self::Cancelled),
             _ => Err(format!("unknown lifecycle status: {s}")),
         }
     }
@@ -319,6 +327,37 @@ mod tests {
         let result = "unknown_value".parse::<AgentStatus>();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown agent status"));
+    }
+
+    #[test]
+    fn lifecycle_status_roundtrip() {
+        for status in [
+            LifecycleStatus::Design,
+            LifecycleStatus::Open,
+            LifecycleStatus::Implementing,
+            LifecycleStatus::Pushing,
+            LifecycleStatus::InReview,
+            LifecycleStatus::FeedbackCreating,
+            LifecycleStatus::Merging,
+            LifecycleStatus::Verifying,
+            LifecycleStatus::AwaitingDispatch,
+            LifecycleStatus::Done,
+            LifecycleStatus::Cancelled,
+        ] {
+            let s = status.as_str();
+            let parsed: LifecycleStatus = s.parse().unwrap();
+            assert_eq!(parsed, status);
+            assert_eq!(status.to_string(), s);
+        }
+    }
+
+    #[test]
+    fn lifecycle_status_is_terminal() {
+        assert!(LifecycleStatus::Done.is_terminal());
+        assert!(LifecycleStatus::Cancelled.is_terminal());
+        assert!(!LifecycleStatus::Open.is_terminal());
+        assert!(!LifecycleStatus::Implementing.is_terminal());
+        assert!(!LifecycleStatus::InReview.is_terminal());
     }
 
     #[test]

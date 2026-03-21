@@ -12,3 +12,4 @@ pub const MERGING: &str = "merging";
 pub const VERIFYING: &str = "verifying";
 pub const AWAITING_DISPATCH: &str = "awaiting_dispatch";
 pub const DONE: &str = "done";
+pub const CANCELLED: &str = "cancelled";

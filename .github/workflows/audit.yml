@@ -1,9 +1,10 @@
 name: Audit
 
 on:
-  pull_request:
-    branches: [master]
-    paths: [Cargo.lock]
+  workflow_dispatch:
+  # pull_request:
+  #   branches: [master]
+  #   paths: [Cargo.lock]
 
 env:
   CARGO_TERM_COLOR: always

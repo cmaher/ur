@@ -17,6 +17,7 @@ pub const UNAVAILABLE: &str = "UNAVAILABLE";
 // Ticket reason codes
 // ---------------------------------------------------------------------------
 pub const TICKET_HAS_OPEN_CHILDREN: &str = "TICKET_HAS_OPEN_CHILDREN";
+pub const TICKET_HAS_ACTIVE_WORKFLOW: &str = "TICKET_HAS_ACTIVE_WORKFLOW";
 
 // ---------------------------------------------------------------------------
 // HostExec reason codes

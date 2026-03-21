@@ -1482,17 +1482,20 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
         // ---- Cancel workflow via ur flow cancel ----
         flow_cancel(env, &ticket_id);
 
-        // ---- Verify workflow no longer appears in ur flow list ----
+        // ---- Verify cancelled workflow no longer appears in ur flow list (active only) ----
         let list_after = flow_list(env);
         assert!(
             !flow_list_contains(&list_after, &ticket_id),
             "flow list should not include cancelled workflow for {ticket_id}.\nJSON: {list_after}"
         );
 
-        // ---- Verify ur flow show also fails after cancel ----
-        assert!(
-            flow_show(env, &ticket_id).is_none(),
-            "ur flow show should fail after cancel (workflow deleted)"
+        // ---- Verify ur flow show returns the workflow with cancelled status ----
+        let show =
+            flow_show(env, &ticket_id).expect("ur flow show should return cancelled workflow");
+        assert_eq!(
+            show["data"]["workflow"]["status"].as_str(),
+            Some("cancelled"),
+            "cancelled workflow should have status 'cancelled'.\nJSON: {show}"
         );
 
         // ---- Stop worker ----

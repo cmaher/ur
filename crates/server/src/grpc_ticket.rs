@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use ur_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
 use ur_rpc::error::{
-    self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_OPEN_CHILDREN,
+    self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_ACTIVE_WORKFLOW,
+    TICKET_HAS_OPEN_CHILDREN,
 };
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
@@ -28,6 +29,9 @@ pub enum TicketError {
 
     #[error("ticket {id} has open children; close them first or use --force")]
     HasOpenChildren { id: String, children: Vec<String> },
+
+    #[error("ticket {id} already has an active workflow")]
+    ActiveWorkflow { id: String },
 
     #[error("validation error: {0}")]
     Validation(String),
@@ -65,6 +69,17 @@ impl From<TicketError> for Status {
                     meta,
                 )
             }
+            TicketError::ActiveWorkflow { ref id } => {
+                let mut meta = HashMap::new();
+                meta.insert("ticket_id".into(), id.clone());
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_TICKET,
+                    TICKET_HAS_ACTIVE_WORKFLOW,
+                    meta,
+                )
+            }
             TicketError::Validation(_) => error::status_with_info(
                 Code::InvalidArgument,
                 err.to_string(),
@@ -97,8 +112,9 @@ pub struct TicketServiceHandler {
 }
 
 impl TicketServiceHandler {
-    /// If the ticket has an active workflow, cancel it: signal the coordinator
-    /// to abort the in-flight handler, then delete intent rows and mark the workflow as done.
+    /// If the ticket has an active (non-terminal) workflow, cancel it: signal
+    /// the coordinator to abort the in-flight handler, delete intent rows, and
+    /// set the workflow status to `Cancelled`.
     async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
         let workflow = self
             .ticket_repo
@@ -106,10 +122,9 @@ impl TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        match workflow {
-            Some(wf) if wf.status != ur_db::model::LifecycleStatus::Done => wf,
-            _ => return Ok(()),
-        };
+        if workflow.is_none() {
+            return Ok(());
+        }
 
         info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
 
@@ -124,14 +139,14 @@ impl TicketServiceHandler {
             );
         }
 
-        // Delete intents and mark workflow as done.
+        // Delete intents and mark workflow as cancelled.
         self.ticket_repo
             .delete_intents_for_ticket(ticket_id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         self.ticket_repo
-            .update_workflow_status(ticket_id, ur_db::model::LifecycleStatus::Done)
+            .update_workflow_status(ticket_id, LifecycleStatus::Cancelled)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
@@ -685,8 +700,19 @@ impl TicketService for TicketServiceHandler {
             .parse()
             .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.status)))?;
 
-        // Cancel any existing workflow before creating a new one.
-        self.cancel_active_workflow(&req.ticket_id).await?;
+        // Reject if there is already an active (non-terminal) workflow for this ticket.
+        if self
+            .ticket_repo
+            .get_workflow_by_ticket(&req.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .is_some()
+        {
+            return Err(TicketError::ActiveWorkflow {
+                id: req.ticket_id.clone(),
+            }
+            .into());
+        }
 
         // Create the workflow row.
         let workflow = self
@@ -785,7 +811,7 @@ impl TicketService for TicketServiceHandler {
         let ticket_id = &req.get_ref().ticket_id;
         let workflow = self
             .ticket_repo
-            .get_workflow_by_ticket(ticket_id)
+            .get_latest_workflow_by_ticket(ticket_id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
