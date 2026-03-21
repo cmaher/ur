@@ -1,14 +1,13 @@
 use anyhow::bail;
 use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
 use tracing::{error, info, warn};
-use ur_db::model::{LifecycleStatus, TicketFilter, TicketUpdate};
+use ur_db::model::{LifecycleStatus, TicketUpdate};
 
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
-/// Handler for the FeedbackCreating → Merging transition.
+/// Handler for the Merging transition.
 ///
-/// Merges the PR (squash), kills the worker, closes the epic, and dispatches
-/// follow-up children as independent work with cleared branches.
+/// Merges the PR (squash), kills the worker, and closes the ticket.
 ///
 /// If the merge fails due to a conflict, transitions back to Implementing.
 pub struct MergeHandler;
@@ -49,23 +48,19 @@ async fn execute_merge(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), any
         anyhow::anyhow!("no gh_repo metadata on ticket {ticket_id} — cannot merge PR")
     })?;
 
-    // 3. Find follow-up epic via follow_up edge.
-    let follow_up_epic_id = find_follow_up_epic(ctx, ticket_id).await?;
-
     info!(
         ticket_id = %ticket_id,
-        follow_up_epic_id = %follow_up_epic_id,
         pr_number = %pr_number,
         "merging PR"
     );
 
-    // 4. Kill worker and release slot.
+    // 3. Kill worker and release slot.
     kill_worker(ctx, worker_id).await?;
 
-    // 5. Merge the PR via GhBackend through builderd.
+    // 4. Merge the PR via GhBackend through builderd.
     merge_pr(ctx, ticket_id, pr_number, gh_repo).await?;
 
-    // 6. Mark workflow as done (no further transitions for this ticket).
+    // 5. Mark workflow as done (no further transitions for this ticket).
     if let Err(e) = ctx
         .ticket_repo
         .update_workflow_status(ticket_id, LifecycleStatus::Done)
@@ -74,12 +69,8 @@ async fn execute_merge(ctx: &WorkflowContext, ticket_id: &str) -> Result<(), any
         warn!(ticket_id = %ticket_id, error = %e, "failed to mark workflow as done");
     }
 
-    // 7. Close original ticket and follow-up epic.
-    close_ticket(ctx, ticket_id).await?;
-    close_ticket(ctx, &follow_up_epic_id).await?;
-
-    // 8. Dispatch follow-up epic children as independent work.
-    dispatch_children(ctx, ticket_id, &follow_up_epic_id).await
+    // 6. Close ticket.
+    close_ticket(ctx, ticket_id).await
 }
 
 async fn merge_pr(
@@ -123,83 +114,6 @@ async fn merge_pr(
         "PR merged successfully"
     );
     Ok(())
-}
-
-async fn dispatch_children(
-    ctx: &WorkflowContext,
-    ticket_id: &str,
-    follow_up_epic_id: &str,
-) -> Result<(), anyhow::Error> {
-    let children = ctx
-        .ticket_repo
-        .list_tickets(&TicketFilter {
-            parent_id: Some(follow_up_epic_id.to_string()),
-            status: Some("open".to_string()),
-            project: None,
-            type_: None,
-            lifecycle_status: None,
-        })
-        .await?;
-
-    for child in &children {
-        if child.lifecycle_status != LifecycleStatus::Design
-            && child.lifecycle_status != LifecycleStatus::Open
-        {
-            continue;
-        }
-        // Clear any inherited branch so they start fresh.
-        let update = TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Open),
-            lifecycle_managed: None,
-            branch: Some(None),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            parent_id: None,
-            project: None,
-        };
-        ctx.ticket_repo.update_ticket(&child.id, &update).await?;
-        info!(
-            child_id = %child.id,
-            follow_up_epic_id = %follow_up_epic_id,
-            "dispatched follow-up child as independent work (lifecycle → open)"
-        );
-    }
-
-    info!(
-        ticket_id = %ticket_id,
-        follow_up_epic_id = %follow_up_epic_id,
-        children_dispatched = children.len(),
-        "merge resolution complete"
-    );
-
-    Ok(())
-}
-
-/// Find the follow-up epic ID linked to the given ticket via a `follow_up` edge.
-async fn find_follow_up_epic(
-    ctx: &WorkflowContext,
-    ticket_id: &str,
-) -> Result<String, anyhow::Error> {
-    let edges = ctx
-        .ticket_repo
-        .edges_for(ticket_id, Some(ur_db::model::EdgeKind::FollowUp))
-        .await?;
-
-    for edge in &edges {
-        if edge.source_id == ticket_id {
-            return Ok(edge.target_id.clone());
-        }
-    }
-    for edge in &edges {
-        if edge.target_id == ticket_id {
-            return Ok(edge.source_id.clone());
-        }
-    }
-
-    anyhow::bail!("no follow_up edge found for ticket {ticket_id}")
 }
 
 /// Kill the worker and mark it stopped, releasing its slot.

@@ -201,7 +201,6 @@ pub struct Edge {
 pub enum EdgeKind {
     Blocks,
     RelatesTo,
-    FollowUp,
 }
 
 pub struct WorkflowEvent {

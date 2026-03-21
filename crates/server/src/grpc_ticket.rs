@@ -583,7 +583,6 @@ impl TicketService for TicketServiceHandler {
         let edge_kind_str = req.edge_kind.as_deref().unwrap_or("relates_to");
         let edge_kind = match edge_kind_str {
             "relates_to" => EdgeKind::RelatesTo,
-            "follow_up" => EdgeKind::FollowUp,
             other => {
                 return Err(TicketError::Validation(format!("unknown edge kind: {other}")).into());
             }
