@@ -357,21 +357,21 @@ async fn emit_workflow_event(
     }
 }
 
-/// Map a `LifecycleStatus` to its corresponding workflow event constant.
-fn lifecycle_status_to_event(status: LifecycleStatus) -> &'static str {
-    use ur_rpc::workflow_event;
+/// Map a `LifecycleStatus` to its corresponding `WorkflowEvent` variant.
+fn lifecycle_status_to_event(status: LifecycleStatus) -> ur_rpc::workflow_event::WorkflowEvent {
+    use ur_rpc::workflow_event::WorkflowEvent;
     match status {
-        LifecycleStatus::AwaitingDispatch => workflow_event::AWAITING_DISPATCH,
-        LifecycleStatus::Implementing => workflow_event::IMPLEMENTING,
-        LifecycleStatus::Verifying => workflow_event::VERIFYING,
-        LifecycleStatus::Pushing => workflow_event::PUSHING,
-        LifecycleStatus::InReview => workflow_event::IN_REVIEW,
-        LifecycleStatus::FeedbackCreating => workflow_event::FEEDBACK_CREATING,
-        LifecycleStatus::Merging => workflow_event::MERGING,
-        LifecycleStatus::Done => workflow_event::DONE,
-        LifecycleStatus::Cancelled => workflow_event::CANCELLED,
+        LifecycleStatus::AwaitingDispatch => WorkflowEvent::AwaitingDispatch,
+        LifecycleStatus::Implementing => WorkflowEvent::Implementing,
+        LifecycleStatus::Verifying => WorkflowEvent::Verifying,
+        LifecycleStatus::Pushing => WorkflowEvent::Pushing,
+        LifecycleStatus::InReview => WorkflowEvent::InReview,
+        LifecycleStatus::FeedbackCreating => WorkflowEvent::FeedbackCreating,
+        LifecycleStatus::Merging => WorkflowEvent::Merging,
+        LifecycleStatus::Done => WorkflowEvent::Done,
+        LifecycleStatus::Cancelled => WorkflowEvent::Cancelled,
         // Open and Design are not workflow transition events — use awaiting_dispatch as fallback.
-        LifecycleStatus::Open | LifecycleStatus::Design => workflow_event::AWAITING_DISPATCH,
+        LifecycleStatus::Open | LifecycleStatus::Design => WorkflowEvent::AwaitingDispatch,
     }
 }
 

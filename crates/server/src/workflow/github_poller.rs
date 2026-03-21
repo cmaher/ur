@@ -8,7 +8,8 @@ use ur_db::TicketRepo;
 use ur_db::model::{LifecycleStatus, Ticket, Workflow};
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
-use ur_rpc::{workflow_condition, workflow_event};
+use ur_rpc::workflow_condition;
+use ur_rpc::workflow_event::WorkflowEvent;
 
 use super::TransitionRequest;
 use super::ticket_client::{self, TicketClient};
@@ -288,9 +289,9 @@ impl GithubPollerManager {
 
             let event = match new_status {
                 s if s == workflow_condition::ci_status::SUCCEEDED => {
-                    Some(workflow_event::CI_SUCCEEDED)
+                    Some(WorkflowEvent::CiSucceeded)
                 }
-                s if s == workflow_condition::ci_status::FAILED => Some(workflow_event::CI_FAILED),
+                s if s == workflow_condition::ci_status::FAILED => Some(WorkflowEvent::CiFailed),
                 _ => None,
             };
 
@@ -329,7 +330,7 @@ impl GithubPollerManager {
             }
 
             if new_status == workflow_condition::mergeable::CONFLICT {
-                self.emit_workflow_event(&workflow.id, workflow_event::MERGE_CONFLICT_DETECTED)
+                self.emit_workflow_event(&workflow.id, WorkflowEvent::MergeConflictDetected)
                     .await;
             }
         }
@@ -416,10 +417,10 @@ impl GithubPollerManager {
 
             let event = match new_status {
                 s if s == workflow_condition::review_status::APPROVED => {
-                    Some(workflow_event::REVIEW_APPROVED)
+                    Some(WorkflowEvent::ReviewApproved)
                 }
                 s if s == workflow_condition::review_status::CHANGES_REQUESTED => {
-                    Some(workflow_event::REVIEW_CHANGES_REQUESTED)
+                    Some(WorkflowEvent::ReviewChangesRequested)
                 }
                 _ => None,
             };
@@ -627,7 +628,12 @@ impl GithubPollerManager {
     }
 
     /// Emit a workflow event with a custom timestamp (for CI events).
-    async fn emit_workflow_event_at(&self, workflow_id: &str, event: &str, created_at: &str) {
+    async fn emit_workflow_event_at(
+        &self,
+        workflow_id: &str,
+        event: WorkflowEvent,
+        created_at: &str,
+    ) {
         // Use the custom timestamp if non-empty, otherwise fall back to server time.
         let result = if created_at.is_empty() {
             self.ticket_repo
@@ -649,7 +655,7 @@ impl GithubPollerManager {
     }
 
     /// Emit a workflow event with the current server timestamp.
-    async fn emit_workflow_event(&self, workflow_id: &str, event: &str) {
+    async fn emit_workflow_event(&self, workflow_id: &str, event: WorkflowEvent) {
         if let Err(e) = self
             .ticket_repo
             .insert_workflow_event(workflow_id, event)

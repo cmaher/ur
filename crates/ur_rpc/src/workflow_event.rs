@@ -1,24 +1,61 @@
-//! String constants for workflow event types.
+//! Enum for workflow event types.
 //!
-//! Use these instead of string literals when emitting or matching workflow
+//! Use this enum instead of string literals when emitting or matching workflow
 //! events in the coordinator, poller, and handlers.
 
-// Lifecycle events — mirror lifecycle statuses as event names.
-pub const AWAITING_DISPATCH: &str = "awaiting_dispatch";
-pub const IMPLEMENTING: &str = "implementing";
-pub const VERIFYING: &str = "verifying";
-pub const PUSHING: &str = "pushing";
-pub const IN_REVIEW: &str = "in_review";
-pub const FEEDBACK_CREATING: &str = "feedback_creating";
-pub const MERGING: &str = "merging";
-pub const DONE: &str = "done";
-pub const CANCELLED: &str = "cancelled";
+/// Identifies a workflow event type.
+///
+/// Use this enum instead of raw event strings when calling
+/// `TicketRepo::insert_workflow_event` or `insert_workflow_event_at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowEvent {
+    // Lifecycle events — mirror lifecycle statuses as event names.
+    AwaitingDispatch,
+    Implementing,
+    Verifying,
+    Pushing,
+    InReview,
+    FeedbackCreating,
+    Merging,
+    Done,
+    Cancelled,
 
-// Condition events — fired when external state changes are detected.
-pub const PR_CREATED: &str = "pr_created";
-pub const CI_SUCCEEDED: &str = "ci_succeeded";
-pub const CI_FAILED: &str = "ci_failed";
-pub const REVIEW_APPROVED: &str = "review_approved";
-pub const REVIEW_CHANGES_REQUESTED: &str = "review_changes_requested";
-pub const MERGE_CONFLICT_DETECTED: &str = "merge_conflict_detected";
-pub const STALLED: &str = "stalled";
+    // Condition events — fired when external state changes are detected.
+    PrCreated,
+    CiSucceeded,
+    CiFailed,
+    ReviewApproved,
+    ReviewChangesRequested,
+    MergeConflictDetected,
+    Stalled,
+}
+
+impl WorkflowEvent {
+    /// Returns the database string value for this event.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AwaitingDispatch => "awaiting_dispatch",
+            Self::Implementing => "implementing",
+            Self::Verifying => "verifying",
+            Self::Pushing => "pushing",
+            Self::InReview => "in_review",
+            Self::FeedbackCreating => "feedback_creating",
+            Self::Merging => "merging",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+            Self::PrCreated => "pr_created",
+            Self::CiSucceeded => "ci_succeeded",
+            Self::CiFailed => "ci_failed",
+            Self::ReviewApproved => "review_approved",
+            Self::ReviewChangesRequested => "review_changes_requested",
+            Self::MergeConflictDetected => "merge_conflict_detected",
+            Self::Stalled => "stalled",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}

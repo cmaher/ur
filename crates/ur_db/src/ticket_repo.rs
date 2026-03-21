@@ -1115,12 +1115,12 @@ impl TicketRepo {
 
     /// Insert a workflow event into the workflow_events table.
     ///
-    /// Records a lifecycle event constant (from `ur_rpc::workflow_event`) with
-    /// the current server timestamp for the given workflow.
+    /// Records a `WorkflowEvent` variant with the current server timestamp
+    /// for the given workflow.
     pub async fn insert_workflow_event(
         &self,
         workflow_id: &str,
-        event: &str,
+        event: ur_rpc::workflow_event::WorkflowEvent,
     ) -> Result<(), sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -1130,7 +1130,7 @@ impl TicketRepo {
         )
         .bind(&id)
         .bind(workflow_id)
-        .bind(event)
+        .bind(event.as_str())
         .bind(&now)
         .execute(&self.pool)
         .await?;
@@ -1146,7 +1146,7 @@ impl TicketRepo {
     pub async fn insert_workflow_event_at(
         &self,
         workflow_id: &str,
-        event: &str,
+        event: ur_rpc::workflow_event::WorkflowEvent,
         created_at: &str,
     ) -> Result<(), sqlx::Error> {
         let id = Uuid::new_v4().to_string();
@@ -1156,7 +1156,7 @@ impl TicketRepo {
         )
         .bind(&id)
         .bind(workflow_id)
-        .bind(event)
+        .bind(event.as_str())
         .bind(created_at)
         .execute(&self.pool)
         .await?;

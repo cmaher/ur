@@ -3,7 +3,8 @@ use remote_repo::{CreatePrOpts, GhBackend, RemoteRepo};
 use tracing::{error, info, warn};
 
 use ur_db::model::LifecycleStatus;
-use ur_rpc::{workflow_condition, workflow_event};
+use ur_rpc::workflow_condition;
+use ur_rpc::workflow_event::WorkflowEvent;
 
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
@@ -190,7 +191,7 @@ async fn initialize_conditions_and_emit_event(
         Some(w) => {
             if let Err(e) = ctx
                 .ticket_repo
-                .insert_workflow_event(&w.id, workflow_event::PR_CREATED)
+                .insert_workflow_event(&w.id, WorkflowEvent::PrCreated)
                 .await
             {
                 error!(
