@@ -279,6 +279,7 @@ message WorkflowInfo {
   string worker_id = 7;
   string feedback_mode = 8;
   string created_at = 9;
+  string pr_url = 10;
 }
 
 // --- GetWorkflow ---
