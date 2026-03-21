@@ -857,9 +857,18 @@ impl TicketService for TicketServiceHandler {
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         match workflow {
-            Some(wf) => Ok(Response::new(GetWorkflowResponse {
-                workflow: Some(workflow_to_proto(wf)),
-            })),
+            Some(wf) => {
+                let pr_url = self
+                    .ticket_repo
+                    .get_meta(&wf.ticket_id, "ticket")
+                    .await
+                    .unwrap_or_default()
+                    .remove("pr_url")
+                    .unwrap_or_default();
+                Ok(Response::new(GetWorkflowResponse {
+                    workflow: Some(workflow_to_proto(wf, pr_url)),
+                }))
+            }
             None => {
                 let mut meta = HashMap::new();
                 meta.insert("ticket_id".into(), ticket_id.clone());
@@ -892,13 +901,22 @@ impl TicketService for TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        Ok(Response::new(ListWorkflowsResponse {
-            workflows: workflows.into_iter().map(workflow_to_proto).collect(),
-        }))
+        let mut protos = Vec::with_capacity(workflows.len());
+        for wf in workflows {
+            let pr_url = self
+                .ticket_repo
+                .get_meta(&wf.ticket_id, "ticket")
+                .await
+                .unwrap_or_default()
+                .remove("pr_url")
+                .unwrap_or_default();
+            protos.push(workflow_to_proto(wf, pr_url));
+        }
+        Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
     }
 }
 
-fn workflow_to_proto(wf: ur_db::Workflow) -> WorkflowInfo {
+fn workflow_to_proto(wf: ur_db::Workflow, pr_url: String) -> WorkflowInfo {
     WorkflowInfo {
         id: wf.id,
         ticket_id: wf.ticket_id,
@@ -909,5 +927,6 @@ fn workflow_to_proto(wf: ur_db::Workflow) -> WorkflowInfo {
         worker_id: wf.worker_id,
         feedback_mode: wf.feedback_mode,
         created_at: wf.created_at,
+        pr_url,
     }
 }

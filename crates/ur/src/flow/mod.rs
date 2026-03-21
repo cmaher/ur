@@ -88,6 +88,9 @@ fn format_workflow(w: &WorkflowInfo) -> String {
     if !w.feedback_mode.is_empty() {
         lines.push(format!("Feedback: {}", w.feedback_mode));
     }
+    if !w.pr_url.is_empty() {
+        lines.push(format!("PR:       {}", w.pr_url));
+    }
     if !w.created_at.is_empty() {
         lines.push(format!("Created:  {}", w.created_at));
     }
@@ -96,9 +99,14 @@ fn format_workflow(w: &WorkflowInfo) -> String {
 
 fn format_workflow_line(w: &WorkflowInfo) -> String {
     let stall_marker = if w.stalled { " [STALLED]" } else { "" };
+    let link = if w.pr_url.is_empty() {
+        &w.id
+    } else {
+        &w.pr_url
+    };
     format!(
         "{} {} {} cycles={}{}",
-        w.ticket_id, w.id, w.status, w.implement_cycles, stall_marker
+        w.ticket_id, link, w.status, w.implement_cycles, stall_marker
     )
 }
 
