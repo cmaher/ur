@@ -1,11 +1,12 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use tracing::debug;
+use tracing::{debug, warn};
 use ur_rpc::proto::builder::{
     BuilderExecMessage, BuilderExecRequest, BuilderdClient,
     builder_exec_message::Payload as ExecPayload,
 };
 use ur_rpc::stream::CompletedExec;
+use ur_rpc::workflow_condition::mergeable;
 
 use crate::r#trait::RemoteRepo;
 use crate::types::{
@@ -89,6 +90,29 @@ impl GhBackend {
             title: value["title"].as_str().unwrap_or("").to_string(),
             body: value["body"].as_str().unwrap_or("").to_string(),
         })
+    }
+
+    /// Check the mergeability status of a pull request.
+    ///
+    /// Returns one of the `ur_rpc::workflow_condition::mergeable` constants:
+    /// - `MERGEABLE` if the PR can be merged cleanly
+    /// - `CONFLICT` if the PR has merge conflicts
+    /// - `UNKNOWN` if the status is not yet determined or on any API error
+    pub async fn check_mergeable(&self, pr_number: i64) -> &'static str {
+        let endpoint = format!("repos/{}/pulls/{}", self.gh_repo, pr_number);
+        let value: serde_json::Value = match self.exec_gh_json(&["api", &endpoint]).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(pr_number, error = %e, "failed to fetch PR mergeability; returning unknown");
+                return mergeable::UNKNOWN;
+            }
+        };
+
+        match value["mergeable"].as_bool() {
+            Some(true) => mergeable::MERGEABLE,
+            Some(false) => mergeable::CONFLICT,
+            None => mergeable::UNKNOWN,
+        }
     }
 
     fn parse_reactions(value: &serde_json::Value) -> Reactions {
