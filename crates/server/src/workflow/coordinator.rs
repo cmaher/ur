@@ -282,6 +282,9 @@ async fn run_handler(
         }
     }
 
+    // Emit a workflow event for this status transition.
+    emit_workflow_event(&ctx, ticket_id, target_status).await;
+
     let handler = match handler {
         Some(h) => h,
         None => {
@@ -307,6 +310,68 @@ async fn run_handler(
         Err(handler_err) => {
             handle_failure(&ctx.ticket_repo, ticket_id, target_status, handler_err).await;
         }
+    }
+}
+
+/// Emit a workflow event for a status transition.
+///
+/// Looks up the workflow for the ticket and inserts a workflow_events row
+/// using the lifecycle constant matching the target status.
+async fn emit_workflow_event(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    target_status: LifecycleStatus,
+) {
+    let workflow = match ctx.ticket_repo.get_workflow_by_ticket(ticket_id).await {
+        Ok(Some(wf)) => wf,
+        Ok(None) => {
+            warn!(
+                ticket_id = %ticket_id,
+                "no workflow found when emitting workflow event"
+            );
+            return;
+        }
+        Err(e) => {
+            error!(
+                error = %e,
+                ticket_id = %ticket_id,
+                "failed to fetch workflow for event emission"
+            );
+            return;
+        }
+    };
+
+    let event = lifecycle_status_to_event(target_status);
+
+    if let Err(e) = ctx
+        .ticket_repo
+        .insert_workflow_event(&workflow.id, event)
+        .await
+    {
+        error!(
+            error = %e,
+            ticket_id = %ticket_id,
+            event = %event,
+            "failed to insert workflow event"
+        );
+    }
+}
+
+/// Map a `LifecycleStatus` to its corresponding workflow event constant.
+fn lifecycle_status_to_event(status: LifecycleStatus) -> &'static str {
+    use ur_rpc::workflow_event;
+    match status {
+        LifecycleStatus::AwaitingDispatch => workflow_event::AWAITING_DISPATCH,
+        LifecycleStatus::Implementing => workflow_event::IMPLEMENTING,
+        LifecycleStatus::Verifying => workflow_event::VERIFYING,
+        LifecycleStatus::Pushing => workflow_event::PUSHING,
+        LifecycleStatus::InReview => workflow_event::IN_REVIEW,
+        LifecycleStatus::FeedbackCreating => workflow_event::FEEDBACK_CREATING,
+        LifecycleStatus::Merging => workflow_event::MERGING,
+        LifecycleStatus::Done => workflow_event::DONE,
+        LifecycleStatus::Cancelled => workflow_event::CANCELLED,
+        // Open and Design are not workflow transition events — use awaiting_dispatch as fallback.
+        LifecycleStatus::Open | LifecycleStatus::Design => workflow_event::AWAITING_DISPATCH,
     }
 }
 
