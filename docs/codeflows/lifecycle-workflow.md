@@ -368,7 +368,7 @@ Source: `crates/server/src/workflow/github_poller.rs`
 
 ## Error Handling
 
-- **Handler failures**: Retried up to `max_transition_attempts` times. After exhausting retries, the ticket is stalled: it stays in its current workflow state, `stall_reason` metadata is set with the error message, and the intent is deleted. Use `ur admin redrive` to retry.
+- **Handler failures**: Retried up to `max_transition_attempts` times. After exhausting retries, the ticket is stalled: it stays in its current workflow state, `stall_reason` metadata is set with the error message, and the intent is deleted. Use `ur flow redrive` to retry.
 - **Stale intents**: On server restart, pending intents are replayed. If attempts are already at max, the intent is deleted and the ticket is stalled.
 - **No handler**: Transitions with no registered handler are logged as warnings and the intent is cleaned up.
 - **Crash recovery**: The intent table ensures no transitions are lost if the server crashes mid-execution.

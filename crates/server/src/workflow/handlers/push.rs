@@ -67,10 +67,13 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
 
     let working_dir = &slot.host_path;
 
+    let no_verify = workflow.noverify;
+
     info!(
         ticket_id = %ticket_id,
         branch = %branch,
         working_dir = %working_dir,
+        no_verify = %no_verify,
         "push handler: pushing branch via local_repo"
     );
 
@@ -78,7 +81,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
     let local_repo = local_repo::GitBackend {
         client: ctx.builderd_client.clone(),
     };
-    let push_result = local_repo.push(branch, working_dir).await?;
+    let push_result = local_repo.push(branch, working_dir, no_verify).await?;
 
     info!(
         ticket_id = %ticket_id,
@@ -113,6 +116,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
                 reason,
                 local_repo: &local_repo,
                 working_dir,
+                no_verify,
             };
             handle_push_rejected(&params).await
         }
@@ -165,6 +169,7 @@ struct RejectedPushParams<'a> {
     reason: &'a str,
     local_repo: &'a local_repo::GitBackend,
     working_dir: &'a str,
+    no_verify: bool,
 }
 
 /// Handle a rejected push: force-push on non-protected branches, stall on protected.
@@ -180,6 +185,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
         reason,
         local_repo,
         working_dir,
+        no_verify,
     } = params;
     let protected = is_branch_protected(branch, ctx, project_key);
 
@@ -208,7 +214,9 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
         "push rejected (non-fast-forward) on non-protected branch — retrying with force-with-lease"
     );
 
-    let force_result = local_repo.force_push(branch, working_dir).await?;
+    let force_result = local_repo
+        .force_push(branch, working_dir, *no_verify)
+        .await?;
 
     info!(
         ticket_id = %ticket_id,

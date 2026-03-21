@@ -118,30 +118,28 @@ impl LocalRepo for GitBackend {
         Ok(output.trim().to_string())
     }
 
-    async fn push(&self, branch: &str, working_dir: &str) -> Result<PushResult> {
-        let completed = self
-            .exec_git(
-                &["push", "--porcelain", "-u", "origin", branch],
-                working_dir,
-            )
-            .await?;
+    async fn push(&self, branch: &str, working_dir: &str, no_verify: bool) -> Result<PushResult> {
+        let mut args = vec!["push", "--porcelain"];
+        if no_verify {
+            args.push("--no-verify");
+        }
+        args.extend_from_slice(&["-u", "origin", branch]);
+        let completed = self.exec_git(&args, working_dir).await?;
         Ok(Self::parse_push_output(&completed))
     }
 
-    async fn force_push(&self, branch: &str, working_dir: &str) -> Result<PushResult> {
-        let completed = self
-            .exec_git(
-                &[
-                    "push",
-                    "--porcelain",
-                    "--force-with-lease",
-                    "-u",
-                    "origin",
-                    branch,
-                ],
-                working_dir,
-            )
-            .await?;
+    async fn force_push(
+        &self,
+        branch: &str,
+        working_dir: &str,
+        no_verify: bool,
+    ) -> Result<PushResult> {
+        let mut args = vec!["push", "--porcelain", "--force-with-lease"];
+        if no_verify {
+            args.push("--no-verify");
+        }
+        args.extend_from_slice(&["-u", "origin", branch]);
+        let completed = self.exec_git(&args, working_dir).await?;
         Ok(Self::parse_push_output(&completed))
     }
 
