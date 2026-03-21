@@ -506,14 +506,14 @@ impl TicketService for TicketServiceHandler {
 
         // Route workflow-owned keys to the workflow table instead of ticket metadata.
         match req.key.as_str() {
-            "noverify" => {
+            ur_rpc::ticket_meta::NOVERIFY => {
                 let noverify = req.value == "true" || req.value == "1";
                 self.ticket_repo
                     .set_workflow_noverify(&req.ticket_id, noverify)
                     .await
                     .map_err(|e| TicketError::Db(e.to_string()))?;
             }
-            "feedback_mode" => {
+            ur_rpc::ticket_meta::FEEDBACK_MODE => {
                 self.ticket_repo
                     .set_workflow_feedback_mode(&req.ticket_id, &req.value)
                     .await

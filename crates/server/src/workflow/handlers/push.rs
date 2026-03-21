@@ -174,7 +174,7 @@ async fn initialize_conditions_and_emit_event(
 
     // Check autoapprove metadata — if set, override review_status to approved.
     let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
-    if meta.contains_key("autoapprove") {
+    if meta.contains_key(ur_rpc::ticket_meta::AUTOAPPROVE) {
         ctx.ticket_repo
             .update_workflow_condition(
                 ticket_id,

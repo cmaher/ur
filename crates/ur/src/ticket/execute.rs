@@ -538,7 +538,7 @@ where
     client
         .set_meta(SetMetaRequest {
             ticket_id: id.clone(),
-            key: "feedback_mode".to_owned(),
+            key: ur_rpc::ticket_meta::FEEDBACK_MODE.to_owned(),
             value: feedback_mode.clone(),
         })
         .await

@@ -4,6 +4,7 @@ pub mod error;
 pub mod agent_status;
 pub mod feedback_mode;
 pub mod lifecycle;
+pub mod ticket_meta;
 pub mod workflow_condition;
 pub mod workflow_event;
 
