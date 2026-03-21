@@ -1144,6 +1144,32 @@ impl TicketRepo {
         Ok(())
     }
 
+    /// Insert a workflow event with a custom timestamp.
+    ///
+    /// Like `insert_workflow_event`, but uses the provided `created_at` instead
+    /// of the current server time. Used for CI events where the GitHub API
+    /// `completed_at` timestamp is the authoritative event time.
+    pub async fn insert_workflow_event_at(
+        &self,
+        workflow_id: &str,
+        event: &str,
+        created_at: &str,
+    ) -> Result<(), sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+
+        sqlx::query(
+            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(workflow_id)
+        .bind(event)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     // ============================================================
     // WorkflowIntent CRUD
     // ============================================================

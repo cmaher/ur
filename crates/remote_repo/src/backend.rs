@@ -254,7 +254,7 @@ impl RemoteRepo for GhBackend {
                 "--repo",
                 &self.gh_repo,
                 "--json",
-                "name,state,conclusion,detailsUrl",
+                "name,state,conclusion,detailsUrl,completedAt",
             ])
             .await?;
 
@@ -265,6 +265,7 @@ impl RemoteRepo for GhBackend {
                 status: v["state"].as_str().unwrap_or("").to_string(),
                 conclusion: v["conclusion"].as_str().unwrap_or("").to_string(),
                 details_url: v["detailsUrl"].as_str().unwrap_or("").to_string(),
+                completed_at: v["completedAt"].as_str().unwrap_or("").to_string(),
             })
             .collect();
 
