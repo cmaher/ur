@@ -15,9 +15,26 @@ use crate::output::OutputManager;
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlowOutput {
-    Shown { workflow: WorkflowInfo },
-    Listed { workflows: Vec<WorkflowInfo> },
-    Cancelled { ticket_id: String },
+    Shown {
+        workflow: WorkflowInfo,
+    },
+    Listed {
+        workflows: Vec<WorkflowInfo>,
+    },
+    Cancelled {
+        ticket_id: String,
+    },
+    NoverifySet {
+        id: String,
+    },
+    Redriven {
+        id: String,
+        lifecycle_status: String,
+    },
+    AutoapproveSet {
+        id: String,
+        feedback_mode: String,
+    },
 }
 
 /// Format a `FlowOutput` as human-readable text.
@@ -37,6 +54,18 @@ pub fn format_output(output: &FlowOutput) -> String {
         }
         FlowOutput::Cancelled { ticket_id } => {
             format!("Cancelled workflow for {ticket_id}")
+        }
+        FlowOutput::NoverifySet { id } => {
+            format!("Set noverify on {id}")
+        }
+        FlowOutput::Redriven {
+            id,
+            lifecycle_status,
+        } => {
+            format!("Redrove {id} to {lifecycle_status}")
+        }
+        FlowOutput::AutoapproveSet { id, feedback_mode } => {
+            format!("Set autoapprove on {id} (feedback_mode={feedback_mode})")
         }
     }
 }

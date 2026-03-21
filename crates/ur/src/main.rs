@@ -1,4 +1,3 @@
-mod admin;
 mod builderd;
 mod compose;
 pub(crate) mod connection;
@@ -54,11 +53,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Privileged admin operations (blocked from workers)
-    Admin {
-        #[command(subcommand)]
-        command: admin::AdminCommands,
-    },
     /// Database backup and restore
     Db {
         #[command(subcommand)]
@@ -1345,7 +1339,6 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
-        Commands::Admin { command } => admin::handle(port, command, output).await?,
         Commands::Db { command } => match command {
             DbCommands::Backup => db::backup(&config, output).await?,
             DbCommands::List => db::list(&config, output)?,

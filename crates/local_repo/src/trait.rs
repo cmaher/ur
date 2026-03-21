@@ -6,8 +6,13 @@ use crate::types::{HookResult, PushResult};
 #[async_trait]
 pub trait LocalRepo: Send + Sync {
     // Push operations
-    async fn push(&self, branch: &str, working_dir: &str) -> Result<PushResult>;
-    async fn force_push(&self, branch: &str, working_dir: &str) -> Result<PushResult>;
+    async fn push(&self, branch: &str, working_dir: &str, no_verify: bool) -> Result<PushResult>;
+    async fn force_push(
+        &self,
+        branch: &str,
+        working_dir: &str,
+        no_verify: bool,
+    ) -> Result<PushResult>;
 
     // Hook execution
     async fn run_hook(&self, script_path: &str, working_dir: &str) -> Result<HookResult>;

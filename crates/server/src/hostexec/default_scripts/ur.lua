@@ -10,9 +10,14 @@ function transform(command, args, working_dir, worker_context)
 
     local subcmd = args[1]
 
-    -- Admin subcommands are never allowed from workers
-    if subcmd == "admin" then
-        error("ur admin: not allowed (privileged operation)")
+    -- Privileged flow subcommands are never allowed from workers
+    if subcmd == "flow" then
+        local flow_sub = args[2]
+        if flow_sub == "noverify" or flow_sub == "redrive" or flow_sub == "autoapprove" then
+            error("ur flow " .. flow_sub .. ": not allowed (privileged operation)")
+        end
+
+        return { command = command, args = args, working_dir = working_dir }
     end
 
     -- All ticket subcommands are allowed (create, list, show, update, etc.)
