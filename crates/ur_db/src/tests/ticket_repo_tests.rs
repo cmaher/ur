@@ -450,6 +450,48 @@ async fn update_nonexistent_ticket_returns_error() {
 }
 
 // ============================================================
+// get_ticket_by_id
+// ============================================================
+
+#[tokio::test]
+async fn get_ticket_by_id_returns_existing_ticket() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "t-byid".into(),
+        type_: "task".into(),
+        priority: 2,
+        parent_id: None,
+        title: "By ID test".into(),
+        body: "Testing get_ticket_by_id".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let fetched = repo.get_ticket_by_id("t-byid").await.unwrap().unwrap();
+    assert_eq!(fetched.id, "t-byid");
+    assert_eq!(fetched.title, "By ID test");
+    assert_eq!(fetched.body, "Testing get_ticket_by_id");
+    assert_eq!(fetched.priority, 2);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_ticket_by_id_returns_none_for_nonexistent() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    let result = repo.get_ticket_by_id("no-such-ticket").await.unwrap();
+    assert!(result.is_none());
+
+    db.cleanup().await;
+}
+
+// ============================================================
 // list_tickets with filters
 // ============================================================
 
