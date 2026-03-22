@@ -113,6 +113,12 @@ dependencies = ["image"]
 command = "cargo"
 args = ["test", "-p", "acceptance", "--features", "acceptance"]
 
+[tasks.acceptance-ci]
+description = "Build isolated CI-tagged images and run acceptance tests (cleans up after)"
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+script_runner = "@shell"
+script = ["scripts/acceptance-ci.sh"]
+
 [tasks.install-hooks]
 description = "Install git hooks (pre-commit formats, pre-push runs CI + acceptance)"
 script_runner = "@shell"
