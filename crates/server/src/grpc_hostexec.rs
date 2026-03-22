@@ -465,26 +465,40 @@ fn map_working_dir_impl(
         });
     }
 
-    // Compute the slot-relative prefix (empty for workspace mounts, e.g. "pool/proj/0" for pool).
-    let slot_relative = slot_path
-        .and_then(|sp| {
-            let host_ws = host_workspace.to_string_lossy();
-            let sp_str = sp.to_string_lossy();
-            sp_str
-                .strip_prefix(host_ws.as_ref())
-                .map(|rel| rel.trim_start_matches('/').to_string())
-        })
-        .unwrap_or_default();
-
-    let mut result = "%WORKSPACE%".to_string();
-    if !slot_relative.is_empty() {
-        result.push('/');
-        result.push_str(&slot_relative);
+    // For pool mounts, slot_path is under host_workspace — use %WORKSPACE%/<relative> template.
+    // For workspace mounts (-w), slot_path is an arbitrary host path not under host_workspace —
+    // use the absolute slot_path directly (builderd passes through absolute paths unchanged).
+    if let Some(sp) = slot_path {
+        let host_ws = host_workspace.to_string_lossy();
+        let sp_str = sp.to_string_lossy();
+        if let Some(rel) = sp_str.strip_prefix(host_ws.as_ref()) {
+            // Pool mount: slot is under host_workspace
+            let slot_relative = rel.trim_start_matches('/');
+            let mut result = "%WORKSPACE%".to_string();
+            if !slot_relative.is_empty() {
+                result.push('/');
+                result.push_str(slot_relative);
+            }
+            if !suffix.is_empty() {
+                result.push_str(suffix);
+            }
+            Ok(result)
+        } else {
+            // Workspace mount: slot is an absolute path outside host_workspace
+            let mut result = sp_str.into_owned();
+            if !suffix.is_empty() {
+                result.push_str(suffix);
+            }
+            Ok(result)
+        }
+    } else {
+        // No slot_path: direct workspace mount
+        let mut result = "%WORKSPACE%".to_string();
+        if !suffix.is_empty() {
+            result.push_str(suffix);
+        }
+        Ok(result)
     }
-    if !suffix.is_empty() {
-        result.push_str(suffix);
-    }
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -524,6 +538,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, "%WORKSPACE%/pool/proj/0/src/main");
+    }
+
+    #[test]
+    fn test_map_working_dir_workspace_mount_with_slot_path() {
+        // -w mount: slot_path is an arbitrary host dir, not under host_workspace
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/Users/foo/myproject");
+    }
+
+    #[test]
+    fn test_map_working_dir_workspace_mount_with_slot_path_subdir() {
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        let result =
+            map_working_dir_impl("/workspace/src", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/Users/foo/myproject/src");
     }
 
     #[test]
