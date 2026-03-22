@@ -365,7 +365,7 @@ impl FilterMenuState {
                     common: false,
                 },
                 FooterCommand {
-                    key_label: "Esc".to_string(),
+                    key_label: "q/Esc".to_string(),
                     description: "Close".to_string(),
                     common: false,
                 },
@@ -383,7 +383,7 @@ impl FilterMenuState {
                     common: false,
                 },
                 FooterCommand {
-                    key_label: "Esc".to_string(),
+                    key_label: "q/Esc".to_string(),
                     description: "Close".to_string(),
                     common: false,
                 },
