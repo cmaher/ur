@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use ratatui::buffer::Buffer;
@@ -18,7 +19,10 @@ const PAGE_SIZE: usize = 20;
 
 /// State for the Flows tab, showing all workflows in a paginated table.
 pub struct FlowsPage {
-    workflows: Vec<WorkflowInfo>,
+    /// Map of ticket_id -> WorkflowInfo for efficient lookups and upserts.
+    workflow_map: HashMap<String, WorkflowInfo>,
+    /// Sorted display list of ticket IDs, rebuilt on data changes.
+    display_ids: Vec<String>,
     selected: usize,
     page: usize,
     loaded: bool,
@@ -35,7 +39,8 @@ pub struct FlowsPage {
 impl FlowsPage {
     pub fn new() -> Self {
         Self {
-            workflows: Vec::new(),
+            workflow_map: HashMap::new(),
+            display_ids: Vec::new(),
             selected: 0,
             page: 0,
             loaded: false,
@@ -48,25 +53,32 @@ impl FlowsPage {
     }
 
     fn total_pages(&self) -> usize {
-        if self.workflows.is_empty() {
+        if self.display_ids.is_empty() {
             1
         } else {
-            self.workflows.len().div_ceil(PAGE_SIZE)
+            self.display_ids.len().div_ceil(PAGE_SIZE)
         }
     }
 
-    fn page_rows(&self) -> &[WorkflowInfo] {
+    fn page_ids(&self) -> &[String] {
         let start = self.page * PAGE_SIZE;
-        let end = (start + PAGE_SIZE).min(self.workflows.len());
-        if start >= self.workflows.len() {
+        let end = (start + PAGE_SIZE).min(self.display_ids.len());
+        if start >= self.display_ids.len() {
             &[]
         } else {
-            &self.workflows[start..end]
+            &self.display_ids[start..end]
         }
+    }
+
+    fn page_rows(&self) -> Vec<&WorkflowInfo> {
+        self.page_ids()
+            .iter()
+            .filter_map(|id| self.workflow_map.get(id))
+            .collect()
     }
 
     fn page_row_count(&self) -> usize {
-        self.page_rows().len()
+        self.page_ids().len()
     }
 
     fn clamp_selection(&mut self) {
@@ -78,10 +90,34 @@ impl FlowsPage {
         }
     }
 
+    /// Rebuild the display_ids list from the workflow_map.
+    fn rebuild_display_ids(&mut self) {
+        self.display_ids = self.workflow_map.keys().cloned().collect();
+        self.display_ids.sort();
+    }
+
+    /// Preserve selection by ticket ID, rebuild display list, restore selection.
+    fn preserve_selection_and_rebuild(&mut self) {
+        let selected_id = self.selected_ticket_id();
+        self.rebuild_display_ids();
+        self.restore_selection_by_id(selected_id.as_deref());
+    }
+
+    /// Restore selection to a ticket ID, or clamp if the ID is gone.
+    fn restore_selection_by_id(&mut self, ticket_id: Option<&str>) {
+        if let Some(id) = ticket_id {
+            if let Some(pos) = self.display_ids.iter().position(|tid| tid == id) {
+                self.page = pos / PAGE_SIZE;
+                self.selected = pos % PAGE_SIZE;
+                return;
+            }
+        }
+        self.clamp_selection();
+    }
+
     /// Returns the ticket ID of the currently selected workflow, if any.
     pub fn selected_ticket_id(&self) -> Option<String> {
-        let rows = self.page_rows();
-        rows.get(self.selected).map(|wf| wf.ticket_id.clone())
+        self.page_ids().get(self.selected).cloned()
     }
 
     /// Take the pending cancel ticket ID, if one was set by the user pressing X.
@@ -194,7 +230,7 @@ impl Page for FlowsPage {
             return;
         }
 
-        let rows: Vec<Vec<String>> = self.page_rows().iter().map(workflow_to_row).collect();
+        let rows: Vec<Vec<String>> = self.page_rows().into_iter().map(workflow_to_row).collect();
 
         let selected = if rows.is_empty() {
             None
@@ -267,21 +303,37 @@ impl Page for FlowsPage {
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
-        if let DataPayload::Flows(result) = payload {
-            self.loaded = true;
-            self.refreshing = false;
-            self.active_status = None;
-            match result {
-                Ok(workflows) => {
-                    self.workflows = workflows.clone();
-                    self.error = None;
-                    self.clamp_selection();
-                }
-                Err(msg) => {
-                    self.error = Some(msg.clone());
-                    self.workflows.clear();
+        match payload {
+            DataPayload::Flows(result) => {
+                self.loaded = true;
+                self.refreshing = false;
+                self.active_status = None;
+                match result {
+                    Ok(workflows) => {
+                        self.workflow_map = workflows
+                            .iter()
+                            .map(|wf| (wf.ticket_id.clone(), wf.clone()))
+                            .collect();
+                        self.error = None;
+                        self.preserve_selection_and_rebuild();
+                    }
+                    Err(msg) => {
+                        self.error = Some(msg.clone());
+                        self.workflow_map.clear();
+                        self.display_ids.clear();
+                    }
                 }
             }
+            DataPayload::FlowUpdate(result) => {
+                if let Ok(workflow) = result {
+                    if self.loaded {
+                        self.workflow_map
+                            .insert(workflow.ticket_id.clone(), workflow.clone());
+                        self.preserve_selection_and_rebuild();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -379,7 +431,7 @@ mod tests {
         page.on_data(&DataPayload::Flows(Ok(wfs.clone())));
         assert!(page.loaded);
         assert!(!page.needs_data());
-        assert_eq!(page.workflows.len(), 1);
+        assert_eq!(page.workflow_map.len(), 1);
         assert!(page.error.is_none());
     }
 
@@ -389,7 +441,7 @@ mod tests {
         page.on_data(&DataPayload::Flows(Err("connection refused".into())));
         assert!(page.loaded);
         assert!(page.error.is_some());
-        assert!(page.workflows.is_empty());
+        assert!(page.workflow_map.is_empty());
     }
 
     #[test]
@@ -657,5 +709,129 @@ mod tests {
         let keymap = Keymap::default();
         let cmds = page.footer_commands(&keymap);
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
+    }
+
+    #[test]
+    fn full_list_load_clears_and_rebuilds() {
+        let mut page = FlowsPage::new();
+        let batch1 = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(batch1)));
+        assert_eq!(page.workflow_map.len(), 2);
+
+        // Full list load with different workflows replaces all
+        let batch2 = vec![make_workflow("wf-3", "ur-ghi", false)];
+        page.on_data(&DataPayload::Flows(Ok(batch2)));
+        assert_eq!(page.workflow_map.len(), 1);
+        assert!(page.workflow_map.contains_key("ur-ghi"));
+        assert!(!page.workflow_map.contains_key("ur-abc"));
+    }
+
+    #[test]
+    fn single_upsert_adds_workflow() {
+        let mut page = FlowsPage::new();
+        let batch = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(batch)));
+        assert_eq!(page.workflow_map.len(), 1);
+
+        // Single-entity upsert adds a new workflow
+        let new_wf = make_workflow("wf-2", "ur-def", false);
+        page.on_data(&DataPayload::FlowUpdate(Ok(new_wf)));
+        assert_eq!(page.workflow_map.len(), 2);
+        assert_eq!(page.display_ids.len(), 2);
+    }
+
+    #[test]
+    fn single_upsert_updates_existing() {
+        let mut page = FlowsPage::new();
+        let batch = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(batch)));
+
+        // Upsert with same ticket_id updates the workflow
+        let mut updated = make_workflow("wf-1", "ur-abc", true);
+        updated.implement_cycles = 5;
+        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
+        assert_eq!(page.workflow_map.len(), 1);
+        let wf = page.workflow_map.get("ur-abc").unwrap();
+        assert!(wf.stalled);
+        assert_eq!(wf.implement_cycles, 5);
+    }
+
+    #[test]
+    fn selection_preserved_by_id_across_rebuild() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+            make_workflow("wf-3", "ur-ghi", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        // Select ur-def (sorted: ur-abc=0, ur-def=1, ur-ghi=2)
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
+
+        // Full reload — selection preserved by ID
+        let wfs2 = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+            make_workflow("wf-3", "ur-ghi", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs2)));
+        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
+    }
+
+    #[test]
+    fn selection_clamped_when_id_disappears() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+            make_workflow("wf-3", "ur-ghi", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        // Select ur-ghi (index 2)
+        page.handle_action(Action::NavigateDown);
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("ur-ghi".to_string()));
+
+        // Reload without ur-ghi — selection clamped
+        let wfs2 = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs2)));
+        assert!(page.selected_ticket_id().is_some());
+    }
+
+    #[test]
+    fn single_upsert_preserves_selection() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        // Select ur-def
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
+
+        // Upsert ur-abc — selection should stay on ur-def
+        let updated = make_workflow("wf-1", "ur-abc", true);
+        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
+        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
+    }
+
+    #[test]
+    fn flow_update_ignored_before_initial_load() {
+        let mut page = FlowsPage::new();
+        let wf = make_workflow("wf-1", "ur-abc", false);
+        page.on_data(&DataPayload::FlowUpdate(Ok(wf)));
+        assert!(!page.loaded);
+        assert!(page.workflow_map.is_empty());
     }
 }
