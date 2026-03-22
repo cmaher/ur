@@ -71,6 +71,7 @@ async fn make_components_with_db(
             github_scan_interval_secs: 30,
             builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
             builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
+            ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
         },
         projects: HashMap::new(),
         tui: ur_config::TuiConfig::default(),
