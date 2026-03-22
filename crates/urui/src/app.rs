@@ -143,6 +143,12 @@ impl App {
             Action::Dispatch if self.active_tab == TabId::Tickets => {
                 self.dispatch_selected_ticket();
             }
+            Action::CloseTicket if self.active_tab == TabId::Tickets => {
+                self.update_selected_ticket_status("closed");
+            }
+            Action::OpenTicket if self.active_tab == TabId::Tickets => {
+                self.update_selected_ticket_status("open");
+            }
             other => self.dispatch_to_page(other),
         }
     }
@@ -161,9 +167,22 @@ impl App {
         self.flows_page.on_data(&payload);
     }
 
-    /// Handle an ActionResult event: route to the active page for banner display.
+    /// Handle an ActionResult event: route to the active page for banner display,
+    /// then trigger a data refresh so the UI reflects the change.
     fn handle_action_result(&mut self, result: crate::data::ActionResult) {
+        let success = result.result.is_ok();
         self.tickets_page.on_action_result(&result);
+        if success {
+            self.fetch_active_tab_data();
+        }
+    }
+
+    /// Update the status of the currently selected ticket.
+    fn update_selected_ticket_status(&mut self, status: &str) {
+        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+            self.data_manager
+                .update_ticket_status(ticket_id, status.to_owned());
+        }
     }
 
     /// Dispatch the currently selected ticket on the tickets page.
@@ -179,6 +198,10 @@ impl App {
         let result = self.active_page_mut().handle_action(action);
         if result == PageResult::Quit {
             self.should_quit = true;
+        }
+        // Trigger immediate fetch if the page now needs data (e.g. after refresh).
+        if self.active_page().needs_data() {
+            self.fetch_active_tab_data();
         }
     }
 
@@ -281,7 +304,7 @@ impl App {
             chunks[2],
             buf,
             &self.ctx,
-            &self.active_page().footer_commands(),
+            &self.active_page().footer_commands(&self.ctx.keymap),
         );
     }
 }

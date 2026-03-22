@@ -8,7 +8,7 @@ use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::context::TuiContext;
 use crate::data::DataPayload;
-use crate::keymap::Action;
+use crate::keymap::{Action, Keymap};
 use crate::page::{FooterCommand, Page, PageResult, TabId};
 use crate::widgets::ThemedTable;
 
@@ -21,6 +21,7 @@ pub struct FlowsPage {
     page: usize,
     loaded: bool,
     error: Option<String>,
+    refreshing: bool,
 }
 
 impl FlowsPage {
@@ -31,6 +32,7 @@ impl FlowsPage {
             page: 0,
             loaded: false,
             error: None,
+            refreshing: false,
         }
     }
 
@@ -109,7 +111,7 @@ impl Page for FlowsPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.loaded = false;
+                self.refreshing = true;
                 PageResult::Consumed
             }
             Action::Quit => PageResult::Quit,
@@ -143,23 +145,15 @@ impl Page for FlowsPage {
         let page_info = format!("Page {}/{}", self.page + 1, self.total_pages());
 
         let table = ThemedTable {
-            headers: vec![
-                "Ticket ID",
-                "Workflow ID",
-                "Status",
-                "Cycles",
-                "PR URL",
-                "Stalled",
-            ],
+            headers: vec!["Ticket ID", "Status", "Cycles", "PR URL", "Stalled"],
             rows,
             selected,
             widths: vec![
-                Constraint::Percentage(15),
-                Constraint::Percentage(15),
-                Constraint::Percentage(15),
-                Constraint::Percentage(8),
-                Constraint::Percentage(37),
-                Constraint::Percentage(10),
+                Constraint::Length(12),
+                Constraint::Length(20),
+                Constraint::Length(8),
+                Constraint::Length(45),
+                Constraint::Fill(1),
             ],
             page_info: Some(page_info),
         };
@@ -167,31 +161,37 @@ impl Page for FlowsPage {
         table.render(area, buf, ctx);
     }
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
+    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: "j".into(),
-                description: "Down".into(),
+                key_label: keymap.label_for(&Action::NavigateDown),
+                description: "Down".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "k".into(),
-                description: "Up".into(),
+                key_label: keymap.label_for(&Action::NavigateUp),
+                description: "Up".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "h/l".into(),
-                description: "Page".into(),
+                key_label: keymap.combined_label(&Action::PageLeft, &Action::PageRight),
+                description: "Page".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "r".into(),
-                description: "Refresh".into(),
+                key_label: keymap.label_for(&Action::Refresh),
+                description: "Refresh".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "q".into(),
-                description: "Back".into(),
+                key_label: keymap.label_for(&Action::Back),
+                description: "Back".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "Q".into(),
-                description: "Quit".into(),
+                key_label: keymap.label_for(&Action::Quit),
+                description: "Quit".to_string(),
+                common: true,
             },
         ]
     }
@@ -199,6 +199,7 @@ impl Page for FlowsPage {
     fn on_data(&mut self, payload: &DataPayload) {
         if let DataPayload::Flows(result) = payload {
             self.loaded = true;
+            self.refreshing = false;
             match result {
                 Ok(workflows) => {
                     self.workflows = workflows.clone();
@@ -214,7 +215,7 @@ impl Page for FlowsPage {
     }
 
     fn needs_data(&self) -> bool {
-        !self.loaded
+        !self.loaded || self.refreshing
     }
 }
 
@@ -228,7 +229,6 @@ fn workflow_to_row(wf: &WorkflowInfo) -> Vec<String> {
 
     vec![
         wf.ticket_id.clone(),
-        wf.id.clone(),
         wf.status.clone(),
         wf.implement_cycles.to_string(),
         wf.pr_url.clone(),
@@ -382,14 +382,14 @@ mod tests {
     fn workflow_to_row_stalled() {
         let wf = make_workflow("wf-1", "ur-abc", true);
         let row = workflow_to_row(&wf);
-        assert_eq!(row[5], "!! test stall");
+        assert_eq!(row[4], "!! test stall");
     }
 
     #[test]
     fn workflow_to_row_not_stalled() {
         let wf = make_workflow("wf-1", "ur-abc", false);
         let row = workflow_to_row(&wf);
-        assert_eq!(row[5], "");
+        assert_eq!(row[4], "");
     }
 
     #[test]
@@ -402,13 +402,14 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(!page.loaded);
+        assert!(page.refreshing);
     }
 
     #[test]
     fn footer_commands_not_empty() {
         let page = FlowsPage::new();
-        let cmds = page.footer_commands();
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
         assert!(!cmds.is_empty());
     }
 }

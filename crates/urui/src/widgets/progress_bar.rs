@@ -15,35 +15,23 @@ pub struct MiniProgressBar {
 }
 
 impl MiniProgressBar {
-    /// Render the progress bar into the given area using theme colors.
+    /// Render just the progress bar (no label) into the given area.
     ///
-    /// Layout: `[████░░░░] N/M`
-    ///
-    /// The bar portion occupies `area.width - label_width - 1` columns (1 space
-    /// separator between bar and label). If the area is too narrow for both,
-    /// only the label is shown.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, theme: &Theme, bg: ratatui::style::Color) {
+    /// The bar fills the entire area width using filled '█' and unfilled '░'
+    /// characters. The filled portion uses `theme.accent` and the unfilled
+    /// portion uses `theme.neutral`.
+    pub fn render_bar(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        bg: ratatui::style::Color,
+    ) {
         if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let label = format!("{}/{}", self.completed, self.total);
-        let label_width = label.len() as u16;
-
-        // Need at least label_width + 1 (space) + 1 (min bar) to show a bar.
-        let bar_width = if area.width > label_width + 1 {
-            area.width - label_width - 1
-        } else {
-            // Only enough room for the label.
-            render_text(
-                area,
-                buf,
-                &label,
-                Style::default().fg(theme.base_content).bg(bg),
-            );
-            return;
-        };
-
+        let bar_width = area.width;
         let fraction = if self.total == 0 {
             0.0
         } else {
@@ -52,14 +40,12 @@ impl MiniProgressBar {
         let filled = ((fraction * bar_width as f64).round() as u16).min(bar_width);
         let unfilled = bar_width - filled;
 
-        let filled_style = Style::default().fg(theme.success).bg(bg);
+        let filled_style = Style::default().fg(theme.accent).bg(bg);
         let unfilled_style = Style::default().fg(theme.neutral).bg(bg);
-        let label_style = Style::default().fg(theme.base_content).bg(bg);
 
         let y = area.y;
         let mut x = area.x;
 
-        // Filled portion (using block char '█')
         for _ in 0..filled {
             if x < area.x + area.width {
                 buf[(x, y)].set_char('█').set_style(filled_style);
@@ -67,27 +53,38 @@ impl MiniProgressBar {
             }
         }
 
-        // Unfilled portion (using light shade '░')
         for _ in 0..unfilled {
             if x < area.x + area.width {
                 buf[(x, y)].set_char('░').set_style(unfilled_style);
                 x += 1;
             }
         }
+    }
 
-        // Space separator
-        if x < area.x + area.width {
-            buf[(x, y)].set_char(' ').set_style(label_style);
-            x += 1;
-        }
+    /// Render the count label ("N/M") into the given area.
+    pub fn render_label(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+        bg: ratatui::style::Color,
+    ) {
+        self.render_label_styled(area, buf, theme.base_content, bg);
+    }
 
-        // Label text
-        for ch in label.chars() {
-            if x < area.x + area.width {
-                buf[(x, y)].set_char(ch).set_style(label_style);
-                x += 1;
-            }
+    /// Render the count label ("N/M") with explicit fg/bg colors.
+    pub fn render_label_styled(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        fg: ratatui::style::Color,
+        bg: ratatui::style::Color,
+    ) {
+        if area.width == 0 || area.height == 0 {
+            return;
         }
+        let label = format!("{}/{}", self.completed, self.total);
+        render_text(area, buf, &label, Style::default().fg(fg).bg(bg));
     }
 }
 
@@ -137,53 +134,49 @@ mod tests {
     #[test]
     fn renders_full_bar() {
         let theme = test_theme();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 15, 1));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         let bar = MiniProgressBar {
             completed: 3,
             total: 3,
         };
-        bar.render(Rect::new(0, 0, 15, 1), &mut buf, &theme, Color::Black);
+        bar.render_bar(Rect::new(0, 0, 10, 1), &mut buf, &theme, Color::Black);
 
-        // Label is "3/3" (3 chars), space (1 char), bar = 15 - 3 - 1 = 11 chars
-        // All 11 should be filled
-        let content: String = (0..15)
+        let content: String = (0..10)
             .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
             .collect();
-        assert!(content.starts_with("███████████")); // 11 filled
-        assert!(content.ends_with("3/3"));
+        assert_eq!(content, "██████████"); // All filled
     }
 
     #[test]
     fn renders_empty_bar() {
         let theme = test_theme();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 15, 1));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         let bar = MiniProgressBar {
             completed: 0,
             total: 3,
         };
-        bar.render(Rect::new(0, 0, 15, 1), &mut buf, &theme, Color::Black);
+        bar.render_bar(Rect::new(0, 0, 10, 1), &mut buf, &theme, Color::Black);
 
-        let content: String = (0..15)
+        let content: String = (0..10)
             .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
             .collect();
-        assert!(content.starts_with("░░░░░░░░░░░")); // 11 unfilled
-        assert!(content.ends_with("0/3"));
+        assert_eq!(content, "░░░░░░░░░░"); // All unfilled
     }
 
     #[test]
-    fn renders_partial_bar() {
+    fn renders_label() {
         let theme = test_theme();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 15, 1));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 1));
         let bar = MiniProgressBar {
             completed: 1,
             total: 2,
         };
-        bar.render(Rect::new(0, 0, 15, 1), &mut buf, &theme, Color::Black);
+        bar.render_label(Rect::new(0, 0, 5, 1), &mut buf, &theme, Color::Black);
 
-        let content: String = (0..15)
+        let content: String = (0..3)
             .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
             .collect();
-        assert!(content.ends_with("1/2"));
+        assert_eq!(content, "1/2");
     }
 
     #[test]
@@ -195,22 +188,7 @@ mod tests {
             total: 2,
         };
         // Should not panic
-        bar.render(Rect::new(0, 0, 0, 0), &mut buf, &theme, Color::Black);
-    }
-
-    #[test]
-    fn narrow_area_shows_label_only() {
-        let theme = test_theme();
-        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
-        let bar = MiniProgressBar {
-            completed: 1,
-            total: 2,
-        };
-        bar.render(Rect::new(0, 0, 3, 1), &mut buf, &theme, Color::Black);
-
-        let content: String = (0..3)
-            .map(|x| buf[(x, 0)].symbol().chars().next().unwrap())
-            .collect();
-        assert_eq!(content, "1/2");
+        bar.render_bar(Rect::new(0, 0, 0, 0), &mut buf, &theme, Color::Black);
+        bar.render_label(Rect::new(0, 0, 0, 0), &mut buf, &theme, Color::Black);
     }
 }

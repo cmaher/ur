@@ -11,7 +11,7 @@ use ur_rpc::proto::ticket::Ticket;
 
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
-use crate::keymap::Action;
+use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
@@ -50,6 +50,8 @@ pub struct TicketsPage {
     filtered_cache: Vec<Ticket>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
+    /// When true, a background refresh is in progress but stale data stays visible.
+    refreshing: bool,
 }
 
 impl TicketsPage {
@@ -63,6 +65,7 @@ impl TicketsPage {
             filters: TicketFilters::default(),
             filtered_cache: Vec::new(),
             active_banner: None,
+            refreshing: false,
         }
     }
 
@@ -104,8 +107,9 @@ impl TicketsPage {
                     t.id.clone(),
                     t.project.clone(),
                     t.priority.to_string(),
-                    String::new(), // placeholder for progress bar
                     t.title.clone(),
+                    String::new(), // placeholder for progress count
+                    String::new(), // placeholder for progress bar
                 ]
             })
             .collect()
@@ -176,6 +180,28 @@ impl TicketsPage {
         let available = area_height.saturating_sub(chrome) as usize;
         if available > 0 {
             self.page_size = available;
+        }
+    }
+
+    /// After loading new data, either clamp the selection (refresh) or reset it (initial load).
+    fn update_selection_after_load(&mut self, was_refreshing: bool) {
+        if !was_refreshing {
+            self.current_page = 0;
+            self.selected_row = 0;
+            return;
+        }
+        // Clamp selection to valid ranges without resetting position.
+        let visible_count = self.visible_tickets().len();
+        if visible_count == 0 {
+            self.selected_row = 0;
+            self.current_page = 0;
+        } else {
+            if self.current_page >= self.total_pages() {
+                self.current_page = self.total_pages().saturating_sub(1);
+            }
+            if self.selected_row >= visible_count {
+                self.selected_row = visible_count - 1;
+            }
         }
     }
 
@@ -318,13 +344,15 @@ fn sort_tickets(tickets: &mut [Ticket]) {
     });
 }
 
-/// The column index of the Progress column in the table.
-const PROGRESS_COL_INDEX: usize = 3;
+/// The column index of the progress count label in the table.
+const PROGRESS_COUNT_COL: usize = 4;
+/// The column index of the progress bar in the table.
+const PROGRESS_BAR_COL: usize = 5;
 
-/// Render mini progress bars over the placeholder Progress column cells.
+/// Render mini progress bars and count labels over the placeholder columns.
 ///
-/// Calculates each row's progress column rect by resolving the table layout
-/// constraints, then renders a `MiniProgressBar` with themed colors.
+/// Calculates each row's progress column rects by resolving the table layout
+/// constraints, then renders bar and count separately for consistent bar width.
 fn render_progress_bars(
     page: &TicketsPage,
     area: Rect,
@@ -344,9 +372,12 @@ fn render_progress_bars(
 
     // Resolve column positions using the same constraints as the table.
     let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
-    let Some(progress_area) = col_areas.get(PROGRESS_COL_INDEX) else {
+    let bar_area = col_areas.get(PROGRESS_BAR_COL);
+    let count_area = col_areas.get(PROGRESS_COUNT_COL);
+
+    if bar_area.is_none() && count_area.is_none() {
         return;
-    };
+    }
 
     // First row inside inner is the header; data rows start at inner.y + 1.
     let data_start_y = inner.y + 1;
@@ -359,21 +390,41 @@ fn render_progress_bars(
         }
 
         let (completed, total) = TicketsPage::ticket_progress(ticket);
-        let cell_rect = Rect {
-            x: progress_area.x,
-            y: row_y,
-            width: progress_area.width,
-            height: 1,
-        };
-
-        let row_bg = if i % 2 == 0 {
+        let is_selected = i == page.selected_row;
+        let row_bg = if is_selected {
+            ctx.theme.primary
+        } else if i % 2 == 0 {
             ctx.theme.base_100
         } else {
             ctx.theme.base_200
         };
+        let row_fg = if is_selected {
+            ctx.theme.primary_content
+        } else {
+            ctx.theme.base_content
+        };
 
         let bar = MiniProgressBar { completed, total };
-        bar.render(cell_rect, buf, &ctx.theme, row_bg);
+
+        if let Some(ba) = bar_area {
+            let cell = Rect {
+                x: ba.x,
+                y: row_y,
+                width: ba.width,
+                height: 1,
+            };
+            bar.render_bar(cell, buf, &ctx.theme, row_bg);
+        }
+
+        if let Some(ca) = count_area {
+            let cell = Rect {
+                x: ca.x,
+                y: row_y,
+                width: ca.width,
+                height: 1,
+            };
+            bar.render_label_styled(cell, buf, row_fg, row_bg);
+        }
     }
 }
 
@@ -411,8 +462,7 @@ impl Page for TicketsPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.data_state = DataState::Loading;
-                self.filtered_cache.clear();
+                self.refreshing = true;
                 PageResult::Consumed
             }
             Action::Filter => {
@@ -445,11 +495,12 @@ impl Page for TicketsPage {
                     Constraint::Length(12),
                     Constraint::Length(10),
                     Constraint::Length(8),
-                    Constraint::Length(16),
                     Constraint::Fill(1),
+                    Constraint::Length(8),
+                    Constraint::Length(10),
                 ];
                 let table = ThemedTable {
-                    headers: vec!["ID", "Project", "Priority", "Progress", "Title"],
+                    headers: vec!["ID", "Project", "Priority", "Title", "Progress", ""],
                     rows,
                     selected: Some(self.selected_row),
                     widths: widths.clone(),
@@ -474,7 +525,7 @@ impl Page for TicketsPage {
         }
     }
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
+    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
         match &self.overlay {
             Some(Overlay::FilterMenu(menu)) => return menu.footer_commands(),
             Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
@@ -482,53 +533,72 @@ impl Page for TicketsPage {
         }
         vec![
             FooterCommand {
-                key_label: "j".to_string(),
-                description: "Down".to_string(),
-            },
-            FooterCommand {
-                key_label: "k".to_string(),
-                description: "Up".to_string(),
-            },
-            FooterCommand {
-                key_label: "h/l".to_string(),
-                description: "Page".to_string(),
-            },
-            FooterCommand {
-                key_label: "*".to_string(),
+                key_label: keymap.label_for(&Action::Filter),
                 description: "Filter".to_string(),
+                common: false,
             },
             FooterCommand {
-                key_label: "P".to_string(),
+                key_label: keymap.label_for(&Action::SetPriority),
                 description: "Priority".to_string(),
+                common: false,
             },
             FooterCommand {
-                key_label: "D".to_string(),
+                key_label: keymap.label_for(&Action::Dispatch),
                 description: "Dispatch".to_string(),
+                common: false,
             },
             FooterCommand {
-                key_label: "r".to_string(),
+                key_label: keymap.label_for(&Action::CloseTicket),
+                description: "Close".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::OpenTicket),
+                description: "Open".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::NavigateDown),
+                description: "Down".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::NavigateUp),
+                description: "Up".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: keymap.combined_label(&Action::PageLeft, &Action::PageRight),
+                description: "Page".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Refresh),
                 description: "Refresh".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "q".to_string(),
+                key_label: keymap.label_for(&Action::Back),
                 description: "Back".to_string(),
+                common: true,
             },
             FooterCommand {
-                key_label: "Q".to_string(),
+                key_label: keymap.label_for(&Action::Quit),
                 description: "Quit".to_string(),
+                common: true,
             },
         ]
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
         if let DataPayload::Tickets(result) = payload {
+            let was_refreshing = self.refreshing;
+            self.refreshing = false;
             match result {
                 Ok(tickets) => {
                     self.data_state = DataState::Loaded(tickets.clone());
                     self.rebuild_cache();
-                    // Clamp selection and page to valid ranges after data update.
-                    self.current_page = 0;
-                    self.selected_row = 0;
+                    self.update_selection_after_load(was_refreshing);
                 }
                 Err(msg) => {
                     self.data_state = DataState::Error(msg.clone());
@@ -539,7 +609,7 @@ impl Page for TicketsPage {
     }
 
     fn needs_data(&self) -> bool {
-        matches!(self.data_state, DataState::Loading)
+        matches!(self.data_state, DataState::Loading) || self.refreshing
     }
 
     fn banner(&self) -> Option<&Banner> {
@@ -761,12 +831,13 @@ mod tests {
     #[test]
     fn footer_commands_not_empty() {
         let page = TicketsPage::new();
-        let cmds = page.footer_commands();
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
         assert!(!cmds.is_empty());
     }
 
     #[test]
-    fn refresh_resets_to_loading() {
+    fn refresh_keeps_data_visible() {
         let mut page = TicketsPage::new();
         let tickets = vec![make_ticket("t-1", "First")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
@@ -775,7 +846,9 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(matches!(page.data_state, DataState::Loading));
+        assert!(page.refreshing);
+        // Data state is still Loaded, not Loading — stale data stays visible.
+        assert!(matches!(page.data_state, DataState::Loaded(_)));
     }
 
     #[test]
@@ -817,17 +890,17 @@ mod tests {
         let tickets = vec![
             make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-2", "closed", 2, "test", "", 0),
+            make_ticket_with_fields("t-3", "in_progress", 2, "test", "", 0),
         ];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
-        // Default: status=open only
-        assert_eq!(page.ticket_count(), 1);
-        assert_eq!(page.filtered_cache[0].id, "t-1");
+        // Default: status=open,in_progress
+        assert_eq!(page.ticket_count(), 2);
 
         // Show all statuses
         page.filters.statuses.clear();
         page.rebuild_cache();
-        assert_eq!(page.ticket_count(), 2);
+        assert_eq!(page.ticket_count(), 3);
     }
 
     #[test]
@@ -925,10 +998,11 @@ mod tests {
     #[test]
     fn overlay_footer_differs() {
         let mut page = TicketsPage::new();
-        let normal_cmds = page.footer_commands();
+        let keymap = Keymap::default();
+        let normal_cmds = page.footer_commands(&keymap);
 
         open_filter_menu(&mut page, &[]);
-        let overlay_cmds = page.footer_commands();
+        let overlay_cmds = page.footer_commands(&keymap);
 
         // Footer should be different when overlay is open
         assert_ne!(normal_cmds.len(), overlay_cmds.len());
