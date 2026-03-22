@@ -81,12 +81,13 @@ impl App {
         Ok(())
     }
 
-    /// Process a single event (key, tick, data, resize).
+    /// Process a single event (key, tick, data, resize, action result).
     fn process_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => self.handle_tick(),
             AppEvent::DataReady(payload) => self.handle_data_ready(payload),
+            AppEvent::ActionResult(result) => self.handle_action_result(result),
             AppEvent::Resize(_, _) => {} // Just redraw
         }
     }
@@ -112,11 +113,11 @@ impl App {
         }
 
         // If the active page has a banner, Enter or Escape dismisses it.
-        if self.active_page().banner().is_some() {
-            if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
-                self.active_page_mut().dismiss_banner();
-                return;
-            }
+        if self.active_page().banner().is_some()
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+        {
+            self.active_page_mut().dismiss_banner();
+            return;
         }
 
         let Some(action) = self.ctx.keymap.resolve(key) else {
@@ -130,6 +131,9 @@ impl App {
             }
             Action::Filter if self.active_tab == TabId::Tickets => {
                 open_filter_menu(&mut self.tickets_page, &self.ctx.projects);
+            }
+            Action::Dispatch if self.active_tab == TabId::Tickets => {
+                self.dispatch_selected_ticket();
             }
             other => self.dispatch_to_page(other),
         }
@@ -147,6 +151,19 @@ impl App {
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);
+    }
+
+    /// Handle an ActionResult event: route to the active page for banner display.
+    fn handle_action_result(&mut self, result: crate::data::ActionResult) {
+        self.tickets_page.on_action_result(&result);
+    }
+
+    /// Dispatch the currently selected ticket on the tickets page.
+    fn dispatch_selected_ticket(&mut self) {
+        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+            self.data_manager
+                .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
     }
 
     /// Dispatch an action to the active page and handle quit if returned.
@@ -277,6 +294,7 @@ mod tests {
             theme,
             keymap,
             projects: vec![],
+            project_configs: std::collections::HashMap::new(),
         }
     }
 

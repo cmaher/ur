@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
@@ -8,9 +10,9 @@ use ratatui::widgets::Paragraph;
 use ur_rpc::proto::ticket::Ticket;
 
 use crate::context::TuiContext;
-use crate::data::DataPayload;
+use crate::data::{ActionResult, DataPayload};
 use crate::keymap::Action;
-use crate::page::{FooterCommand, Page, PageResult, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
 use crate::widgets::ThemedTable;
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 
@@ -44,6 +46,8 @@ pub struct TicketsPage {
     filters: TicketFilters,
     /// Cache of filtered + sorted tickets, rebuilt on data or filter change.
     filtered_cache: Vec<Ticket>,
+    /// Active notification banner (success/error from async actions).
+    active_banner: Option<Banner>,
 }
 
 impl TicketsPage {
@@ -56,6 +60,7 @@ impl TicketsPage {
             overlay: None,
             filters: TicketFilters::default(),
             filtered_cache: Vec::new(),
+            active_banner: None,
         }
     }
 
@@ -234,6 +239,32 @@ impl TicketsPage {
     pub fn close_overlay(&mut self) {
         self.overlay = None;
     }
+
+    /// Returns the ticket ID of the currently selected row, if any.
+    pub fn selected_ticket_id(&self) -> Option<String> {
+        let visible = self.visible_tickets();
+        visible.get(self.selected_row).map(|t| t.id.clone())
+    }
+
+    /// Handle an async action result by showing a success or error banner.
+    pub fn on_action_result(&mut self, result: &ActionResult) {
+        match &result.result {
+            Ok(msg) => {
+                self.active_banner = Some(Banner {
+                    message: msg.clone(),
+                    variant: BannerVariant::Success,
+                    created_at: Instant::now(),
+                });
+            }
+            Err(msg) => {
+                self.active_banner = Some(Banner {
+                    message: msg.clone(),
+                    variant: BannerVariant::Error,
+                    created_at: Instant::now(),
+                });
+            }
+        }
+    }
 }
 
 /// Sort tickets: priority ascending (P0 first), tickets with children rank
@@ -362,6 +393,10 @@ impl Page for TicketsPage {
                 description: "Filter".to_string(),
             },
             FooterCommand {
+                key_label: "D".to_string(),
+                description: "Dispatch".to_string(),
+            },
+            FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
             },
@@ -396,6 +431,22 @@ impl Page for TicketsPage {
 
     fn needs_data(&self) -> bool {
         matches!(self.data_state, DataState::Loading)
+    }
+
+    fn banner(&self) -> Option<&Banner> {
+        self.active_banner.as_ref()
+    }
+
+    fn dismiss_banner(&mut self) {
+        self.active_banner = None;
+    }
+
+    fn tick_banner(&mut self) {
+        if let Some(ref banner) = self.active_banner
+            && banner.is_expired()
+        {
+            self.active_banner = None;
+        }
     }
 }
 

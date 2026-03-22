@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         theme,
         keymap,
         projects,
+        project_configs: config.projects.clone(),
     };
 
     let mut terminal = setup_terminal()?;

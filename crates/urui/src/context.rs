@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use ur_config::ProjectConfig;
+
 use crate::keymap::Keymap;
 use crate::theme::Theme;
 
@@ -11,4 +15,6 @@ pub struct TuiContext {
     pub keymap: Keymap,
     /// Project keys from ur.toml configuration, sorted alphabetically.
     pub projects: Vec<String>,
+    /// Full project configurations keyed by project key, used for dispatch.
+    pub project_configs: HashMap<String, ProjectConfig>,
 }

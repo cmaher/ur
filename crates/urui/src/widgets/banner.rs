@@ -45,6 +45,7 @@ mod tests {
             theme,
             keymap,
             projects: vec![],
+            project_configs: std::collections::HashMap::new(),
         }
     }
 
