@@ -9,7 +9,7 @@ use ur_rpc::proto::ticket::WorkflowInfo;
 use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
-use crate::page::{FooterCommand, Page, PageResult, TabId};
+use crate::page::{FooterCommand, Page, PageResult, StatusMessage, TabId};
 use crate::widgets::ThemedTable;
 
 const PAGE_SIZE: usize = 20;
@@ -22,6 +22,8 @@ pub struct FlowsPage {
     loaded: bool,
     error: Option<String>,
     refreshing: bool,
+    /// In-progress status message shown below the tab header.
+    active_status: Option<StatusMessage>,
 }
 
 impl FlowsPage {
@@ -33,6 +35,7 @@ impl FlowsPage {
             loaded: false,
             error: None,
             refreshing: false,
+            active_status: None,
         }
     }
 
@@ -112,6 +115,10 @@ impl Page for FlowsPage {
             }
             Action::Refresh => {
                 self.refreshing = true;
+                self.active_status = Some(StatusMessage {
+                    text: "Refreshing flows...".to_string(),
+                    dismissable: true,
+                });
                 PageResult::Consumed
             }
             Action::Quit => PageResult::Quit,
@@ -200,6 +207,7 @@ impl Page for FlowsPage {
         if let DataPayload::Flows(result) = payload {
             self.loaded = true;
             self.refreshing = false;
+            self.active_status = None;
             match result {
                 Ok(workflows) => {
                     self.workflows = workflows.clone();
@@ -216,6 +224,22 @@ impl Page for FlowsPage {
 
     fn needs_data(&self) -> bool {
         !self.loaded || self.refreshing
+    }
+
+    fn status(&self) -> Option<&StatusMessage> {
+        self.active_status.as_ref()
+    }
+
+    fn dismiss_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn clear_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn mark_stale(&mut self) {
+        self.loaded = false;
     }
 }
 

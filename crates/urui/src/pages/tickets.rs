@@ -12,7 +12,7 @@ use ur_rpc::proto::ticket::Ticket;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
@@ -50,6 +50,8 @@ pub struct TicketsPage {
     filtered_cache: Vec<Ticket>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
+    /// In-progress status message shown below the tab header.
+    active_status: Option<StatusMessage>,
     /// When true, a background refresh is in progress but stale data stays visible.
     refreshing: bool,
 }
@@ -65,6 +67,7 @@ impl TicketsPage {
             filters: TicketFilters::default(),
             filtered_cache: Vec::new(),
             active_banner: None,
+            active_status: None,
             refreshing: false,
         }
     }
@@ -305,8 +308,18 @@ impl TicketsPage {
         visible.get(self.selected_row).map(|t| t.id.clone())
     }
 
+    /// Set an in-progress status message (e.g., for dispatch).
+    pub fn set_status(&mut self, text: String) {
+        self.active_status = Some(StatusMessage {
+            text,
+            dismissable: true,
+        });
+    }
+
     /// Handle an async action result by showing a success or error banner.
     pub fn on_action_result(&mut self, result: &ActionResult) {
+        // Clear in-progress status before showing banner.
+        self.active_status = None;
         match &result.result {
             Ok(msg) => {
                 if !result.silent_on_success {
@@ -463,6 +476,10 @@ impl Page for TicketsPage {
             }
             Action::Refresh => {
                 self.refreshing = true;
+                self.active_status = Some(StatusMessage {
+                    text: "Refreshing tickets...".to_string(),
+                    dismissable: true,
+                });
                 PageResult::Consumed
             }
             Action::Filter => {
@@ -594,6 +611,7 @@ impl Page for TicketsPage {
         if let DataPayload::Tickets(result) = payload {
             let was_refreshing = self.refreshing;
             self.refreshing = false;
+            self.active_status = None;
             match result {
                 Ok(tickets) => {
                     self.data_state = DataState::Loaded(tickets.clone());
@@ -626,6 +644,22 @@ impl Page for TicketsPage {
         {
             self.active_banner = None;
         }
+    }
+
+    fn status(&self) -> Option<&StatusMessage> {
+        self.active_status.as_ref()
+    }
+
+    fn dismiss_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn clear_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn mark_stale(&mut self) {
+        self.data_state = DataState::Loading;
     }
 }
 

@@ -15,7 +15,7 @@ use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{open_filter_menu, open_priority_picker};
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
-use crate::widgets::{render_banner, render_footer, render_header};
+use crate::widgets::{render_banner, render_footer, render_header, render_status_header};
 
 /// Top-level application state and event loop coordinator.
 ///
@@ -123,6 +123,14 @@ impl App {
             return;
         }
 
+        // If the active page has a status message, Enter or Escape dismisses it.
+        if self.active_page().status().is_some()
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+        {
+            self.active_page_mut().dismiss_status();
+            return;
+        }
+
         let Some(action) = self.ctx.keymap.resolve(key) else {
             return;
         };
@@ -205,7 +213,8 @@ impl App {
         }
     }
 
-    /// Switch the active tab, dismiss any banner, and fetch data if the new page needs it.
+    /// Switch the active tab, dismiss any banner, mark the new page stale,
+    /// and fetch data immediately.
     fn switch_tab(&mut self, tab: TabId) {
         if self.active_tab == tab {
             return;
@@ -213,9 +222,9 @@ impl App {
         // Dismiss banner on the page we're leaving.
         self.active_page_mut().dismiss_banner();
         self.active_tab = tab;
-        if self.active_page().needs_data() {
-            self.fetch_active_tab_data();
-        }
+        // Mark the newly active page stale so it re-fetches fresh data.
+        self.active_page_mut().mark_stale();
+        self.fetch_active_tab_data();
     }
 
     /// Fetch data for the currently active tab.
