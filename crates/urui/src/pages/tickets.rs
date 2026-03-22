@@ -36,8 +36,8 @@ enum Overlay {
 
 /// The Tickets tab page.
 ///
-/// Displays all tickets in a themed table with columns: ID, Project, Status,
-/// Priority, Title. Supports row selection (NavigateUp/Down) and client-side
+/// Displays all tickets in a themed table with columns: ID, Status, Priority,
+/// Progress, Title. Supports row selection (NavigateUp/Down) and client-side
 /// pagination (PageLeft/Right). Includes a filter overlay for narrowing results.
 pub struct TicketsPage {
     data_state: DataState,
@@ -106,16 +106,28 @@ impl TicketsPage {
         self.visible_tickets()
             .iter()
             .map(|t| {
+                let status_label = Self::dispatch_label(t);
                 vec![
                     t.id.clone(),
-                    t.project.clone(),
+                    status_label,
                     t.priority.to_string(),
-                    t.title.clone(),
                     String::new(), // placeholder for progress count
                     String::new(), // placeholder for progress bar
+                    t.title.clone(),
                 ]
             })
             .collect()
+    }
+
+    /// Derive the display label for the Status column from dispatch state.
+    fn dispatch_label(ticket: &Ticket) -> String {
+        if !ticket.dispatch_status.is_empty() {
+            "Dispatched".to_string()
+        } else if ticket.status == "closed" {
+            "Closed".to_string()
+        } else {
+            "Open".to_string()
+        }
     }
 
     /// Compute progress values for a ticket.
@@ -358,9 +370,9 @@ fn sort_tickets(tickets: &mut [Ticket]) {
 }
 
 /// The column index of the progress count label in the table.
-const PROGRESS_COUNT_COL: usize = 4;
+const PROGRESS_COUNT_COL: usize = 3;
 /// The column index of the progress bar in the table.
-const PROGRESS_BAR_COL: usize = 5;
+const PROGRESS_BAR_COL: usize = 4;
 
 /// Render mini progress bars and count labels over the placeholder columns.
 ///
@@ -510,14 +522,14 @@ impl Page for TicketsPage {
                 );
                 let widths = vec![
                     Constraint::Length(12),
-                    Constraint::Length(10),
+                    Constraint::Length(12),
                     Constraint::Length(8),
+                    Constraint::Length(8),
+                    Constraint::Length(10),
                     Constraint::Fill(1),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
                 ];
                 let table = ThemedTable {
-                    headers: vec!["ID", "Project", "Priority", "Title", "Progress", ""],
+                    headers: vec!["ID", "Status", "Priority", "Progress", "", "Title"],
                     rows,
                     selected: Some(self.selected_row),
                     widths: widths.clone(),
