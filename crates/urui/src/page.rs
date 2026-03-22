@@ -17,6 +17,14 @@ pub enum BannerVariant {
     Error,
 }
 
+/// An in-progress status message displayed below the tab header.
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    /// Whether the user can dismiss this status with Esc or Enter.
+    pub dismissable: bool,
+}
+
 /// A temporary notification banner displayed in the header slot.
 #[derive(Debug, Clone)]
 pub struct Banner {
@@ -101,4 +109,18 @@ pub trait Page {
 
     /// Tick the banner timer, auto-dismissing expired banners.
     fn tick_banner(&mut self) {}
+
+    /// Returns the active status message for this page, if any.
+    fn status(&self) -> Option<&StatusMessage> {
+        None
+    }
+
+    /// Dismiss the active status message on this page.
+    fn dismiss_status(&mut self) {}
+
+    /// Clear the status message (called when the async action completes).
+    fn clear_status(&mut self) {}
+
+    /// Mark this page's data as stale so the next tick triggers a re-fetch.
+    fn mark_stale(&mut self);
 }

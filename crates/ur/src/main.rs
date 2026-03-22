@@ -14,6 +14,7 @@ mod project;
 mod proxy;
 mod rag;
 mod ticket;
+mod tui;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -94,6 +95,11 @@ enum Commands {
     Ticket {
         #[command(subcommand)]
         command: crate::ticket::TicketArgs,
+    },
+    /// Manage TUI settings (themes, keymaps)
+    Tui {
+        #[command(subcommand)]
+        command: Box<crate::tui::TuiArgs>,
     },
     /// Manage workflows
     Flow {
@@ -1363,6 +1369,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
+        Commands::Tui { command } => tui::handle(*command, &config, output)?,
         Commands::Flow { command } => flow::handle(port, command, output).await?,
         Commands::Worker { command } => {
             handle_worker(

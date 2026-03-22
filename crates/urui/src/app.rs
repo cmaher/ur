@@ -6,6 +6,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::widgets::{Clear, Widget};
 
 use crate::context::TuiContext;
 use crate::data::DataManager;
@@ -15,7 +16,8 @@ use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{open_filter_menu, open_priority_picker};
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
-use crate::widgets::{render_banner, render_footer, render_header};
+use crate::widgets::settings_overlay::{SettingsOverlayState, SettingsResult};
+use crate::widgets::{render_banner, render_footer, render_header, render_status_header};
 
 /// Top-level application state and event loop coordinator.
 ///
@@ -29,6 +31,8 @@ pub struct App {
     ctx: TuiContext,
     data_manager: DataManager,
     should_quit: bool,
+    /// Global settings overlay state, present when the overlay is open.
+    settings_overlay: Option<SettingsOverlayState>,
 }
 
 impl App {
@@ -43,6 +47,7 @@ impl App {
             ctx,
             data_manager,
             should_quit: false,
+            settings_overlay: None,
         }
     }
 
@@ -100,6 +105,18 @@ impl App {
             return;
         }
 
+        // If the settings overlay is open, route keys to it first.
+        if self.settings_overlay.is_some() {
+            self.handle_settings_key(key);
+            return;
+        }
+
+        // Open settings overlay from any page via keymap.
+        if self.ctx.keymap.resolve(key) == Some(Action::OpenSettings) {
+            self.open_settings_overlay();
+            return;
+        }
+
         // If the tickets page has an active overlay, route raw keys to it.
         // Tab-switch keys close the overlay and switch tabs.
         if self.active_tab == TabId::Tickets && self.tickets_page.has_overlay() {
@@ -120,6 +137,14 @@ impl App {
             && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
         {
             self.active_page_mut().dismiss_banner();
+            return;
+        }
+
+        // If the active page has a status message, Enter or Escape dismisses it.
+        if self.active_page().status().is_some()
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+        {
+            self.active_page_mut().dismiss_status();
             return;
         }
 
@@ -188,8 +213,33 @@ impl App {
     /// Dispatch the currently selected ticket on the tickets page.
     fn dispatch_selected_ticket(&mut self) {
         if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+            self.tickets_page
+                .set_status(format!("Dispatching ticket {ticket_id}..."));
             self.data_manager
                 .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
+    /// Open the global settings overlay.
+    fn open_settings_overlay(&mut self) {
+        let custom_names: Vec<String> = self.ctx.tui_config.custom_themes.keys().cloned().collect();
+        self.settings_overlay = Some(SettingsOverlayState::new(
+            custom_names,
+            self.ctx.config_dir.clone(),
+        ));
+    }
+
+    /// Handle a key event while the settings overlay is open.
+    fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) {
+        let overlay = self.settings_overlay.as_mut().expect("overlay must exist");
+        match overlay.handle_key(key) {
+            SettingsResult::Consumed => {}
+            SettingsResult::ThemeSelected(name) => {
+                self.ctx.swap_theme(&name);
+            }
+            SettingsResult::Close => {
+                self.settings_overlay = None;
+            }
         }
     }
 
@@ -205,7 +255,8 @@ impl App {
         }
     }
 
-    /// Switch the active tab, dismiss any banner, and fetch data if the new page needs it.
+    /// Switch the active tab, dismiss any banner, mark the new page stale,
+    /// and fetch data immediately.
     fn switch_tab(&mut self, tab: TabId) {
         if self.active_tab == tab {
             return;
@@ -213,9 +264,9 @@ impl App {
         // Dismiss banner on the page we're leaving.
         self.active_page_mut().dismiss_banner();
         self.active_tab = tab;
-        if self.active_page().needs_data() {
-            self.fetch_active_tab_data();
-        }
+        // Mark the newly active page stale so it re-fetches fresh data.
+        self.active_page_mut().mark_stale();
+        self.fetch_active_tab_data();
     }
 
     /// Fetch data for the currently active tab.
@@ -274,12 +325,23 @@ impl App {
             .fg(self.ctx.theme.base_content);
         buf.set_style(area, base_style);
 
-        let chunks = Layout::vertical([
-            Constraint::Length(1), // header
-            Constraint::Fill(1),   // content
-            Constraint::Length(1), // footer
-        ])
-        .split(area);
+        let has_status = self.active_page().status().is_some();
+        let chunks = if has_status {
+            Layout::vertical([
+                Constraint::Length(1), // header
+                Constraint::Length(1), // status header
+                Constraint::Fill(1),   // content
+                Constraint::Length(1), // footer
+            ])
+            .split(area)
+        } else {
+            Layout::vertical([
+                Constraint::Length(1), // header
+                Constraint::Fill(1),   // content
+                Constraint::Length(1), // footer
+            ])
+            .split(area)
+        };
 
         let tabs = vec![
             TabInfo {
@@ -299,13 +361,38 @@ impl App {
         } else {
             render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
         }
-        self.active_page().render(chunks[1], buf, &self.ctx);
-        render_footer(
-            chunks[2],
-            buf,
-            &self.ctx,
-            &self.active_page().footer_commands(&self.ctx.keymap),
-        );
+
+        if has_status {
+            if let Some(status) = self.active_page().status() {
+                render_status_header(chunks[1], buf, &self.ctx, status);
+            }
+            self.active_page().render(chunks[2], buf, &self.ctx);
+            render_footer(
+                chunks[3],
+                buf,
+                &self.ctx,
+                &self.active_page().footer_commands(&self.ctx.keymap),
+            );
+        } else {
+            self.active_page().render(chunks[1], buf, &self.ctx);
+            render_footer(
+                chunks[2],
+                buf,
+                &self.ctx,
+                &self.active_page().footer_commands(&self.ctx.keymap),
+            );
+        }
+
+        // Render settings overlay on top if open.
+        if let Some(ref overlay) = self.settings_overlay {
+            overlay.render(area, buf, &self.ctx);
+            // Override footer with settings overlay commands.
+            // Clear the footer area first so underlying page footer text
+            // does not bleed through when the overlay footer is shorter.
+            let footer_area = *chunks.last().expect("chunks must have footer");
+            Clear.render(footer_area, buf);
+            render_footer(footer_area, buf, &self.ctx, &overlay.footer_commands());
+        }
     }
 }
 
@@ -326,6 +413,8 @@ mod tests {
             keymap,
             projects: vec![],
             project_configs: std::collections::HashMap::new(),
+            tui_config: TuiConfig::default(),
+            config_dir: std::path::PathBuf::from("/tmp/test-urui"),
         }
     }
 

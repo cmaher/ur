@@ -46,6 +46,8 @@ mod tests {
             keymap,
             projects: vec![],
             project_configs: std::collections::HashMap::new(),
+            tui_config: TuiConfig::default(),
+            config_dir: std::path::PathBuf::from("/tmp/test-urui"),
         }
     }
 

@@ -12,7 +12,7 @@ use ur_rpc::proto::ticket::Ticket;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
@@ -36,8 +36,8 @@ enum Overlay {
 
 /// The Tickets tab page.
 ///
-/// Displays all tickets in a themed table with columns: ID, Project, Status,
-/// Priority, Title. Supports row selection (NavigateUp/Down) and client-side
+/// Displays all tickets in a themed table with columns: ID, Status, Priority,
+/// Progress, Title. Supports row selection (NavigateUp/Down) and client-side
 /// pagination (PageLeft/Right). Includes a filter overlay for narrowing results.
 pub struct TicketsPage {
     data_state: DataState,
@@ -50,6 +50,8 @@ pub struct TicketsPage {
     filtered_cache: Vec<Ticket>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
+    /// In-progress status message shown below the tab header.
+    active_status: Option<StatusMessage>,
     /// When true, a background refresh is in progress but stale data stays visible.
     refreshing: bool,
 }
@@ -65,6 +67,7 @@ impl TicketsPage {
             filters: TicketFilters::default(),
             filtered_cache: Vec::new(),
             active_banner: None,
+            active_status: None,
             refreshing: false,
         }
     }
@@ -103,16 +106,28 @@ impl TicketsPage {
         self.visible_tickets()
             .iter()
             .map(|t| {
+                let status_label = Self::dispatch_label(t);
                 vec![
                     t.id.clone(),
-                    t.project.clone(),
+                    status_label,
                     t.priority.to_string(),
-                    t.title.clone(),
                     String::new(), // placeholder for progress count
                     String::new(), // placeholder for progress bar
+                    t.title.clone(),
                 ]
             })
             .collect()
+    }
+
+    /// Derive the display label for the Status column from dispatch state.
+    fn dispatch_label(ticket: &Ticket) -> String {
+        if !ticket.dispatch_status.is_empty() {
+            "Dispatched".to_string()
+        } else if ticket.status == "closed" {
+            "Closed".to_string()
+        } else {
+            "Open".to_string()
+        }
     }
 
     /// Compute progress values for a ticket.
@@ -305,8 +320,18 @@ impl TicketsPage {
         visible.get(self.selected_row).map(|t| t.id.clone())
     }
 
+    /// Set an in-progress status message (e.g., for dispatch).
+    pub fn set_status(&mut self, text: String) {
+        self.active_status = Some(StatusMessage {
+            text,
+            dismissable: true,
+        });
+    }
+
     /// Handle an async action result by showing a success or error banner.
     pub fn on_action_result(&mut self, result: &ActionResult) {
+        // Clear in-progress status before showing banner.
+        self.active_status = None;
         match &result.result {
             Ok(msg) => {
                 if !result.silent_on_success {
@@ -345,9 +370,9 @@ fn sort_tickets(tickets: &mut [Ticket]) {
 }
 
 /// The column index of the progress count label in the table.
-const PROGRESS_COUNT_COL: usize = 4;
+const PROGRESS_COUNT_COL: usize = 3;
 /// The column index of the progress bar in the table.
-const PROGRESS_BAR_COL: usize = 5;
+const PROGRESS_BAR_COL: usize = 4;
 
 /// Render mini progress bars and count labels over the placeholder columns.
 ///
@@ -463,6 +488,10 @@ impl Page for TicketsPage {
             }
             Action::Refresh => {
                 self.refreshing = true;
+                self.active_status = Some(StatusMessage {
+                    text: "Refreshing tickets...".to_string(),
+                    dismissable: true,
+                });
                 PageResult::Consumed
             }
             Action::Filter => {
@@ -493,14 +522,14 @@ impl Page for TicketsPage {
                 );
                 let widths = vec![
                     Constraint::Length(12),
-                    Constraint::Length(10),
                     Constraint::Length(8),
+                    Constraint::Length(8),
+                    Constraint::Length(8),
+                    Constraint::Length(10),
                     Constraint::Fill(1),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
                 ];
                 let table = ThemedTable {
-                    headers: vec!["ID", "Project", "Priority", "Title", "Progress", ""],
+                    headers: vec!["ID", "Status", "P", "Progress", "", "Title"],
                     rows,
                     selected: Some(self.selected_row),
                     widths: widths.clone(),
@@ -583,6 +612,11 @@ impl Page for TicketsPage {
                 common: true,
             },
             FooterCommand {
+                key_label: keymap.label_for(&Action::OpenSettings),
+                description: "Settings".to_string(),
+                common: true,
+            },
+            FooterCommand {
                 key_label: keymap.label_for(&Action::Quit),
                 description: "Quit".to_string(),
                 common: true,
@@ -594,6 +628,7 @@ impl Page for TicketsPage {
         if let DataPayload::Tickets(result) = payload {
             let was_refreshing = self.refreshing;
             self.refreshing = false;
+            self.active_status = None;
             match result {
                 Ok(tickets) => {
                     self.data_state = DataState::Loaded(tickets.clone());
@@ -626,6 +661,22 @@ impl Page for TicketsPage {
         {
             self.active_banner = None;
         }
+    }
+
+    fn status(&self) -> Option<&StatusMessage> {
+        self.active_status.as_ref()
+    }
+
+    fn dismiss_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn clear_status(&mut self) {
+        self.active_status = None;
+    }
+
+    fn mark_stale(&mut self) {
+        self.data_state = DataState::Loading;
     }
 }
 
@@ -667,6 +718,7 @@ mod tests {
             depth: 0,
             children_total: 0,
             children_completed: 0,
+            dispatch_status: String::new(),
         }
     }
 
@@ -693,6 +745,7 @@ mod tests {
             depth: 0,
             children_total,
             children_completed: 0,
+            dispatch_status: String::new(),
         }
     }
 

@@ -10,8 +10,8 @@ use ur_rpc::proto::core::WorkerLaunchRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
-    CreateWorkflowRequest, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
-    ListWorkflowsResponse, Ticket, UpdateTicketRequest, WorkflowInfo,
+    CancelWorkflowRequest, CreateWorkflowRequest, ListTicketsRequest, ListTicketsResponse,
+    ListWorkflowsRequest, ListWorkflowsResponse, Ticket, UpdateTicketRequest, WorkflowInfo,
 };
 
 use crate::event::AppEvent;
@@ -171,6 +171,32 @@ impl DataManager {
             let _ = tx.send(AppEvent::DataReady(payload));
         });
     }
+
+    /// Spawn a background task that cancels the active workflow for a ticket
+    /// via `CancelWorkflow` and sends the result as `AppEvent::ActionResult`.
+    pub fn cancel_flow(&self, ticket_id: String) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "cancelling workflow");
+            let result = cancel_workflow_rpc(port, &ticket_id).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("Cancelled workflow for {ticket_id}")),
+                    silent_on_success: false,
+                },
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "workflow cancel failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
 }
 
 /// Perform the ListTickets RPC call, returning the full response.
@@ -196,6 +222,18 @@ async fn fetch_workflows_rpc(port: u16) -> Result<ListWorkflowsResponse> {
     let request = tonic::Request::new(ListWorkflowsRequest { status: None });
     let response = client.list_workflows(request).await?;
     Ok(response.into_inner())
+}
+
+/// Perform the CancelWorkflow RPC to cancel the active workflow for a ticket.
+async fn cancel_workflow_rpc(port: u16, ticket_id: &str) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await?;
+    Ok(())
 }
 
 /// Perform the UpdateTicket RPC to change a ticket's status.

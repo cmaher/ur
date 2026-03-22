@@ -22,6 +22,8 @@ pub enum Action {
     Dispatch,
     CloseTicket,
     OpenTicket,
+    CancelFlow,
+    OpenSettings,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -220,6 +222,15 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::OpenTicket,
     );
+
+    // open_settings = [,]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char(','),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::OpenSettings,
+    );
 }
 
 impl Keymap {
@@ -298,6 +309,13 @@ impl Keymap {
                 modifiers: KeyModifiers::SHIFT,
             },
             Action::OpenTicket,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char(','),
+                modifiers: KeyModifiers::NONE,
+            },
+            Action::OpenSettings,
         );
 
         Self { bindings }

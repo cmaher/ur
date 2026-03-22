@@ -87,7 +87,7 @@ impl FilterMenuState {
     /// Returns whether the menu was consumed or should close.
     pub fn handle_key(&mut self, key: KeyEvent, filters: &mut TicketFilters) -> FilterMenuResult {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => FilterMenuResult::Close,
+            KeyCode::Esc => FilterMenuResult::Close,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_down();
                 FilterMenuResult::Consumed
@@ -534,18 +534,6 @@ mod tests {
 
         let r = state.handle_key(
             KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE),
-            &mut filters,
-        );
-        assert_eq!(r, FilterMenuResult::Close);
-    }
-
-    #[test]
-    fn filter_menu_close_on_q() {
-        let mut state = FilterMenuState::new(vec![]);
-        let mut filters = TicketFilters::default();
-
-        let r = state.handle_key(
-            KeyEvent::new(KeyCode::Char('q'), crossterm::event::KeyModifiers::NONE),
             &mut filters,
         );
         assert_eq!(r, FilterMenuResult::Close);

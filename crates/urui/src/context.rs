@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use ur_config::ProjectConfig;
+use ur_config::{ProjectConfig, TuiConfig};
 
 use crate::keymap::Keymap;
 use crate::theme::Theme;
@@ -17,4 +18,18 @@ pub struct TuiContext {
     pub projects: Vec<String>,
     /// Full project configurations keyed by project key, used for dispatch.
     pub project_configs: HashMap<String, ProjectConfig>,
+    /// TUI configuration (needed for theme resolution on swap).
+    pub tui_config: TuiConfig,
+    /// Root config directory for persisting settings.
+    pub config_dir: PathBuf,
+}
+
+impl TuiContext {
+    /// Swap the active theme by name.
+    ///
+    /// Updates the theme_name in the TUI config and re-resolves the theme.
+    pub fn swap_theme(&mut self, name: &str) {
+        self.tui_config.theme_name = name.to_string();
+        self.theme = Theme::resolve(&self.tui_config);
+    }
 }
