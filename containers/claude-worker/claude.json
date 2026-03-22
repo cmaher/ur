@@ -1,5 +1,6 @@
 {
   "hasCompletedOnboarding": true,
+  "editorMode": "vim",
   "projects": {
     "/workspace": {
       "hasTrustDialogAccepted": true,
