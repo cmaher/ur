@@ -180,8 +180,8 @@ impl TicketServiceHandler {
                 project: t.project,
                 branch: t.branch.unwrap_or_default(),
                 depth,
-                children_completed: 0,
-                children_total: 0,
+                children_completed: t.children_completed,
+                children_total: t.children_total,
             })
             .collect())
     }
@@ -352,8 +352,8 @@ impl TicketService for TicketServiceHandler {
                         project: t.project,
                         branch: t.branch.unwrap_or_default(),
                         depth: 0,
-                        children_completed: 0,
-                        children_total: 0,
+                        children_completed: t.children_completed,
+                        children_total: t.children_total,
                     })
                     .collect()
             }
@@ -401,8 +401,8 @@ impl TicketService for TicketServiceHandler {
             project: t.project,
             branch: t.branch.unwrap_or_default(),
             depth: 0,
-            children_completed: 0,
-            children_total: 0,
+            children_completed: t.children_completed,
+            children_total: t.children_total,
         };
 
         let metadata: Vec<_> = meta
