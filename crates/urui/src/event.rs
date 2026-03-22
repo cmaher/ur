@@ -4,18 +4,7 @@ use crossterm::event::{self, Event, KeyEvent};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-/// Payload delivered by gRPC data-fetch tasks.
-///
-/// Defined in `data.rs`; re-referenced here for the `DataReady` variant.
-// TODO(urui): replace with actual import once data.rs is compiled into the crate:
-//   use crate::data::DataPayload;
-#[derive(Debug, Clone)]
-pub struct DataPayload {
-    /// Opaque label identifying which data source produced this payload.
-    pub source: String,
-    /// Serialized response bytes from the gRPC fetch.
-    pub bytes: Vec<u8>,
-}
+use crate::data::DataPayload;
 
 /// Events consumed by the main application loop.
 #[derive(Debug)]
