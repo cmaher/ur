@@ -58,13 +58,16 @@ impl App {
         self.draw(terminal)?;
 
         loop {
-            let event = receiver.recv().await;
-            match event {
-                Some(AppEvent::Key(key)) => self.handle_key(key),
-                Some(AppEvent::Tick) => self.handle_tick(),
-                Some(AppEvent::DataReady(payload)) => self.handle_data_ready(payload),
-                Some(AppEvent::Resize(_, _)) => {} // Just redraw below
-                None => break,
+            // Block until at least one event arrives.
+            let Some(first) = receiver.recv().await else {
+                break;
+            };
+            self.process_event(first);
+
+            // Drain any queued events without blocking so we batch
+            // multiple key presses into a single redraw.
+            while let Ok(ev) = receiver.try_recv() {
+                self.process_event(ev);
             }
 
             if self.should_quit {
@@ -75,6 +78,16 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Process a single event (key, tick, data, resize).
+    fn process_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::Key(key) => self.handle_key(key),
+            AppEvent::Tick => self.handle_tick(),
+            AppEvent::DataReady(payload) => self.handle_data_ready(payload),
+            AppEvent::Resize(_, _) => {} // Just redraw
+        }
     }
 
     /// Handle a key event: check for Ctrl+C, resolve via keymap, dispatch.

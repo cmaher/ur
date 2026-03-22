@@ -20,7 +20,7 @@ pub enum AppEvent {
 }
 
 const TICK_INTERVAL: Duration = Duration::from_secs(5);
-const CROSSTERM_POLL_TIMEOUT: Duration = Duration::from_millis(100);
+const CROSSTERM_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Channel-based event manager.
 ///
@@ -76,6 +76,12 @@ impl EventReceiver {
     /// Returns `None` when all senders have been dropped (clean shutdown).
     pub async fn recv(&mut self) -> Option<AppEvent> {
         self.receiver.recv().await
+    }
+
+    /// Non-blocking receive: returns `Ok(event)` if one is ready, or
+    /// `Err` if the channel is empty.
+    pub fn try_recv(&mut self) -> Result<AppEvent, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
     }
 }
 
