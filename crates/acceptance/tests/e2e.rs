@@ -11,13 +11,21 @@
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
 //!   - Pre-built `ur` binary in `target/debug/`
-//!   - Container images (`ur-server:latest`, `ur-worker:latest`) already built
+//!   - Container images (`ur-server`, `ur-worker`) already built (tag via `UR_IMAGE_TAG`, default: `latest`)
 //!   - A Docker-compatible container runtime
 #![cfg(feature = "acceptance")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
+
+/// Read the image tag to use for all container images in tests.
+/// Uses `UR_IMAGE_TAG` env var if set, otherwise defaults to "latest".
+fn image_tag() -> String {
+    std::env::var("UR_IMAGE_TAG").unwrap_or_else(|_| "latest".into())
+}
+
+static IMAGE_TAG: LazyLock<String> = LazyLock::new(image_tag);
 
 /// Generate a short unique prefix for this test run to avoid container/network
 /// collisions with other concurrent CI runs or local stacks.
@@ -238,13 +246,21 @@ fn write_test_config(
 
     let compose_file = config_dir.join("docker-compose.yml");
 
+    let tag = &*IMAGE_TAG;
     let mut projects_toml = String::new();
     for proj in projects {
+        // Resolve image alias to a full reference with the configured tag.
+        // If the image already contains ':' or '/', it is a full reference and used as-is.
+        let image_ref = if proj.image.contains(':') || proj.image.contains('/') {
+            proj.image.clone()
+        } else {
+            format!("{}:{}", proj.image, tag)
+        };
         projects_toml.push_str(&format!(
             "\n[projects.{key}]\nrepo = \"{repo}\"\n\n[projects.{key}.container]\nimage = \"{image}\"\n",
             key = proj.key,
             repo = proj.repo,
-            image = proj.image,
+            image = image_ref,
         ));
     }
 
@@ -987,7 +1003,7 @@ fn scenario_launch_without_project(env: &TestEnv) {
     );
 }
 
-/// Launch with `image = "ur-worker-rust"` project config and verify the container uses `ur-worker-rust:latest`.
+/// Launch with `image = "ur-worker-rust"` project config and verify the container uses the `ur-worker-rust` image.
 fn scenario_project_image_rust(env: &TestEnv) {
     let ticket_id = "rust-image-test";
     let container_name = env.container_name(ticket_id);
@@ -1017,7 +1033,7 @@ fn scenario_project_image_rust(env: &TestEnv) {
         wait_for_healthy(&env.runtime, &container_name);
 
         // ---- Verify the container is running the rust image ----
-        // Inspect the container image to confirm it is ur-worker-rust:latest
+        // Inspect the container image to confirm it uses ur-worker-rust
         let inspect_output = Command::new(&env.runtime)
             .args(["inspect", "--format", "{{.Config.Image}}", &container_name])
             .output()
