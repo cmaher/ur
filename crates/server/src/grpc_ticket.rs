@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
@@ -19,7 +20,8 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    UpdateTicketRequest, UpdateTicketResponse, WorkflowInfo,
+    SubscribeUiEventsRequest, UiEventBatch, UpdateTicketRequest, UpdateTicketResponse,
+    WorkflowInfo,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -185,8 +187,13 @@ impl TicketServiceHandler {
     }
 }
 
+type SubscribeUiEventsOutputStream =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<UiEventBatch, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl TicketService for TicketServiceHandler {
+    type SubscribeUiEventsStream = SubscribeUiEventsOutputStream;
+
     async fn create_ticket(
         &self,
         req: Request<CreateTicketRequest>,
@@ -913,6 +920,15 @@ impl TicketService for TicketServiceHandler {
             protos.push(workflow_to_proto(wf, pr_url));
         }
         Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
+    }
+
+    async fn subscribe_ui_events(
+        &self,
+        _req: Request<SubscribeUiEventsRequest>,
+    ) -> Result<Response<Self::SubscribeUiEventsStream>, Status> {
+        Err(Status::unimplemented(
+            "subscribe_ui_events not yet implemented",
+        ))
     }
 }
 

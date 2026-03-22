@@ -21,6 +21,7 @@ service TicketService {
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
+  rpc SubscribeUiEvents(SubscribeUiEventsRequest) returns (stream UiEventBatch);
 }
 
 // --- Shared messages ---
@@ -301,3 +302,23 @@ message ListWorkflowsRequest {
 message ListWorkflowsResponse {
   repeated WorkflowInfo workflows = 1;
 }
+
+// --- SubscribeUiEvents ---
+
+enum UiEventType {
+  UNKNOWN = 0;
+  TICKET = 1;
+  WORKFLOW = 2;
+  WORKER = 3;
+}
+
+message UiEvent {
+  UiEventType entity_type = 1;
+  string entity_id = 2;
+}
+
+message UiEventBatch {
+  repeated UiEvent events = 1;
+}
+
+message SubscribeUiEventsRequest {}
