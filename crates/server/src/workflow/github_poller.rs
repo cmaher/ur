@@ -583,7 +583,7 @@ impl GithubPollerManager {
             ),
         ] {
             if let Err(e) = self
-                .ticket_repo
+                .workflow_repo
                 .update_workflow_condition(ticket_id, condition, value)
                 .await
             {
@@ -632,7 +632,7 @@ impl GithubPollerManager {
         backend: &GhBackend,
         pr_number: i64,
     ) -> usize {
-        let seen_ids = match self.ticket_repo.get_seen_comment_ids(ticket_id).await {
+        let seen_ids = match self.workflow_repo.get_seen_comment_ids(ticket_id).await {
             Ok(ids) => ids,
             Err(e) => {
                 warn!(ticket_id = %ticket_id, error = %e, "failed to get seen comment IDs");
