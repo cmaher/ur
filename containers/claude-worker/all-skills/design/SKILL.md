@@ -1,6 +1,9 @@
 ---
 name: design
-description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
+description: |
+  You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.
+  TRIGGER when: user asks to create a feature, build something, add functionality, modify behavior, design a system, or any creative work. Also when user describes an idea, asks "how should we build X", or starts work that requires design decisions.
+  DO NOT TRIGGER when: user asks to fix a bug, debug, refactor without behavior change, asks a question about code, or explicitly says to skip design.
 ---
 
 # Brainstorming Ideas Into Designs
