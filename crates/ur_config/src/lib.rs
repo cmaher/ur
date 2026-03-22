@@ -499,6 +499,7 @@ struct RawServerConfig {
     github_scan_interval_secs: Option<u64>,
     builderd_retry_count: Option<u32>,
     builderd_retry_backoff_ms: Option<u64>,
+    ui_event_poll_interval_ms: Option<u64>,
 }
 
 /// Environment variable: container runtime command override (e.g. "nerdctl").
@@ -519,6 +520,9 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 
 /// Default GitHub scan interval in seconds for the poller.
 pub const DEFAULT_GITHUB_SCAN_INTERVAL_SECS: u64 = 30;
+
+/// Default UI event poll interval in milliseconds.
+pub const DEFAULT_UI_EVENT_POLL_INTERVAL_MS: u64 = 200;
 
 /// Default number of builderd retry attempts.
 pub const DEFAULT_BUILDERD_RETRY_COUNT: u32 = 3;
@@ -546,6 +550,8 @@ pub struct ServerConfig {
     /// Base backoff in milliseconds for builderd retries (default: 200).
     /// Each retry doubles this value (exponential backoff).
     pub builderd_retry_backoff_ms: u64,
+    /// UI event poll interval in milliseconds (default: 200).
+    pub ui_event_poll_interval_ms: u64,
 }
 
 /// Default TUI theme name.
@@ -1101,6 +1107,9 @@ fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
             builderd_retry_backoff_ms: s
                 .builderd_retry_backoff_ms
                 .unwrap_or(DEFAULT_BUILDERD_RETRY_BACKOFF_MS),
+            ui_event_poll_interval_ms: s
+                .ui_event_poll_interval_ms
+                .unwrap_or(DEFAULT_UI_EVENT_POLL_INTERVAL_MS),
         },
         None => ServerConfig {
             container_command,
@@ -1110,6 +1119,7 @@ fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
             github_scan_interval_secs: DEFAULT_GITHUB_SCAN_INTERVAL_SECS,
             builderd_retry_count: DEFAULT_BUILDERD_RETRY_COUNT,
             builderd_retry_backoff_ms: DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
+            ui_event_poll_interval_ms: DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
         },
     }
 }
