@@ -10,7 +10,7 @@ description: |
 
 Help turn ideas into fully formed designs and specs through natural collaborative dialogue.
 
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval. The end result is an epic ticket with the full design document and child tickets for each task.
+Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval. The end result is a parent ticket with the full design document and child tickets for each task.
 
 <HARD-GATE>
 Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action. This skill produces ONLY tickets. No code. No plans that reference writing code. No "next step: implement." The terminal state is a set of tickets.
@@ -31,8 +31,8 @@ The design skill MAY be invoked on a **design ticket** — a ticket of type `des
 **This lifecycle flow ONLY applies when the current ticket is a design ticket.** If the skill is invoked without a design ticket (e.g., the user just wants to brainstorm), skip the design ticket lifecycle steps (closing, etc.) and just create the epic and child tickets normally.
 
 When a design ticket is present:
-- Create a NEW epic for the implementation: `ur ticket create "Epic title" --type epic --body "..." --output json`
-- Create all child tickets parented to the NEW epic
+- Create a NEW parent ticket for the implementation: `ur ticket create "Title" --body "..." --output json`
+- Create all child tickets parented to the NEW parent ticket
 - Close the design ticket: `ur ticket update <design-ticket-id> --status closed --output json`
 
 ## Checklist
@@ -43,8 +43,8 @@ You MUST create a task for each of these items and complete them in order:
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
-5. **Create epic ticket** — create a new epic with the full design document as the body
-6. **Create child tickets** — one per discrete task, all parented to the new epic
+5. **Create parent ticket** — create a new parent ticket with the full design document as the body
+6. **Create child tickets** — one per discrete task, all parented to the parent ticket
 7. **Close the design ticket** (only if invoked on a design ticket) — design is complete, close it
 
 ## Process Flow
@@ -56,8 +56,8 @@ digraph brainstorming {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
-    "Create new epic with design doc" [shape=box];
-    "Create child tickets under epic" [shape=box];
+    "Create parent ticket with design doc" [shape=box];
+    "Create child tickets under parent" [shape=box];
     "Close design ticket (if applicable)" [shape=box];
     "Done — tickets ready" [shape=doublecircle];
 
@@ -66,9 +66,9 @@ digraph brainstorming {
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Create new epic with design doc" [label="yes"];
-    "Create new epic with design doc" -> "Create child tickets under epic";
-    "Create child tickets under epic" -> "Close design ticket (if applicable)";
+    "User approves design?" -> "Create parent ticket with design doc" [label="yes"];
+    "Create parent ticket with design doc" -> "Create child tickets under parent";
+    "Create child tickets under parent" -> "Close design ticket (if applicable)";
     "Close design ticket (if applicable)" -> "Done — tickets ready";
 }
 ```
@@ -81,7 +81,7 @@ digraph brainstorming {
 
 - Check out the current project state first (files, docs, recent commits). Pay particular attention to relevant CLAUDE.md files — they contain crate-specific conventions, constraints, and architectural decisions that should inform the design.
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
-- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own epic.
+- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own parent ticket.
 - For appropriately-scoped projects, ask questions one at a time to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Only one question per message - if a topic needs more exploration, break it into multiple questions
@@ -116,15 +116,15 @@ digraph brainstorming {
 
 ## After the Design
 
-**Creating the epic:**
+**Creating the parent ticket:**
 
-- Create a new epic with the full design document as the body: `ur ticket create "Epic title" --type epic --body "..." --output json`
+- Create a new parent ticket with the full design document as the body: `ur ticket create "Title" --body "..." --output json`
 - The design document should include architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
-- If invoked on a design ticket, add a link between the design ticket and the new epic: `ur ticket add-link <design-ticket-id> <epic-id> --output json`
+- If invoked on a design ticket, add a link between the design ticket and the new parent: `ur ticket add-link <design-ticket-id> <parent-id> --output json`
 
 **Creating child tickets:**
 
-- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <epic-id> --output json`
+- Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <parent-id> --output json`
 - Do NOT use the `--wip` flag — child tickets must default to lifecycle_status=open so they are immediately dispatchable
 - Each ticket body MUST follow this format:
   ```
