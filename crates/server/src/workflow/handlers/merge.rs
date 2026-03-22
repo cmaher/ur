@@ -61,19 +61,46 @@ async fn execute_merge(
         anyhow::anyhow!("no gh_repo metadata on ticket {ticket_id} — cannot merge PR")
     })?;
 
+    let backend = GhBackend {
+        client: ctx.builderd_client.clone(),
+        gh_repo: gh_repo.clone(),
+    };
+
+    // 4. Check if PR is already merged (manual merge case).
+    let pr = backend
+        .get_pr(pr_number.parse().map_err(|_| {
+            anyhow::anyhow!("invalid pr_number '{pr_number}' on ticket {ticket_id}")
+        })?)
+        .await?;
+    let already_merged = pr.state == "closed" || pr.state == "CLOSED" || pr.state == "MERGED";
+
     info!(
         ticket_id = %ticket_id,
         pr_number = %pr_number,
+        already_merged = %already_merged,
         "merging PR"
     );
 
-    // 4. Kill worker and release slot.
+    // 5. Kill worker and release slot.
     kill_worker(ctx, worker_id).await?;
 
-    // 5. Merge the PR via GhBackend through builderd.
-    merge_pr(ctx, ticket_id, pr_number, gh_repo, ticket_client).await?;
+    // 6. Merge or clean up.
+    if already_merged {
+        // PR was manually merged — just delete the branch.
+        if let Err(e) = backend.delete_branch(&pr.head_ref).await {
+            warn!(
+                ticket_id = %ticket_id,
+                branch = %pr.head_ref,
+                error = %e,
+                "failed to delete branch after manual merge"
+            );
+        }
+    } else {
+        // Normal path: merge via gh (which also deletes the branch via --delete-branch).
+        merge_pr(ctx, ticket_id, pr_number, gh_repo, ticket_client).await?;
+    }
 
-    // 6. Mark workflow as done (no further transitions for this ticket).
+    // 7. Mark workflow as done (no further transitions for this ticket).
     if let Err(e) = ctx
         .ticket_repo
         .update_workflow_status(ticket_id, LifecycleStatus::Done)
@@ -82,7 +109,7 @@ async fn execute_merge(
         warn!(ticket_id = %ticket_id, error = %e, "failed to mark workflow as done");
     }
 
-    // 7. Close ticket.
+    // 8. Close ticket.
     close_ticket(ctx, ticket_id).await
 }
 

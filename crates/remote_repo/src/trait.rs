@@ -16,6 +16,7 @@ pub trait RemoteRepo: Send + Sync {
     async fn get_review_comments(&self, pr_number: i64) -> Result<Vec<ReviewComment>>;
     async fn get_conversation_comments(&self, pr_number: i64) -> Result<Vec<ConversationComment>>;
     async fn reply_to_comment(&self, pr_number: i64, comment_id: i64, body: &str) -> Result<i64>;
+    async fn delete_branch(&self, branch: &str) -> Result<()>;
 
     /// Reply to a comment with a bot prefix.
     async fn reply_bot_comment(&self, pr_number: i64, comment_id: i64, body: &str) -> Result<i64> {
