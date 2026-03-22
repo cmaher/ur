@@ -85,6 +85,7 @@ impl WorkflowHandler for MockHandler {
 // Test harness: coordinator + gRPC server in one bundle
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct TestHarness {
     client: CoreServiceClient<tonic::transport::Channel>,
     ticket_repo: TicketRepo,

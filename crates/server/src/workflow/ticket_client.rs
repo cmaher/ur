@@ -162,7 +162,7 @@ mod tests {
     use std::collections::HashSet;
 
     use tempfile::TempDir;
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo};
+    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkflowRepo};
 
     async fn setup() -> (TicketClient, TicketRepo, TempDir) {
         let tmp = TempDir::new().unwrap();
@@ -172,9 +172,11 @@ mod tests {
             .expect("open test db");
         let graph_manager = GraphManager::new(db.pool().clone());
         let repo = TicketRepo::new(db.pool().clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(db.pool().clone());
 
         let handler = TicketServiceHandler {
             ticket_repo: repo.clone(),
+            workflow_repo,
             valid_projects: HashSet::new(),
             transition_tx: None,
             cancel_tx: None,

@@ -492,13 +492,13 @@ mod tests {
         assert_eq!(t.lifecycle_status, LifecycleStatus::Implementing);
 
         // Workflow event is deleted (engine won't retry).
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(event.is_none(), "event should be deleted after stalling");
     }
 
     #[tokio::test]
     async fn engine_open_to_awaiting_dispatch_noop_processes_and_deletes() {
-        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-ad01".to_string(),
@@ -528,12 +528,13 @@ mod tests {
         repo.update_ticket("ur-ad01", &update).await.unwrap();
 
         // Verify event exists.
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(event.is_some(), "workflow event should exist");
 
         let call_count = Arc::new(AtomicU32::new(0));
         let engine = WorkflowEngine::new(
             repo.clone(),
+            workflow_repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
@@ -558,7 +559,7 @@ mod tests {
         );
 
         // Event should be deleted after successful processing.
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(
             event.is_none(),
             "event should be deleted after no-op handler succeeds"
@@ -571,7 +572,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_awaiting_dispatch_to_implementing_fires_handler() {
-        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-ad02".to_string(),
@@ -601,11 +602,12 @@ mod tests {
         repo.update_ticket("ur-ad02", &update).await.unwrap();
 
         // Drain the Open→AwaitingDispatch event (not relevant to this test).
-        repo.poll_workflow_event().await.unwrap();
+        workflow_repo.poll_workflow_event().await.unwrap();
         // Delete it manually since we have no handler for it in this engine.
         // Use a small engine with the no-op handler.
         let noop_engine = WorkflowEngine::new(
             repo.clone(),
+            workflow_repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
@@ -638,7 +640,7 @@ mod tests {
         repo.update_ticket("ur-ad02", &update).await.unwrap();
 
         // Verify event exists.
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(
             event.is_some(),
             "AwaitingDispatch→Implementing event should exist"
@@ -647,6 +649,7 @@ mod tests {
         let call_count = Arc::new(AtomicU32::new(0));
         let engine = WorkflowEngine::new(
             repo.clone(),
+            workflow_repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
@@ -671,7 +674,7 @@ mod tests {
         );
 
         // Event should be deleted after successful processing.
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(
             event.is_none(),
             "event should be deleted after handler succeeds"
@@ -680,7 +683,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_deletes_event_with_no_handler() {
-        let (_tmp, repo, worker_repo) = setup_test_db().await;
+        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: "ur-test4".to_string(),
@@ -710,6 +713,7 @@ mod tests {
 
         let engine = WorkflowEngine::new(
             repo.clone(),
+            workflow_repo.clone(),
             worker_repo.clone(),
             "ur-worker-".to_string(),
             dummy_builderd_client(),
@@ -721,7 +725,7 @@ mod tests {
 
         engine.poll_once().await;
 
-        let event = repo.poll_workflow_event().await.unwrap();
+        let event = workflow_repo.poll_workflow_event().await.unwrap();
         assert!(
             event.is_none(),
             "event should be deleted when no handler is registered"
