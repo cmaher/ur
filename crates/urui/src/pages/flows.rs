@@ -38,7 +38,7 @@ impl FlowsPage {
         if self.workflows.is_empty() {
             1
         } else {
-            (self.workflows.len() + PAGE_SIZE - 1) / PAGE_SIZE
+            self.workflows.len().div_ceil(PAGE_SIZE)
         }
     }
 
@@ -128,11 +128,7 @@ impl Page for FlowsPage {
             return;
         }
 
-        let rows: Vec<Vec<String>> = self
-            .page_rows()
-            .iter()
-            .map(|wf| workflow_to_row(wf))
-            .collect();
+        let rows: Vec<Vec<String>> = self.page_rows().iter().map(workflow_to_row).collect();
 
         let selected = if rows.is_empty() {
             None

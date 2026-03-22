@@ -134,13 +134,8 @@ fn main() {
         themes_css_path.to_string_lossy()
     );
 
-    let css = fs::read_to_string(&themes_css_path).unwrap_or_else(|e| {
-        panic!(
-            "Failed to read {}: {}",
-            themes_css_path.display(),
-            e
-        )
-    });
+    let css = fs::read_to_string(&themes_css_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", themes_css_path.display(), e));
 
     // Parse themes: theme_name -> { field_name -> (r, g, b) }
     let themes = parse_themes(&css);
@@ -153,6 +148,32 @@ fn main() {
     write_generated_code(&mut out, &themes);
 }
 
+/// Parse a single CSS variable line and insert the converted color into the themes map.
+fn parse_css_var(
+    rest: &str,
+    colon_pos: usize,
+    theme_name: &str,
+    themes: &mut BTreeMap<String, BTreeMap<String, (u8, u8, u8)>>,
+) {
+    let var_name = rest[..colon_pos].trim();
+    let value = rest[colon_pos + 1..].trim().trim_end_matches(';').trim();
+
+    let Some(field_name) = css_var_to_field(var_name) else {
+        return;
+    };
+    let Some((l, c, h)) = parse_oklch(value) else {
+        panic!(
+            "Failed to parse oklch value for --{} in theme '{}': {}",
+            var_name, theme_name, value
+        );
+    };
+    let (r, g, b) = oklch_to_srgb(l, c, h);
+    themes
+        .entry(theme_name.to_string())
+        .or_default()
+        .insert(field_name.to_string(), (r, g, b));
+}
+
 /// Parse all themes from CSS content.
 fn parse_themes(css: &str) -> BTreeMap<String, BTreeMap<String, (u8, u8, u8)>> {
     let mut themes: BTreeMap<String, BTreeMap<String, (u8, u8, u8)>> = BTreeMap::new();
@@ -162,12 +183,12 @@ fn parse_themes(css: &str) -> BTreeMap<String, BTreeMap<String, (u8, u8, u8)>> {
         let trimmed = line.trim();
 
         // Match theme selector: [data-theme="name"] {
-        if let Some(rest) = trimmed.strip_prefix("[data-theme=\"") {
-            if let Some(name_end) = rest.find('"') {
-                let name = rest[..name_end].to_string();
-                current_theme = Some(name);
-                continue;
-            }
+        if let Some(rest) = trimmed.strip_prefix("[data-theme=\"")
+            && let Some(name_end) = rest.find('"')
+        {
+            let name = rest[..name_end].to_string();
+            current_theme = Some(name);
+            continue;
         }
 
         // Match closing brace
@@ -177,28 +198,11 @@ fn parse_themes(css: &str) -> BTreeMap<String, BTreeMap<String, (u8, u8, u8)>> {
         }
 
         // Match CSS variable: --varname: oklch(...);
-        if let Some(theme_name) = &current_theme {
-            if let Some(rest) = trimmed.strip_prefix("--") {
-                if let Some(colon_pos) = rest.find(':') {
-                    let var_name = rest[..colon_pos].trim();
-                    let value = rest[colon_pos + 1..].trim().trim_end_matches(';').trim();
-
-                    if let Some(field_name) = css_var_to_field(var_name) {
-                        if let Some((l, c, h)) = parse_oklch(value) {
-                            let (r, g, b) = oklch_to_srgb(l, c, h);
-                            themes
-                                .entry(theme_name.clone())
-                                .or_default()
-                                .insert(field_name.to_string(), (r, g, b));
-                        } else {
-                            panic!(
-                                "Failed to parse oklch value for --{} in theme '{}': {}",
-                                var_name, theme_name, value
-                            );
-                        }
-                    }
-                }
-            }
+        if let Some(theme_name) = &current_theme
+            && let Some(rest) = trimmed.strip_prefix("--")
+            && let Some(colon_pos) = rest.find(':')
+        {
+            parse_css_var(rest, colon_pos, theme_name, &mut themes);
         }
     }
 
@@ -229,11 +233,7 @@ fn write_generated_code(
         "/// Returns a built-in daisyUI theme by name, if it exists."
     )
     .unwrap();
-    writeln!(
-        out,
-        "pub fn builtin_theme(name: &str) -> Option<Theme> {{"
-    )
-    .unwrap();
+    writeln!(out, "pub fn builtin_theme(name: &str) -> Option<Theme> {{").unwrap();
     writeln!(out, "    match name {{").unwrap();
 
     for (theme_name, fields) in themes {
@@ -256,16 +256,8 @@ fn write_generated_code(
     writeln!(out).unwrap();
 
     // Also generate a list of all theme names
-    writeln!(
-        out,
-        "/// All built-in theme names, sorted alphabetically."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "pub const BUILTIN_THEME_NAMES: &[&str] = &["
-    )
-    .unwrap();
+    writeln!(out, "/// All built-in theme names, sorted alphabetically.").unwrap();
+    writeln!(out, "pub const BUILTIN_THEME_NAMES: &[&str] = &[").unwrap();
     for theme_name in themes.keys() {
         writeln!(out, "    \"{}\",", theme_name).unwrap();
     }

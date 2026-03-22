@@ -33,13 +33,9 @@ pub fn render_header(
         .map(|tab| {
             let text = format!(" ({}){}  ", tab.shortcut, tab.label);
             let style = if tab.id == active {
-                Style::default()
-                    .bg(theme.primary)
-                    .fg(theme.primary_content)
+                Style::default().bg(theme.primary).fg(theme.primary_content)
             } else {
-                Style::default()
-                    .bg(theme.base_200)
-                    .fg(theme.base_content)
+                Style::default().bg(theme.base_200).fg(theme.base_content)
             };
             Span::styled(text, style)
         })

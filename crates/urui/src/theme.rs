@@ -36,6 +36,7 @@ pub struct Theme {
 /// without `border_rounded`. We define a compatible struct here and re-export
 /// through conversion functions.
 mod generated {
+    #![allow(clippy::too_many_lines)]
     use ratatui::style::Color;
 
     /// Color-only theme struct matching the generated code's struct literals
@@ -162,99 +163,36 @@ fn check_truecolor_support() {
 fn apply_custom_overrides(dark: &Theme, custom: &ur_config::ThemeColors) -> Theme {
     let mut theme = dark.clone();
 
-    if let Some(ref v) = custom.bg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.base_100 = c;
+    /// Try to parse `opt` as a hex color and write it into `field` on success.
+    fn apply(field: &mut Color, opt: &Option<String>) {
+        if let Some(ref v) = *opt
+            && let Some(c) = parse_hex_color(v)
+        {
+            *field = c;
         }
     }
-    if let Some(ref v) = custom.fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.base_content = c;
-        }
-    }
-    if let Some(ref v) = custom.border {
-        if let Some(c) = parse_hex_color(v) {
-            theme.base_200 = c;
-        }
-    }
-    if let Some(ref v) = custom.border_focused {
-        if let Some(c) = parse_hex_color(v) {
-            theme.base_300 = c;
-        }
-    }
+
+    apply(&mut theme.base_100, &custom.bg);
+    apply(&mut theme.base_content, &custom.fg);
+    apply(&mut theme.base_200, &custom.border);
+    apply(&mut theme.base_300, &custom.border_focused);
     if let Some(v) = custom.border_rounded {
         theme.border_rounded = v;
     }
-    if let Some(ref v) = custom.header_bg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.primary = c;
-        }
-    }
-    if let Some(ref v) = custom.header_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.primary_content = c;
-        }
-    }
-    if let Some(ref v) = custom.selected_bg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.secondary = c;
-        }
-    }
-    if let Some(ref v) = custom.selected_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.secondary_content = c;
-        }
-    }
-    if let Some(ref v) = custom.status_bar_bg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.neutral = c;
-        }
-    }
-    if let Some(ref v) = custom.status_bar_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.neutral_content = c;
-        }
-    }
-    if let Some(ref v) = custom.error_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.error = c;
-        }
-    }
-    if let Some(ref v) = custom.warning_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.warning = c;
-        }
-    }
-    if let Some(ref v) = custom.success_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.success = c;
-        }
-    }
-    if let Some(ref v) = custom.info_fg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.info = c;
-        }
-    }
-    if let Some(ref v) = custom.accent {
-        if let Some(c) = parse_hex_color(v) {
-            theme.accent = c;
-        }
-    }
-    if let Some(ref v) = custom.highlight {
-        if let Some(c) = parse_hex_color(v) {
-            theme.accent_content = c;
-        }
-    }
-    if let Some(ref v) = custom.shadow {
-        if let Some(c) = parse_hex_color(v) {
-            theme.info_content = c;
-        }
-    }
-    if let Some(ref v) = custom.overlay_bg {
-        if let Some(c) = parse_hex_color(v) {
-            theme.warning_content = c;
-        }
-    }
+    apply(&mut theme.primary, &custom.header_bg);
+    apply(&mut theme.primary_content, &custom.header_fg);
+    apply(&mut theme.secondary, &custom.selected_bg);
+    apply(&mut theme.secondary_content, &custom.selected_fg);
+    apply(&mut theme.neutral, &custom.status_bar_bg);
+    apply(&mut theme.neutral_content, &custom.status_bar_fg);
+    apply(&mut theme.error, &custom.error_fg);
+    apply(&mut theme.warning, &custom.warning_fg);
+    apply(&mut theme.success, &custom.success_fg);
+    apply(&mut theme.info, &custom.info_fg);
+    apply(&mut theme.accent, &custom.accent);
+    apply(&mut theme.accent_content, &custom.highlight);
+    apply(&mut theme.info_content, &custom.shadow);
+    apply(&mut theme.warning_content, &custom.overlay_bg);
 
     theme
 }
@@ -306,10 +244,7 @@ mod tests {
     fn resolve_uses_builtin_by_name() {
         // Pick a theme that is not "dark" (if available).
         if BUILTIN_THEME_NAMES.len() > 1 {
-            let name = BUILTIN_THEME_NAMES
-                .iter()
-                .find(|&&n| n != "dark")
-                .unwrap();
+            let name = BUILTIN_THEME_NAMES.iter().find(|&&n| n != "dark").unwrap();
             let config = TuiConfig {
                 theme_name: name.to_string(),
                 ..TuiConfig::default()
@@ -324,9 +259,11 @@ mod tests {
     fn resolve_custom_theme_overrides_dark() {
         use std::collections::HashMap;
 
-        let mut custom = ur_config::ThemeColors::default();
-        custom.bg = Some("#112233".to_string());
-        custom.border_rounded = Some(true);
+        let custom = ur_config::ThemeColors {
+            bg: Some("#112233".to_string()),
+            border_rounded: Some(true),
+            ..Default::default()
+        };
 
         let mut custom_themes = HashMap::new();
         custom_themes.insert("mycustom".to_string(), custom);

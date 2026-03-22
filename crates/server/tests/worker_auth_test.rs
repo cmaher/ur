@@ -61,6 +61,7 @@ async fn make_test_components(
             builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
         projects: HashMap::new(),
+        tui: ur_config::TuiConfig::default(),
     };
     let db = ur_db::DatabaseManager::open(":memory:")
         .await

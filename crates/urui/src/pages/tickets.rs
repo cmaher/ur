@@ -51,7 +51,7 @@ impl TicketsPage {
         if count == 0 || self.page_size == 0 {
             return 1;
         }
-        (count + self.page_size - 1) / self.page_size
+        count.div_ceil(self.page_size)
     }
 
     /// Number of tickets in the current dataset.

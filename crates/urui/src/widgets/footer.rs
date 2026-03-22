@@ -10,12 +10,7 @@ use crate::page::FooterCommand;
 /// Render footer commands horizontally into the given area.
 ///
 /// Key labels are shown in `secondary` color; descriptions in `base_content`.
-pub fn render_footer(
-    area: Rect,
-    buf: &mut Buffer,
-    ctx: &TuiContext,
-    commands: &[FooterCommand],
-) {
+pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &[FooterCommand]) {
     let theme = &ctx.theme;
 
     let mut spans: Vec<Span> = Vec::new();
