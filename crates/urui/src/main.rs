@@ -4,45 +4,23 @@
 
 mod app;
 mod context;
+mod create_ticket;
 mod data;
 mod event;
 mod keymap;
 mod page;
 mod pages;
+mod terminal;
 mod theme;
 mod widgets;
-
-use std::io;
-
-use crossterm::execute;
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
 
 use crate::app::App;
 use crate::context::TuiContext;
 use crate::data::DataManager;
 use crate::event::EventManager;
 use crate::keymap::Keymap;
+use crate::terminal::{restore_terminal, setup_terminal};
 use crate::theme::Theme;
-
-/// Set up the terminal for TUI rendering: enable raw mode and enter alternate screen.
-fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let terminal = Terminal::new(backend)?;
-    Ok(terminal)
-}
-
-/// Restore the terminal to its original state: leave alternate screen and disable raw mode.
-fn restore_terminal() {
-    let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), LeaveAlternateScreen);
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
