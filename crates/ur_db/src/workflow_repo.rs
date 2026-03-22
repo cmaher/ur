@@ -7,7 +7,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::model::{
-    LifecycleStatus, MetadataMatchTicket, Ticket, Workflow, WorkflowEvent, WorkflowIntent,
+    LifecycleStatus, MetadataMatchTicket, Ticket, Workflow, WorkflowEvent, WorkflowEventRow,
+    WorkflowIntent,
 };
 
 #[derive(Clone)]
@@ -414,6 +415,45 @@ impl WorkflowRepo {
         .await?;
 
         Ok(())
+    }
+
+    /// Get all workflow events for a given workflow, ordered by created_at ASC.
+    pub async fn get_workflow_events(
+        &self,
+        workflow_id: &str,
+    ) -> Result<Vec<WorkflowEventRow>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT event, created_at FROM workflow_events WHERE workflow_id = ? ORDER BY created_at ASC",
+        )
+        .bind(workflow_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(event, created_at)| WorkflowEventRow { event, created_at })
+            .collect())
+    }
+
+    /// Get the open and closed children counts for a ticket.
+    /// Returns (open_count, closed_count).
+    pub async fn get_ticket_children_counts(
+        &self,
+        ticket_id: &str,
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = ?")
+            .bind(ticket_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let closed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ticket WHERE parent_id = ? AND status = 'closed'",
+        )
+        .bind(ticket_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((total - closed, closed))
     }
 
     // ============================================================

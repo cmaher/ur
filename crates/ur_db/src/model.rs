@@ -214,6 +214,12 @@ pub struct WorkflowEvent {
     pub created_at: String,
 }
 
+/// A row from the workflow_events table (lifecycle/condition events for a workflow).
+pub struct WorkflowEventRow {
+    pub event: String,
+    pub created_at: String,
+}
+
 /// Ticket status enum for workflow-driven tickets.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TicketStatus {

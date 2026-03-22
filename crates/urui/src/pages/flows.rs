@@ -359,6 +359,9 @@ mod tests {
             feedback_mode: String::new(),
             created_at: String::new(),
             pr_url: "https://github.com/org/repo/pull/1".into(),
+            history: vec![],
+            ticket_children_open: 0,
+            ticket_children_closed: 0,
         }
     }
 
