@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let (event_manager, receiver) = EventManager::start();
     let data_manager = DataManager::new(config.server_port, event_manager.sender());
 
-    let mut app = App::new(ctx, data_manager, config.tui.key_repeat_interval_ms);
+    let mut app = App::new(ctx, data_manager);
     let result = app.run(&mut terminal, receiver).await;
 
     restore_terminal();
