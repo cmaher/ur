@@ -22,6 +22,7 @@ pub enum Action {
     Dispatch,
     CloseTicket,
     OpenTicket,
+    CancelFlow,
 }
 
 /// A resolved key binding: modifier flags + key code.
