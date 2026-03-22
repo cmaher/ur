@@ -136,7 +136,7 @@ impl TicketsPage {
 
     /// Update page size based on the render area height, accounting for
     /// table chrome (header row + top/bottom borders).
-    fn update_page_size(&mut self, area_height: u16) {
+    pub fn update_page_size(&mut self, area_height: u16) {
         // 3 lines of chrome: 1 top border + 1 header row + 1 bottom border
         let chrome = 3u16;
         let available = area_height.saturating_sub(chrome) as usize;

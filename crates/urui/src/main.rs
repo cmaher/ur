@@ -2,13 +2,10 @@
 // (app, context, keymap, page, pages, theme, widgets).
 #![allow(dead_code)]
 
-// Modules with implementations:
+mod app;
+mod context;
 mod data;
 mod event;
-
-// Planned modules — uncomment as implementations land:
-// mod app;
-mod context;
 mod keymap;
 mod page;
 mod pages;
@@ -24,7 +21,12 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::event::{AppEvent, EventManager, EventReceiver};
+use crate::app::App;
+use crate::context::TuiContext;
+use crate::data::DataManager;
+use crate::event::EventManager;
+use crate::keymap::Keymap;
+use crate::theme::Theme;
 
 /// Set up the terminal for TUI rendering: enable raw mode and enter alternate screen.
 fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -42,49 +44,17 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen);
 }
 
-/// Minimal main loop that runs until the user presses 'q'.
-///
-/// This is a temporary implementation until `app.rs` provides the full `App` struct
-/// with page routing, keymap resolution, and data fetching.
-async fn run_minimal_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    mut receiver: EventReceiver,
-    _config: &ur_config::Config,
-) -> anyhow::Result<()> {
-    use crossterm::event::KeyCode;
-    use ratatui::style::{Color, Style};
-    use ratatui::text::Line;
-    use ratatui::widgets::Paragraph;
-
-    loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
-            let text = Line::raw("urui — press q to quit");
-            let paragraph =
-                Paragraph::new(text).style(Style::default().fg(Color::White).bg(Color::Black));
-            frame.render_widget(paragraph, area);
-        })?;
-
-        match receiver.recv().await {
-            Some(AppEvent::Key(key)) => {
-                if key.code == KeyCode::Char('q') {
-                    break;
-                }
-            }
-            Some(_) => {}
-            None => break,
-        }
-    }
-
-    Ok(())
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = ur_config::Config::load()?;
 
     // Verify server connectivity early so the user gets a clear error message.
     let _channel = ur_rpc::connection::connect(config.server_port).await?;
+
+    // Resolve theme and keymap from configuration.
+    let theme = Theme::resolve(&config.tui);
+    let keymap = resolve_keymap(&config.tui);
+    let ctx = TuiContext { theme, keymap };
 
     let mut terminal = setup_terminal()?;
 
@@ -95,11 +65,24 @@ async fn main() -> anyhow::Result<()> {
         default_hook(info);
     }));
 
-    let (_event_manager, receiver) = EventManager::start();
+    let (event_manager, receiver) = EventManager::start();
+    let data_manager = DataManager::new(config.server_port, event_manager.sender());
 
-    let result = run_minimal_loop(&mut terminal, receiver, &config).await;
+    let mut app = App::new(ctx, data_manager);
+    let result = app.run(&mut terminal, receiver).await;
 
     restore_terminal();
 
     result
+}
+
+/// Resolve the keymap from TUI configuration: use the named custom keymap if
+/// one is configured and present, otherwise fall back to the default keymap.
+fn resolve_keymap(tui: &ur_config::TuiConfig) -> Keymap {
+    if tui.keymap_name != "default"
+        && let Some(overrides) = tui.custom_keymaps.get(&tui.keymap_name)
+    {
+        return Keymap::from_config(overrides.clone());
+    }
+    Keymap::default()
 }

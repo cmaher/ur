@@ -1,5 +1,5 @@
 mod footer;
-mod header;
+pub mod header;
 mod table;
 
 pub use footer::render_footer;

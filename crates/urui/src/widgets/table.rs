@@ -39,11 +39,8 @@ impl<'a> ThemedTable<'a> {
                 ))
             })
             .collect();
-        let header_row = Row::new(header_cells).style(
-            Style::default()
-                .bg(theme.neutral)
-                .fg(theme.neutral_content),
-        );
+        let header_row = Row::new(header_cells)
+            .style(Style::default().bg(theme.neutral).fg(theme.neutral_content));
 
         let data_rows: Vec<Row> = self
             .rows
@@ -78,14 +75,12 @@ impl<'a> ThemedTable<'a> {
             ));
         }
 
-        let highlight_style = Style::default()
-            .bg(theme.primary)
-            .fg(theme.primary_content);
+        let highlight_style = Style::default().bg(theme.primary).fg(theme.primary_content);
 
         let table = Table::new(data_rows, &self.widths)
             .header(header_row)
             .block(block)
-            .highlight_style(highlight_style);
+            .row_highlight_style(highlight_style);
 
         let mut state = TableState::default();
         state.select(self.selected);
