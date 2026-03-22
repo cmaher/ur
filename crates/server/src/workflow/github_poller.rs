@@ -262,6 +262,7 @@ impl GithubPollerManager {
         // Step 5: Evaluate transition.
         self.evaluate_transition(
             &ticket.id,
+            &workflow.id,
             &backend,
             pr_number,
             ci_result,
@@ -458,6 +459,7 @@ impl GithubPollerManager {
     async fn evaluate_transition(
         &self,
         ticket_id: &str,
+        workflow_id: &str,
         backend: &GhBackend,
         pr_number: i64,
         ci_status: &str,
@@ -468,17 +470,8 @@ impl GithubPollerManager {
         // Handle PR merged/closed signals first — these override condition-based logic.
         match review_result.signal {
             ReviewSignal::Merged => {
-                info!(
-                    ticket_id = %ticket_id,
-                    pr_number = %pr_number,
-                    "PR merged by human — transitioning to feedback_creating (mode=later)"
-                );
-                self.set_feedback_mode_and_transition(
-                    ticket_id,
-                    ur_rpc::feedback_mode::LATER,
-                    LifecycleStatus::FeedbackCreating,
-                )
-                .await;
+                self.handle_manual_merge(ticket_id, workflow_id, backend, pr_number)
+                    .await;
                 return;
             }
             ReviewSignal::Closed => {
@@ -553,6 +546,106 @@ impl GithubPollerManager {
         }
 
         // Otherwise, stay in InReview — conditions not yet met.
+    }
+
+    /// Handle a manually-merged PR: treat as approval with the same short-circuit
+    /// logic as `ur approve` (skip feedback if no unseen comments to address).
+    async fn handle_manual_merge(
+        &self,
+        ticket_id: &str,
+        workflow_id: &str,
+        backend: &GhBackend,
+        pr_number: i64,
+    ) {
+        info!(
+            ticket_id = %ticket_id,
+            pr_number = %pr_number,
+            "PR merged by human — treating as approval"
+        );
+
+        // Set all three conditions to passing — the merge proves they were satisfied.
+        for (condition, value) in [
+            (
+                workflow_condition::WorkflowCondition::ReviewStatus,
+                workflow_condition::review_status::APPROVED,
+            ),
+            (
+                workflow_condition::WorkflowCondition::CiStatus,
+                workflow_condition::ci_status::SUCCEEDED,
+            ),
+            (
+                workflow_condition::WorkflowCondition::Mergeable,
+                workflow_condition::mergeable::MERGEABLE,
+            ),
+        ] {
+            if let Err(e) = self
+                .ticket_repo
+                .update_workflow_condition(ticket_id, condition, value)
+                .await
+            {
+                error!(
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to update workflow condition on manual merge"
+                );
+            }
+        }
+        self.emit_workflow_event(workflow_id, WorkflowEvent::ReviewApproved)
+            .await;
+
+        // Count unseen comments to decide whether to short-circuit feedback.
+        let unseen_count = self
+            .count_unseen_comments(ticket_id, backend, pr_number)
+            .await;
+
+        if unseen_count <= 1 {
+            self.record_comments_and_transition(
+                ticket_id,
+                backend,
+                pr_number,
+                ur_rpc::feedback_mode::LATER,
+                LifecycleStatus::Merging,
+                "manual merge (approve-only) — skipping feedback, transitioning to merging",
+            )
+            .await;
+        } else {
+            self.record_comments_and_transition(
+                ticket_id,
+                backend,
+                pr_number,
+                ur_rpc::feedback_mode::LATER,
+                LifecycleStatus::FeedbackCreating,
+                "manual merge with unseen comments — transitioning to feedback_creating (mode=later)",
+            )
+            .await;
+        }
+    }
+
+    /// Count conversation comments on a PR that haven't been seen by the workflow yet.
+    async fn count_unseen_comments(
+        &self,
+        ticket_id: &str,
+        backend: &GhBackend,
+        pr_number: i64,
+    ) -> usize {
+        let seen_ids = match self.ticket_repo.get_seen_comment_ids(ticket_id).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!(ticket_id = %ticket_id, error = %e, "failed to get seen comment IDs");
+                return 0;
+            }
+        };
+        let comments = match backend.get_conversation_comments(pr_number).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(ticket_id = %ticket_id, error = %e, "failed to fetch comments for unseen count");
+                return 0;
+            }
+        };
+        comments
+            .iter()
+            .filter(|c| !seen_ids.contains(&c.id.to_string()))
+            .count()
     }
 
     /// Fetch all current comment IDs, insert them as seen, then trigger a transition.

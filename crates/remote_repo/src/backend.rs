@@ -334,6 +334,19 @@ impl RemoteRepo for GhBackend {
         Ok(comments)
     }
 
+    async fn delete_branch(&self, branch: &str) -> Result<()> {
+        let endpoint = format!("repos/{}/git/refs/heads/{}", self.gh_repo, branch);
+        let completed = self.exec_gh(&["api", "-X", "DELETE", &endpoint]).await?;
+        if completed.exit_code != 0 {
+            let stderr = completed.stderr_text();
+            // Branch may already be deleted — treat 422 (Reference does not exist) as success.
+            if !stderr.contains("Reference does not exist") {
+                anyhow::bail!("failed to delete branch {branch}: {stderr}");
+            }
+        }
+        Ok(())
+    }
+
     async fn reply_to_comment(&self, pr_number: i64, comment_id: i64, body: &str) -> Result<i64> {
         let endpoint = format!(
             "repos/{}/pulls/{}/comments/{}/replies",
