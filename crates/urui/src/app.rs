@@ -110,8 +110,8 @@ impl App {
             return;
         }
 
-        // `,` opens the settings overlay from any page.
-        if key.code == KeyCode::Char(',') && key.modifiers == KeyModifiers::NONE {
+        // Open settings overlay from any page via keymap.
+        if self.ctx.keymap.resolve(key) == Some(Action::OpenSettings) {
             self.open_settings_overlay();
             return;
         }

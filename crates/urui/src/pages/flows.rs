@@ -254,6 +254,11 @@ impl Page for FlowsPage {
                 common: true,
             },
             FooterCommand {
+                key_label: keymap.label_for(&Action::OpenSettings),
+                description: "Settings".to_string(),
+                common: true,
+            },
+            FooterCommand {
                 key_label: keymap.label_for(&Action::Quit),
                 description: "Quit".to_string(),
                 common: true,
