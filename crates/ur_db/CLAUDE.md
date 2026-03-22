@@ -6,6 +6,7 @@ Async SQLite-backed ticket database, replacing the CozoDB-based ur_db crate.
 
 - `DatabaseManager` — primary entry point. Holds an sqlx `SqlitePool`. Runs migrations on startup via `sqlx::migrate!()`. Injected into all other managers.
 - `TicketRepo` — CRUD operations for tickets, activities, and metadata. Accepts `DatabaseManager` via constructor.
+- `WorkflowRepo` — workflow lifecycle state, events, intents, and comments. Manages the workflow tables that track ticket workflow progression. Accepts `DatabaseManager` via constructor.
 - `GraphManager` — dependency graph operations using petgraph. Loads edges from SQLite into a petgraph `DiGraph` for traversal, cycle detection, and topological sorting. Accepts `DatabaseManager` via constructor.
 - `SnapshotManager` — point-in-time snapshots of ticket state for history/undo. Accepts `DatabaseManager` via constructor.
 - `model` — shared data structs (Ticket, Activity, Edge, Meta, etc.) used across managers.
