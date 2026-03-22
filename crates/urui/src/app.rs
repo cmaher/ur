@@ -6,6 +6,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::widgets::{Clear, Widget};
 
 use crate::context::TuiContext;
 use crate::data::DataManager;
@@ -386,11 +387,10 @@ impl App {
         if let Some(ref overlay) = self.settings_overlay {
             overlay.render(area, buf, &self.ctx);
             // Override footer with settings overlay commands.
+            // Clear the footer area first so underlying page footer text
+            // does not bleed through when the overlay footer is shorter.
             let footer_area = *chunks.last().expect("chunks must have footer");
-            let bg_style = Style::default()
-                .bg(self.ctx.theme.neutral)
-                .fg(self.ctx.theme.neutral_content);
-            buf.set_style(footer_area, bg_style);
+            Clear.render(footer_area, buf);
             render_footer(footer_area, buf, &self.ctx, &overlay.footer_commands());
         }
     }
