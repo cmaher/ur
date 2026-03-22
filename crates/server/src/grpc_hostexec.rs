@@ -465,26 +465,40 @@ fn map_working_dir_impl(
         });
     }
 
-    // Compute the slot-relative prefix (empty for workspace mounts, e.g. "pool/proj/0" for pool).
-    let slot_relative = slot_path
-        .and_then(|sp| {
-            let host_ws = host_workspace.to_string_lossy();
-            let sp_str = sp.to_string_lossy();
-            sp_str
-                .strip_prefix(host_ws.as_ref())
-                .map(|rel| rel.trim_start_matches('/').to_string())
-        })
-        .unwrap_or_default();
-
-    let mut result = "%WORKSPACE%".to_string();
-    if !slot_relative.is_empty() {
-        result.push('/');
-        result.push_str(&slot_relative);
+    // For pool mounts, slot_path is under host_workspace — use %WORKSPACE%/<relative> template.
+    // For workspace mounts (-w), slot_path is an arbitrary host path not under host_workspace —
+    // use the absolute slot_path directly (builderd passes through absolute paths unchanged).
+    if let Some(sp) = slot_path {
+        let host_ws = host_workspace.to_string_lossy();
+        let sp_str = sp.to_string_lossy();
+        if let Some(rel) = sp_str.strip_prefix(host_ws.as_ref()) {
+            // Pool mount: slot is under host_workspace
+            let slot_relative = rel.trim_start_matches('/');
+            let mut result = "%WORKSPACE%".to_string();
+            if !slot_relative.is_empty() {
+                result.push('/');
+                result.push_str(slot_relative);
+            }
+            if !suffix.is_empty() {
+                result.push_str(suffix);
+            }
+            Ok(result)
+        } else {
+            // Workspace mount: slot is an absolute path outside host_workspace
+            let mut result = sp_str.into_owned();
+            if !suffix.is_empty() {
+                result.push_str(suffix);
+            }
+            Ok(result)
+        }
+    } else {
+        // No slot_path: direct workspace mount
+        let mut result = "%WORKSPACE%".to_string();
+        if !suffix.is_empty() {
+            result.push_str(suffix);
+        }
+        Ok(result)
     }
-    if !suffix.is_empty() {
-        result.push_str(suffix);
-    }
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -527,8 +541,129 @@ mod tests {
     }
 
     #[test]
+    fn test_map_working_dir_workspace_mount_with_slot_path() {
+        // -w mount: slot_path is an arbitrary host dir, not under host_workspace
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/Users/foo/myproject");
+    }
+
+    #[test]
+    fn test_map_working_dir_workspace_mount_with_slot_path_subdir() {
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        let result =
+            map_working_dir_impl("/workspace/src", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/Users/foo/myproject/src");
+    }
+
+    #[test]
     fn test_map_working_dir_rejects_invalid() {
         assert!(map_working_dir_impl("/tmp", None, Path::new(HOST_WS)).is_err());
         assert!(map_working_dir_impl("/workspacefoo", None, Path::new(HOST_WS)).is_err());
+    }
+
+    #[test]
+    fn test_map_working_dir_rejects_invalid_with_pool_slot() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        assert!(map_working_dir_impl("/tmp", Some(&slot), Path::new(HOST_WS)).is_err());
+        assert!(map_working_dir_impl("/workspacefoo", Some(&slot), Path::new(HOST_WS)).is_err());
+    }
+
+    #[test]
+    fn test_map_working_dir_rejects_invalid_with_workspace_slot() {
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        assert!(map_working_dir_impl("/other", Some(&slot), Path::new(HOST_WS)).is_err());
+    }
+
+    #[test]
+    fn test_map_working_dir_pool_slot_is_host_workspace_root() {
+        // Slot path is exactly the host_workspace directory (no relative suffix)
+        let slot = std::path::PathBuf::from(HOST_WS);
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%");
+    }
+
+    #[test]
+    fn test_map_working_dir_pool_slot_is_host_workspace_root_subdir() {
+        let slot = std::path::PathBuf::from(HOST_WS);
+        let result =
+            map_working_dir_impl("/workspace/src", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/src");
+    }
+
+    #[test]
+    fn test_map_working_dir_pool_mount_deeply_nested_subdir() {
+        let slot = std::path::PathBuf::from("/home/user/.ur/workspace/pool/proj/0");
+        let result = map_working_dir_impl(
+            "/workspace/src/lib/module/file",
+            Some(&slot),
+            Path::new(HOST_WS),
+        )
+        .unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/proj/0/src/lib/module/file");
+    }
+
+    #[test]
+    fn test_map_working_dir_workspace_mount_deeply_nested_subdir() {
+        let result = map_working_dir_impl("/workspace/a/b/c/d", None, Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/a/b/c/d");
+    }
+
+    #[test]
+    fn test_map_working_dir_workspace_slot_deeply_nested_subdir() {
+        let slot = std::path::PathBuf::from("/Users/foo/myproject");
+        let result =
+            map_working_dir_impl("/workspace/a/b/c/d", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/Users/foo/myproject/a/b/c/d");
+    }
+
+    #[test]
+    fn test_map_working_dir_error_message_contains_path() {
+        let err = map_working_dir_impl("/tmp/foo", None, Path::new(HOST_WS)).unwrap_err();
+        match err {
+            HostExecError::InvalidWorkingDir { path, .. } => {
+                assert_eq!(path, "/tmp/foo");
+            }
+            _ => panic!("expected InvalidWorkingDir"),
+        }
+    }
+
+    #[test]
+    fn test_map_working_dir_workspacex_rejected() {
+        // Paths like /workspaceXYZ should be rejected (no slash separator)
+        let err = map_working_dir_impl("/workspacedata", None, Path::new(HOST_WS)).unwrap_err();
+        match err {
+            HostExecError::InvalidWorkingDir { path, reason } => {
+                assert_eq!(path, "/workspacedata");
+                assert_eq!(reason, "invalid working_dir");
+            }
+            _ => panic!("expected InvalidWorkingDir"),
+        }
+    }
+
+    #[test]
+    fn test_map_working_dir_different_host_workspace() {
+        // Verify behavior with a non-default host_workspace path
+        let custom_host_ws = "/opt/custom/workspace";
+        let slot = std::path::PathBuf::from("/opt/custom/workspace/pool/myproj/1");
+        let result =
+            map_working_dir_impl("/workspace/src", Some(&slot), Path::new(custom_host_ws)).unwrap();
+        assert_eq!(result, "%WORKSPACE%/pool/myproj/1/src");
+    }
+
+    #[test]
+    fn test_map_working_dir_slot_completely_different_prefix() {
+        // Slot path with a completely different prefix from host_workspace
+        let slot = std::path::PathBuf::from("/opt/other/projects/myapp");
+        let result = map_working_dir_impl("/workspace", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/opt/other/projects/myapp");
+    }
+
+    #[test]
+    fn test_map_working_dir_slot_completely_different_prefix_subdir() {
+        let slot = std::path::PathBuf::from("/opt/other/projects/myapp");
+        let result =
+            map_working_dir_impl("/workspace/src", Some(&slot), Path::new(HOST_WS)).unwrap();
+        assert_eq!(result, "/opt/other/projects/myapp/src");
     }
 }
