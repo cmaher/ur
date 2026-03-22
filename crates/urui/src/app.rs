@@ -14,7 +14,7 @@ use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
-use crate::widgets::{render_footer, render_header};
+use crate::widgets::{render_banner, render_footer, render_header};
 
 /// Top-level application state and event loop coordinator.
 ///
@@ -90,12 +90,20 @@ impl App {
         }
     }
 
-    /// Handle a key event: check for Ctrl+C, resolve via keymap, dispatch.
+    /// Handle a key event: check for Ctrl+C, dismiss banners, resolve via keymap, dispatch.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         // Ctrl+C always exits cleanly.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
             return;
+        }
+
+        // If the active page has a banner, Enter or Escape dismisses it.
+        if self.active_page().banner().is_some() {
+            if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                self.active_page_mut().dismiss_banner();
+                return;
+            }
         }
 
         let Some(action) = self.ctx.keymap.resolve(key) else {
@@ -111,8 +119,9 @@ impl App {
         }
     }
 
-    /// Handle a tick: refresh active page data if stale.
+    /// Handle a tick: auto-dismiss expired banners and refresh active page data if stale.
     fn handle_tick(&mut self) {
+        self.active_page_mut().tick_banner();
         if self.active_page().needs_data() {
             self.fetch_active_tab_data();
         }
@@ -132,11 +141,13 @@ impl App {
         }
     }
 
-    /// Switch the active tab and fetch data if the new page needs it.
+    /// Switch the active tab, dismiss any banner, and fetch data if the new page needs it.
     fn switch_tab(&mut self, tab: TabId) {
         if self.active_tab == tab {
             return;
         }
+        // Dismiss banner on the page we're leaving.
+        self.active_page_mut().dismiss_banner();
         self.active_tab = tab;
         if self.active_page().needs_data() {
             self.fetch_active_tab_data();
@@ -219,7 +230,11 @@ impl App {
             },
         ];
 
-        render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
+        if let Some(banner) = self.active_page().banner() {
+            render_banner(chunks[0], buf, &self.ctx, banner);
+        } else {
+            render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
+        }
         self.active_page().render(chunks[1], buf, &self.ctx);
         render_footer(
             chunks[2],
