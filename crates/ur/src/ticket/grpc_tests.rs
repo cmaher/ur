@@ -60,6 +60,8 @@ impl TicketService for MockTicketStore {
             project: req.project,
             branch: String::new(),
             depth: 0,
+            children_completed: 0,
+            children_total: 0,
         };
         self.inner
             .lock()
