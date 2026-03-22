@@ -13,9 +13,9 @@ use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::Action;
 use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
-use crate::widgets::ThemedTable;
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
+use crate::widgets::{MiniProgressBar, ThemedTable};
 
 /// Internal state for the ticket data lifecycle.
 #[derive(Debug, Clone)]
@@ -92,25 +92,40 @@ impl TicketsPage {
     }
 
     /// Build table row data from visible tickets.
+    ///
+    /// The Progress column (index 3) is left empty here because the progress
+    /// bar is rendered directly to the buffer with themed colors in
+    /// [`render_progress_bars`].
     fn build_rows(&self) -> Vec<Vec<String>> {
         self.visible_tickets()
             .iter()
             .map(|t| {
-                let children_col = if t.children_total > 0 {
-                    format!("{}/{}", t.children_completed, t.children_total)
-                } else {
-                    String::new()
-                };
                 vec![
                     t.id.clone(),
                     t.project.clone(),
-                    t.status.clone(),
                     t.priority.to_string(),
-                    children_col,
+                    String::new(), // placeholder for progress bar
                     t.title.clone(),
                 ]
             })
             .collect()
+    }
+
+    /// Compute progress values for a ticket.
+    ///
+    /// Leaf tickets (children_total=0): 0/1 if open, 1/1 if closed.
+    /// Parent tickets: children_completed/children_total from proto fields.
+    fn ticket_progress(ticket: &Ticket) -> (u32, u32) {
+        if ticket.children_total > 0 {
+            (
+                ticket.children_completed as u32,
+                ticket.children_total as u32,
+            )
+        } else if ticket.status == "closed" {
+            (1, 1)
+        } else {
+            (0, 1)
+        }
     }
 
     /// Render a centered message (used for loading/error states).
@@ -303,6 +318,65 @@ fn sort_tickets(tickets: &mut [Ticket]) {
     });
 }
 
+/// The column index of the Progress column in the table.
+const PROGRESS_COL_INDEX: usize = 3;
+
+/// Render mini progress bars over the placeholder Progress column cells.
+///
+/// Calculates each row's progress column rect by resolving the table layout
+/// constraints, then renders a `MiniProgressBar` with themed colors.
+fn render_progress_bars(
+    page: &TicketsPage,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+    widths: &[Constraint],
+) {
+    use ratatui::layout::Layout;
+
+    // The table block has a 1-cell border on each side.
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1, // skip top border
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Resolve column positions using the same constraints as the table.
+    let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
+    let Some(progress_area) = col_areas.get(PROGRESS_COL_INDEX) else {
+        return;
+    };
+
+    // First row inside inner is the header; data rows start at inner.y + 1.
+    let data_start_y = inner.y + 1;
+    let visible = page.visible_tickets();
+
+    for (i, ticket) in visible.iter().enumerate() {
+        let row_y = data_start_y + i as u16;
+        if row_y >= inner.y + inner.height {
+            break;
+        }
+
+        let (completed, total) = TicketsPage::ticket_progress(ticket);
+        let cell_rect = Rect {
+            x: progress_area.x,
+            y: row_y,
+            width: progress_area.width,
+            height: 1,
+        };
+
+        let row_bg = if i % 2 == 0 {
+            ctx.theme.base_100
+        } else {
+            ctx.theme.base_200
+        };
+
+        let bar = MiniProgressBar { completed, total };
+        bar.render(cell_rect, buf, &ctx.theme, row_bg);
+    }
+}
+
 use ratatui::widgets::Widget;
 
 impl Page for TicketsPage {
@@ -367,21 +441,24 @@ impl Page for TicketsPage {
                     self.total_pages(),
                     self.ticket_count(),
                 );
+                let widths = vec![
+                    Constraint::Length(12),
+                    Constraint::Length(10),
+                    Constraint::Length(8),
+                    Constraint::Length(16),
+                    Constraint::Fill(1),
+                ];
                 let table = ThemedTable {
-                    headers: vec!["ID", "Project", "Status", "Priority", "Progress", "Title"],
+                    headers: vec!["ID", "Project", "Priority", "Progress", "Title"],
                     rows,
                     selected: Some(self.selected_row),
-                    widths: vec![
-                        Constraint::Length(12),
-                        Constraint::Length(10),
-                        Constraint::Length(12),
-                        Constraint::Length(8),
-                        Constraint::Length(10),
-                        Constraint::Fill(1),
-                    ],
+                    widths: widths.clone(),
                     page_info: Some(page_info),
                 };
                 table.render(area, buf, ctx);
+
+                // Render progress bars on top of the placeholder cells.
+                render_progress_bars(self, area, buf, ctx, &widths);
             }
         }
 
