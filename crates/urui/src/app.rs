@@ -8,9 +8,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Clear, Widget};
 
+use std::collections::HashSet;
+
 use crate::context::TuiContext;
 use crate::data::DataManager;
-use crate::event::{AppEvent, EventReceiver};
+use crate::event::{AppEvent, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{open_filter_menu, open_priority_picker};
@@ -86,14 +88,15 @@ impl App {
         Ok(())
     }
 
-    /// Process a single event (key, tick, data, resize, action result).
+    /// Process a single event (key, tick, data, resize, action result, ui event).
     fn process_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => self.handle_tick(),
-            AppEvent::DataReady(payload) => self.handle_data_ready(payload),
+            AppEvent::DataReady(payload) => self.handle_data_ready(*payload),
             AppEvent::ActionResult(result) => self.handle_action_result(result),
             AppEvent::Resize(_, _) => {} // Just redraw
+            AppEvent::UiEvent(items) => self.handle_ui_events(items),
         }
     }
 
@@ -199,6 +202,20 @@ impl App {
         self.tickets_page.on_action_result(&result);
         if success {
             self.fetch_active_tab_data();
+        }
+    }
+
+    /// Handle a batch of UI events: deduplicate by (entity_type, entity_id),
+    /// then trigger per-entity fetches for tickets and workflows. Worker events
+    /// are ignored.
+    fn handle_ui_events(&self, items: Vec<UiEventItem>) {
+        let unique = deduplicate_ui_events(items);
+        for item in unique {
+            match item.entity_type.as_str() {
+                "ticket" => self.data_manager.fetch_ticket(item.entity_id),
+                "workflow" => self.data_manager.fetch_workflow(item.entity_id),
+                _ => {} // worker and unknown events ignored
+            }
         }
     }
 
@@ -396,6 +413,15 @@ impl App {
     }
 }
 
+/// Deduplicate UI events by (entity_type, entity_id), preserving first-seen order.
+fn deduplicate_ui_events(items: Vec<UiEventItem>) -> Vec<UiEventItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert((item.entity_type.clone(), item.entity_id.clone())))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +510,60 @@ mod tests {
         let key = crossterm::event::KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
         app.handle_key(key);
         assert_eq!(app.active_tab, TabId::Flows);
+    }
+
+    #[test]
+    fn deduplicate_removes_exact_duplicates() {
+        let items = vec![
+            UiEventItem {
+                entity_type: "ticket".into(),
+                entity_id: "ur-abc".into(),
+            },
+            UiEventItem {
+                entity_type: "ticket".into(),
+                entity_id: "ur-abc".into(),
+            },
+            UiEventItem {
+                entity_type: "workflow".into(),
+                entity_id: "ur-abc".into(),
+            },
+        ];
+        let result = deduplicate_ui_events(items);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].entity_type, "ticket");
+        assert_eq!(result[1].entity_type, "workflow");
+    }
+
+    #[test]
+    fn deduplicate_preserves_order() {
+        let items = vec![
+            UiEventItem {
+                entity_type: "workflow".into(),
+                entity_id: "w1".into(),
+            },
+            UiEventItem {
+                entity_type: "ticket".into(),
+                entity_id: "t1".into(),
+            },
+            UiEventItem {
+                entity_type: "workflow".into(),
+                entity_id: "w1".into(),
+            },
+            UiEventItem {
+                entity_type: "ticket".into(),
+                entity_id: "t2".into(),
+            },
+        ];
+        let result = deduplicate_ui_events(items);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].entity_id, "w1");
+        assert_eq!(result[1].entity_id, "t1");
+        assert_eq!(result[2].entity_id, "t2");
+    }
+
+    #[test]
+    fn deduplicate_empty_batch() {
+        let result = deduplicate_ui_events(vec![]);
+        assert!(result.is_empty());
     }
 }
