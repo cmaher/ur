@@ -46,7 +46,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
 
     // 2. Resolve worker and slot to get the working directory.
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -168,14 +168,14 @@ async fn initialize_conditions_and_emit_event(
     ctx: &WorkflowContext,
     ticket_id: &str,
 ) -> anyhow::Result<()> {
-    ctx.ticket_repo
+    ctx.workflow_repo
         .initialize_workflow_conditions(ticket_id)
         .await?;
 
     // Check autoapprove metadata — if set, override review_status to approved.
     let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
     if meta.contains_key(ur_rpc::ticket_meta::AUTOAPPROVE) {
-        ctx.ticket_repo
+        ctx.workflow_repo
             .update_workflow_condition(
                 ticket_id,
                 workflow_condition::WorkflowCondition::ReviewStatus,
@@ -186,11 +186,11 @@ async fn initialize_conditions_and_emit_event(
     }
 
     // Emit pr_created workflow event.
-    let workflow = ctx.ticket_repo.get_workflow_by_ticket(ticket_id).await?;
+    let workflow = ctx.workflow_repo.get_workflow_by_ticket(ticket_id).await?;
     match workflow {
         Some(w) => {
             if let Err(e) = ctx
-                .ticket_repo
+                .workflow_repo
                 .insert_workflow_event(&w.id, WorkflowEvent::PrCreated)
                 .await
             {

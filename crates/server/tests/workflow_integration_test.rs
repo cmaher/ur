@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, watch};
 use tonic::transport::{Endpoint, Server};
 
 use ur_db::model::{LifecycleStatus, NewTicket, Worker};
-use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo};
+use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{UpdateAgentStatusRequest, WorkflowStepCompleteRequest};
 use ur_server::workflow::{
@@ -88,6 +88,7 @@ impl WorkflowHandler for MockHandler {
 struct TestHarness {
     client: CoreServiceClient<tonic::transport::Channel>,
     ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
     transition_tx: tokio::sync::mpsc::Sender<TransitionRequest>,
     shutdown_tx: watch::Sender<bool>,
     coord_handle: tokio::task::JoinHandle<()>,
@@ -97,6 +98,7 @@ struct TestHarness {
 impl TestHarness {
     async fn new(
         ticket_repo: TicketRepo,
+        workflow_repo: WorkflowRepo,
         worker_repo: WorkerRepo,
         handlers: Vec<HandlerEntry>,
     ) -> Self {
@@ -105,6 +107,7 @@ impl TestHarness {
 
         let ctx = WorkflowContext {
             ticket_repo: ticket_repo.clone(),
+            workflow_repo: workflow_repo.clone(),
             worker_repo: worker_repo.clone(),
             worker_prefix: "ur-worker-".to_string(),
             builderd_client: dummy_builderd_client(),
@@ -120,6 +123,7 @@ impl TestHarness {
         let worker_handler = ur_server::grpc::WorkerCoreServiceHandler {
             worker_repo,
             ticket_repo: ticket_repo.clone(),
+            workflow_repo: workflow_repo.clone(),
             worker_prefix: "ur-worker-".to_string(),
             transition_tx: transition_tx.clone(),
         };
@@ -130,6 +134,7 @@ impl TestHarness {
         Self {
             client,
             ticket_repo,
+            workflow_repo,
             transition_tx,
             shutdown_tx,
             coord_handle,
@@ -170,14 +175,14 @@ impl TestHarness {
     ) -> LifecycleStatus {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
-            if let Ok(Some(wf)) = self.ticket_repo.get_workflow_by_ticket(ticket_id).await
+            if let Ok(Some(wf)) = self.workflow_repo.get_workflow_by_ticket(ticket_id).await
                 && wf.status == expected
             {
                 return wf.status;
             }
             if tokio::time::Instant::now() >= deadline {
                 let wf = self
-                    .ticket_repo
+                    .workflow_repo
                     .get_workflow_by_ticket(ticket_id)
                     .await
                     .unwrap();
@@ -197,14 +202,15 @@ impl TestHarness {
 // Test infrastructure helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_db() -> (DatabaseManager, TicketRepo, WorkerRepo) {
+async fn setup_db() -> (DatabaseManager, TicketRepo, WorkflowRepo, WorkerRepo) {
     let db = DatabaseManager::open(":memory:")
         .await
         .expect("open in-memory db");
     let graph = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph);
+    let workflow_repo = WorkflowRepo::new(db.pool().clone());
     let worker_repo = WorkerRepo::new(db.pool().clone());
-    (db, ticket_repo, worker_repo)
+    (db, ticket_repo, workflow_repo, worker_repo)
 }
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
@@ -327,6 +333,7 @@ fn worker_request<T>(inner: T, worker_id: &str) -> tonic::Request<T> {
 /// Create test ticket, worker, and workflow records in the DB.
 async fn seed_ticket_and_worker(
     ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
     worker_repo: &WorkerRepo,
     ticket_id: &str,
     worker_id: &str,
@@ -343,7 +350,7 @@ async fn seed_ticket_and_worker(
     };
     ticket_repo.create_ticket(&ticket).await.unwrap();
 
-    ticket_repo
+    workflow_repo
         .create_workflow(ticket_id, LifecycleStatus::AwaitingDispatch)
         .await
         .unwrap();
@@ -365,7 +372,7 @@ async fn seed_ticket_and_worker(
     };
     worker_repo.insert_worker(&worker).await.unwrap();
 
-    ticket_repo
+    workflow_repo
         .set_workflow_worker_id(ticket_id, worker_id)
         .await
         .unwrap();
@@ -434,20 +441,27 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
 ///   FeedbackCreating → (step complete + feedback_mode=later) → Merging
 #[tokio::test]
 async fn full_lifecycle_awaiting_dispatch_through_merging() {
-    let (_db, ticket_repo, worker_repo) = setup_db().await;
+    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ1";
     let worker_id = "w-integ1";
 
-    seed_ticket_and_worker(&ticket_repo, &worker_repo, ticket_id, worker_id).await;
-    ticket_repo
+    seed_ticket_and_worker(
+        &ticket_repo,
+        &workflow_repo,
+        &worker_repo,
+        ticket_id,
+        worker_id,
+    )
+    .await;
+    workflow_repo
         .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::LATER)
         .await
         .unwrap();
 
     let lc = build_lifecycle_handlers();
 
-    let mut h = TestHarness::new(ticket_repo, worker_repo, lc.handlers).await;
+    let mut h = TestHarness::new(ticket_repo, workflow_repo, worker_repo, lc.handlers).await;
 
     // Phase 1: Worker reports idle → AwaitingDispatch → Implementing
     h.send_idle(worker_id).await;
@@ -483,17 +497,24 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 /// Test the FeedbackCreating → Implementing path (feedback_mode=now).
 #[tokio::test]
 async fn feedback_mode_now_routes_back_to_implementing() {
-    let (_db, ticket_repo, worker_repo) = setup_db().await;
+    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ2";
     let worker_id = "w-integ2";
 
-    seed_ticket_and_worker(&ticket_repo, &worker_repo, ticket_id, worker_id).await;
-    ticket_repo
+    seed_ticket_and_worker(
+        &ticket_repo,
+        &workflow_repo,
+        &worker_repo,
+        ticket_id,
+        worker_id,
+    )
+    .await;
+    workflow_repo
         .update_workflow_status(ticket_id, LifecycleStatus::FeedbackCreating)
         .await
         .unwrap();
-    ticket_repo
+    workflow_repo
         .set_workflow_feedback_mode(ticket_id, ur_rpc::feedback_mode::NOW)
         .await
         .unwrap();
@@ -505,7 +526,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
         (LifecycleStatus::FeedbackCreating, Arc::new(feedback_h)),
     ];
 
-    let mut h = TestHarness::new(ticket_repo, worker_repo, handlers).await;
+    let mut h = TestHarness::new(ticket_repo, workflow_repo, worker_repo, handlers).await;
 
     h.send_step_complete(worker_id).await;
     let status = h
@@ -521,12 +542,19 @@ async fn feedback_mode_now_routes_back_to_implementing() {
 /// handler completion (the specific bug this patch fixes).
 #[tokio::test]
 async fn coordinator_dequeues_pending_across_grpc_boundary() {
-    let (_db, ticket_repo, worker_repo) = setup_db().await;
+    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ3";
     let worker_id = "w-integ3";
 
-    seed_ticket_and_worker(&ticket_repo, &worker_repo, ticket_id, worker_id).await;
+    seed_ticket_and_worker(
+        &ticket_repo,
+        &workflow_repo,
+        &worker_repo,
+        ticket_id,
+        worker_id,
+    )
+    .await;
 
     let (await_h, await_count, _) = MockHandler::new("awaiting_dispatch");
     let (impl_h, impl_count, _) = MockHandler::new("implementing");
@@ -535,7 +563,7 @@ async fn coordinator_dequeues_pending_across_grpc_boundary() {
         (LifecycleStatus::Implementing, Arc::new(impl_h)),
     ];
 
-    let h = TestHarness::new(ticket_repo, worker_repo, handlers).await;
+    let h = TestHarness::new(ticket_repo, workflow_repo, worker_repo, handlers).await;
 
     // Send both transitions directly — the second should be queued as pending
     // and processed after the first completes.

@@ -105,7 +105,7 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
     // 5. Process hook result.
     let output_summary = build_output_summary(&hook_result.stdout, &hook_result.stderr);
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -156,7 +156,7 @@ async fn resolve_hook_context(
 
     // Resolve worker and slot to get the working directory.
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;

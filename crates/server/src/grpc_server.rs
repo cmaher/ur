@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use tonic::transport::Server;
-use ur_db::{TicketRepo, WorkerRepo};
+use ur_db::{TicketRepo, WorkerRepo, WorkflowRepo};
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
@@ -46,6 +46,7 @@ pub async fn serve_worker_grpc(
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
     worker_prefix: String,
     projects: HashMap<String, ur_config::ProjectConfig>,
     hostexec_config: crate::hostexec::HostExecConfigManager,
@@ -61,6 +62,7 @@ pub async fn serve_worker_grpc(
     let worker_core_handler = crate::grpc::WorkerCoreServiceHandler {
         worker_repo: worker_repo.clone(),
         ticket_repo,
+        workflow_repo,
         worker_prefix,
         transition_tx,
     };

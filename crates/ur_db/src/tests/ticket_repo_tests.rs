@@ -4,12 +4,18 @@ use crate::graph::GraphManager;
 use crate::model::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketUpdate};
 use crate::tests::TestDb;
 use crate::ticket_repo::TicketRepo;
+use crate::workflow_repo::WorkflowRepo;
 
 /// Build a TicketRepo from a TestDb.
 fn repo(db: &TestDb) -> TicketRepo {
     let pool = db.db().pool().clone();
     let graph_manager = GraphManager::new(pool.clone());
     TicketRepo::new(pool, graph_manager)
+}
+
+/// Build a WorkflowRepo from a TestDb.
+fn wf_repo(db: &TestDb) -> WorkflowRepo {
+    WorkflowRepo::new(db.db().pool().clone())
 }
 
 /// Build a complex ticket hierarchy for tests that need rich data.
@@ -1139,6 +1145,7 @@ async fn close_open_children_returns_zero_when_already_closed() {
 async fn create_and_get_workflow() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-t1".into(),
@@ -1151,7 +1158,7 @@ async fn create_and_get_workflow() {
     .await
     .unwrap();
 
-    let wf = repo
+    let wf = wf
         .create_workflow("wf-t1", LifecycleStatus::Open)
         .await
         .unwrap();
@@ -1159,7 +1166,7 @@ async fn create_and_get_workflow() {
     assert_eq!(wf.status, LifecycleStatus::Open);
     assert!(!wf.id.is_empty());
 
-    let fetched = repo.get_workflow_by_ticket("wf-t1").await.unwrap().unwrap();
+    let fetched = wf.get_workflow_by_ticket("wf-t1").await.unwrap().unwrap();
     assert_eq!(fetched.id, wf.id);
     assert_eq!(fetched.status, LifecycleStatus::Open);
 
@@ -1170,8 +1177,9 @@ async fn create_and_get_workflow() {
 async fn get_workflow_returns_none_when_missing() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
-    let result = repo.get_workflow_by_ticket("no-such").await.unwrap();
+    let result = wf.get_workflow_by_ticket("no-such").await.unwrap();
     assert!(result.is_none());
 
     db.cleanup().await;
@@ -1181,6 +1189,7 @@ async fn get_workflow_returns_none_when_missing() {
 async fn create_workflow_allows_multiple_per_ticket() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-dup".into(),
@@ -1194,26 +1203,22 @@ async fn create_workflow_allows_multiple_per_ticket() {
     .unwrap();
 
     // First workflow — mark it done (terminal).
-    repo.create_workflow("wf-dup", LifecycleStatus::Open)
+    wf.create_workflow("wf-dup", LifecycleStatus::Open)
         .await
         .unwrap();
-    repo.update_workflow_status("wf-dup", LifecycleStatus::Done)
+    wf.update_workflow_status("wf-dup", LifecycleStatus::Done)
         .await
         .unwrap();
 
     // Second workflow for the same ticket should succeed.
-    let wf2 = repo
+    let wf2 = wf
         .create_workflow("wf-dup", LifecycleStatus::Implementing)
         .await
         .unwrap();
     assert_eq!(wf2.status, LifecycleStatus::Implementing);
 
     // Active-only query should return the new (non-terminal) workflow.
-    let active = repo
-        .get_workflow_by_ticket("wf-dup")
-        .await
-        .unwrap()
-        .unwrap();
+    let active = wf.get_workflow_by_ticket("wf-dup").await.unwrap().unwrap();
     assert_eq!(active.id, wf2.id);
 
     db.cleanup().await;
@@ -1223,6 +1228,7 @@ async fn create_workflow_allows_multiple_per_ticket() {
 async fn update_workflow_status() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-upd".into(),
@@ -1235,19 +1241,15 @@ async fn update_workflow_status() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-upd", LifecycleStatus::Open)
+    wf.create_workflow("wf-upd", LifecycleStatus::Open)
         .await
         .unwrap();
 
-    repo.update_workflow_status("wf-upd", LifecycleStatus::Implementing)
+    wf.update_workflow_status("wf-upd", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-upd")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-upd").await.unwrap().unwrap();
     assert_eq!(wf.status, LifecycleStatus::Implementing);
 
     db.cleanup().await;
@@ -1257,6 +1259,7 @@ async fn update_workflow_status() {
 async fn mark_workflow_done() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-done".into(),
@@ -1269,20 +1272,20 @@ async fn mark_workflow_done() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-done", LifecycleStatus::Open)
+    wf.create_workflow("wf-done", LifecycleStatus::Open)
         .await
         .unwrap();
 
-    repo.update_workflow_status("wf-done", LifecycleStatus::Done)
+    wf.update_workflow_status("wf-done", LifecycleStatus::Done)
         .await
         .unwrap();
 
     // Active-only query should return None for terminal workflows.
-    let active = repo.get_workflow_by_ticket("wf-done").await.unwrap();
+    let active = wf.get_workflow_by_ticket("wf-done").await.unwrap();
     assert!(active.is_none());
 
     // Latest query should still return the Done workflow.
-    let latest = repo
+    let latest = wf
         .get_latest_workflow_by_ticket("wf-done")
         .await
         .unwrap()
@@ -1300,6 +1303,7 @@ async fn mark_workflow_done() {
 async fn create_and_poll_intent() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "int-t1".into(),
@@ -1312,14 +1316,14 @@ async fn create_and_poll_intent() {
     .await
     .unwrap();
 
-    let intent = repo
+    let intent = wf
         .create_intent("int-t1", LifecycleStatus::Implementing)
         .await
         .unwrap();
     assert_eq!(intent.ticket_id, "int-t1");
     assert_eq!(intent.target_status, LifecycleStatus::Implementing);
 
-    let polled = repo.poll_intent().await.unwrap().unwrap();
+    let polled = wf.poll_intent().await.unwrap().unwrap();
     assert_eq!(polled.id, intent.id);
     assert_eq!(polled.target_status, LifecycleStatus::Implementing);
 
@@ -1330,8 +1334,9 @@ async fn create_and_poll_intent() {
 async fn poll_intent_returns_none_when_empty() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
-    let result = repo.poll_intent().await.unwrap();
+    let result = wf.poll_intent().await.unwrap();
     assert!(result.is_none());
 
     db.cleanup().await;
@@ -1341,6 +1346,7 @@ async fn poll_intent_returns_none_when_empty() {
 async fn delete_intent() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "int-del".into(),
@@ -1353,14 +1359,14 @@ async fn delete_intent() {
     .await
     .unwrap();
 
-    let intent = repo
+    let intent = wf
         .create_intent("int-del", LifecycleStatus::Pushing)
         .await
         .unwrap();
 
-    repo.delete_intent(&intent.id).await.unwrap();
+    wf.delete_intent(&intent.id).await.unwrap();
 
-    let polled = repo.poll_intent().await.unwrap();
+    let polled = wf.poll_intent().await.unwrap();
     assert!(polled.is_none());
 
     db.cleanup().await;
@@ -1370,6 +1376,7 @@ async fn delete_intent() {
 async fn poll_intent_returns_oldest_first() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "int-ord1".into(),
@@ -1393,21 +1400,21 @@ async fn poll_intent_returns_oldest_first() {
     .await
     .unwrap();
 
-    let first = repo
+    let first = wf
         .create_intent("int-ord1", LifecycleStatus::Implementing)
         .await
         .unwrap();
-    repo.create_intent("int-ord2", LifecycleStatus::Pushing)
+    wf.create_intent("int-ord2", LifecycleStatus::Pushing)
         .await
         .unwrap();
 
-    let polled = repo.poll_intent().await.unwrap().unwrap();
+    let polled = wf.poll_intent().await.unwrap().unwrap();
     assert_eq!(polled.id, first.id);
     assert_eq!(polled.ticket_id, "int-ord1");
 
     // Delete first, poll should return second
-    repo.delete_intent(&first.id).await.unwrap();
-    let polled2 = repo.poll_intent().await.unwrap().unwrap();
+    wf.delete_intent(&first.id).await.unwrap();
+    let polled2 = wf.poll_intent().await.unwrap().unwrap();
     assert_eq!(polled2.ticket_id, "int-ord2");
 
     db.cleanup().await;
@@ -1479,6 +1486,7 @@ async fn hierarchy_top_level_tickets() {
 async fn workflow_new_has_default_stall_fields() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-stall1".into(),
@@ -1491,7 +1499,7 @@ async fn workflow_new_has_default_stall_fields() {
     .await
     .unwrap();
 
-    let wf = repo
+    let wf = wf
         .create_workflow("wf-stall1", LifecycleStatus::Open)
         .await
         .unwrap();
@@ -1504,7 +1512,7 @@ async fn workflow_new_has_default_stall_fields() {
     assert_eq!(wf.feedback_mode, "");
 
     // Verify defaults are returned by get_workflow_by_ticket too.
-    let fetched = repo
+    let fetched = wf
         .get_workflow_by_ticket("wf-stall1")
         .await
         .unwrap()
@@ -1519,6 +1527,7 @@ async fn workflow_new_has_default_stall_fields() {
 async fn set_and_clear_workflow_stall() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-stall2".into(),
@@ -1531,15 +1540,15 @@ async fn set_and_clear_workflow_stall() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-stall2", LifecycleStatus::Implementing)
+    wf.create_workflow("wf-stall2", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    repo.set_workflow_stalled("wf-stall2", "handler failed: timeout")
+    wf.set_workflow_stalled("wf-stall2", "handler failed: timeout")
         .await
         .unwrap();
 
-    let wf = repo
+    let wf = wf
         .get_workflow_by_ticket("wf-stall2")
         .await
         .unwrap()
@@ -1547,9 +1556,9 @@ async fn set_and_clear_workflow_stall() {
     assert!(wf.stalled);
     assert_eq!(wf.stall_reason, "handler failed: timeout");
 
-    repo.clear_workflow_stall("wf-stall2").await.unwrap();
+    wf.clear_workflow_stall("wf-stall2").await.unwrap();
 
-    let wf = repo
+    let wf = wf
         .get_workflow_by_ticket("wf-stall2")
         .await
         .unwrap()
@@ -1564,6 +1573,7 @@ async fn set_and_clear_workflow_stall() {
 async fn increment_implement_cycles() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-cyc1".into(),
@@ -1576,19 +1586,15 @@ async fn increment_implement_cycles() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-cyc1", LifecycleStatus::Implementing)
+    wf.create_workflow("wf-cyc1", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
-    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
-    repo.increment_implement_cycles("wf-cyc1").await.unwrap();
+    wf.increment_implement_cycles("wf-cyc1").await.unwrap();
+    wf.increment_implement_cycles("wf-cyc1").await.unwrap();
+    wf.increment_implement_cycles("wf-cyc1").await.unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-cyc1")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-cyc1").await.unwrap().unwrap();
     assert_eq!(wf.implement_cycles, 3);
 
     db.cleanup().await;
@@ -1598,6 +1604,7 @@ async fn increment_implement_cycles() {
 async fn set_workflow_worker_id() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-wid1".into(),
@@ -1610,19 +1617,15 @@ async fn set_workflow_worker_id() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-wid1", LifecycleStatus::Implementing)
+    wf.create_workflow("wf-wid1", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    repo.set_workflow_worker_id("wf-wid1", "worker-abc123")
+    wf.set_workflow_worker_id("wf-wid1", "worker-abc123")
         .await
         .unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-wid1")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-wid1").await.unwrap().unwrap();
     assert_eq!(wf.worker_id, "worker-abc123");
 
     db.cleanup().await;
@@ -1632,6 +1635,7 @@ async fn set_workflow_worker_id() {
 async fn set_workflow_noverify() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-nv1".into(),
@@ -1644,26 +1648,18 @@ async fn set_workflow_noverify() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-nv1", LifecycleStatus::Implementing)
+    wf.create_workflow("wf-nv1", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    repo.set_workflow_noverify("wf-nv1", true).await.unwrap();
+    wf.set_workflow_noverify("wf-nv1", true).await.unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-nv1")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-nv1").await.unwrap().unwrap();
     assert!(wf.noverify);
 
-    repo.set_workflow_noverify("wf-nv1", false).await.unwrap();
+    wf.set_workflow_noverify("wf-nv1", false).await.unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-nv1")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-nv1").await.unwrap().unwrap();
     assert!(!wf.noverify);
 
     db.cleanup().await;
@@ -1673,6 +1669,7 @@ async fn set_workflow_noverify() {
 async fn set_workflow_feedback_mode() {
     let db = TestDb::new().await;
     let repo = repo(&db);
+    let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
         id: "wf-fb1".into(),
@@ -1685,19 +1682,15 @@ async fn set_workflow_feedback_mode() {
     .await
     .unwrap();
 
-    repo.create_workflow("wf-fb1", LifecycleStatus::Implementing)
+    wf.create_workflow("wf-fb1", LifecycleStatus::Implementing)
         .await
         .unwrap();
 
-    repo.set_workflow_feedback_mode("wf-fb1", "inline")
+    wf.set_workflow_feedback_mode("wf-fb1", "inline")
         .await
         .unwrap();
 
-    let wf = repo
-        .get_workflow_by_ticket("wf-fb1")
-        .await
-        .unwrap()
-        .unwrap();
+    let wf = wf.get_workflow_by_ticket("wf-fb1").await.unwrap().unwrap();
     assert_eq!(wf.feedback_mode, "inline");
 
     db.cleanup().await;

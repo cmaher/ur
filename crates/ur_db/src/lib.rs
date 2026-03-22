@@ -5,6 +5,7 @@ pub mod snapshot;
 pub mod ticket_repo;
 pub mod ui_event_repo;
 pub mod worker_repo;
+pub mod workflow_repo;
 
 #[cfg(test)]
 mod tests;
@@ -20,3 +21,4 @@ pub use snapshot::SnapshotManager;
 pub use ticket_repo::TicketRepo;
 pub use ui_event_repo::UiEventRepo;
 pub use worker_repo::{SlotReconcileResult, WorkerReconcileResult, WorkerRepo};
+pub use workflow_repo::WorkflowRepo;

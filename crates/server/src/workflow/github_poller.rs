@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use ur_db::TicketRepo;
+use ur_db::WorkflowRepo;
 use ur_db::model::{LifecycleStatus, Ticket, Workflow};
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
@@ -42,6 +43,7 @@ mod check_run {
 #[derive(Clone)]
 pub struct GithubPollerManager {
     ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
     builderd_client: BuilderdClient,
     scan_interval: Duration,
     transition_tx: mpsc::Sender<TransitionRequest>,
@@ -51,6 +53,7 @@ pub struct GithubPollerManager {
 impl GithubPollerManager {
     pub fn new(
         ticket_repo: TicketRepo,
+        workflow_repo: WorkflowRepo,
         builderd_client: BuilderdClient,
         scan_interval: Duration,
         transition_tx: mpsc::Sender<TransitionRequest>,
@@ -58,6 +61,7 @@ impl GithubPollerManager {
     ) -> Self {
         Self {
             ticket_repo,
+            workflow_repo,
             builderd_client,
             scan_interval,
             transition_tx,
@@ -90,7 +94,7 @@ impl GithubPollerManager {
     /// Run one full scan: check all in_review tickets.
     async fn poll_once(&self) {
         match self
-            .ticket_repo
+            .workflow_repo
             .tickets_by_workflow_status(LifecycleStatus::InReview)
             .await
         {
@@ -147,7 +151,7 @@ impl GithubPollerManager {
         target: LifecycleStatus,
     ) {
         if let Err(e) = self
-            .ticket_repo
+            .workflow_repo
             .set_workflow_feedback_mode(ticket_id, feedback_mode)
             .await
         {
@@ -191,7 +195,7 @@ impl GithubPollerManager {
             gh_repo: gh_repo.clone(),
         };
 
-        let workflow = match self.ticket_repo.get_workflow_by_ticket(&ticket.id).await {
+        let workflow = match self.workflow_repo.get_workflow_by_ticket(&ticket.id).await {
             Ok(Some(w)) => w,
             Ok(None) => {
                 warn!(ticket_id = %ticket.id, "no active workflow found for in_review ticket");
@@ -292,7 +296,7 @@ impl GithubPollerManager {
 
         if new_status != workflow.ci_status {
             if let Err(e) = self
-                .ticket_repo
+                .workflow_repo
                 .update_workflow_condition(
                     ticket_id,
                     workflow_condition::WorkflowCondition::CiStatus,
@@ -334,7 +338,7 @@ impl GithubPollerManager {
 
         if new_status != workflow.mergeable {
             if let Err(e) = self
-                .ticket_repo
+                .workflow_repo
                 .update_workflow_condition(
                     ticket_id,
                     workflow_condition::WorkflowCondition::Mergeable,
@@ -367,7 +371,7 @@ impl GithubPollerManager {
     ) -> ReviewResult {
         let current_status = to_review_status_const(&workflow.review_status);
 
-        let seen_comment_ids = match self.ticket_repo.get_seen_comment_ids(ticket_id).await {
+        let seen_comment_ids = match self.workflow_repo.get_seen_comment_ids(ticket_id).await {
             Ok(ids) => ids,
             Err(e) => {
                 warn!(ticket_id = %ticket_id, error = %e, "failed to get seen comment IDs");
@@ -416,7 +420,7 @@ impl GithubPollerManager {
 
         if new_status != workflow.review_status {
             if let Err(e) = self
-                .ticket_repo
+                .workflow_repo
                 .update_workflow_condition(
                     ticket_id,
                     workflow_condition::WorkflowCondition::ReviewStatus,
@@ -488,7 +492,7 @@ impl GithubPollerManager {
 
         // Changes requested takes priority — create failure tickets first, then go to FeedbackCreating.
         if review_result.status == workflow_condition::review_status::CHANGES_REQUESTED {
-            if let Err(e) = self.ticket_repo.reset_implement_cycles(ticket_id).await {
+            if let Err(e) = self.workflow_repo.reset_implement_cycles(ticket_id).await {
                 warn!(ticket_id = %ticket_id, error = %e, "failed to reset implement_cycles");
             }
             self.record_comments_and_transition(
@@ -677,7 +681,7 @@ impl GithubPollerManager {
             }
         };
         if let Err(e) = self
-            .ticket_repo
+            .workflow_repo
             .insert_workflow_comments(ticket_id, &comment_ids)
             .await
         {
@@ -712,7 +716,7 @@ impl GithubPollerManager {
     /// Used when a PR is closed without merge.
     async fn cancel_workflow_and_revert(&self, ticket_id: &str) {
         if let Err(e) = self
-            .ticket_repo
+            .workflow_repo
             .update_workflow_status(ticket_id, LifecycleStatus::Cancelled)
             .await
         {
@@ -745,11 +749,11 @@ impl GithubPollerManager {
     ) {
         // Use the custom timestamp if non-empty, otherwise fall back to server time.
         let result = if created_at.is_empty() {
-            self.ticket_repo
+            self.workflow_repo
                 .insert_workflow_event(workflow_id, event)
                 .await
         } else {
-            self.ticket_repo
+            self.workflow_repo
                 .insert_workflow_event_at(workflow_id, event, created_at)
                 .await
         };
@@ -766,7 +770,7 @@ impl GithubPollerManager {
     /// Emit a workflow event with the current server timestamp.
     async fn emit_workflow_event(&self, workflow_id: &str, event: WorkflowEvent) {
         if let Err(e) = self
-            .ticket_repo
+            .workflow_repo
             .insert_workflow_event(workflow_id, event)
             .await
         {

@@ -36,7 +36,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
 
             // 2. Read worker_id from workflow table, pr_number from ticket metadata.
             let workflow = ctx
-                .ticket_repo
+                .workflow_repo
                 .get_workflow_by_ticket(&ticket_id)
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -70,11 +70,11 @@ impl WorkflowHandler for FeedbackCreateHandler {
             //    on step completion. Handled IDs are passed to the worker so it
             //    skips comments that already have feedback tickets.
             let pending_comments = ctx
-                .ticket_repo
+                .workflow_repo
                 .get_pending_feedback_comments(&ticket_id)
                 .await?;
 
-            let all_seen = ctx.ticket_repo.get_seen_comment_ids(&ticket_id).await?;
+            let all_seen = ctx.workflow_repo.get_seen_comment_ids(&ticket_id).await?;
 
             let pending_set: std::collections::HashSet<&str> =
                 pending_comments.iter().map(|s| s.as_str()).collect();

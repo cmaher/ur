@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo};
+use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo, WorkflowRepo};
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -178,6 +178,7 @@ async fn init_and_serve(
 
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
+    let workflow_repo = WorkflowRepo::new(db.pool().clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
     let poll_interval = std::time::Duration::from_millis(cfg.server.ui_event_poll_interval_ms);
@@ -185,6 +186,7 @@ async fn init_and_serve(
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
         transition_tx: None, // set in serve_grpc_servers after builderd connects
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
@@ -199,6 +201,7 @@ async fn init_and_serve(
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
         ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
         network_config: cfg.network.clone(),
         hostexec_config: hostexec_config.clone(),
         builderd_addr: builderd_addr.clone(),
@@ -215,6 +218,7 @@ async fn init_and_serve(
         worker_manager,
         worker_repo,
         ticket_repo,
+        workflow_repo,
         hostexec_config,
         builderd_addr,
         host_workspace,
@@ -236,6 +240,7 @@ async fn serve_grpc_servers(
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
     hostexec_config: ur_server::hostexec::HostExecConfigManager,
     builderd_addr: String,
     host_workspace: PathBuf,
@@ -257,8 +262,10 @@ async fn serve_grpc_servers(
 
     // Clone repos before they are moved into gRPC server handlers.
     let engine_ticket_repo = ticket_repo.clone();
+    let engine_workflow_repo = workflow_repo.clone();
     let engine_worker_repo = worker_repo.clone();
     let poller_ticket_repo = ticket_repo.clone();
+    let poller_workflow_repo = workflow_repo.clone();
     let poller_builderd_client = workflow_builderd_client.clone();
 
     let workflow_ticket_client =
@@ -278,6 +285,7 @@ async fn serve_grpc_servers(
     let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
     let engine = WorkflowEngine::new(
         engine_ticket_repo,
+        engine_workflow_repo,
         engine_worker_repo,
         network_prefix.clone(),
         workflow_builderd_client,
@@ -291,6 +299,7 @@ async fn serve_grpc_servers(
     // Spawn the workflow coordinator for intent-based transitions.
     let coordinator_ctx = ur_server::workflow::WorkflowContext {
         ticket_repo: poller_ticket_repo.clone(),
+        workflow_repo: poller_workflow_repo.clone(),
         worker_repo: worker_repo.clone(),
         worker_prefix: network_prefix.clone(),
         builderd_client: poller_builderd_client.clone(),
@@ -308,6 +317,7 @@ async fn serve_grpc_servers(
 
     let poller = GithubPollerManager::new(
         poller_ticket_repo,
+        poller_workflow_repo,
         poller_builderd_client,
         scan_interval,
         transition_tx.clone(),
@@ -341,6 +351,7 @@ async fn serve_grpc_servers(
         worker_manager,
         worker_repo,
         ticket_repo,
+        workflow_repo,
         network_prefix,
         projects,
         hostexec_config,
