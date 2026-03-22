@@ -7,7 +7,10 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo, WorkflowRepo};
+use ur_db::{
+    DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo,
+    WorkflowRepo,
+};
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
