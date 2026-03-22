@@ -42,6 +42,10 @@ pub fn render_header(
         })
         .collect();
 
+    // Fill the entire header row with base_200 background first.
+    let bg_style = Style::default().bg(theme.base_200).fg(theme.base_content);
+    buf.set_style(area, bg_style);
+
     let line = Line::from(spans);
     line.render(area, buf);
 }

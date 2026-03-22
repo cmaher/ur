@@ -29,6 +29,10 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
         ));
     }
 
+    // Fill the entire footer row with neutral background first.
+    let bg_style = Style::default().bg(theme.neutral).fg(theme.neutral_content);
+    buf.set_style(area, bg_style);
+
     let line = Line::from(spans);
     line.render(area, buf);
 }
