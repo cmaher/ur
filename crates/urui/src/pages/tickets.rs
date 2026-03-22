@@ -529,7 +529,7 @@ impl Page for TicketsPage {
                     Constraint::Fill(1),
                 ];
                 let table = ThemedTable {
-                    headers: vec!["ID", "Status", "Priority", "Progress", "", "Title"],
+                    headers: vec!["ID", "Status", "P", "Progress", "", "Title"],
                     rows,
                     selected: Some(self.selected_row),
                     widths: widths.clone(),
