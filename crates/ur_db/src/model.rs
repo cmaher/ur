@@ -125,6 +125,8 @@ pub struct Ticket {
     pub branch: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub children_completed: i32,
+    pub children_total: i32,
 }
 
 #[derive(Default)]

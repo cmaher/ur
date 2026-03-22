@@ -4,7 +4,7 @@ use crossterm::event::{self, Event, KeyEvent};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::data::DataPayload;
+use crate::data::{ActionResult, DataPayload};
 
 /// Events consumed by the main application loop.
 #[derive(Debug)]
@@ -15,6 +15,8 @@ pub enum AppEvent {
     Tick,
     /// A gRPC data-fetch task completed and delivered a payload.
     DataReady(DataPayload),
+    /// An async action (dispatch, etc.) completed with a result.
+    ActionResult(ActionResult),
     /// Terminal was resized to (columns, rows).
     Resize(u16, u16),
 }
@@ -163,6 +165,21 @@ mod tests {
         // Should receive the one event, then None.
         assert!(rx.recv().await.is_some());
         assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn action_result_round_trip() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let result = ActionResult {
+            result: Ok("Dispatched ur-123".into()),
+            silent_on_success: false,
+        };
+        tx.send(AppEvent::ActionResult(result)).unwrap();
+        drop(tx);
+
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, AppEvent::ActionResult(_)));
     }
 
     #[test]

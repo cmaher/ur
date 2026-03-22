@@ -12,9 +12,10 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventReceiver};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
+use crate::pages::tickets::{open_filter_menu, open_priority_picker};
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
-use crate::widgets::{render_footer, render_header};
+use crate::widgets::{render_banner, render_footer, render_header};
 
 /// Top-level application state and event loop coordinator.
 ///
@@ -80,21 +81,45 @@ impl App {
         Ok(())
     }
 
-    /// Process a single event (key, tick, data, resize).
+    /// Process a single event (key, tick, data, resize, action result).
     fn process_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Tick => self.handle_tick(),
             AppEvent::DataReady(payload) => self.handle_data_ready(payload),
+            AppEvent::ActionResult(result) => self.handle_action_result(result),
             AppEvent::Resize(_, _) => {} // Just redraw
         }
     }
 
-    /// Handle a key event: check for Ctrl+C, resolve via keymap, dispatch.
+    /// Handle a key event: check for Ctrl+C, dismiss banners, resolve via keymap, dispatch.
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         // Ctrl+C always exits cleanly.
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.should_quit = true;
+            return;
+        }
+
+        // If the tickets page has an active overlay, route raw keys to it.
+        // Tab-switch keys close the overlay and switch tabs.
+        if self.active_tab == TabId::Tickets && self.tickets_page.has_overlay() {
+            if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
+                self.tickets_page.close_overlay();
+                self.switch_tab(tab);
+                return;
+            }
+            if let Some((ticket_id, priority)) = self.tickets_page.handle_overlay_key(key) {
+                self.data_manager
+                    .update_ticket_priority(ticket_id, priority);
+            }
+            return;
+        }
+
+        // If the active page has a banner, Enter or Escape dismisses it.
+        if self.active_page().banner().is_some()
+            && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
+        {
+            self.active_page_mut().dismiss_banner();
             return;
         }
 
@@ -107,12 +132,24 @@ impl App {
             Action::Quit => {
                 self.should_quit = true;
             }
+            Action::Filter if self.active_tab == TabId::Tickets => {
+                open_filter_menu(&mut self.tickets_page, &self.ctx.projects);
+            }
+            Action::SetPriority if self.active_tab == TabId::Tickets => {
+                if self.tickets_page.selected_ticket_id().is_some() {
+                    open_priority_picker(&mut self.tickets_page);
+                }
+            }
+            Action::Dispatch if self.active_tab == TabId::Tickets => {
+                self.dispatch_selected_ticket();
+            }
             other => self.dispatch_to_page(other),
         }
     }
 
-    /// Handle a tick: refresh active page data if stale.
+    /// Handle a tick: auto-dismiss expired banners and refresh active page data if stale.
     fn handle_tick(&mut self) {
+        self.active_page_mut().tick_banner();
         if self.active_page().needs_data() {
             self.fetch_active_tab_data();
         }
@@ -124,6 +161,19 @@ impl App {
         self.flows_page.on_data(&payload);
     }
 
+    /// Handle an ActionResult event: route to the active page for banner display.
+    fn handle_action_result(&mut self, result: crate::data::ActionResult) {
+        self.tickets_page.on_action_result(&result);
+    }
+
+    /// Dispatch the currently selected ticket on the tickets page.
+    fn dispatch_selected_ticket(&mut self) {
+        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+            self.data_manager
+                .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
     /// Dispatch an action to the active page and handle quit if returned.
     fn dispatch_to_page(&mut self, action: Action) {
         let result = self.active_page_mut().handle_action(action);
@@ -132,11 +182,13 @@ impl App {
         }
     }
 
-    /// Switch the active tab and fetch data if the new page needs it.
+    /// Switch the active tab, dismiss any banner, and fetch data if the new page needs it.
     fn switch_tab(&mut self, tab: TabId) {
         if self.active_tab == tab {
             return;
         }
+        // Dismiss banner on the page we're leaving.
+        self.active_page_mut().dismiss_banner();
         self.active_tab = tab;
         if self.active_page().needs_data() {
             self.fetch_active_tab_data();
@@ -219,7 +271,11 @@ impl App {
             },
         ];
 
-        render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
+        if let Some(banner) = self.active_page().banner() {
+            render_banner(chunks[0], buf, &self.ctx, banner);
+        } else {
+            render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
+        }
         self.active_page().render(chunks[1], buf, &self.ctx);
         render_footer(
             chunks[2],
@@ -242,7 +298,12 @@ mod tests {
         let tui_config = TuiConfig::default();
         let theme = Theme::resolve(&tui_config);
         let keymap = Keymap::default();
-        TuiContext { theme, keymap }
+        TuiContext {
+            theme,
+            keymap,
+            projects: vec![],
+            project_configs: std::collections::HashMap::new(),
+        }
     }
 
     fn make_app() -> App {

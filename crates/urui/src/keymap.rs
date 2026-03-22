@@ -16,6 +16,10 @@ pub enum Action {
     Back,
     Quit,
     SwitchTab(TabId),
+    Refresh,
+    Filter,
+    SetPriority,
+    Dispatch,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -38,118 +42,164 @@ pub struct Keymap {
 impl Default for Keymap {
     fn default() -> Self {
         let mut bindings = HashMap::new();
-
-        // navigate_up = [k, Up]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('k'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::NavigateUp,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Up,
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::NavigateUp,
-        );
-
-        // navigate_down = [j, Down]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('j'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::NavigateDown,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Down,
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::NavigateDown,
-        );
-
-        // navigate_left = [h, Left]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('h'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::PageLeft,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Left,
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::PageLeft,
-        );
-
-        // navigate_right = [l, Right]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('l'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::PageRight,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Right,
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::PageRight,
-        );
-
-        // tab_tickets = [t]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('t'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::SwitchTab(TabId::Tickets),
-        );
-
-        // tab_flows = [f]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('f'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::SwitchTab(TabId::Flows),
-        );
-
-        // select = [Enter]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::Select,
-        );
-
-        // back = [q]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('q'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::Back,
-        );
-
-        // quit = [Q]
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('Q'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::Quit,
-        );
-
+        insert_navigation_bindings(&mut bindings);
+        insert_fixed_action_bindings(&mut bindings);
         Self { bindings }
     }
+}
+
+/// Insert vim-style and arrow-key navigation bindings (up/down/left/right).
+fn insert_navigation_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+    // navigate_up = [k, Up]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('k'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::NavigateUp,
+    );
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::NavigateUp,
+    );
+
+    // navigate_down = [j, Down]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::NavigateDown,
+    );
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::NavigateDown,
+    );
+
+    // navigate_left = [h, Left]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('h'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::PageLeft,
+    );
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Left,
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::PageLeft,
+    );
+
+    // navigate_right = [l, Right]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('l'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::PageRight,
+    );
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Right,
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::PageRight,
+    );
+}
+
+/// Insert fixed action bindings: tabs, refresh, filter, priority, dispatch,
+/// select, back, quit. These are not overridable via KeymapOverrides.
+fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+    // tab_tickets = [t]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::SwitchTab(TabId::Tickets),
+    );
+
+    // tab_flows = [f]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::SwitchTab(TabId::Flows),
+    );
+
+    // refresh = [r]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Refresh,
+    );
+
+    // filter = [*]
+    // Note: `*` is not uppercase, so normalize_modifiers strips SHIFT.
+    // Store with NONE to match the normalized key event.
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('*'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Filter,
+    );
+
+    // set_priority = [P]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('P'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::SetPriority,
+    );
+
+    // dispatch = [D]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('D'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::Dispatch,
+    );
+
+    // select = [Enter]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Select,
+    );
+
+    // back = [q]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Back,
+    );
+
+    // quit = [Q]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('Q'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::Quit,
+    );
 }
 
 impl Keymap {
@@ -183,6 +233,37 @@ impl Keymap {
                 modifiers: KeyModifiers::NONE,
             },
             Action::SwitchTab(TabId::Flows),
+        );
+
+        // Refresh, Filter, SetPriority, Dispatch are not part of
+        // KeymapOverrides; preserve defaults when building from config.
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('r'),
+                modifiers: KeyModifiers::NONE,
+            },
+            Action::Refresh,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('*'),
+                modifiers: KeyModifiers::NONE,
+            },
+            Action::Filter,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('P'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::SetPriority,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('D'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::Dispatch,
         );
 
         Self { bindings }
@@ -485,6 +566,60 @@ mod tests {
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
             Some(Action::SwitchTab(TabId::Tickets)),
+        );
+
+        // Refresh, Filter, SetPriority, Dispatch preserved as defaults
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Some(Action::Refresh),
+        );
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT)),
+            Some(Action::Filter), // SHIFT stripped by normalize_modifiers for non-uppercase
+        );
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            Some(Action::SetPriority),
+        );
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
+            Some(Action::Dispatch),
+        );
+    }
+
+    #[test]
+    fn default_keymap_refresh() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+            Some(Action::Refresh),
+        );
+    }
+
+    #[test]
+    fn default_keymap_filter() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT)),
+            Some(Action::Filter), // SHIFT stripped by normalize_modifiers for non-uppercase
+        );
+    }
+
+    #[test]
+    fn default_keymap_set_priority() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            Some(Action::SetPriority),
+        );
+    }
+
+    #[test]
+    fn default_keymap_dispatch() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
+            Some(Action::Dispatch),
         );
     }
 }

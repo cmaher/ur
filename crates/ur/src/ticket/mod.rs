@@ -1,7 +1,6 @@
 pub mod args;
 mod execute;
 pub mod format;
-mod status;
 
 pub use args::TicketArgs;
 pub use execute::execute;
@@ -75,10 +74,6 @@ pub enum TicketOutput {
         epic_id: String,
         tickets: Vec<DispatchableTicket>,
     },
-    StatusReport {
-        report: String,
-        tickets: Vec<Ticket>,
-    },
 }
 
 /// Format a `TicketOutput` as human-readable text.
@@ -128,7 +123,6 @@ pub fn format_output(output: &TicketOutput) -> String {
                 format::format_dispatchable(tickets)
             }
         }
-        TicketOutput::StatusReport { report, .. } => report.clone(),
     }
 }
 

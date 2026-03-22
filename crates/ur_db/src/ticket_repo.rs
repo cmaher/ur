@@ -67,6 +67,8 @@ impl TicketRepo {
             branch: ticket.branch.clone(),
             created_at: now.clone(),
             updated_at: now,
+            children_completed: 0,
+            children_total: 0,
         })
     }
 
@@ -128,6 +130,8 @@ impl TicketRepo {
                     branch,
                     created_at,
                     updated_at,
+                    children_completed: 0,
+                    children_total: 0,
                 }
             },
         ))
@@ -196,12 +200,17 @@ impl TicketRepo {
             branch: branch.map(|s| s.to_owned()),
             created_at: existing.created_at,
             updated_at: now,
+            children_completed: 0,
+            children_total: 0,
         })
     }
 
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = String::from(
-            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at FROM ticket WHERE 1=1",
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             FROM ticket WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
 
@@ -244,6 +253,8 @@ impl TicketRepo {
                 Option<String>,
                 String,
                 String,
+                i32,
+                i32,
             ),
         >(sqlx::AssertSqlSafe(query));
         for bind in &binds {
@@ -269,6 +280,8 @@ impl TicketRepo {
                     branch,
                     created_at,
                     updated_at,
+                    children_completed,
+                    children_total,
                 )| {
                     Ticket {
                         id,
@@ -286,6 +299,8 @@ impl TicketRepo {
                         branch,
                         created_at,
                         updated_at,
+                        children_completed,
+                        children_total,
                     }
                 },
             )
@@ -422,6 +437,8 @@ impl TicketRepo {
                             branch,
                             created_at,
                             updated_at,
+                            children_completed: 0,
+                            children_total: 0,
                         },
                         depth,
                     )
@@ -1333,6 +1350,8 @@ impl TicketRepo {
                         branch,
                         created_at,
                         updated_at,
+                        children_completed: 0,
+                        children_total: 0,
                     }
                 },
             )
@@ -1407,6 +1426,8 @@ impl TicketRepo {
                         branch,
                         created_at,
                         updated_at,
+                        children_completed: 0,
+                        children_total: 0,
                     }
                 },
             )

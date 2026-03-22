@@ -16,6 +16,8 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
         project: "test".to_owned(),
         branch: String::new(),
         depth: 0,
+        children_completed: 0,
+        children_total: 0,
     }
 }
 

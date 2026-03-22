@@ -42,6 +42,10 @@ message Ticket {
   // Field 13 removed (was lifecycle_managed).
   // Depth in the tree hierarchy (0 = root). Only set when using --tree queries.
   int32 depth = 14;
+  // Number of children in a completed (closed) state.
+  int32 children_completed = 15;
+  // Total number of children.
+  int32 children_total = 16;
 }
 
 message MetadataEntry {

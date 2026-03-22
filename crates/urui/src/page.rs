@@ -1,9 +1,41 @@
+use std::time::Instant;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::Action;
+
+/// Duration after which success banners auto-dismiss.
+const BANNER_AUTO_DISMISS_SECS: u64 = 5;
+
+/// Visual variant controlling banner color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerVariant {
+    Success,
+    Error,
+}
+
+/// A temporary notification banner displayed in the header slot.
+#[derive(Debug, Clone)]
+pub struct Banner {
+    pub message: String,
+    pub variant: BannerVariant,
+    pub created_at: Instant,
+}
+
+impl Banner {
+    /// Returns true if this banner should be auto-dismissed based on elapsed time.
+    pub fn is_expired(&self) -> bool {
+        match self.variant {
+            BannerVariant::Success => {
+                self.created_at.elapsed().as_secs() >= BANNER_AUTO_DISMISS_SECS
+            }
+            BannerVariant::Error => false,
+        }
+    }
+}
 
 /// Identifies which tab/page is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,4 +88,15 @@ pub trait Page {
 
     /// Whether this page currently needs a data fetch.
     fn needs_data(&self) -> bool;
+
+    /// Returns the active banner for this page, if any.
+    fn banner(&self) -> Option<&Banner> {
+        None
+    }
+
+    /// Dismiss any active banner on this page.
+    fn dismiss_banner(&mut self) {}
+
+    /// Tick the banner timer, auto-dismissing expired banners.
+    fn tick_banner(&mut self) {}
 }
