@@ -6,6 +6,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 
 use crate::context::TuiContext;
 use crate::data::DataManager;
@@ -189,6 +190,13 @@ impl App {
 
     /// Render the full application frame: header, content area, footer.
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        // Fill the entire frame with the base background so no terminal
+        // theme bleeds through in margins or empty regions.
+        let base_style = Style::default()
+            .bg(self.ctx.theme.base_100)
+            .fg(self.ctx.theme.base_content);
+        buf.set_style(area, base_style);
+
         let chunks = Layout::vertical([
             Constraint::Length(1), // header
             Constraint::Fill(1),   // content
