@@ -560,6 +560,54 @@ pub const DEFAULT_TUI_THEME: &str = "dark";
 /// Default TUI keymap name.
 pub const DEFAULT_TUI_KEYMAP: &str = "default";
 
+/// Built-in theme names (from daisyUI), sorted alphabetically.
+///
+/// These rarely change. The canonical list is generated at compile time in
+/// `urui/build.rs` from `themes/themes.css`, but we keep a static copy here
+/// so that the CLI can validate theme names without depending on `urui`.
+pub const BUILTIN_THEME_NAMES: &[&str] = &[
+    "abyss",
+    "acid",
+    "aqua",
+    "autumn",
+    "black",
+    "bumblebee",
+    "business",
+    "caramellatte",
+    "cmyk",
+    "coffee",
+    "corporate",
+    "cupcake",
+    "cyberpunk",
+    "dark",
+    "dim",
+    "dracula",
+    "emerald",
+    "fantasy",
+    "forest",
+    "garden",
+    "halloween",
+    "lemonade",
+    "light",
+    "lofi",
+    "luxury",
+    "night",
+    "nord",
+    "pastel",
+    "retro",
+    "silk",
+    "sunset",
+    "synthwave",
+    "valentine",
+    "winter",
+    "wireframe",
+];
+
+/// Returns `true` if the given name is a built-in theme.
+pub fn is_builtin_theme(name: &str) -> bool {
+    BUILTIN_THEME_NAMES.contains(&name)
+}
+
 /// TUI theme color definitions.
 ///
 /// All fields are `Option<String>` — colors are stored as raw strings
@@ -933,6 +981,39 @@ impl Config {
             projects,
         })
     }
+}
+
+/// Persist the selected theme name to `ur.toml` in the given config directory.
+///
+/// Reads the existing file (if any), sets `[tui].theme`, and writes it back
+/// without disturbing other sections.
+pub fn save_theme_name(config_dir: &Path, theme_name: &str) -> anyhow::Result<()> {
+    let path = config_dir.join("ur.toml");
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let mut doc: toml::Value = if content.is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        content.parse()?
+    };
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("ur.toml root is not a table"))?;
+    let tui = table
+        .entry("tui")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let tui_table = tui
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[tui] is not a table"))?;
+    tui_table.insert(
+        "theme".to_string(),
+        toml::Value::String(theme_name.to_string()),
+    );
+    std::fs::write(&path, toml::to_string_pretty(&doc)?)?;
+    Ok(())
 }
 
 /// Filename for the server pid file, stored in the config directory.
