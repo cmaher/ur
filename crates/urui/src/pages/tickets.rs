@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crossterm::event::KeyEvent;
@@ -22,8 +23,8 @@ use crate::widgets::{MiniProgressBar, ThemedTable};
 enum DataState {
     /// No data has been fetched yet.
     Loading,
-    /// Data was fetched successfully.
-    Loaded(Vec<Ticket>),
+    /// Data was fetched successfully. Stored in a HashMap keyed by ticket ID.
+    Loaded(HashMap<String, Ticket>),
     /// Data fetch failed with the given error message.
     Error(String),
 }
@@ -46,8 +47,8 @@ pub struct TicketsPage {
     page_size: usize,
     overlay: Option<Overlay>,
     filters: TicketFilters,
-    /// Cache of filtered + sorted tickets, rebuilt on data or filter change.
-    filtered_cache: Vec<Ticket>,
+    /// Cache of filtered + sorted ticket IDs, rebuilt on data or filter change.
+    filtered_cache: Vec<String>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
     /// In-progress status message shown below the tab header.
@@ -86,8 +87,8 @@ impl TicketsPage {
         self.filtered_cache.len()
     }
 
-    /// Returns the slice of tickets visible on the current page.
-    fn visible_tickets(&self) -> &[Ticket] {
+    /// Returns the IDs visible on the current page.
+    fn visible_ids(&self) -> &[String] {
         let start = self.current_page * self.page_size;
         let end = (start + self.page_size).min(self.filtered_cache.len());
         if start >= self.filtered_cache.len() {
@@ -97,6 +98,18 @@ impl TicketsPage {
         }
     }
 
+    /// Returns the tickets visible on the current page by looking up IDs in the map.
+    fn visible_tickets(&self) -> Vec<&Ticket> {
+        let map = match &self.data_state {
+            DataState::Loaded(m) => m,
+            _ => return Vec::new(),
+        };
+        self.visible_ids()
+            .iter()
+            .filter_map(|id| map.get(id))
+            .collect()
+    }
+
     /// Build table row data from visible tickets.
     ///
     /// The Progress column (index 3) is left empty here because the progress
@@ -104,7 +117,7 @@ impl TicketsPage {
     /// [`render_progress_bars`].
     fn build_rows(&self) -> Vec<Vec<String>> {
         self.visible_tickets()
-            .iter()
+            .into_iter()
             .map(|t| {
                 let status_label = Self::dispatch_label(t);
                 vec![
@@ -165,7 +178,7 @@ impl TicketsPage {
 
     /// Handle NavigateDown: move selection down within the current page.
     fn navigate_down(&mut self) {
-        let visible_count = self.visible_tickets().len();
+        let visible_count = self.visible_ids().len();
         if visible_count > 0 && self.selected_row < visible_count - 1 {
             self.selected_row += 1;
         }
@@ -199,42 +212,80 @@ impl TicketsPage {
     }
 
     /// After loading new data, either clamp the selection (refresh) or reset it (initial load).
-    fn update_selection_after_load(&mut self, was_refreshing: bool) {
-        if !was_refreshing {
-            self.current_page = 0;
-            self.selected_row = 0;
+    /// Apply a full ticket list result, preserving selection on refresh.
+    fn apply_tickets_result(&mut self, result: &Result<Vec<Ticket>, String>, was_refreshing: bool) {
+        match result {
+            Ok(tickets) => {
+                let map: HashMap<String, Ticket> =
+                    tickets.iter().map(|t| (t.id.clone(), t.clone())).collect();
+                self.data_state = DataState::Loaded(map);
+                if was_refreshing {
+                    self.preserve_selection_and_rebuild();
+                } else {
+                    self.rebuild_cache();
+                    self.current_page = 0;
+                    self.selected_row = 0;
+                }
+            }
+            Err(msg) => {
+                self.data_state = DataState::Error(msg.clone());
+                self.filtered_cache.clear();
+            }
+        }
+    }
+
+    /// Preserve selection by ticket ID across data reloads.
+    ///
+    /// Saves the currently selected ticket ID, rebuilds the cache, then restores
+    /// the selection to the same ID if it still exists. Falls back to clamping.
+    fn preserve_selection_and_rebuild(&mut self) {
+        let selected_id = self.selected_ticket_id();
+        self.rebuild_cache();
+        self.restore_selection_by_id(selected_id.as_deref());
+    }
+
+    /// Restore selection to a ticket ID, or clamp if the ID is gone.
+    fn restore_selection_by_id(&mut self, ticket_id: Option<&str>) {
+        if let Some(id) = ticket_id
+            && let Some(pos) = self.filtered_cache.iter().position(|tid| tid == id)
+        {
+            self.current_page = pos / self.page_size;
+            self.selected_row = pos % self.page_size;
             return;
         }
-        // Clamp selection to valid ranges without resetting position.
-        let visible_count = self.visible_tickets().len();
-        if visible_count == 0 {
+        // ID not found or no previous selection — clamp.
+        self.clamp_selection();
+    }
+
+    /// Clamp selection to valid ranges.
+    fn clamp_selection(&mut self) {
+        let total = self.filtered_cache.len();
+        if total == 0 {
             self.selected_row = 0;
             self.current_page = 0;
         } else {
             if self.current_page >= self.total_pages() {
                 self.current_page = self.total_pages().saturating_sub(1);
             }
+            let visible_count = self.visible_ids().len();
             if self.selected_row >= visible_count {
-                self.selected_row = visible_count - 1;
+                self.selected_row = visible_count.saturating_sub(1);
             }
         }
     }
 
     /// Rebuild the filtered + sorted cache from the raw data.
     fn rebuild_cache(&mut self) {
-        let tickets = match &self.data_state {
-            DataState::Loaded(t) => t,
+        let map = match &self.data_state {
+            DataState::Loaded(m) => m,
             _ => {
                 self.filtered_cache.clear();
                 return;
             }
         };
-        self.filtered_cache = tickets
-            .iter()
-            .filter(|t| self.passes_filter(t))
-            .cloned()
-            .collect();
-        sort_tickets(&mut self.filtered_cache);
+        let mut tickets: Vec<&Ticket> = map.values().filter(|t| self.passes_filter(t)).collect();
+        sort_tickets_ref(&mut tickets);
+        self.filtered_cache = tickets.into_iter().map(|t| t.id.clone()).collect();
     }
 
     /// Check whether a ticket passes the current filters.
@@ -316,8 +367,7 @@ impl TicketsPage {
 
     /// Returns the ticket ID of the currently selected row, if any.
     pub fn selected_ticket_id(&self) -> Option<String> {
-        let visible = self.visible_tickets();
-        visible.get(self.selected_row).map(|t| t.id.clone())
+        self.visible_ids().get(self.selected_row).cloned()
     }
 
     /// Set an in-progress status message (e.g., for dispatch).
@@ -353,9 +403,9 @@ impl TicketsPage {
     }
 }
 
-/// Sort tickets: priority ascending (P0 first), tickets with children rank
-/// higher than same-priority leaves.
-fn sort_tickets(tickets: &mut [Ticket]) {
+/// Sort ticket references: priority ascending (P0 first), tickets with children
+/// rank higher than same-priority leaves.
+fn sort_tickets_ref(tickets: &mut [&Ticket]) {
     tickets.sort_by(|a, b| {
         // Primary sort: priority ascending
         let prio = a.priority.cmp(&b.priority);
@@ -365,7 +415,12 @@ fn sort_tickets(tickets: &mut [Ticket]) {
         // Secondary: tickets with children before leaves at same priority
         let a_has_children = a.children_total > 0;
         let b_has_children = b.children_total > 0;
-        b_has_children.cmp(&a_has_children)
+        let children = b_has_children.cmp(&a_has_children);
+        if children != std::cmp::Ordering::Equal {
+            return children;
+        }
+        // Tertiary: stable order by ID
+        a.id.cmp(&b.id)
     });
 }
 
@@ -408,7 +463,7 @@ fn render_progress_bars(
     let data_start_y = inner.y + 1;
     let visible = page.visible_tickets();
 
-    for (i, ticket) in visible.iter().enumerate() {
+    for (i, ticket) in visible.into_iter().enumerate() {
         let row_y = data_start_y + i as u16;
         if row_y >= inner.y + inner.height {
             break;
@@ -625,21 +680,20 @@ impl Page for TicketsPage {
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
-        if let DataPayload::Tickets(result) = payload {
-            let was_refreshing = self.refreshing;
-            self.refreshing = false;
-            self.active_status = None;
-            match result {
-                Ok(tickets) => {
-                    self.data_state = DataState::Loaded(tickets.clone());
-                    self.rebuild_cache();
-                    self.update_selection_after_load(was_refreshing);
-                }
-                Err(msg) => {
-                    self.data_state = DataState::Error(msg.clone());
-                    self.filtered_cache.clear();
+        match payload {
+            DataPayload::Tickets(result) => {
+                let was_refreshing = self.refreshing;
+                self.refreshing = false;
+                self.active_status = None;
+                self.apply_tickets_result(result, was_refreshing);
+            }
+            DataPayload::TicketUpdate(Ok(ticket)) => {
+                if let DataState::Loaded(ref mut map) = self.data_state {
+                    map.insert(ticket.id.clone(), ticket.clone());
+                    self.preserve_selection_and_rebuild();
                 }
             }
+            _ => {}
         }
     }
 
@@ -688,8 +742,8 @@ pub fn open_filter_menu(page: &mut TicketsPage, projects: &[String]) {
 /// Open the priority picker overlay on the tickets page, initialized to the
 /// selected ticket's current priority.
 pub fn open_priority_picker(page: &mut TicketsPage) {
-    let current_priority = page
-        .visible_tickets()
+    let visible = page.visible_tickets();
+    let current_priority = visible
         .get(page.selected_row)
         .map(|t| t.priority)
         .unwrap_or(2);
@@ -934,7 +988,7 @@ mod tests {
 
         // Default: show_children=off, so child is hidden
         assert_eq!(page.ticket_count(), 1);
-        assert_eq!(page.filtered_cache[0].id, "t-1");
+        assert_eq!(page.filtered_cache[0], "t-1");
     }
 
     #[test]
@@ -971,7 +1025,7 @@ mod tests {
         page.filters.priorities = vec![0];
         page.rebuild_cache();
         assert_eq!(page.ticket_count(), 1);
-        assert_eq!(page.filtered_cache[0].id, "t-1");
+        assert_eq!(page.filtered_cache[0], "t-1");
     }
 
     #[test]
@@ -987,7 +1041,7 @@ mod tests {
         page.filters.projects = vec!["alpha".to_string()];
         page.rebuild_cache();
         assert_eq!(page.ticket_count(), 1);
-        assert_eq!(page.filtered_cache[0].project, "alpha");
+        assert_eq!(page.filtered_cache[0], "t-1");
     }
 
     #[test]
@@ -1001,9 +1055,9 @@ mod tests {
         ];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
-        assert_eq!(page.filtered_cache[0].id, "t-1"); // P0
-        assert_eq!(page.filtered_cache[1].id, "t-2"); // P2
-        assert_eq!(page.filtered_cache[2].id, "t-3"); // P4
+        assert_eq!(page.filtered_cache[0], "t-1"); // P0
+        assert_eq!(page.filtered_cache[1], "t-2"); // P2
+        assert_eq!(page.filtered_cache[2], "t-3"); // P4
     }
 
     #[test]
@@ -1017,8 +1071,8 @@ mod tests {
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
         // Parent (has children) should come before leaf at same priority
-        assert_eq!(page.filtered_cache[0].id, "t-parent");
-        assert_eq!(page.filtered_cache[1].id, "t-leaf");
+        assert_eq!(page.filtered_cache[0], "t-parent");
+        assert_eq!(page.filtered_cache[1], "t-leaf");
     }
 
     #[test]
@@ -1059,5 +1113,127 @@ mod tests {
 
         // Footer should be different when overlay is open
         assert_ne!(normal_cmds.len(), overlay_cmds.len());
+    }
+
+    #[test]
+    fn full_list_load_clears_and_rebuilds() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let batch1 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
+        page.on_data(&DataPayload::Tickets(Ok(batch1)));
+        assert_eq!(page.ticket_count(), 2);
+
+        // Full list load with different tickets replaces all
+        let batch2 = vec![make_ticket("t-3", "C")];
+        page.on_data(&DataPayload::Tickets(Ok(batch2)));
+        assert_eq!(page.ticket_count(), 1);
+        assert_eq!(page.filtered_cache[0], "t-3");
+    }
+
+    #[test]
+    fn single_upsert_adds_ticket() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let batch = vec![make_ticket("t-1", "A")];
+        page.on_data(&DataPayload::Tickets(Ok(batch)));
+        assert_eq!(page.ticket_count(), 1);
+
+        // Single-entity upsert adds a new ticket
+        let new_ticket = make_ticket("t-2", "B");
+        page.on_data(&DataPayload::TicketUpdate(Ok(new_ticket)));
+        assert_eq!(page.ticket_count(), 2);
+    }
+
+    #[test]
+    fn single_upsert_updates_existing() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let batch = vec![make_ticket("t-1", "A")];
+        page.on_data(&DataPayload::Tickets(Ok(batch)));
+
+        // Upsert with same ID updates the ticket
+        let mut updated = make_ticket("t-1", "Updated A");
+        updated.priority = 0;
+        page.on_data(&DataPayload::TicketUpdate(Ok(updated)));
+        assert_eq!(page.ticket_count(), 1);
+        let visible = page.visible_tickets();
+        assert_eq!(visible[0].title, "Updated A");
+        assert_eq!(visible[0].priority, 0);
+    }
+
+    #[test]
+    fn selection_preserved_by_id_across_rebuild() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![
+            make_ticket("t-1", "A"),
+            make_ticket("t-2", "B"),
+            make_ticket("t-3", "C"),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Select the second ticket
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("t-2".to_string()));
+
+        // Refresh with same data — selection preserved by ID
+        page.handle_action(Action::Refresh);
+        let tickets2 = vec![
+            make_ticket("t-1", "A"),
+            make_ticket("t-2", "B"),
+            make_ticket("t-3", "C"),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        assert_eq!(page.selected_ticket_id(), Some("t-2".to_string()));
+    }
+
+    #[test]
+    fn selection_clamped_when_id_disappears() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![
+            make_ticket("t-1", "A"),
+            make_ticket("t-2", "B"),
+            make_ticket("t-3", "C"),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Select the third ticket
+        page.handle_action(Action::NavigateDown);
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("t-3".to_string()));
+
+        // Refresh with fewer tickets — t-3 gone
+        page.handle_action(Action::Refresh);
+        let tickets2 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
+        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        // Selection should be clamped to last valid index
+        assert!(page.selected_ticket_id().is_some());
+    }
+
+    #[test]
+    fn single_upsert_preserves_selection() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Select t-2
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_ticket_id(), Some("t-2".to_string()));
+
+        // Upsert t-1 — selection should stay on t-2
+        let updated = make_ticket("t-1", "Updated A");
+        page.on_data(&DataPayload::TicketUpdate(Ok(updated)));
+        assert_eq!(page.selected_ticket_id(), Some("t-2".to_string()));
+    }
+
+    #[test]
+    fn ticket_update_ignored_before_initial_load() {
+        let mut page = TicketsPage::new();
+        // TicketUpdate before initial Tickets load should be ignored
+        let ticket = make_ticket("t-1", "A");
+        page.on_data(&DataPayload::TicketUpdate(Ok(ticket)));
+        assert!(page.needs_data()); // Still in Loading state
     }
 }

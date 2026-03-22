@@ -23,7 +23,7 @@ use ur_rpc::proto::ticket::{
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
     SubscribeUiEventsRequest, UiEventBatch, UpdateTicketRequest, UpdateTicketResponse,
-    WorkflowInfo,
+    WorkflowHistoryEvent, WorkflowInfo,
 };
 
 use crate::UiEventPoller;
@@ -122,6 +122,45 @@ pub struct TicketServiceHandler {
 }
 
 impl TicketServiceHandler {
+    /// Enrich a workflow with history events, ticket progress, and PR URL.
+    async fn enrich_workflow(&self, wf: ur_db::Workflow) -> Result<WorkflowInfo, Status> {
+        let pr_url = self
+            .ticket_repo
+            .get_meta(&wf.ticket_id, "ticket")
+            .await
+            .unwrap_or_default()
+            .remove("pr_url")
+            .unwrap_or_default();
+
+        let events = self
+            .workflow_repo
+            .get_workflow_events(&wf.id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        let history: Vec<WorkflowHistoryEvent> = events
+            .into_iter()
+            .map(|e| WorkflowHistoryEvent {
+                event: e.event,
+                created_at: e.created_at,
+            })
+            .collect();
+
+        let (children_open, children_closed) = self
+            .workflow_repo
+            .get_ticket_children_counts(&wf.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        Ok(workflow_to_proto(
+            wf,
+            pr_url,
+            history,
+            children_open,
+            children_closed,
+        ))
+    }
+
     /// If the ticket has an active (non-terminal) workflow, cancel it: signal
     /// the coordinator to abort the in-flight handler, delete intent rows, and
     /// set the workflow status to `Cancelled`.
@@ -419,7 +458,7 @@ impl TicketService for TicketServiceHandler {
 
         let t = self
             .ticket_repo
-            .get_ticket(&req.id)
+            .get_ticket_by_id(&req.id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?
             .ok_or_else(|| TicketError::NotFound { id: req.id.clone() })?;
@@ -923,15 +962,9 @@ impl TicketService for TicketServiceHandler {
 
         match workflow {
             Some(wf) => {
-                let pr_url = self
-                    .ticket_repo
-                    .get_meta(&wf.ticket_id, "ticket")
-                    .await
-                    .unwrap_or_default()
-                    .remove("pr_url")
-                    .unwrap_or_default();
+                let proto = self.enrich_workflow(wf).await?;
                 Ok(Response::new(GetWorkflowResponse {
-                    workflow: Some(workflow_to_proto(wf, pr_url)),
+                    workflow: Some(proto),
                 }))
             }
             None => {
@@ -968,14 +1001,8 @@ impl TicketService for TicketServiceHandler {
 
         let mut protos = Vec::with_capacity(workflows.len());
         for wf in workflows {
-            let pr_url = self
-                .ticket_repo
-                .get_meta(&wf.ticket_id, "ticket")
-                .await
-                .unwrap_or_default()
-                .remove("pr_url")
-                .unwrap_or_default();
-            protos.push(workflow_to_proto(wf, pr_url));
+            let proto = self.enrich_workflow(wf).await?;
+            protos.push(proto);
         }
         Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
     }
@@ -996,7 +1023,13 @@ impl TicketService for TicketServiceHandler {
     }
 }
 
-fn workflow_to_proto(wf: ur_db::Workflow, pr_url: String) -> WorkflowInfo {
+fn workflow_to_proto(
+    wf: ur_db::Workflow,
+    pr_url: String,
+    history: Vec<WorkflowHistoryEvent>,
+    ticket_children_open: i64,
+    ticket_children_closed: i64,
+) -> WorkflowInfo {
     WorkflowInfo {
         id: wf.id,
         ticket_id: wf.ticket_id,
@@ -1008,5 +1041,244 @@ fn workflow_to_proto(wf: ur_db::Workflow, pr_url: String) -> WorkflowInfo {
         feedback_mode: wf.feedback_mode,
         created_at: wf.created_at,
         pr_url,
+        history,
+        ticket_children_open,
+        ticket_children_closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use tonic::Request;
+    use ur_db::{DatabaseManager, GraphManager, NewTicket};
+
+    fn test_workflow() -> ur_db::Workflow {
+        ur_db::Workflow {
+            id: "wf-id".into(),
+            ticket_id: "t-1".into(),
+            status: LifecycleStatus::Implementing,
+            stalled: false,
+            stall_reason: String::new(),
+            implement_cycles: 2,
+            worker_id: "w-1".into(),
+            noverify: false,
+            feedback_mode: String::new(),
+            ci_status: String::new(),
+            mergeable: String::new(),
+            review_status: String::new(),
+            created_at: "2025-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn workflow_to_proto_includes_history_and_progress() {
+        let wf = test_workflow();
+        let history = vec![
+            WorkflowHistoryEvent {
+                event: "implementing".into(),
+                created_at: "2025-01-01T00:00:01Z".into(),
+            },
+            WorkflowHistoryEvent {
+                event: "pushing".into(),
+                created_at: "2025-01-01T00:00:02Z".into(),
+            },
+        ];
+
+        let proto = workflow_to_proto(wf, "https://pr.url".into(), history, 3, 5);
+
+        assert_eq!(proto.history.len(), 2);
+        assert_eq!(proto.history[0].event, "implementing");
+        assert_eq!(proto.history[1].event, "pushing");
+        assert_eq!(proto.ticket_children_open, 3);
+        assert_eq!(proto.ticket_children_closed, 5);
+        assert_eq!(proto.pr_url, "https://pr.url");
+        assert_eq!(proto.status, "implementing");
+    }
+
+    #[test]
+    fn workflow_to_proto_handles_empty_history() {
+        let wf = test_workflow();
+
+        let proto = workflow_to_proto(wf, String::new(), vec![], 0, 0);
+
+        assert!(proto.history.is_empty());
+        assert_eq!(proto.ticket_children_open, 0);
+        assert_eq!(proto.ticket_children_closed, 0);
+    }
+
+    async fn setup_handler() -> (TempDir, TicketServiceHandler) {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let db = DatabaseManager::open(&db_path.to_string_lossy())
+            .await
+            .expect("open test db");
+        let graph_manager = GraphManager::new(db.pool().clone());
+        let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(db.pool().clone());
+        let handler = TicketServiceHandler {
+            ticket_repo,
+            workflow_repo,
+            valid_projects: HashSet::new(),
+            transition_tx: None,
+            cancel_tx: None,
+            ui_event_poller: None,
+        };
+        (tmp, handler)
+    }
+
+    #[tokio::test]
+    async fn get_ticket_found() {
+        let (_tmp, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: "t-found".into(),
+                type_: "task".into(),
+                priority: 1,
+                parent_id: None,
+                title: "Found ticket".into(),
+                body: "A body".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let resp = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "t-found".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let ticket = resp.into_inner().ticket.unwrap();
+        assert_eq!(ticket.id, "t-found");
+        assert_eq!(ticket.title, "Found ticket");
+        assert_eq!(ticket.body, "A body");
+    }
+
+    #[tokio::test]
+    async fn get_ticket_not_found() {
+        let (_tmp, handler) = setup_handler().await;
+
+        let result = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "nonexistent".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn get_workflow_includes_history_and_progress() {
+        let (_tmp, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: "t-wfhist".into(),
+                type_: "task".into(),
+                priority: 1,
+                title: "Workflow history".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Create a child ticket (open).
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: "t-wfhist-c1".into(),
+                type_: "task".into(),
+                priority: 1,
+                title: "Child 1".into(),
+                project: "test".into(),
+                parent_id: Some("t-wfhist".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let wf = handler
+            .workflow_repo
+            .create_workflow("t-wfhist", LifecycleStatus::Open)
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .insert_workflow_event(&wf.id, ur_rpc::workflow_event::WorkflowEvent::Implementing)
+            .await
+            .unwrap();
+
+        let resp = TicketService::get_workflow(
+            &handler,
+            Request::new(GetWorkflowRequest {
+                ticket_id: "t-wfhist".into(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let info = resp.into_inner().workflow.unwrap();
+        assert_eq!(info.history.len(), 1);
+        assert_eq!(info.history[0].event, "implementing");
+        assert_eq!(info.ticket_children_open, 1);
+        assert_eq!(info.ticket_children_closed, 0);
+    }
+
+    #[tokio::test]
+    async fn list_workflows_includes_history_and_progress() {
+        let (_tmp, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: "t-wflist".into(),
+                type_: "task".into(),
+                priority: 1,
+                title: "Workflow list".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let wf = handler
+            .workflow_repo
+            .create_workflow("t-wflist", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .insert_workflow_event(&wf.id, ur_rpc::workflow_event::WorkflowEvent::Implementing)
+            .await
+            .unwrap();
+
+        let resp = TicketService::list_workflows(
+            &handler,
+            Request::new(ListWorkflowsRequest { status: None }),
+        )
+        .await
+        .unwrap();
+
+        let workflows = &resp.into_inner().workflows;
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(workflows[0].history.len(), 1);
+        assert_eq!(workflows[0].history[0].event, "implementing");
     }
 }

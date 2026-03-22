@@ -516,3 +516,174 @@ async fn set_workflow_feedback_mode() {
 
     db.cleanup().await;
 }
+
+// ============================================================
+// Workflow events query tests
+// ============================================================
+
+#[tokio::test]
+async fn get_workflow_events_returns_ordered_events() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-evt1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Events test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let created = wf
+        .create_workflow("wf-evt1", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    // Insert events with explicit timestamps to verify ordering.
+    wf.insert_workflow_event_at(
+        &created.id,
+        ur_rpc::workflow_event::WorkflowEvent::Implementing,
+        "2025-01-01T00:00:01Z",
+    )
+    .await
+    .unwrap();
+
+    wf.insert_workflow_event_at(
+        &created.id,
+        ur_rpc::workflow_event::WorkflowEvent::Pushing,
+        "2025-01-01T00:00:02Z",
+    )
+    .await
+    .unwrap();
+
+    wf.insert_workflow_event_at(
+        &created.id,
+        ur_rpc::workflow_event::WorkflowEvent::InReview,
+        "2025-01-01T00:00:03Z",
+    )
+    .await
+    .unwrap();
+
+    let events = wf.get_workflow_events(&created.id).await.unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].event, "implementing");
+    assert_eq!(events[0].created_at, "2025-01-01T00:00:01Z");
+    assert_eq!(events[1].event, "pushing");
+    assert_eq!(events[2].event, "in_review");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_workflow_events_returns_empty_for_no_events() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-evt2".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "No events".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let created = wf
+        .create_workflow("wf-evt2", LifecycleStatus::Open)
+        .await
+        .unwrap();
+
+    let events = wf.get_workflow_events(&created.id).await.unwrap();
+    assert!(events.is_empty());
+
+    db.cleanup().await;
+}
+
+// ============================================================
+// Ticket children counts tests
+// ============================================================
+
+#[tokio::test]
+async fn get_ticket_children_counts_returns_correct_counts() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    // Create a parent ticket.
+    repo.create_ticket(&NewTicket {
+        id: "wf-parent1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Parent".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Create children: 2 open, 1 closed.
+    repo.create_ticket(&NewTicket {
+        id: "wf-child1".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Child 1".into(),
+        project: "test".into(),
+        parent_id: Some("wf-parent1".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-child2".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Child 2".into(),
+        project: "test".into(),
+        parent_id: Some("wf-parent1".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_ticket(&NewTicket {
+        id: "wf-child3".into(),
+        type_: "task".into(),
+        priority: 1,
+        title: "Child 3".into(),
+        project: "test".into(),
+        parent_id: Some("wf-parent1".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Close one child.
+    repo.update_ticket(
+        "wf-child3",
+        &crate::TicketUpdate {
+            status: Some("closed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let (open, closed) = wf.get_ticket_children_counts("wf-parent1").await.unwrap();
+    assert_eq!(open, 2);
+    assert_eq!(closed, 1);
+
+    // A ticket with no children should return (0, 0).
+    let (open_none, closed_none) = wf.get_ticket_children_counts("wf-child1").await.unwrap();
+    assert_eq!(open_none, 0);
+    assert_eq!(closed_none, 0);
+
+    db.cleanup().await;
+}

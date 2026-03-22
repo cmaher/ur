@@ -6,6 +6,15 @@ use tokio::task::JoinHandle;
 
 use crate::data::{ActionResult, DataPayload};
 
+/// A single UI event received from the server's event stream.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UiEventItem {
+    /// The entity type: "ticket", "workflow", or "worker".
+    pub entity_type: String,
+    /// The entity identifier (e.g. ticket ID or workflow ticket_id).
+    pub entity_id: String,
+}
+
 /// Events consumed by the main application loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -14,11 +23,13 @@ pub enum AppEvent {
     /// Periodic tick for background data refresh.
     Tick,
     /// A gRPC data-fetch task completed and delivered a payload.
-    DataReady(DataPayload),
+    DataReady(Box<DataPayload>),
     /// An async action (dispatch, etc.) completed with a result.
     ActionResult(ActionResult),
     /// Terminal was resized to (columns, rows).
     Resize(u16, u16),
+    /// A batch of UI events received from the server's event stream.
+    UiEvent(Vec<UiEventItem>),
 }
 
 const TICK_INTERVAL: Duration = Duration::from_secs(5);
@@ -140,7 +151,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let payload = DataPayload::Tickets(Ok(vec![]));
-        tx.send(AppEvent::DataReady(payload)).unwrap();
+        tx.send(AppEvent::DataReady(Box::new(payload))).unwrap();
         drop(tx);
 
         let found = find_data_ready(&mut rx).await;

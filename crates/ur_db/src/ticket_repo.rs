@@ -72,6 +72,12 @@ impl TicketRepo {
         })
     }
 
+    /// Fetch a single ticket by its ID. Returns `None` if no ticket exists with that ID.
+    /// This is the primary lookup method for the GetTicket RPC.
+    pub async fn get_ticket_by_id(&self, id: &str) -> Result<Option<Ticket>, sqlx::Error> {
+        self.get_ticket(id).await
+    }
+
     pub async fn get_ticket(&self, id: &str) -> Result<Option<Ticket>, sqlx::Error> {
         let row = sqlx::query_as::<
             _,
