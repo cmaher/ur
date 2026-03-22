@@ -701,6 +701,7 @@ mod tests {
             depth: 0,
             children_total: 0,
             children_completed: 0,
+            dispatch_status: String::new(),
         }
     }
 
@@ -727,6 +728,7 @@ mod tests {
             depth: 0,
             children_total,
             children_completed: 0,
+            dispatch_status: String::new(),
         }
     }
 
