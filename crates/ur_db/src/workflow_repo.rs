@@ -1,5 +1,7 @@
 // WorkflowRepo: CRUD operations for workflows, workflow events, intents, and comments.
 
+use std::collections::HashMap;
+
 use chrono::Utc;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -514,6 +516,32 @@ impl WorkflowRepo {
             .await?;
 
         Ok(())
+    }
+
+    /// Batch-query active (non-terminal) workflows for a set of ticket IDs.
+    /// Returns a map from ticket_id to the workflow lifecycle status string.
+    /// Avoids N+1 queries when enriching ticket lists with dispatch status.
+    pub async fn get_active_workflows_by_ticket_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<HashMap<String, String>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Fetch all active workflows in a single query and filter client-side.
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT ticket_id, status FROM workflow WHERE status NOT IN ('done', 'cancelled')",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let id_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+        Ok(rows
+            .into_iter()
+            .filter(|(tid, _)| id_set.contains(tid.as_str()))
+            .collect())
     }
 
     /// Return all tickets that have a workflow with the given status.

@@ -163,6 +163,45 @@ impl TicketServiceHandler {
         Ok(())
     }
 
+    /// Enrich a list of proto tickets with dispatch_status from active workflows.
+    /// For each ticket, checks if the ticket itself or its parent has an active workflow.
+    async fn enrich_dispatch_status(
+        &self,
+        tickets: &mut [ur_rpc::proto::ticket::Ticket],
+    ) -> Result<(), Status> {
+        if tickets.is_empty() {
+            return Ok(());
+        }
+
+        // Collect all ticket IDs and parent IDs for the batch query.
+        let mut ids_to_query: Vec<String> = tickets.iter().map(|t| t.id.clone()).collect();
+        for t in tickets.iter() {
+            if !t.parent_id.is_empty() && !ids_to_query.contains(&t.parent_id) {
+                ids_to_query.push(t.parent_id.clone());
+            }
+        }
+
+        let active_workflows = self
+            .workflow_repo
+            .get_active_workflows_by_ticket_ids(&ids_to_query)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        for ticket in tickets.iter_mut() {
+            // Check if this ticket has an active workflow.
+            if let Some(status) = active_workflows.get(&ticket.id) {
+                ticket.dispatch_status = status.clone();
+            } else if !ticket.parent_id.is_empty() {
+                // Check if the parent has an active workflow.
+                if let Some(status) = active_workflows.get(&ticket.parent_id) {
+                    ticket.dispatch_status = status.clone();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// List a ticket tree: root + all descendants with depth, using a recursive CTE.
     async fn list_ticket_tree(
         &self,
@@ -192,6 +231,7 @@ impl TicketServiceHandler {
                 depth,
                 children_completed: t.children_completed,
                 children_total: t.children_total,
+                dispatch_status: String::new(),
             })
             .collect())
     }
@@ -302,6 +342,7 @@ impl TicketService for TicketServiceHandler {
                         depth: 0,
                         children_completed: 0,
                         children_total: 0,
+                        dispatch_status: String::new(),
                     })
                     .collect()
             }
@@ -328,6 +369,7 @@ impl TicketService for TicketServiceHandler {
                         depth: 0,
                         children_completed: 0,
                         children_total: 0,
+                        dispatch_status: String::new(),
                     })
                     .collect()
             }
@@ -369,10 +411,14 @@ impl TicketService for TicketServiceHandler {
                         depth: 0,
                         children_completed: t.children_completed,
                         children_total: t.children_total,
+                        dispatch_status: String::new(),
                     })
                     .collect()
             }
         };
+
+        let mut tickets = tickets;
+        self.enrich_dispatch_status(&mut tickets).await?;
 
         Ok(Response::new(ListTicketsResponse { tickets }))
     }
@@ -418,6 +464,7 @@ impl TicketService for TicketServiceHandler {
             depth: 0,
             children_completed: t.children_completed,
             children_total: t.children_total,
+            dispatch_status: String::new(),
         };
 
         let metadata: Vec<_> = meta

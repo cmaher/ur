@@ -46,6 +46,8 @@ message Ticket {
   int32 children_completed = 15;
   // Total number of children.
   int32 children_total = 16;
+  // Dispatch status: workflow lifecycle status if this ticket (or its parent) has an active workflow.
+  string dispatch_status = 17;
 }
 
 message MetadataEntry {
