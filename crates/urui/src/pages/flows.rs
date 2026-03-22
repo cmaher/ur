@@ -108,6 +108,10 @@ impl Page for FlowsPage {
                 }
                 PageResult::Consumed
             }
+            Action::Refresh => {
+                self.loaded = false;
+                PageResult::Consumed
+            }
             Action::Quit => PageResult::Quit,
             _ => PageResult::Ignored,
         }
@@ -176,6 +180,10 @@ impl Page for FlowsPage {
             FooterCommand {
                 key_label: "h/l".into(),
                 description: "Page".into(),
+            },
+            FooterCommand {
+                key_label: "r".into(),
+                description: "Refresh".into(),
             },
             FooterCommand {
                 key_label: "q".into(),
@@ -382,6 +390,19 @@ mod tests {
         let wf = make_workflow("wf-1", "ur-abc", false);
         let row = workflow_to_row(&wf);
         assert_eq!(row[5], "");
+    }
+
+    #[test]
+    fn refresh_resets_to_loading() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        assert!(!page.needs_data());
+
+        let result = page.handle_action(Action::Refresh);
+        assert_eq!(result, PageResult::Consumed);
+        assert!(page.needs_data());
+        assert!(!page.loaded);
     }
 
     #[test]

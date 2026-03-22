@@ -179,6 +179,10 @@ impl Page for TicketsPage {
                 self.page_right();
                 PageResult::Consumed
             }
+            Action::Refresh => {
+                self.data_state = DataState::Loading;
+                PageResult::Consumed
+            }
             Action::Quit => PageResult::Quit,
             _ => PageResult::Ignored,
         }
@@ -237,6 +241,10 @@ impl Page for TicketsPage {
                 description: "Page".to_string(),
             },
             FooterCommand {
+                key_label: "r".to_string(),
+                description: "Refresh".to_string(),
+            },
+            FooterCommand {
                 key_label: "q".to_string(),
                 description: "Back".to_string(),
             },
@@ -286,6 +294,8 @@ mod tests {
             project: "test".to_string(),
             branch: String::new(),
             depth: 0,
+            children_total: 0,
+            children_completed: 0,
         }
     }
 
@@ -426,6 +436,19 @@ mod tests {
         let page = TicketsPage::new();
         let cmds = page.footer_commands();
         assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn refresh_resets_to_loading() {
+        let mut page = TicketsPage::new();
+        let tickets = vec![make_ticket("t-1", "First")];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        assert!(!page.needs_data());
+
+        let result = page.handle_action(Action::Refresh);
+        assert_eq!(result, PageResult::Consumed);
+        assert!(page.needs_data());
+        assert!(matches!(page.data_state, DataState::Loading));
     }
 
     #[test]
