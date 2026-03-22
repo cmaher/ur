@@ -403,7 +403,13 @@ mod tests {
     fn test_show() {
         let cmd = parse(&["ticket", "show", "ur-abc12"]);
         match cmd.command {
-            super::TicketArgs::Show { id } => assert_eq!(id, "ur-abc12"),
+            super::TicketArgs::Show {
+                id,
+                activity_author,
+            } => {
+                assert_eq!(id, "ur-abc12");
+                assert_eq!(activity_author, None);
+            }
             other => panic!("expected Show, got {other:?}"),
         }
     }

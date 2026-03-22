@@ -397,11 +397,17 @@ impl TicketService for TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        let activities_list = self
-            .ticket_repo
-            .get_activities(&req.id)
-            .await
-            .map_err(|e| TicketError::Db(e.to_string()))?;
+        let activities_list = if let Some(author) = &req.activity_author_filter {
+            self.ticket_repo
+                .get_activities_by_author(&req.id, author)
+                .await
+                .map_err(|e| TicketError::Db(e.to_string()))?
+        } else {
+            self.ticket_repo
+                .get_activities(&req.id)
+                .await
+                .map_err(|e| TicketError::Db(e.to_string()))?
+        };
 
         let ticket = ur_rpc::proto::ticket::Ticket {
             id: t.id,

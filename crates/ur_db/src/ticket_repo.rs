@@ -585,6 +585,32 @@ impl TicketRepo {
         })
     }
 
+    pub async fn get_activities_by_author(
+        &self,
+        ticket_id: &str,
+        author: &str,
+    ) -> Result<Vec<Activity>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT id, ticket_id, timestamp, author, message FROM activity
+             WHERE ticket_id = ? AND author = ? ORDER BY timestamp ASC",
+        )
+        .bind(ticket_id)
+        .bind(author)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, ticket_id, timestamp, author, message)| Activity {
+                id,
+                ticket_id,
+                timestamp,
+                author,
+                message,
+            })
+            .collect())
+    }
+
     pub async fn get_activities(&self, ticket_id: &str) -> Result<Vec<Activity>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
             "SELECT id, ticket_id, timestamp, author, message FROM activity

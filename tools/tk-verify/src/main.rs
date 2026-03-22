@@ -234,7 +234,10 @@ async fn verify_tickets(
         let f = &t.front;
 
         let resp = match client
-            .get_ticket(GetTicketRequest { id: f.id.clone() })
+            .get_ticket(GetTicketRequest {
+                id: f.id.clone(),
+                activity_author_filter: None,
+            })
             .await
         {
             Ok(r) => r.into_inner(),
