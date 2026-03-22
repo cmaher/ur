@@ -173,6 +173,7 @@ mod tests {
 
         let result = ActionResult {
             result: Ok("Dispatched ur-123".into()),
+            silent_on_success: false,
         };
         tx.send(AppEvent::ActionResult(result)).unwrap();
         drop(tx);

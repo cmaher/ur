@@ -11,7 +11,7 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     CreateWorkflowRequest, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
-    ListWorkflowsResponse, Ticket, WorkflowInfo,
+    ListWorkflowsResponse, Ticket, UpdateTicketRequest, WorkflowInfo,
 };
 
 use crate::event::AppEvent;
@@ -30,6 +30,8 @@ pub enum DataPayload {
 pub struct ActionResult {
     /// Human-readable success message, or error message.
     pub result: Result<String, String>,
+    /// When true, suppress the success banner (errors still shown).
+    pub silent_on_success: bool,
 }
 
 /// Async data-fetching manager that spawns tokio tasks for gRPC calls.
@@ -88,10 +90,38 @@ impl DataManager {
             let action_result = match result {
                 Ok(()) => ActionResult {
                     result: Ok(format!("Dispatched {ticket_id}")),
+                    silent_on_success: false,
                 },
                 Err(e) => ActionResult {
                     result: Err(e.to_string()),
+                    silent_on_success: false,
                 },
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that updates a ticket's priority via `UpdateTicket`.
+    /// On success, no banner is shown (silent). On failure, an error banner appears.
+    pub fn update_ticket_priority(&self, ticket_id: String, priority: i64) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, priority, "updating ticket priority");
+            let result = update_ticket_priority_rpc(port, &ticket_id, priority).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("Priority set to P{priority} for {ticket_id}")),
+                    silent_on_success: true,
+                },
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "priority update failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
             };
             let _ = tx.send(AppEvent::ActionResult(action_result));
         });
@@ -140,6 +170,27 @@ async fn fetch_workflows_rpc(port: u16) -> Result<ListWorkflowsResponse> {
     let request = tonic::Request::new(ListWorkflowsRequest { status: None });
     let response = client.list_workflows(request).await?;
     Ok(response.into_inner())
+}
+
+/// Perform the UpdateTicket RPC to change a ticket's priority.
+async fn update_ticket_priority_rpc(port: u16, ticket_id: &str, priority: i64) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: Some(priority),
+            status: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: None,
+        })
+        .await?;
+    Ok(())
 }
 
 /// Resolve the project key from a ticket ID by extracting the prefix before

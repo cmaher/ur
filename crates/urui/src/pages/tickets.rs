@@ -15,6 +15,7 @@ use crate::keymap::Action;
 use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
 use crate::widgets::ThemedTable;
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
+use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 
 /// Internal state for the ticket data lifecycle.
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ enum DataState {
 /// Active overlay on this page.
 enum Overlay {
     FilterMenu(FilterMenuState),
+    PriorityPicker(PriorityPickerState),
 }
 
 /// The Tickets tab page.
@@ -203,30 +205,46 @@ impl TicketsPage {
     }
 
     /// Handle a raw key event when the overlay is active.
-    /// Returns true if the event was consumed by the overlay.
-    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> bool {
-        let Some(Overlay::FilterMenu(ref mut menu)) = self.overlay else {
-            return false;
-        };
+    /// Returns `None` if the event was consumed or closed without selection.
+    /// Returns `Some((ticket_id, priority))` if the user selected a priority.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> Option<(String, i64)> {
+        match self.overlay {
+            Some(Overlay::FilterMenu(ref mut menu)) => {
+                // First check if Esc should collapse submenu before closing
+                if matches!(key.code, crossterm::event::KeyCode::Esc) && menu.collapse() {
+                    return None;
+                }
 
-        // First check if Esc should collapse submenu before closing
-        if matches!(key.code, crossterm::event::KeyCode::Esc) && menu.collapse() {
-            return true;
-        }
-
-        let result = menu.handle_key(key, &mut self.filters);
-        match result {
-            FilterMenuResult::Consumed => {
-                // Filters may have changed; rebuild cache
-                self.rebuild_cache();
-                self.current_page = 0;
-                self.selected_row = 0;
-                true
+                let result = menu.handle_key(key, &mut self.filters);
+                match result {
+                    FilterMenuResult::Consumed => {
+                        // Filters may have changed; rebuild cache
+                        self.rebuild_cache();
+                        self.current_page = 0;
+                        self.selected_row = 0;
+                    }
+                    FilterMenuResult::Close => {
+                        self.overlay = None;
+                    }
+                }
+                None
             }
-            FilterMenuResult::Close => {
-                self.overlay = None;
-                true
+            Some(Overlay::PriorityPicker(ref mut picker)) => {
+                let result = picker.handle_key(key);
+                match result {
+                    PriorityPickerResult::Consumed => None,
+                    PriorityPickerResult::Close => {
+                        self.overlay = None;
+                        None
+                    }
+                    PriorityPickerResult::Selected(priority) => {
+                        let ticket_id = self.selected_ticket_id();
+                        self.overlay = None;
+                        ticket_id.map(|id| (id, priority))
+                    }
+                }
             }
+            None => None,
         }
     }
 
@@ -250,11 +268,13 @@ impl TicketsPage {
     pub fn on_action_result(&mut self, result: &ActionResult) {
         match &result.result {
             Ok(msg) => {
-                self.active_banner = Some(Banner {
-                    message: msg.clone(),
-                    variant: BannerVariant::Success,
-                    created_at: Instant::now(),
-                });
+                if !result.silent_on_success {
+                    self.active_banner = Some(Banner {
+                        message: msg.clone(),
+                        variant: BannerVariant::Success,
+                        created_at: Instant::now(),
+                    });
+                }
             }
             Err(msg) => {
                 self.active_banner = Some(Banner {
@@ -366,14 +386,22 @@ impl Page for TicketsPage {
         }
 
         // Render overlay on top
-        if let Some(Overlay::FilterMenu(ref menu)) = self.overlay {
-            menu.render(area, buf, ctx, &self.filters);
+        match &self.overlay {
+            Some(Overlay::FilterMenu(menu)) => {
+                menu.render(area, buf, ctx, &self.filters);
+            }
+            Some(Overlay::PriorityPicker(picker)) => {
+                picker.render(area, buf, ctx);
+            }
+            None => {}
         }
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        if let Some(Overlay::FilterMenu(ref menu)) = self.overlay {
-            return menu.footer_commands();
+        match &self.overlay {
+            Some(Overlay::FilterMenu(menu)) => return menu.footer_commands(),
+            Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
+            None => {}
         }
         vec![
             FooterCommand {
@@ -391,6 +419,10 @@ impl Page for TicketsPage {
             FooterCommand {
                 key_label: "*".to_string(),
                 description: "Filter".to_string(),
+            },
+            FooterCommand {
+                key_label: "P".to_string(),
+                description: "Priority".to_string(),
             },
             FooterCommand {
                 key_label: "D".to_string(),
@@ -453,6 +485,19 @@ impl Page for TicketsPage {
 /// Open the filter menu overlay on the tickets page.
 pub fn open_filter_menu(page: &mut TicketsPage, projects: &[String]) {
     page.overlay = Some(Overlay::FilterMenu(FilterMenuState::new(projects.to_vec())));
+}
+
+/// Open the priority picker overlay on the tickets page, initialized to the
+/// selected ticket's current priority.
+pub fn open_priority_picker(page: &mut TicketsPage) {
+    let current_priority = page
+        .visible_tickets()
+        .get(page.selected_row)
+        .map(|t| t.priority)
+        .unwrap_or(2);
+    page.overlay = Some(Overlay::PriorityPicker(PriorityPickerState::new(
+        current_priority,
+    )));
 }
 
 #[cfg(test)]

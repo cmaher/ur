@@ -12,7 +12,7 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventReceiver};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
-use crate::pages::tickets::open_filter_menu;
+use crate::pages::tickets::{open_filter_menu, open_priority_picker};
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
 use crate::widgets::{render_banner, render_footer, render_header};
@@ -108,7 +108,10 @@ impl App {
                 self.switch_tab(tab);
                 return;
             }
-            self.tickets_page.handle_overlay_key(key);
+            if let Some((ticket_id, priority)) = self.tickets_page.handle_overlay_key(key) {
+                self.data_manager
+                    .update_ticket_priority(ticket_id, priority);
+            }
             return;
         }
 
@@ -131,6 +134,11 @@ impl App {
             }
             Action::Filter if self.active_tab == TabId::Tickets => {
                 open_filter_menu(&mut self.tickets_page, &self.ctx.projects);
+            }
+            Action::SetPriority if self.active_tab == TabId::Tickets => {
+                if self.tickets_page.selected_ticket_id().is_some() {
+                    open_priority_picker(&mut self.tickets_page);
+                }
             }
             Action::Dispatch if self.active_tab == TabId::Tickets => {
                 self.dispatch_selected_ticket();
