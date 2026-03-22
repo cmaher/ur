@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, WorkerRepo};
+use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo};
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -179,11 +179,16 @@ async fn init_and_serve(
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
 
+    let ui_event_repo = UiEventRepo::new(db.pool().clone());
+    let poll_interval = std::time::Duration::from_millis(cfg.server.ui_event_poll_interval_ms);
+    let ui_event_poller = ur_server::UiEventPoller::new(ui_event_repo, poll_interval);
+
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
         transition_tx: None, // set in serve_grpc_servers after builderd connects
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
+        ui_event_poller: Some(ui_event_poller.clone()),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -214,6 +219,7 @@ async fn init_and_serve(
         builderd_addr,
         host_workspace,
         Arc::new(cfg.clone()),
+        ui_event_poller,
     )
     .await
 }
@@ -234,6 +240,7 @@ async fn serve_grpc_servers(
     builderd_addr: String,
     host_workspace: PathBuf,
     config: Arc<ur_config::Config>,
+    ui_event_poller: ur_server::UiEventPoller,
 ) -> anyhow::Result<()> {
     let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
@@ -306,7 +313,9 @@ async fn serve_grpc_servers(
         transition_tx.clone(),
         poller_ticket_client,
     );
-    let poller_handle = poller.spawn(workflow_shutdown_rx);
+    let poller_handle = poller.spawn(workflow_shutdown_rx.clone());
+
+    let ui_poller_handle = ui_event_poller.spawn(workflow_shutdown_rx);
 
     let host_server = ur_server::grpc_server::serve_grpc(
         host_addr,
@@ -324,6 +333,9 @@ async fn serve_grpc_servers(
         ur_server::grpc_remote_repo::RemoteRepoServiceHandler { builderd_client }
     };
 
+    let mut worker_ticket_handler = ticket_handler;
+    worker_ticket_handler.ui_event_poller = None;
+
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         worker_manager,
@@ -335,18 +347,19 @@ async fn serve_grpc_servers(
         builderd_addr,
         host_workspace,
         rag_handler,
-        ticket_handler,
+        worker_ticket_handler,
         remote_repo_handler,
         transition_tx,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
 
-    // Signal workflow engine, coordinator, and github poller to shut down.
+    // Signal workflow engine, coordinator, github poller, and UI event poller to shut down.
     let _ = workflow_shutdown_tx.send(true);
     let _ = engine_handle.await;
     let _ = coordinator_handle.await;
     let _ = poller_handle.await;
+    let _ = ui_poller_handle.await;
 
     server_result
 }

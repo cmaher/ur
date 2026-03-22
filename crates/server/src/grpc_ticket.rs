@@ -24,6 +24,8 @@ use ur_rpc::proto::ticket::{
     WorkflowInfo,
 };
 
+use crate::UiEventPoller;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
     #[error("ticket not found: {id}")]
@@ -111,6 +113,9 @@ pub struct TicketServiceHandler {
     /// Optional channel sender for workflow cancellation requests.
     /// None on the worker server (no workflow engine).
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    /// Optional UI event poller for streaming UI events to subscribers.
+    /// None on the worker server.
+    pub ui_event_poller: Option<UiEventPoller>,
 }
 
 impl TicketServiceHandler {
@@ -926,9 +931,15 @@ impl TicketService for TicketServiceHandler {
         &self,
         _req: Request<SubscribeUiEventsRequest>,
     ) -> Result<Response<Self::SubscribeUiEventsStream>, Status> {
-        Err(Status::unimplemented(
-            "subscribe_ui_events not yet implemented",
-        ))
+        let poller = self.ui_event_poller.as_ref().ok_or_else(|| {
+            Status::unavailable("UI event streaming not available on this server")
+        })?;
+
+        let rx = poller.add_listener().await;
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let mapped = tokio_stream::StreamExt::map(stream, Ok);
+
+        Ok(Response::new(Box::pin(mapped)))
     }
 }
 
