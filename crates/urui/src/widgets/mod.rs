@@ -1,6 +1,8 @@
 mod banner;
+pub mod filter_menu;
 mod footer;
 pub mod header;
+pub mod overlay;
 mod table;
 
 pub use banner::render_banner;

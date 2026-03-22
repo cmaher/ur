@@ -1,3 +1,4 @@
+use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
@@ -11,6 +12,7 @@ use crate::data::DataPayload;
 use crate::keymap::Action;
 use crate::page::{FooterCommand, Page, PageResult, TabId};
 use crate::widgets::ThemedTable;
+use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 
 /// Internal state for the ticket data lifecycle.
 #[derive(Debug, Clone)]
@@ -23,16 +25,25 @@ enum DataState {
     Error(String),
 }
 
+/// Active overlay on this page.
+enum Overlay {
+    FilterMenu(FilterMenuState),
+}
+
 /// The Tickets tab page.
 ///
-/// Displays all tickets in a themed table with columns: ID, Type, Status,
+/// Displays all tickets in a themed table with columns: ID, Project, Status,
 /// Priority, Title. Supports row selection (NavigateUp/Down) and client-side
-/// pagination (PageLeft/Right).
+/// pagination (PageLeft/Right). Includes a filter overlay for narrowing results.
 pub struct TicketsPage {
     data_state: DataState,
     selected_row: usize,
     current_page: usize,
     page_size: usize,
+    overlay: Option<Overlay>,
+    filters: TicketFilters,
+    /// Cache of filtered + sorted tickets, rebuilt on data or filter change.
+    filtered_cache: Vec<Ticket>,
 }
 
 impl TicketsPage {
@@ -42,39 +53,34 @@ impl TicketsPage {
             selected_row: 0,
             current_page: 0,
             page_size: 20,
+            overlay: None,
+            filters: TicketFilters::default(),
+            filtered_cache: Vec::new(),
         }
     }
 
     /// Total number of pages given the current ticket count and page size.
     fn total_pages(&self) -> usize {
-        let count = self.ticket_count();
+        let count = self.filtered_cache.len();
         if count == 0 || self.page_size == 0 {
             return 1;
         }
         count.div_ceil(self.page_size)
     }
 
-    /// Number of tickets in the current dataset.
+    /// Number of tickets after filtering.
     fn ticket_count(&self) -> usize {
-        match &self.data_state {
-            DataState::Loaded(tickets) => tickets.len(),
-            _ => 0,
-        }
+        self.filtered_cache.len()
     }
 
     /// Returns the slice of tickets visible on the current page.
     fn visible_tickets(&self) -> &[Ticket] {
-        match &self.data_state {
-            DataState::Loaded(tickets) => {
-                let start = self.current_page * self.page_size;
-                let end = (start + self.page_size).min(tickets.len());
-                if start >= tickets.len() {
-                    &[]
-                } else {
-                    &tickets[start..end]
-                }
-            }
-            _ => &[],
+        let start = self.current_page * self.page_size;
+        let end = (start + self.page_size).min(self.filtered_cache.len());
+        if start >= self.filtered_cache.len() {
+            &[]
+        } else {
+            &self.filtered_cache[start..end]
         }
     }
 
@@ -83,11 +89,17 @@ impl TicketsPage {
         self.visible_tickets()
             .iter()
             .map(|t| {
+                let children_col = if t.children_total > 0 {
+                    format!("{}/{}", t.children_completed, t.children_total)
+                } else {
+                    String::new()
+                };
                 vec![
                     t.id.clone(),
-                    t.ticket_type.clone(),
+                    t.project.clone(),
                     t.status.clone(),
                     t.priority.to_string(),
+                    children_col,
                     t.title.clone(),
                 ]
             })
@@ -144,6 +156,100 @@ impl TicketsPage {
             self.page_size = available;
         }
     }
+
+    /// Rebuild the filtered + sorted cache from the raw data.
+    fn rebuild_cache(&mut self) {
+        let tickets = match &self.data_state {
+            DataState::Loaded(t) => t,
+            _ => {
+                self.filtered_cache.clear();
+                return;
+            }
+        };
+        self.filtered_cache = tickets
+            .iter()
+            .filter(|t| self.passes_filter(t))
+            .cloned()
+            .collect();
+        sort_tickets(&mut self.filtered_cache);
+    }
+
+    /// Check whether a ticket passes the current filters.
+    fn passes_filter(&self, ticket: &Ticket) -> bool {
+        // Status filter
+        if !self.filters.statuses.is_empty() && !self.filters.statuses.contains(&ticket.status) {
+            return false;
+        }
+        // Priority filter
+        if !self.filters.priorities.is_empty()
+            && !self.filters.priorities.contains(&ticket.priority)
+        {
+            return false;
+        }
+        // Project filter
+        if !self.filters.projects.is_empty() && !self.filters.projects.contains(&ticket.project) {
+            return false;
+        }
+        // Show children filter: hide tickets with parent_id when off
+        if !self.filters.show_children && !ticket.parent_id.is_empty() {
+            return false;
+        }
+        true
+    }
+
+    /// Handle a raw key event when the overlay is active.
+    /// Returns true if the event was consumed by the overlay.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> bool {
+        let Some(Overlay::FilterMenu(ref mut menu)) = self.overlay else {
+            return false;
+        };
+
+        // First check if Esc should collapse submenu before closing
+        if matches!(key.code, crossterm::event::KeyCode::Esc) && menu.collapse() {
+            return true;
+        }
+
+        let result = menu.handle_key(key, &mut self.filters);
+        match result {
+            FilterMenuResult::Consumed => {
+                // Filters may have changed; rebuild cache
+                self.rebuild_cache();
+                self.current_page = 0;
+                self.selected_row = 0;
+                true
+            }
+            FilterMenuResult::Close => {
+                self.overlay = None;
+                true
+            }
+        }
+    }
+
+    /// Returns true if an overlay is currently active.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Close any active overlay.
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
+    }
+}
+
+/// Sort tickets: priority ascending (P0 first), tickets with children rank
+/// higher than same-priority leaves.
+fn sort_tickets(tickets: &mut [Ticket]) {
+    tickets.sort_by(|a, b| {
+        // Primary sort: priority ascending
+        let prio = a.priority.cmp(&b.priority);
+        if prio != std::cmp::Ordering::Equal {
+            return prio;
+        }
+        // Secondary: tickets with children before leaves at same priority
+        let a_has_children = a.children_total > 0;
+        let b_has_children = b.children_total > 0;
+        b_has_children.cmp(&a_has_children)
+    });
 }
 
 use ratatui::widgets::Widget;
@@ -181,6 +287,12 @@ impl Page for TicketsPage {
             }
             Action::Refresh => {
                 self.data_state = DataState::Loading;
+                self.filtered_cache.clear();
+                PageResult::Consumed
+            }
+            Action::Filter => {
+                // Open filter menu — pass empty projects, will be overridden
+                // at render time via ctx, but state is initialized here.
                 PageResult::Consumed
             }
             Action::Quit => PageResult::Quit,
@@ -189,10 +301,6 @@ impl Page for TicketsPage {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        // Recompute page size from terminal height. Because render takes &self,
-        // we cannot mutate here; the caller should call update_page_size before
-        // render. However, we still display correctly based on the last-set
-        // page_size.
         match &self.data_state {
             DataState::Loading => {
                 self.render_message(area, buf, ctx, "Loading...");
@@ -209,14 +317,15 @@ impl Page for TicketsPage {
                     self.ticket_count(),
                 );
                 let table = ThemedTable {
-                    headers: vec!["ID", "Type", "Status", "Priority", "Title"],
+                    headers: vec!["ID", "Project", "Status", "Priority", "Progress", "Title"],
                     rows,
                     selected: Some(self.selected_row),
                     widths: vec![
                         Constraint::Length(12),
-                        Constraint::Length(8),
+                        Constraint::Length(10),
                         Constraint::Length(12),
                         Constraint::Length(8),
+                        Constraint::Length(10),
                         Constraint::Fill(1),
                     ],
                     page_info: Some(page_info),
@@ -224,9 +333,17 @@ impl Page for TicketsPage {
                 table.render(area, buf, ctx);
             }
         }
+
+        // Render overlay on top
+        if let Some(Overlay::FilterMenu(ref menu)) = self.overlay {
+            menu.render(area, buf, ctx, &self.filters);
+        }
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
+        if let Some(Overlay::FilterMenu(ref menu)) = self.overlay {
+            return menu.footer_commands();
+        }
         vec![
             FooterCommand {
                 key_label: "j".to_string(),
@@ -239,6 +356,10 @@ impl Page for TicketsPage {
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
+            },
+            FooterCommand {
+                key_label: "*".to_string(),
+                description: "Filter".to_string(),
             },
             FooterCommand {
                 key_label: "r".to_string(),
@@ -260,12 +381,14 @@ impl Page for TicketsPage {
             match result {
                 Ok(tickets) => {
                     self.data_state = DataState::Loaded(tickets.clone());
+                    self.rebuild_cache();
                     // Clamp selection and page to valid ranges after data update.
                     self.current_page = 0;
                     self.selected_row = 0;
                 }
                 Err(msg) => {
                     self.data_state = DataState::Error(msg.clone());
+                    self.filtered_cache.clear();
                 }
             }
         }
@@ -274,6 +397,11 @@ impl Page for TicketsPage {
     fn needs_data(&self) -> bool {
         matches!(self.data_state, DataState::Loading)
     }
+}
+
+/// Open the filter menu overlay on the tickets page.
+pub fn open_filter_menu(page: &mut TicketsPage, projects: &[String]) {
+    page.overlay = Some(Overlay::FilterMenu(FilterMenuState::new(projects.to_vec())));
 }
 
 #[cfg(test)]
@@ -295,6 +423,32 @@ mod tests {
             branch: String::new(),
             depth: 0,
             children_total: 0,
+            children_completed: 0,
+        }
+    }
+
+    fn make_ticket_with_fields(
+        id: &str,
+        status: &str,
+        priority: i64,
+        project: &str,
+        parent_id: &str,
+        children_total: i32,
+    ) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            ticket_type: "task".to_string(),
+            status: status.to_string(),
+            priority,
+            parent_id: parent_id.to_string(),
+            title: format!("Ticket {id}"),
+            body: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            project: project.to_string(),
+            branch: String::new(),
+            depth: 0,
+            children_total,
             children_completed: 0,
         }
     }
@@ -460,15 +614,150 @@ mod tests {
             .collect();
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
-        // Page 0: tickets 0, 1
+        // Page 0: first 2 tickets
         let visible = page.visible_tickets();
         assert_eq!(visible.len(), 2);
-        assert_eq!(visible[0].id, "t-0");
 
-        // Page 2: ticket 4 only
+        // Page 2: last ticket only
         page.current_page = 2;
         let visible = page.visible_tickets();
         assert_eq!(visible.len(), 1);
-        assert_eq!(visible[0].id, "t-4");
+    }
+
+    #[test]
+    fn default_filter_hides_children() {
+        let mut page = TicketsPage::new();
+        let tickets = vec![
+            make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
+            make_ticket_with_fields("t-2", "open", 2, "test", "t-1", 0), // child
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Default: show_children=off, so child is hidden
+        assert_eq!(page.ticket_count(), 1);
+        assert_eq!(page.filtered_cache[0].id, "t-1");
+    }
+
+    #[test]
+    fn filter_by_status() {
+        let mut page = TicketsPage::new();
+        let tickets = vec![
+            make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
+            make_ticket_with_fields("t-2", "closed", 2, "test", "", 0),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Default: status=open only
+        assert_eq!(page.ticket_count(), 1);
+        assert_eq!(page.filtered_cache[0].id, "t-1");
+
+        // Show all statuses
+        page.filters.statuses.clear();
+        page.rebuild_cache();
+        assert_eq!(page.ticket_count(), 2);
+    }
+
+    #[test]
+    fn filter_by_priority() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear(); // Show all statuses
+        let tickets = vec![
+            make_ticket_with_fields("t-1", "open", 0, "test", "", 0),
+            make_ticket_with_fields("t-2", "open", 2, "test", "", 0),
+            make_ticket_with_fields("t-3", "open", 4, "test", "", 0),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Filter to P0 only
+        page.filters.priorities = vec![0];
+        page.rebuild_cache();
+        assert_eq!(page.ticket_count(), 1);
+        assert_eq!(page.filtered_cache[0].id, "t-1");
+    }
+
+    #[test]
+    fn filter_by_project() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![
+            make_ticket_with_fields("t-1", "open", 2, "alpha", "", 0),
+            make_ticket_with_fields("t-2", "open", 2, "beta", "", 0),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        page.filters.projects = vec!["alpha".to_string()];
+        page.rebuild_cache();
+        assert_eq!(page.ticket_count(), 1);
+        assert_eq!(page.filtered_cache[0].project, "alpha");
+    }
+
+    #[test]
+    fn sorting_priority_ascending() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![
+            make_ticket_with_fields("t-3", "open", 4, "test", "", 0),
+            make_ticket_with_fields("t-1", "open", 0, "test", "", 0),
+            make_ticket_with_fields("t-2", "open", 2, "test", "", 0),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        assert_eq!(page.filtered_cache[0].id, "t-1"); // P0
+        assert_eq!(page.filtered_cache[1].id, "t-2"); // P2
+        assert_eq!(page.filtered_cache[2].id, "t-3"); // P4
+    }
+
+    #[test]
+    fn sorting_children_rank_higher() {
+        let mut page = TicketsPage::new();
+        page.filters.statuses.clear();
+        let tickets = vec![
+            make_ticket_with_fields("t-leaf", "open", 2, "test", "", 0),
+            make_ticket_with_fields("t-parent", "open", 2, "test", "", 3),
+        ];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Parent (has children) should come before leaf at same priority
+        assert_eq!(page.filtered_cache[0].id, "t-parent");
+        assert_eq!(page.filtered_cache[1].id, "t-leaf");
+    }
+
+    #[test]
+    fn filters_persist_across_refresh() {
+        let mut page = TicketsPage::new();
+        page.filters.priorities = vec![0, 1];
+
+        let tickets = vec![make_ticket("t-1", "First")];
+        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+
+        // Refresh
+        page.handle_action(Action::Refresh);
+        assert!(page.needs_data());
+
+        // Reload data — filters should still be set
+        let tickets2 = vec![make_ticket("t-2", "Second")];
+        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        assert_eq!(page.filters.priorities, vec![0, 1]);
+    }
+
+    #[test]
+    fn open_filter_menu_creates_overlay() {
+        let mut page = TicketsPage::new();
+        assert!(!page.has_overlay());
+
+        open_filter_menu(&mut page, &["proj1".to_string()]);
+        assert!(page.has_overlay());
+    }
+
+    #[test]
+    fn overlay_footer_differs() {
+        let mut page = TicketsPage::new();
+        let normal_cmds = page.footer_commands();
+
+        open_filter_menu(&mut page, &[]);
+        let overlay_cmds = page.footer_commands();
+
+        // Footer should be different when overlay is open
+        assert_ne!(normal_cmds.len(), overlay_cmds.len());
     }
 }

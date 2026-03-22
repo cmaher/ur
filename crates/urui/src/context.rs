@@ -9,4 +9,6 @@ use crate::theme::Theme;
 pub struct TuiContext {
     pub theme: Theme,
     pub keymap: Keymap,
+    /// Project keys from ur.toml configuration, sorted alphabetically.
+    pub projects: Vec<String>,
 }

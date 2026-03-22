@@ -54,7 +54,13 @@ async fn main() -> anyhow::Result<()> {
     // Resolve theme and keymap from configuration.
     let theme = Theme::resolve(&config.tui);
     let keymap = resolve_keymap(&config.tui);
-    let ctx = TuiContext { theme, keymap };
+    let mut projects: Vec<String> = config.projects.keys().cloned().collect();
+    projects.sort();
+    let ctx = TuiContext {
+        theme,
+        keymap,
+        projects,
+    };
 
     let mut terminal = setup_terminal()?;
 

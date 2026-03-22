@@ -12,6 +12,7 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventReceiver};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
+use crate::pages::tickets::open_filter_menu;
 use crate::pages::{FlowsPage, TicketsPage};
 use crate::widgets::header::TabInfo;
 use crate::widgets::{render_banner, render_footer, render_header};
@@ -98,6 +99,18 @@ impl App {
             return;
         }
 
+        // If the tickets page has an active overlay, route raw keys to it.
+        // Tab-switch keys close the overlay and switch tabs.
+        if self.active_tab == TabId::Tickets && self.tickets_page.has_overlay() {
+            if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
+                self.tickets_page.close_overlay();
+                self.switch_tab(tab);
+                return;
+            }
+            self.tickets_page.handle_overlay_key(key);
+            return;
+        }
+
         // If the active page has a banner, Enter or Escape dismisses it.
         if self.active_page().banner().is_some() {
             if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
@@ -114,6 +127,9 @@ impl App {
             Action::SwitchTab(tab) => self.switch_tab(tab),
             Action::Quit => {
                 self.should_quit = true;
+            }
+            Action::Filter if self.active_tab == TabId::Tickets => {
+                open_filter_menu(&mut self.tickets_page, &self.ctx.projects);
             }
             other => self.dispatch_to_page(other),
         }
@@ -257,7 +273,11 @@ mod tests {
         let tui_config = TuiConfig::default();
         let theme = Theme::resolve(&tui_config);
         let keymap = Keymap::default();
-        TuiContext { theme, keymap }
+        TuiContext {
+            theme,
+            keymap,
+            projects: vec![],
+        }
     }
 
     fn make_app() -> App {

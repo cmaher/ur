@@ -41,7 +41,11 @@ mod tests {
         let tui_config = TuiConfig::default();
         let theme = Theme::resolve(&tui_config);
         let keymap = Keymap::default();
-        TuiContext { theme, keymap }
+        TuiContext {
+            theme,
+            keymap,
+            projects: vec![],
+        }
     }
 
     #[test]

@@ -135,10 +135,12 @@ impl Default for Keymap {
         );
 
         // filter = [*]
+        // Note: `*` is not uppercase, so normalize_modifiers strips SHIFT.
+        // Store with NONE to match the normalized key event.
         bindings.insert(
             KeyBinding {
                 code: KeyCode::Char('*'),
-                modifiers: KeyModifiers::SHIFT,
+                modifiers: KeyModifiers::NONE,
             },
             Action::Filter,
         );
@@ -237,7 +239,7 @@ impl Keymap {
         bindings.insert(
             KeyBinding {
                 code: KeyCode::Char('*'),
-                modifiers: KeyModifiers::SHIFT,
+                modifiers: KeyModifiers::NONE,
             },
             Action::Filter,
         );
@@ -565,7 +567,7 @@ mod tests {
         );
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT)),
-            Some(Action::Filter),
+            Some(Action::Filter), // SHIFT stripped by normalize_modifiers for non-uppercase
         );
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
@@ -591,7 +593,7 @@ mod tests {
         let keymap = Keymap::default();
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('*'), KeyModifiers::SHIFT)),
-            Some(Action::Filter),
+            Some(Action::Filter), // SHIFT stripped by normalize_modifiers for non-uppercase
         );
     }
 
