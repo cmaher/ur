@@ -436,6 +436,7 @@ struct RawBackupConfig {
 struct RawTuiConfig {
     theme: Option<String>,
     keymap: Option<String>,
+    key_repeat_interval_ms: Option<u64>,
     #[serde(default)]
     themes: HashMap<String, RawThemeColors>,
     #[serde(default)]
@@ -614,17 +615,22 @@ pub struct TuiConfig {
     pub theme_name: String,
     /// Active keymap name (default: "default").
     pub keymap_name: String,
+    /// Minimum interval in ms between repeated navigation actions when holding a key (default: 200).
+    pub key_repeat_interval_ms: u64,
     /// User-defined themes, keyed by name.
     pub custom_themes: HashMap<String, ThemeColors>,
     /// User-defined keymap overrides, keyed by name.
     pub custom_keymaps: HashMap<String, KeymapOverrides>,
 }
 
+pub const DEFAULT_KEY_REPEAT_INTERVAL_MS: u64 = 200;
+
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             theme_name: DEFAULT_TUI_THEME.to_string(),
             keymap_name: DEFAULT_TUI_KEYMAP.to_string(),
+            key_repeat_interval_ms: DEFAULT_KEY_REPEAT_INTERVAL_MS,
             custom_themes: HashMap::new(),
             custom_keymaps: HashMap::new(),
         }
@@ -1187,6 +1193,9 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
             TuiConfig {
                 theme_name: t.theme.unwrap_or_else(|| DEFAULT_TUI_THEME.to_string()),
                 keymap_name: t.keymap.unwrap_or_else(|| DEFAULT_TUI_KEYMAP.to_string()),
+                key_repeat_interval_ms: t
+                    .key_repeat_interval_ms
+                    .unwrap_or(DEFAULT_KEY_REPEAT_INTERVAL_MS),
                 custom_themes,
                 custom_keymaps,
             }

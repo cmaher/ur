@@ -1,4 +1,5 @@
 use std::io;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Terminal;
@@ -27,13 +28,15 @@ pub struct App {
     ctx: TuiContext,
     data_manager: DataManager,
     should_quit: bool,
+    key_repeat_interval: Duration,
+    last_nav_time: Instant,
 }
 
 impl App {
     /// Create a new `App` with the given context and data manager.
     ///
     /// The initial active tab is `Tickets`.
-    pub fn new(ctx: TuiContext, data_manager: DataManager) -> Self {
+    pub fn new(ctx: TuiContext, data_manager: DataManager, key_repeat_interval_ms: u64) -> Self {
         Self {
             active_tab: TabId::Tickets,
             tickets_page: TicketsPage::new(),
@@ -41,6 +44,8 @@ impl App {
             ctx,
             data_manager,
             should_quit: false,
+            key_repeat_interval: Duration::from_millis(key_repeat_interval_ms),
+            last_nav_time: Instant::now() - Duration::from_secs(1),
         }
     }
 
@@ -93,12 +98,13 @@ impl App {
             Action::Quit => {
                 self.should_quit = true;
             }
-            other => {
-                let result = self.active_page_mut().handle_action(other);
-                if result == PageResult::Quit {
-                    self.should_quit = true;
+            ref a if is_navigation_action(a) => {
+                if self.last_nav_time.elapsed() >= self.key_repeat_interval {
+                    self.last_nav_time = Instant::now();
+                    self.dispatch_to_page(action);
                 }
             }
+            other => self.dispatch_to_page(other),
         }
     }
 
@@ -113,6 +119,14 @@ impl App {
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);
+    }
+
+    /// Dispatch an action to the active page and handle quit if returned.
+    fn dispatch_to_page(&mut self, action: Action) {
+        let result = self.active_page_mut().handle_action(action);
+        if result == PageResult::Quit {
+            self.should_quit = true;
+        }
     }
 
     /// Switch the active tab and fetch data if the new page needs it.
@@ -206,6 +220,14 @@ impl App {
     }
 }
 
+/// Returns `true` for actions that should be throttled when a key is held.
+fn is_navigation_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::NavigateUp | Action::NavigateDown | Action::PageLeft | Action::PageRight
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,7 +247,7 @@ mod tests {
         let ctx = make_ctx();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let data_manager = DataManager::new(42069, tx);
-        App::new(ctx, data_manager)
+        App::new(ctx, data_manager, ur_config::DEFAULT_KEY_REPEAT_INTERVAL_MS)
     }
 
     #[test]

@@ -31,7 +31,8 @@ pub fn render_header(
     let spans: Vec<Span> = tabs
         .iter()
         .map(|tab| {
-            let text = format!(" ({}){}  ", tab.shortcut, tab.label);
+            let label_lower = tab.label.to_lowercase();
+            let text = format!(" ({}){}  ", tab.shortcut, &label_lower[1..]);
             let style = if tab.id == active {
                 Style::default().bg(theme.primary).fg(theme.primary_content)
             } else {

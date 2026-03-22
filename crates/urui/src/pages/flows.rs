@@ -166,16 +166,20 @@ impl Page for FlowsPage {
     fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: "j/k".into(),
-                description: "Navigate".into(),
+                key_label: "j".into(),
+                description: "Down".into(),
+            },
+            FooterCommand {
+                key_label: "k".into(),
+                description: "Up".into(),
             },
             FooterCommand {
                 key_label: "h/l".into(),
                 description: "Page".into(),
             },
             FooterCommand {
-                key_label: "t".into(),
-                description: "Tickets".into(),
+                key_label: "q".into(),
+                description: "Back".into(),
             },
             FooterCommand {
                 key_label: "Q".into(),

@@ -158,7 +158,7 @@ impl Page for TicketsPage {
     }
 
     fn shortcut_char(&self) -> char {
-        '1'
+        't'
     }
 
     fn handle_action(&mut self, action: Action) -> PageResult {
@@ -225,8 +225,12 @@ impl Page for TicketsPage {
     fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
+                key_label: "j".to_string(),
+                description: "Down".to_string(),
+            },
+            FooterCommand {
+                key_label: "k".to_string(),
+                description: "Up".to_string(),
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
@@ -234,6 +238,10 @@ impl Page for TicketsPage {
             },
             FooterCommand {
                 key_label: "q".to_string(),
+                description: "Back".to_string(),
+            },
+            FooterCommand {
+                key_label: "Q".to_string(),
                 description: "Quit".to_string(),
             },
         ]
