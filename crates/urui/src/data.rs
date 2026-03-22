@@ -127,6 +127,32 @@ impl DataManager {
         });
     }
 
+    /// Spawn a background task that updates a ticket's status via `UpdateTicket`.
+    /// On success, triggers a data refresh. On failure, an error banner appears.
+    pub fn update_ticket_status(&self, ticket_id: String, status: String) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, %status, "updating ticket status");
+            let result = update_ticket_status_rpc(port, &ticket_id, &status).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("{ticket_id} → {status}")),
+                    silent_on_success: false,
+                },
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "status update failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
     /// Spawn a background task that fetches all workflows via `ListWorkflows`
     /// and sends the result as `DataPayload::Flows`.
     pub fn fetch_flows(&self) {
@@ -170,6 +196,27 @@ async fn fetch_workflows_rpc(port: u16) -> Result<ListWorkflowsResponse> {
     let request = tonic::Request::new(ListWorkflowsRequest { status: None });
     let response = client.list_workflows(request).await?;
     Ok(response.into_inner())
+}
+
+/// Perform the UpdateTicket RPC to change a ticket's status.
+async fn update_ticket_status_rpc(port: u16, ticket_id: &str, status: &str) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: None,
+            status: Some(status.to_owned()),
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: None,
+        })
+        .await?;
+    Ok(())
 }
 
 /// Perform the UpdateTicket RPC to change a ticket's priority.

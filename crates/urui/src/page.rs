@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 
 use crate::context::TuiContext;
 use crate::data::DataPayload;
-use crate::keymap::Action;
+use crate::keymap::{Action, Keymap};
 
 /// Duration after which success banners auto-dismiss.
 const BANNER_AUTO_DISMISS_SECS: u64 = 5;
@@ -61,6 +61,8 @@ pub struct FooterCommand {
     pub key_label: String,
     /// Human-readable description (e.g. "Quit").
     pub description: String,
+    /// Whether this is a common command (rendered on the right side).
+    pub common: bool,
 }
 
 /// Trait implemented by every tab page in the TUI.
@@ -81,7 +83,7 @@ pub trait Page {
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext);
 
     /// Footer commands available while this page is active.
-    fn footer_commands(&self) -> Vec<FooterCommand>;
+    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand>;
 
     /// Receive fetched data from the data layer.
     fn on_data(&mut self, payload: &DataPayload);

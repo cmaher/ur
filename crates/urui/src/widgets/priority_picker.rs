@@ -106,18 +106,17 @@ impl PriorityPickerState {
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
+                common: false,
             },
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Confirm".to_string(),
-            },
-            FooterCommand {
-                key_label: "0-4".to_string(),
-                description: "Quick set".to_string(),
+                common: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Close".to_string(),
+                common: false,
             },
         ]
     }
@@ -253,6 +252,6 @@ mod tests {
         let cmds = state.footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Confirm"));
-        assert!(cmds.iter().any(|c| c.description == "Quick set"));
+        assert!(!cmds.iter().any(|c| c.description == "Quick set"));
     }
 }

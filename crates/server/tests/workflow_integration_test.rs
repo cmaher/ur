@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use tempfile::TempDir;
 use tokio::sync::{Mutex, watch};
 use tonic::transport::{Endpoint, Server};
 
@@ -203,15 +204,17 @@ impl TestHarness {
 // Test infrastructure helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_db() -> (DatabaseManager, TicketRepo, WorkflowRepo, WorkerRepo) {
-    let db = DatabaseManager::open(":memory:")
+async fn setup_db() -> (TempDir, TicketRepo, WorkflowRepo, WorkerRepo) {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+    let db = DatabaseManager::open(&db_path.to_string_lossy())
         .await
-        .expect("open in-memory db");
+        .expect("open test db");
     let graph = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph);
     let workflow_repo = WorkflowRepo::new(db.pool().clone());
     let worker_repo = WorkerRepo::new(db.pool().clone());
-    (db, ticket_repo, workflow_repo, worker_repo)
+    (tmp, ticket_repo, workflow_repo, worker_repo)
 }
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
@@ -442,7 +445,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
 ///   FeedbackCreating → (step complete + feedback_mode=later) → Merging
 #[tokio::test]
 async fn full_lifecycle_awaiting_dispatch_through_merging() {
-    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ1";
     let worker_id = "w-integ1";
@@ -498,7 +501,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 /// Test the FeedbackCreating → Implementing path (feedback_mode=now).
 #[tokio::test]
 async fn feedback_mode_now_routes_back_to_implementing() {
-    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ2";
     let worker_id = "w-integ2";
@@ -543,7 +546,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
 /// handler completion (the specific bug this patch fixes).
 #[tokio::test]
 async fn coordinator_dequeues_pending_across_grpc_boundary() {
-    let (_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ3";
     let worker_id = "w-integ3";

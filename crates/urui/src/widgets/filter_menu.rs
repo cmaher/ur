@@ -53,7 +53,7 @@ pub struct TicketFilters {
 impl Default for TicketFilters {
     fn default() -> Self {
         Self {
-            statuses: vec!["open".to_string()],
+            statuses: vec!["open".to_string(), "in_progress".to_string()],
             priorities: vec![],
             projects: vec![],
             show_children: false,
@@ -147,6 +147,15 @@ impl FilterMenuState {
     }
 
     fn quick_toggle(&mut self, c: char, filters: &mut TicketFilters) {
+        // At top level, number keys expand/activate categories (1-indexed)
+        if self.expanded.is_none() {
+            let digit = (c as u8 - b'0') as usize;
+            if digit >= 1 && digit <= CATEGORIES.len() {
+                self.cursor = digit - 1;
+                self.activate(filters);
+            }
+            return;
+        }
         let Some(cat) = self.expanded else {
             return;
         };
@@ -248,7 +257,8 @@ impl FilterMenuState {
             };
 
             buf.set_style(row_area, style);
-            let text = format!(" {label}: {summary}");
+            let num = i + 1;
+            let text = format!(" {num} {label}: {summary}");
             let line = Line::from(Span::raw(text)).style(style);
             line.render(row_area, buf);
         }
@@ -347,18 +357,17 @@ impl FilterMenuState {
                 FooterCommand {
                     key_label: "j/k".to_string(),
                     description: "Navigate".to_string(),
+                    common: false,
                 },
                 FooterCommand {
                     key_label: "Space".to_string(),
                     description: "Toggle".to_string(),
-                },
-                FooterCommand {
-                    key_label: "0-9".to_string(),
-                    description: "Quick toggle".to_string(),
+                    common: false,
                 },
                 FooterCommand {
                     key_label: "Esc".to_string(),
                     description: "Close".to_string(),
+                    common: false,
                 },
             ]
         } else {
@@ -366,14 +375,17 @@ impl FilterMenuState {
                 FooterCommand {
                     key_label: "j/k".to_string(),
                     description: "Navigate".to_string(),
+                    common: false,
                 },
                 FooterCommand {
                     key_label: "Enter".to_string(),
                     description: "Expand".to_string(),
+                    common: false,
                 },
                 FooterCommand {
                     key_label: "Esc".to_string(),
                     description: "Close".to_string(),
+                    common: false,
                 },
             ]
         }
@@ -446,7 +458,10 @@ mod tests {
     #[test]
     fn default_filters() {
         let f = TicketFilters::default();
-        assert_eq!(f.statuses, vec!["open".to_string()]);
+        assert_eq!(
+            f.statuses,
+            vec!["open".to_string(), "in_progress".to_string()]
+        );
         assert!(f.priorities.is_empty());
         assert!(f.projects.is_empty());
         assert!(!f.show_children);
@@ -485,7 +500,10 @@ mod tests {
     #[test]
     fn filter_menu_expand_and_toggle() {
         let mut state = FilterMenuState::new(vec!["proj1".into()]);
-        let mut filters = TicketFilters::default();
+        let mut filters = TicketFilters {
+            statuses: vec!["open".to_string()],
+            ..TicketFilters::default()
+        };
 
         // Cursor is on Status (index 0). Press Enter to expand.
         state.handle_key(
@@ -584,7 +602,10 @@ mod tests {
     #[test]
     fn quick_toggle_status_uses_1_indexed() {
         let mut state = FilterMenuState::new(vec![]);
-        let mut filters = TicketFilters::default();
+        let mut filters = TicketFilters {
+            statuses: vec![],
+            ..TicketFilters::default()
+        };
 
         // Expand Status
         state.handle_key(

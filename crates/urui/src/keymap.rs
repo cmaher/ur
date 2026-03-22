@@ -20,6 +20,8 @@ pub enum Action {
     Filter,
     SetPriority,
     Dispatch,
+    CloseTicket,
+    OpenTicket,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -200,6 +202,24 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::Quit,
     );
+
+    // close_ticket = [X]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('X'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::CloseTicket,
+    );
+
+    // open_ticket = [O]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('O'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::OpenTicket,
+    );
 }
 
 impl Keymap {
@@ -265,8 +285,71 @@ impl Keymap {
             },
             Action::Dispatch,
         );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('X'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::CloseTicket,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('O'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::OpenTicket,
+        );
 
         Self { bindings }
+    }
+
+    /// Returns a display label for the primary key bound to the given action.
+    ///
+    /// Prefers short character labels over named keys (arrows, etc.).
+    pub fn label_for(&self, action: &Action) -> String {
+        let mut char_label: Option<String> = None;
+        let mut named_label: Option<String> = None;
+
+        let matching = self
+            .bindings
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(kb, _)| kb);
+
+        for kb in matching {
+            let label = key_binding_display(kb);
+            if label.is_empty() {
+                continue;
+            }
+            let is_char = matches!(kb.code, KeyCode::Char(_));
+            if is_char
+                && char_label
+                    .as_ref()
+                    .is_none_or(|cur| label.len() < cur.len())
+            {
+                char_label = Some(label);
+            } else if !is_char && named_label.is_none() {
+                named_label = Some(label);
+            }
+        }
+
+        char_label.or(named_label).unwrap_or_default()
+    }
+
+    /// Returns a combined display label for two related actions (e.g. "h/l"
+    /// for PageLeft/PageRight).
+    pub fn combined_label(&self, a1: &Action, a2: &Action) -> String {
+        let l1 = self.label_for(a1);
+        let l2 = self.label_for(a2);
+        if l1.is_empty() && l2.is_empty() {
+            String::new()
+        } else if l1.is_empty() {
+            l2
+        } else if l2.is_empty() {
+            l1
+        } else {
+            format!("{l1}/{l2}")
+        }
     }
 
     /// Resolve a raw `KeyEvent` to a semantic `Action`, if any binding matches.
@@ -293,6 +376,34 @@ fn normalize_modifiers(event: KeyEvent) -> KeyModifiers {
         }
     }
     mods
+}
+
+/// Convert a `KeyBinding` to a human-readable display string.
+fn key_binding_display(kb: &KeyBinding) -> String {
+    let base = match kb.code {
+        KeyCode::Char(c) => {
+            if kb.modifiers.contains(KeyModifiers::CONTROL) {
+                return format!("C-{c}");
+            }
+            return c.to_string();
+        }
+        KeyCode::Up => "Up",
+        KeyCode::Down => "Down",
+        KeyCode::Left => "Left",
+        KeyCode::Right => "Right",
+        KeyCode::Enter => "Enter",
+        KeyCode::Esc => "Esc",
+        KeyCode::Tab => "Tab",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::Delete => "Delete",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::F(n) => return format!("F{n}"),
+        _ => return String::new(),
+    };
+    base.to_string()
 }
 
 /// Insert parsed key bindings for an action from an optional config field.
