@@ -255,18 +255,28 @@ impl RemoteRepo for GhBackend {
                 "--repo",
                 &self.gh_repo,
                 "--json",
-                "name,state,conclusion,detailsUrl,completedAt",
+                "name,state,completedAt",
             ])
             .await?;
 
         let runs = value
             .iter()
-            .map(|v| CheckRun {
-                name: v["name"].as_str().unwrap_or("").to_string(),
-                status: v["state"].as_str().unwrap_or("").to_string(),
-                conclusion: v["conclusion"].as_str().unwrap_or("").to_string(),
-                details_url: v["detailsUrl"].as_str().unwrap_or("").to_string(),
-                completed_at: v["completedAt"].as_str().unwrap_or("").to_string(),
+            .map(|v| {
+                let state = v["state"].as_str().unwrap_or("");
+                // gh pr checks --json state returns terminal values directly
+                // (SUCCESS, FAILURE, NEUTRAL, SKIPPED, ERROR, CANCELLED, etc.)
+                // and PENDING/EXPECTED for in-progress checks.
+                let (status, conclusion) = match state.to_uppercase().as_str() {
+                    "PENDING" | "EXPECTED" | "QUEUED" => (state.to_string(), String::new()),
+                    _ => ("completed".to_string(), state.to_lowercase()),
+                };
+                CheckRun {
+                    name: v["name"].as_str().unwrap_or("").to_string(),
+                    status,
+                    conclusion,
+                    details_url: String::new(),
+                    completed_at: v["completedAt"].as_str().unwrap_or("").to_string(),
+                }
             })
             .collect();
 
