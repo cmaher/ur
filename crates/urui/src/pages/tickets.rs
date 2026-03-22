@@ -212,6 +212,28 @@ impl TicketsPage {
     }
 
     /// After loading new data, either clamp the selection (refresh) or reset it (initial load).
+    /// Apply a full ticket list result, preserving selection on refresh.
+    fn apply_tickets_result(&mut self, result: &Result<Vec<Ticket>, String>, was_refreshing: bool) {
+        match result {
+            Ok(tickets) => {
+                let map: HashMap<String, Ticket> =
+                    tickets.iter().map(|t| (t.id.clone(), t.clone())).collect();
+                self.data_state = DataState::Loaded(map);
+                if was_refreshing {
+                    self.preserve_selection_and_rebuild();
+                } else {
+                    self.rebuild_cache();
+                    self.current_page = 0;
+                    self.selected_row = 0;
+                }
+            }
+            Err(msg) => {
+                self.data_state = DataState::Error(msg.clone());
+                self.filtered_cache.clear();
+            }
+        }
+    }
+
     /// Preserve selection by ticket ID across data reloads.
     ///
     /// Saves the currently selected ticket ID, rebuilds the cache, then restores
@@ -224,12 +246,12 @@ impl TicketsPage {
 
     /// Restore selection to a ticket ID, or clamp if the ID is gone.
     fn restore_selection_by_id(&mut self, ticket_id: Option<&str>) {
-        if let Some(id) = ticket_id {
-            if let Some(pos) = self.filtered_cache.iter().position(|tid| tid == id) {
-                self.current_page = pos / self.page_size;
-                self.selected_row = pos % self.page_size;
-                return;
-            }
+        if let Some(id) = ticket_id
+            && let Some(pos) = self.filtered_cache.iter().position(|tid| tid == id)
+        {
+            self.current_page = pos / self.page_size;
+            self.selected_row = pos % self.page_size;
+            return;
         }
         // ID not found or no previous selection — clamp.
         self.clamp_selection();
@@ -393,7 +415,12 @@ fn sort_tickets_ref(tickets: &mut [&Ticket]) {
         // Secondary: tickets with children before leaves at same priority
         let a_has_children = a.children_total > 0;
         let b_has_children = b.children_total > 0;
-        b_has_children.cmp(&a_has_children)
+        let children = b_has_children.cmp(&a_has_children);
+        if children != std::cmp::Ordering::Equal {
+            return children;
+        }
+        // Tertiary: stable order by ID
+        a.id.cmp(&b.id)
     });
 }
 
@@ -658,31 +685,12 @@ impl Page for TicketsPage {
                 let was_refreshing = self.refreshing;
                 self.refreshing = false;
                 self.active_status = None;
-                match result {
-                    Ok(tickets) => {
-                        let map: HashMap<String, Ticket> =
-                            tickets.iter().map(|t| (t.id.clone(), t.clone())).collect();
-                        self.data_state = DataState::Loaded(map);
-                        if was_refreshing {
-                            self.preserve_selection_and_rebuild();
-                        } else {
-                            self.rebuild_cache();
-                            self.current_page = 0;
-                            self.selected_row = 0;
-                        }
-                    }
-                    Err(msg) => {
-                        self.data_state = DataState::Error(msg.clone());
-                        self.filtered_cache.clear();
-                    }
-                }
+                self.apply_tickets_result(result, was_refreshing);
             }
-            DataPayload::TicketUpdate(result) => {
-                if let Ok(ticket) = result {
-                    if let DataState::Loaded(ref mut map) = self.data_state {
-                        map.insert(ticket.id.clone(), ticket.clone());
-                        self.preserve_selection_and_rebuild();
-                    }
+            DataPayload::TicketUpdate(Ok(ticket)) => {
+                if let DataState::Loaded(ref mut map) = self.data_state {
+                    map.insert(ticket.id.clone(), ticket.clone());
+                    self.preserve_selection_and_rebuild();
                 }
             }
             _ => {}
