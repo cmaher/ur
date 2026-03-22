@@ -47,7 +47,6 @@ const LIGHT_THEMES: &[&str] = &[
     "lemonade",
     "light",
     "lofi",
-    "nord",
     "pastel",
     "retro",
     "silk",
