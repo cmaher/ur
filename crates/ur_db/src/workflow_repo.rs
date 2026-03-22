@@ -584,6 +584,8 @@ impl WorkflowRepo {
                         branch,
                         created_at,
                         updated_at,
+                        children_completed: 0,
+                        children_total: 0,
                     }
                 },
             )
