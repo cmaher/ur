@@ -50,6 +50,7 @@ impl Banner {
 pub enum TabId {
     Tickets,
     Flows,
+    Workers,
 }
 
 /// Result of a page handling an action.
