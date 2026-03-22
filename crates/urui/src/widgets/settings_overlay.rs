@@ -133,7 +133,7 @@ impl SettingsOverlayState {
 
     fn handle_top_level_key(&mut self, key: KeyEvent) -> SettingsResult {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => SettingsResult::Close,
+            KeyCode::Esc => SettingsResult::Close,
             KeyCode::Char('1') | KeyCode::Char(' ') | KeyCode::Enter => {
                 // Only option is Theme (index 0)
                 self.level = SettingsLevel::ThemePicker;
@@ -145,7 +145,7 @@ impl SettingsOverlayState {
 
     fn handle_theme_picker_key(&mut self, key: KeyEvent) -> SettingsResult {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc => {
                 self.level = SettingsLevel::TopLevel;
                 SettingsResult::Consumed
             }
@@ -357,7 +357,7 @@ impl SettingsOverlayState {
                     common: false,
                 },
                 FooterCommand {
-                    key_label: "q/Esc".to_string(),
+                    key_label: "Esc".to_string(),
                     description: "Close".to_string(),
                     common: false,
                 },
@@ -379,7 +379,7 @@ impl SettingsOverlayState {
                     common: false,
                 },
                 FooterCommand {
-                    key_label: "q/Esc".to_string(),
+                    key_label: "Esc".to_string(),
                     description: "Back".to_string(),
                     common: false,
                 },
@@ -424,16 +424,6 @@ mod tests {
     }
 
     #[test]
-    fn top_level_q_closes() {
-        let mut state = make_state();
-        let r = state.handle_key(KeyEvent::new(
-            KeyCode::Char('q'),
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(r, SettingsResult::Close);
-    }
-
-    #[test]
     fn top_level_1_enters_theme_picker() {
         let mut state = make_state();
         let r = state.handle_key(KeyEvent::new(
@@ -461,18 +451,6 @@ mod tests {
         state.level = SettingsLevel::ThemePicker;
         let r = state.handle_key(KeyEvent::new(
             KeyCode::Esc,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(r, SettingsResult::Consumed);
-        assert_eq!(state.level, SettingsLevel::TopLevel);
-    }
-
-    #[test]
-    fn theme_picker_q_returns_to_top() {
-        let mut state = make_state();
-        state.level = SettingsLevel::ThemePicker;
-        let r = state.handle_key(KeyEvent::new(
-            KeyCode::Char('q'),
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, SettingsResult::Consumed);

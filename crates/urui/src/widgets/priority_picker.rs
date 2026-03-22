@@ -48,7 +48,7 @@ impl PriorityPickerState {
     /// Handle a raw key event. Returns the result indicating what happened.
     pub fn handle_key(&mut self, key: KeyEvent) -> PriorityPickerResult {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => PriorityPickerResult::Close,
+            KeyCode::Esc => PriorityPickerResult::Close,
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.cursor < PRIORITIES.len() - 1 {
                     self.cursor += 1;
@@ -114,7 +114,7 @@ impl PriorityPickerState {
                 common: false,
             },
             FooterCommand {
-                key_label: "q/Esc".to_string(),
+                key_label: "Esc".to_string(),
                 description: "Close".to_string(),
                 common: false,
             },
@@ -231,16 +231,6 @@ mod tests {
         let mut state = PriorityPickerState::new(0);
         let r = state.handle_key(KeyEvent::new(
             KeyCode::Esc,
-            crossterm::event::KeyModifiers::NONE,
-        ));
-        assert_eq!(r, PriorityPickerResult::Close);
-    }
-
-    #[test]
-    fn q_closes() {
-        let mut state = PriorityPickerState::new(0);
-        let r = state.handle_key(KeyEvent::new(
-            KeyCode::Char('q'),
             crossterm::event::KeyModifiers::NONE,
         ));
         assert_eq!(r, PriorityPickerResult::Close);
