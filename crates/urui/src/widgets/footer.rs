@@ -54,7 +54,7 @@ fn build_spans(
 pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &[FooterCommand]) {
     let theme = &ctx.theme;
 
-    // Fill the entire footer row with neutral background first.
+    // Use same background as the table header (neutral bg / neutral_content fg).
     let bg_style = Style::default().bg(theme.neutral).fg(theme.neutral_content);
     buf.set_style(area, bg_style);
 
@@ -66,7 +66,7 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
 
     // Always render left commands
     if !left_cmds.is_empty() {
-        let spans = build_spans(&left_cmds, theme.secondary, theme.base_content);
+        let spans = build_spans(&left_cmds, theme.primary_content, theme.neutral_content);
         let line = Line::from(spans);
         line.render(area, buf);
     }
@@ -76,7 +76,7 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
     if !right_cmds.is_empty() && left_width + gap + right_width <= area.width {
         let right_x = area.x + area.width - right_width;
         let right_area = Rect::new(right_x, area.y, right_width, 1);
-        let spans = build_spans(&right_cmds, theme.secondary, theme.base_content);
+        let spans = build_spans(&right_cmds, theme.primary_content, theme.neutral_content);
         let line = Line::from(spans);
         line.render(right_area, buf);
     }
