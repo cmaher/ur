@@ -3,6 +3,7 @@ mod graph_tests;
 mod snapshot_tests;
 mod ticket_repo_tests;
 mod worker_repo_tests;
+mod workflow_repo_tests;
 
 use crate::database::DatabaseManager;
 use std::path::PathBuf;
