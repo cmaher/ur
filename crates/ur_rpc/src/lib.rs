@@ -9,6 +9,9 @@ pub mod workflow_condition;
 pub mod workflow_event;
 
 #[cfg(feature = "retry")]
+pub mod connection;
+
+#[cfg(feature = "retry")]
 pub mod retry;
 
 #[cfg(feature = "stream")]

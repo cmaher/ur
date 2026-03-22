@@ -73,6 +73,7 @@ async fn make_components_with_db(
             builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
         },
         projects: HashMap::new(),
+        tui: ur_config::TuiConfig::default(),
     };
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let graph_manager = ur_db::GraphManager::new(db.pool().clone());

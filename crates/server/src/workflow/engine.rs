@@ -286,6 +286,7 @@ mod tests {
                 builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
             },
             projects: std::collections::HashMap::new(),
+            tui: ur_config::TuiConfig::default(),
         })
     }
 

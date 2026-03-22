@@ -314,6 +314,7 @@ struct RawConfig {
     rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
+    tui: Option<RawTuiConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
 }
@@ -430,6 +431,64 @@ struct RawBackupConfig {
     retain_count: Option<u64>,
 }
 
+/// Raw TOML representation for the `[tui]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawTuiConfig {
+    theme: Option<String>,
+    keymap: Option<String>,
+    key_repeat_interval_ms: Option<u64>,
+    #[serde(default)]
+    themes: HashMap<String, RawThemeColors>,
+    #[serde(default)]
+    keymaps: HashMap<String, RawKeymapOverrides>,
+}
+
+/// Raw TOML representation for a `[tui.themes.<name>]` entry.
+#[derive(Debug, Default, Deserialize)]
+struct RawThemeColors {
+    bg: Option<String>,
+    fg: Option<String>,
+    border: Option<String>,
+    border_focused: Option<String>,
+    border_rounded: Option<bool>,
+    header_bg: Option<String>,
+    header_fg: Option<String>,
+    selected_bg: Option<String>,
+    selected_fg: Option<String>,
+    status_bar_bg: Option<String>,
+    status_bar_fg: Option<String>,
+    error_fg: Option<String>,
+    warning_fg: Option<String>,
+    success_fg: Option<String>,
+    info_fg: Option<String>,
+    muted_fg: Option<String>,
+    accent: Option<String>,
+    highlight: Option<String>,
+    shadow: Option<String>,
+    overlay_bg: Option<String>,
+}
+
+/// Raw TOML representation for a `[tui.keymaps.<name>]` entry.
+#[derive(Debug, Default, Deserialize)]
+struct RawKeymapOverrides {
+    quit: Option<Vec<String>>,
+    focus_next: Option<Vec<String>>,
+    focus_prev: Option<Vec<String>>,
+    scroll_up: Option<Vec<String>>,
+    scroll_down: Option<Vec<String>>,
+    page_up: Option<Vec<String>>,
+    page_down: Option<Vec<String>>,
+    select: Option<Vec<String>>,
+    cancel: Option<Vec<String>>,
+    refresh: Option<Vec<String>>,
+    filter: Option<Vec<String>>,
+    help: Option<Vec<String>>,
+    new_flow: Option<Vec<String>>,
+    stop_flow: Option<Vec<String>>,
+    view_logs: Option<Vec<String>>,
+    toggle_panel: Option<Vec<String>>,
+}
+
 /// Raw TOML representation for the `[server]` section.
 #[derive(Debug, Default, Deserialize)]
 struct RawServerConfig {
@@ -487,6 +546,95 @@ pub struct ServerConfig {
     /// Base backoff in milliseconds for builderd retries (default: 200).
     /// Each retry doubles this value (exponential backoff).
     pub builderd_retry_backoff_ms: u64,
+}
+
+/// Default TUI theme name.
+pub const DEFAULT_TUI_THEME: &str = "dark";
+
+/// Default TUI keymap name.
+pub const DEFAULT_TUI_KEYMAP: &str = "default";
+
+/// TUI theme color definitions.
+///
+/// All fields are `Option<String>` — colors are stored as raw strings
+/// (e.g. `"#1a1b26"`, `"red"`) and resolved to actual color values by
+/// the TUI crate at runtime. No ratatui dependency here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeColors {
+    pub bg: Option<String>,
+    pub fg: Option<String>,
+    pub border: Option<String>,
+    pub border_focused: Option<String>,
+    pub border_rounded: Option<bool>,
+    pub header_bg: Option<String>,
+    pub header_fg: Option<String>,
+    pub selected_bg: Option<String>,
+    pub selected_fg: Option<String>,
+    pub status_bar_bg: Option<String>,
+    pub status_bar_fg: Option<String>,
+    pub error_fg: Option<String>,
+    pub warning_fg: Option<String>,
+    pub success_fg: Option<String>,
+    pub info_fg: Option<String>,
+    pub muted_fg: Option<String>,
+    pub accent: Option<String>,
+    pub highlight: Option<String>,
+    pub shadow: Option<String>,
+    pub overlay_bg: Option<String>,
+}
+
+/// TUI keymap override definitions.
+///
+/// Each field maps an action name to a list of key binding strings
+/// (e.g. `["q", "ctrl-c"]`). `None` means use the built-in default
+/// for that action.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeymapOverrides {
+    pub quit: Option<Vec<String>>,
+    pub focus_next: Option<Vec<String>>,
+    pub focus_prev: Option<Vec<String>>,
+    pub scroll_up: Option<Vec<String>>,
+    pub scroll_down: Option<Vec<String>>,
+    pub page_up: Option<Vec<String>>,
+    pub page_down: Option<Vec<String>>,
+    pub select: Option<Vec<String>>,
+    pub cancel: Option<Vec<String>>,
+    pub refresh: Option<Vec<String>>,
+    pub filter: Option<Vec<String>>,
+    pub help: Option<Vec<String>>,
+    pub new_flow: Option<Vec<String>>,
+    pub stop_flow: Option<Vec<String>>,
+    pub view_logs: Option<Vec<String>>,
+    pub toggle_panel: Option<Vec<String>>,
+}
+
+/// Resolved TUI configuration from the `[tui]` section of `ur.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiConfig {
+    /// Active theme name (default: "dark").
+    pub theme_name: String,
+    /// Active keymap name (default: "default").
+    pub keymap_name: String,
+    /// Minimum interval in ms between repeated navigation actions when holding a key (default: 200).
+    pub key_repeat_interval_ms: u64,
+    /// User-defined themes, keyed by name.
+    pub custom_themes: HashMap<String, ThemeColors>,
+    /// User-defined keymap overrides, keyed by name.
+    pub custom_keymaps: HashMap<String, KeymapOverrides>,
+}
+
+pub const DEFAULT_KEY_REPEAT_INTERVAL_MS: u64 = 200;
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme_name: DEFAULT_TUI_THEME.to_string(),
+            keymap_name: DEFAULT_TUI_KEYMAP.to_string(),
+            key_repeat_interval_ms: DEFAULT_KEY_REPEAT_INTERVAL_MS,
+            custom_themes: HashMap::new(),
+            custom_keymaps: HashMap::new(),
+        }
+    }
 }
 
 /// Default maximum number of fix loop iterations before stalling an agent.
@@ -684,6 +832,8 @@ pub struct Config {
     pub backup: BackupConfig,
     /// Server runtime settings (container command, polling intervals, etc.).
     pub server: ServerConfig,
+    /// TUI display settings (theme, keymap).
+    pub tui: TuiConfig,
     /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
     /// Empty string means no prefix.
     pub git_branch_prefix: String,
@@ -749,6 +899,7 @@ impl Config {
         let rag = resolve_rag(raw.rag);
         let backup = resolve_backup(raw.backup);
         let server = resolve_server(raw.server);
+        let tui = resolve_tui(raw.tui);
 
         let projects = raw
             .projects
@@ -771,6 +922,7 @@ impl Config {
             rag,
             backup,
             server,
+            tui,
             git_branch_prefix,
             projects,
         })
@@ -978,6 +1130,77 @@ fn resolve_backup(raw: Option<RawBackupConfig>) -> BackupConfig {
             enabled: true,
             retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
         },
+    }
+}
+
+fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
+    match raw {
+        Some(t) => {
+            let custom_themes = t
+                .themes
+                .into_iter()
+                .map(|(name, raw_theme)| {
+                    let theme = ThemeColors {
+                        bg: raw_theme.bg,
+                        fg: raw_theme.fg,
+                        border: raw_theme.border,
+                        border_focused: raw_theme.border_focused,
+                        border_rounded: raw_theme.border_rounded,
+                        header_bg: raw_theme.header_bg,
+                        header_fg: raw_theme.header_fg,
+                        selected_bg: raw_theme.selected_bg,
+                        selected_fg: raw_theme.selected_fg,
+                        status_bar_bg: raw_theme.status_bar_bg,
+                        status_bar_fg: raw_theme.status_bar_fg,
+                        error_fg: raw_theme.error_fg,
+                        warning_fg: raw_theme.warning_fg,
+                        success_fg: raw_theme.success_fg,
+                        info_fg: raw_theme.info_fg,
+                        muted_fg: raw_theme.muted_fg,
+                        accent: raw_theme.accent,
+                        highlight: raw_theme.highlight,
+                        shadow: raw_theme.shadow,
+                        overlay_bg: raw_theme.overlay_bg,
+                    };
+                    (name, theme)
+                })
+                .collect();
+            let custom_keymaps = t
+                .keymaps
+                .into_iter()
+                .map(|(name, raw_km)| {
+                    let km = KeymapOverrides {
+                        quit: raw_km.quit,
+                        focus_next: raw_km.focus_next,
+                        focus_prev: raw_km.focus_prev,
+                        scroll_up: raw_km.scroll_up,
+                        scroll_down: raw_km.scroll_down,
+                        page_up: raw_km.page_up,
+                        page_down: raw_km.page_down,
+                        select: raw_km.select,
+                        cancel: raw_km.cancel,
+                        refresh: raw_km.refresh,
+                        filter: raw_km.filter,
+                        help: raw_km.help,
+                        new_flow: raw_km.new_flow,
+                        stop_flow: raw_km.stop_flow,
+                        view_logs: raw_km.view_logs,
+                        toggle_panel: raw_km.toggle_panel,
+                    };
+                    (name, km)
+                })
+                .collect();
+            TuiConfig {
+                theme_name: t.theme.unwrap_or_else(|| DEFAULT_TUI_THEME.to_string()),
+                keymap_name: t.keymap.unwrap_or_else(|| DEFAULT_TUI_KEYMAP.to_string()),
+                key_repeat_interval_ms: t
+                    .key_repeat_interval_ms
+                    .unwrap_or(DEFAULT_KEY_REPEAT_INTERVAL_MS),
+                custom_themes,
+                custom_keymaps,
+            }
+        }
+        None => TuiConfig::default(),
     }
 }
 
@@ -2291,5 +2514,127 @@ github_scan_interval_secs = 60
         // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
         assert_eq!(cfg.server.container_command, "podman");
+    }
+
+    #[test]
+    fn tui_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
+        assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
+        assert!(cfg.tui.custom_themes.is_empty());
+        assert!(cfg.tui.custom_keymaps.is_empty());
+    }
+
+    #[test]
+    fn tui_defaults_when_present_but_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "[tui]\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
+        assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
+        assert!(cfg.tui.custom_themes.is_empty());
+        assert!(cfg.tui.custom_keymaps.is_empty());
+    }
+
+    #[test]
+    fn tui_reads_theme_and_keymap_names() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[tui]\ntheme = \"solarized\"\nkeymap = \"vim\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.theme_name, "solarized");
+        assert_eq!(cfg.tui.keymap_name, "vim");
+    }
+
+    #[test]
+    fn tui_parses_custom_theme() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r##"
+[tui.themes.tokyo]
+bg = "#1a1b26"
+fg = "#c0caf5"
+border = "#3b4261"
+border_focused = "#7aa2f7"
+border_rounded = true
+error_fg = "#f7768e"
+"##,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.custom_themes.len(), 1);
+        let theme = &cfg.tui.custom_themes["tokyo"];
+        assert_eq!(theme.bg.as_deref(), Some("#1a1b26"));
+        assert_eq!(theme.fg.as_deref(), Some("#c0caf5"));
+        assert_eq!(theme.border.as_deref(), Some("#3b4261"));
+        assert_eq!(theme.border_focused.as_deref(), Some("#7aa2f7"));
+        assert_eq!(theme.border_rounded, Some(true));
+        assert_eq!(theme.error_fg.as_deref(), Some("#f7768e"));
+        assert_eq!(theme.header_bg, None);
+    }
+
+    #[test]
+    fn tui_parses_custom_keymap() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[tui.keymaps.vim]
+quit = ["q", "ctrl-c"]
+scroll_up = ["k"]
+scroll_down = ["j"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.custom_keymaps.len(), 1);
+        let km = &cfg.tui.custom_keymaps["vim"];
+        assert_eq!(km.quit, Some(vec!["q".to_string(), "ctrl-c".to_string()]));
+        assert_eq!(km.scroll_up, Some(vec!["k".to_string()]));
+        assert_eq!(km.scroll_down, Some(vec!["j".to_string()]));
+        assert_eq!(km.focus_next, None);
+    }
+
+    #[test]
+    fn tui_parses_multiple_themes_and_keymaps() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r##"
+[tui]
+theme = "light"
+keymap = "emacs"
+
+[tui.themes.light]
+bg = "#ffffff"
+fg = "#000000"
+
+[tui.themes.dark]
+bg = "#000000"
+fg = "#ffffff"
+
+[tui.keymaps.emacs]
+quit = ["ctrl-x ctrl-c"]
+
+[tui.keymaps.vim]
+quit = ["q"]
+"##,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.tui.theme_name, "light");
+        assert_eq!(cfg.tui.keymap_name, "emacs");
+        assert_eq!(cfg.tui.custom_themes.len(), 2);
+        assert!(cfg.tui.custom_themes.contains_key("light"));
+        assert!(cfg.tui.custom_themes.contains_key("dark"));
+        assert_eq!(cfg.tui.custom_keymaps.len(), 2);
+        assert!(cfg.tui.custom_keymaps.contains_key("emacs"));
+        assert!(cfg.tui.custom_keymaps.contains_key("vim"));
     }
 }

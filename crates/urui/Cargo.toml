@@ -1,0 +1,21 @@
+[package]
+name = "urui"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "urui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+crossterm = "0.28"
+ratatui = "0.29"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tonic = { workspace = true }
+tracing = { workspace = true }
+ur_config = { path = "../ur_config" }
+ur_rpc = { path = "../ur_rpc", features = ["retry"] }
+
+[lints]
+workspace = true
