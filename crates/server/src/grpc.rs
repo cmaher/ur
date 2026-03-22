@@ -5,6 +5,7 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{error, info, warn};
 
 use ur_db::TicketRepo;
+use ur_db::WorkflowRepo;
 use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
@@ -132,6 +133,7 @@ pub struct CoreServiceHandler {
     pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     pub worker_repo: WorkerRepo,
     pub ticket_repo: TicketRepo,
+    pub workflow_repo: WorkflowRepo,
     pub network_config: ur_config::NetworkConfig,
     pub hostexec_config: crate::hostexec::HostExecConfigManager,
     pub builderd_addr: String,
@@ -307,7 +309,7 @@ impl CoreService for CoreServiceHandler {
             })?;
 
         // Bind the ticket to its worker on the workflow table (if a workflow exists).
-        self.ticket_repo
+        self.workflow_repo
             .set_workflow_worker_id(&process_id, &worker_id_str)
             .await
             .map_err(|e| CoreError::RunFailed {
@@ -386,7 +388,7 @@ impl CoreService for CoreServiceHandler {
                 String::new()
             };
             let workflow = self
-                .ticket_repo
+                .workflow_repo
                 .get_workflow_by_ticket(&s.process_id)
                 .await
                 .ok()
@@ -495,6 +497,7 @@ impl CoreService for CoreServiceHandler {
 pub struct WorkerCoreServiceHandler {
     pub worker_repo: WorkerRepo,
     pub ticket_repo: TicketRepo,
+    pub workflow_repo: WorkflowRepo,
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     pub worker_prefix: String,
     /// Channel sender for submitting transition requests to the
@@ -559,11 +562,11 @@ impl CoreService for WorkerCoreServiceHandler {
 
         info!(worker_id = %worker_id, "workflow_step_complete request received");
 
-        let ticket_repo = self.ticket_repo.clone();
+        let workflow_repo = self.workflow_repo.clone();
         let transition_tx = self.transition_tx.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                handle_workflow_step_complete(&worker_id, &ticket_repo, &transition_tx).await
+                handle_workflow_step_complete(&worker_id, &workflow_repo, &transition_tx).await
             {
                 warn!(
                     worker_id = %worker_id,
@@ -609,12 +612,12 @@ impl CoreService for WorkerCoreServiceHandler {
         // AwaitingDispatch readiness trigger: when a worker reports idle and
         // its assigned ticket is in AwaitingDispatch, transition to Implementing.
         if inner.status == ur_rpc::agent_status::IDLE {
-            let ticket_repo = self.ticket_repo.clone();
+            let workflow_repo = self.workflow_repo.clone();
             let transition_tx = self.transition_tx.clone();
             let wid = worker_id.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    handle_awaiting_dispatch_readiness(&wid, &ticket_repo, &transition_tx).await
+                    handle_awaiting_dispatch_readiness(&wid, &workflow_repo, &transition_tx).await
                 {
                     warn!(
                         worker_id = %wid,
@@ -628,10 +631,14 @@ impl CoreService for WorkerCoreServiceHandler {
         // When a worker requests human attention, add activity to the assigned ticket.
         if inner.status == ur_rpc::agent_status::STALLED && !inner.message.is_empty() {
             let ticket_repo = self.ticket_repo.clone();
+            let workflow_repo = self.workflow_repo.clone();
             let wid = worker_id.clone();
             let message = inner.message.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_request_human_activity(&wid, &ticket_repo, &message).await {
+                if let Err(e) =
+                    handle_request_human_activity(&wid, &ticket_repo, &workflow_repo, &message)
+                        .await
+                {
                     warn!(
                         worker_id = %wid,
                         error = %e,
@@ -687,7 +694,7 @@ async fn persist_pool_branch(
 /// coordinator.
 async fn handle_workflow_step_complete(
     worker_id: &str,
-    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
     use crate::workflow::{NextStepResult, WorkerdNextStepRouter};
@@ -696,7 +703,9 @@ async fn handle_workflow_step_complete(
     // 1. Find the ticket assigned to this worker via workflow table.
     // Don't filter by ticket status — closed tickets still need their workflow
     // advanced (e.g., implementing → pushing) so the branch gets pushed and PR'd.
-    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
+    let matched = workflow_repo
+        .tickets_by_workflow_worker_id(worker_id)
+        .await?;
 
     if matched.is_empty() {
         info!(
@@ -709,7 +718,7 @@ async fn handle_workflow_step_complete(
     let ticket_id = &matched[0].id;
 
     // 2. Look up the workflow status for this ticket.
-    let workflow = ticket_repo
+    let workflow = workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -733,7 +742,7 @@ async fn handle_workflow_step_complete(
             // Mark pending comments as feedback_created before advancing.
             // If this fails, we log and continue — the comments will be
             // re-processed on the next FeedbackCreating cycle (safe retry).
-            mark_pending_feedback_comments(ticket_repo, ticket_id).await;
+            mark_pending_feedback_comments(workflow_repo, ticket_id).await;
 
             let feedback_mode = &workflow.feedback_mode;
             let to = match feedback_mode.as_str() {
@@ -768,8 +777,8 @@ async fn handle_workflow_step_complete(
 /// comment IDs (`feedback_created = 0`) and marks them as created. If the
 /// worker dies before step completion, comments remain unmarked and will be
 /// re-processed on the next FeedbackCreating cycle.
-async fn mark_pending_feedback_comments(ticket_repo: &TicketRepo, ticket_id: &str) {
-    match ticket_repo.get_pending_feedback_comments(ticket_id).await {
+async fn mark_pending_feedback_comments(workflow_repo: &WorkflowRepo, ticket_id: &str) {
+    match workflow_repo.get_pending_feedback_comments(ticket_id).await {
         Ok(pending) if pending.is_empty() => {
             info!(
                 ticket_id = %ticket_id,
@@ -778,7 +787,10 @@ async fn mark_pending_feedback_comments(ticket_repo: &TicketRepo, ticket_id: &st
         }
         Ok(pending) => {
             let count = pending.len();
-            if let Err(e) = ticket_repo.mark_feedback_created(ticket_id, &pending).await {
+            if let Err(e) = workflow_repo
+                .mark_feedback_created(ticket_id, &pending)
+                .await
+            {
                 error!(
                     ticket_id = %ticket_id,
                     error = %e,
@@ -808,12 +820,14 @@ async fn mark_pending_feedback_comments(ticket_repo: &TicketRepo, ticket_id: &st
 /// for the worker's assigned ticket, instead of checking ticket.lifecycle_status.
 async fn handle_awaiting_dispatch_readiness(
     worker_id: &str,
-    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
     use ur_db::model::LifecycleStatus;
 
-    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
+    let matched = workflow_repo
+        .tickets_by_workflow_worker_id(worker_id)
+        .await?;
 
     if matched.is_empty() {
         return Ok(());
@@ -822,7 +836,7 @@ async fn handle_awaiting_dispatch_readiness(
     let ticket_id = &matched[0].id;
 
     // Check the workflow table for an awaiting_dispatch workflow.
-    let workflow = ticket_repo.get_workflow_by_ticket(ticket_id).await?;
+    let workflow = workflow_repo.get_workflow_by_ticket(ticket_id).await?;
 
     if let Some(wf) = workflow
         && wf.status == LifecycleStatus::AwaitingDispatch
@@ -859,9 +873,12 @@ async fn send_transition(
 async fn handle_request_human_activity(
     worker_id: &str,
     ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
     message: &str,
 ) -> Result<(), anyhow::Error> {
-    let matched = ticket_repo.tickets_by_workflow_worker_id(worker_id).await?;
+    let matched = workflow_repo
+        .tickets_by_workflow_worker_id(worker_id)
+        .await?;
 
     if matched.is_empty() {
         warn!(

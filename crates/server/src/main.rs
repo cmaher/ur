@@ -7,7 +7,10 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
-use ur_db::{DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo};
+use ur_db::{
+    DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo,
+    WorkflowRepo,
+};
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -178,6 +181,7 @@ async fn init_and_serve(
 
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
+    let workflow_repo = WorkflowRepo::new(db.pool().clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
     let poll_interval = std::time::Duration::from_millis(cfg.server.ui_event_poll_interval_ms);
@@ -185,6 +189,7 @@ async fn init_and_serve(
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
         valid_projects: cfg.projects.keys().cloned().collect(),
         transition_tx: None, // set in serve_grpc_servers after builderd connects
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
@@ -199,6 +204,7 @@ async fn init_and_serve(
         projects: cfg.projects.clone(),
         worker_repo: worker_repo.clone(),
         ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
         network_config: cfg.network.clone(),
         hostexec_config: hostexec_config.clone(),
         builderd_addr: builderd_addr.clone(),
@@ -215,6 +221,7 @@ async fn init_and_serve(
         worker_manager,
         worker_repo,
         ticket_repo,
+        workflow_repo,
         hostexec_config,
         builderd_addr,
         host_workspace,
@@ -222,6 +229,99 @@ async fn init_and_serve(
         ui_event_poller,
     )
     .await
+}
+
+struct WorkflowServices {
+    transition_tx: tokio::sync::mpsc::Sender<ur_server::workflow::TransitionRequest>,
+    cancel_tx: tokio::sync::mpsc::Sender<String>,
+    shutdown_tx: watch::Sender<bool>,
+    engine_handle: tokio::task::JoinHandle<()>,
+    coordinator_handle: tokio::task::JoinHandle<()>,
+    poller_handle: tokio::task::JoinHandle<()>,
+    ui_poller_handle: tokio::task::JoinHandle<()>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_workflow_services(
+    network_prefix: &str,
+    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
+    worker_repo: &WorkerRepo,
+    worker_manager: &WorkerManager,
+    ticket_handler: &ur_server::grpc_ticket::TicketServiceHandler,
+    builderd_addr: &str,
+    config: &Arc<ur_config::Config>,
+    ui_event_poller: ur_server::UiEventPoller,
+) -> WorkflowServices {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let workflow_retry_channel =
+        ur_rpc::retry::RetryChannel::new(builderd_addr, ur_rpc::retry::RetryConfig::default())
+            .expect("failed to create builderd retry channel for workflow engine");
+    let workflow_builderd_client =
+        ur_rpc::proto::builder::BuilderdClient::new(workflow_retry_channel.channel().clone());
+
+    let workflow_ticket_client =
+        ur_server::workflow::ticket_client::TicketClient::new(ticket_handler.clone());
+    let poller_ticket_client = workflow_ticket_client.clone();
+    let handlers = build_handlers(workflow_ticket_client);
+
+    let (transition_tx, coordinator_rx) = ur_server::workflow::coordinator_channel(256);
+    let (cancel_tx, cancel_rx) = ur_server::workflow::coordinator_cancel_channel(256);
+
+    let engine = WorkflowEngine::new(
+        ticket_repo.clone(),
+        workflow_repo.clone(),
+        worker_repo.clone(),
+        network_prefix.to_owned(),
+        workflow_builderd_client.clone(),
+        config.clone(),
+        handlers.clone(),
+        transition_tx.clone(),
+        worker_manager.clone(),
+    );
+    let engine_handle = engine.spawn(shutdown_rx.clone());
+
+    let coordinator_ctx = ur_server::workflow::WorkflowContext {
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        worker_repo: worker_repo.clone(),
+        worker_prefix: network_prefix.to_owned(),
+        builderd_client: workflow_builderd_client.clone(),
+        config: config.clone(),
+        transition_tx: transition_tx.clone(),
+        worker_manager: worker_manager.clone(),
+    };
+    let coordinator = ur_server::workflow::WorkflowCoordinator::new(
+        coordinator_rx,
+        cancel_rx,
+        coordinator_ctx,
+        &handlers,
+    );
+    let coordinator_handle = coordinator.spawn(shutdown_rx.clone());
+
+    let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
+    let poller = GithubPollerManager::new(
+        ticket_repo.clone(),
+        workflow_repo.clone(),
+        workflow_builderd_client,
+        scan_interval,
+        transition_tx.clone(),
+        poller_ticket_client,
+    );
+    let poller_handle = poller.spawn(shutdown_rx.clone());
+
+    let ui_poller_handle = ui_event_poller.spawn(shutdown_rx);
+
+    WorkflowServices {
+        transition_tx,
+        cancel_tx,
+        shutdown_tx,
+        engine_handle,
+        coordinator_handle,
+        poller_handle,
+        ui_poller_handle,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -236,6 +336,7 @@ async fn serve_grpc_servers(
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
     hostexec_config: ur_server::hostexec::HostExecConfigManager,
     builderd_addr: String,
     host_workspace: PathBuf,
@@ -245,77 +346,20 @@ async fn serve_grpc_servers(
     let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
 
-    // Create shutdown channel for workflow engine and github poller.
-    let (workflow_shutdown_tx, workflow_shutdown_rx) = watch::channel(false);
-
-    // Create a BuilderdClient for the workflow engine and github poller via retry channel.
-    let workflow_retry_channel =
-        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
-            .expect("failed to create builderd retry channel for workflow engine");
-    let workflow_builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::new(workflow_retry_channel.channel().clone());
-
-    // Clone repos before they are moved into gRPC server handlers.
-    let engine_ticket_repo = ticket_repo.clone();
-    let engine_worker_repo = worker_repo.clone();
-    let poller_ticket_repo = ticket_repo.clone();
-    let poller_builderd_client = workflow_builderd_client.clone();
-
-    let workflow_ticket_client =
-        ur_server::workflow::ticket_client::TicketClient::new(ticket_handler.clone());
-    let poller_ticket_client = workflow_ticket_client.clone();
-    let handlers = build_handlers(workflow_ticket_client);
-
-    // Create the coordinator channel for transition requests.
-    let (transition_tx, coordinator_rx) = ur_server::workflow::coordinator_channel(256);
-
-    // Create the cancel channel for workflow cancellation requests.
-    let (cancel_tx, cancel_rx) = ur_server::workflow::coordinator_cancel_channel(256);
-
-    ticket_handler.transition_tx = Some(transition_tx.clone());
-    ticket_handler.cancel_tx = Some(cancel_tx);
-
-    let scan_interval = std::time::Duration::from_secs(config.server.github_scan_interval_secs);
-    let engine = WorkflowEngine::new(
-        engine_ticket_repo,
-        engine_worker_repo,
-        network_prefix.clone(),
-        workflow_builderd_client,
-        config.clone(),
-        handlers.clone(),
-        transition_tx.clone(),
-        worker_manager.clone(),
+    let wf = spawn_workflow_services(
+        &network_prefix,
+        &ticket_repo,
+        &workflow_repo,
+        &worker_repo,
+        &worker_manager,
+        &ticket_handler,
+        &builderd_addr,
+        &config,
+        ui_event_poller,
     );
-    let engine_handle = engine.spawn(workflow_shutdown_rx.clone());
 
-    // Spawn the workflow coordinator for intent-based transitions.
-    let coordinator_ctx = ur_server::workflow::WorkflowContext {
-        ticket_repo: poller_ticket_repo.clone(),
-        worker_repo: worker_repo.clone(),
-        worker_prefix: network_prefix.clone(),
-        builderd_client: poller_builderd_client.clone(),
-        config: config.clone(),
-        transition_tx: transition_tx.clone(),
-        worker_manager: worker_manager.clone(),
-    };
-    let coordinator = ur_server::workflow::WorkflowCoordinator::new(
-        coordinator_rx,
-        cancel_rx,
-        coordinator_ctx,
-        &handlers,
-    );
-    let coordinator_handle = coordinator.spawn(workflow_shutdown_rx.clone());
-
-    let poller = GithubPollerManager::new(
-        poller_ticket_repo,
-        poller_builderd_client,
-        scan_interval,
-        transition_tx.clone(),
-        poller_ticket_client,
-    );
-    let poller_handle = poller.spawn(workflow_shutdown_rx.clone());
-
-    let ui_poller_handle = ui_event_poller.spawn(workflow_shutdown_rx);
+    ticket_handler.transition_tx = Some(wf.transition_tx.clone());
+    ticket_handler.cancel_tx = Some(wf.cancel_tx);
 
     let host_server = ur_server::grpc_server::serve_grpc(
         host_addr,
@@ -341,6 +385,7 @@ async fn serve_grpc_servers(
         worker_manager,
         worker_repo,
         ticket_repo,
+        workflow_repo,
         network_prefix,
         projects,
         hostexec_config,
@@ -349,17 +394,17 @@ async fn serve_grpc_servers(
         rag_handler,
         worker_ticket_handler,
         remote_repo_handler,
-        transition_tx,
+        wf.transition_tx,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
 
     // Signal workflow engine, coordinator, github poller, and UI event poller to shut down.
-    let _ = workflow_shutdown_tx.send(true);
-    let _ = engine_handle.await;
-    let _ = coordinator_handle.await;
-    let _ = poller_handle.await;
-    let _ = ui_poller_handle.await;
+    let _ = wf.shutdown_tx.send(true);
+    let _ = wf.engine_handle.await;
+    let _ = wf.coordinator_handle.await;
+    let _ = wf.poller_handle.await;
+    let _ = wf.ui_poller_handle.await;
 
     server_result
 }

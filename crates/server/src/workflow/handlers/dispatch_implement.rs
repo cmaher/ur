@@ -38,7 +38,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
     }
 
     // 0b. Increment implement_cycles for this transition.
-    ctx.ticket_repo
+    ctx.workflow_repo
         .increment_implement_cycles(ticket_id)
         .await?;
 
@@ -51,7 +51,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
 
     // 2. Resolve the assigned worker from workflow table.
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -187,7 +187,7 @@ async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Re
     };
 
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -203,7 +203,7 @@ async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Re
             max_cycles = max_cycles,
             "implement cycle limit reached — stalling workflow"
         );
-        ctx.ticket_repo
+        ctx.workflow_repo
             .set_workflow_stalled(ticket_id, &reason)
             .await?;
         return Ok(true);

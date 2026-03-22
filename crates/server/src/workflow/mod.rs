@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use ur_config::Config;
 use ur_db::TicketRepo;
 use ur_db::WorkerRepo;
+use ur_db::WorkflowRepo;
 use ur_db::model::LifecycleStatus;
 use ur_rpc::proto::builder::BuilderdClient;
 
@@ -35,6 +36,7 @@ pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = Result<(), anyhow::Erro
 #[derive(Clone)]
 pub struct WorkflowContext {
     pub ticket_repo: TicketRepo,
+    pub workflow_repo: WorkflowRepo,
     pub worker_repo: WorkerRepo,
     /// Docker container name prefix for workers (e.g., `ur-worker-`).
     /// Used to derive workerd gRPC addresses from process IDs.

@@ -39,7 +39,7 @@ async fn execute_merge(
 
     // 2. Read worker_id from workflow table, pr_number/gh_repo from ticket metadata.
     let workflow = ctx
-        .ticket_repo
+        .workflow_repo
         .get_workflow_by_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
@@ -102,7 +102,7 @@ async fn execute_merge(
 
     // 7. Mark workflow as done (no further transitions for this ticket).
     if let Err(e) = ctx
-        .ticket_repo
+        .workflow_repo
         .update_workflow_status(ticket_id, LifecycleStatus::Done)
         .await
     {
