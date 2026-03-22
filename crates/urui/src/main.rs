@@ -61,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         keymap,
         projects,
         project_configs: config.projects.clone(),
+        tui_config: config.tui.clone(),
+        config_dir: config.config_dir.clone(),
     };
 
     let mut terminal = setup_terminal()?;
