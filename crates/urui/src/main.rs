@@ -8,12 +8,12 @@ mod event;
 
 // Planned modules — uncomment as implementations land:
 // mod app;
-// mod context;
-// mod keymap;
-// mod page;
-// mod pages;
-// mod theme;
-// mod widgets;
+mod context;
+mod keymap;
+mod page;
+mod pages;
+mod theme;
+mod widgets;
 
 use std::io;
 

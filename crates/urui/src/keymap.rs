@@ -41,71 +41,110 @@ impl Default for Keymap {
 
         // navigate_up = [k, Up]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('k'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('k'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::NavigateUp,
         );
         bindings.insert(
-            KeyBinding { code: KeyCode::Up, modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Up,
+                modifiers: KeyModifiers::NONE,
+            },
             Action::NavigateUp,
         );
 
         // navigate_down = [j, Down]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('j'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('j'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::NavigateDown,
         );
         bindings.insert(
-            KeyBinding { code: KeyCode::Down, modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Down,
+                modifiers: KeyModifiers::NONE,
+            },
             Action::NavigateDown,
         );
 
         // navigate_left = [h, Left]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('h'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('h'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::PageLeft,
         );
         bindings.insert(
-            KeyBinding { code: KeyCode::Left, modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Left,
+                modifiers: KeyModifiers::NONE,
+            },
             Action::PageLeft,
         );
 
         // navigate_right = [l, Right]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('l'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('l'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::PageRight,
         );
         bindings.insert(
-            KeyBinding { code: KeyCode::Right, modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Right,
+                modifiers: KeyModifiers::NONE,
+            },
             Action::PageRight,
         );
 
         // tab_tickets = [t]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('t'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::SwitchTab(TabId::Tickets),
         );
 
         // tab_flows = [f]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('f'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('f'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::SwitchTab(TabId::Flows),
         );
 
         // select = [Enter]
         bindings.insert(
-            KeyBinding { code: KeyCode::Enter, modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+            },
             Action::Select,
         );
 
         // back = [q]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('q'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('q'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::Back,
         );
 
         // quit = [Q]
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('Q'), modifiers: KeyModifiers::SHIFT },
+            KeyBinding {
+                code: KeyCode::Char('Q'),
+                modifiers: KeyModifiers::SHIFT,
+            },
             Action::Quit,
         );
 
@@ -132,11 +171,17 @@ impl Keymap {
         // Tab switching is not part of KeymapOverrides; preserve defaults
         // for SwitchTab actions when building from config.
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('t'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::SwitchTab(TabId::Tickets),
         );
         bindings.insert(
-            KeyBinding { code: KeyCode::Char('f'), modifiers: KeyModifiers::NONE },
+            KeyBinding {
+                code: KeyCode::Char('f'),
+                modifiers: KeyModifiers::NONE,
+            },
             Action::SwitchTab(TabId::Flows),
         );
 

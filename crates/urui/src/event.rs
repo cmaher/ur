@@ -138,10 +138,7 @@ mod tests {
         let (manager, mut receiver) = EventManager::start();
 
         let sender = manager.sender();
-        let payload = DataPayload {
-            source: "test".into(),
-            bytes: vec![1, 2, 3],
-        };
+        let payload = DataPayload::Tickets(Ok(vec![]));
         sender.send(AppEvent::DataReady(payload)).unwrap();
 
         // We should receive the DataReady event (possibly after a Tick; drain

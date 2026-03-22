@@ -10,7 +10,7 @@ use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::Action;
 use crate::page::{FooterCommand, Page, PageResult, TabId};
-use crate::widgets::table::ThemedTable;
+use crate::widgets::ThemedTable;
 
 /// Internal state for the ticket data lifecycle.
 #[derive(Debug, Clone)]
