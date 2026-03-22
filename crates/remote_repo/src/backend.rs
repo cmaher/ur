@@ -247,8 +247,8 @@ impl RemoteRepo for GhBackend {
 
     async fn check_runs(&self, pr_number: i64) -> Result<Vec<CheckRun>> {
         let pr_str = pr_number.to_string();
-        let value: Vec<serde_json::Value> = self
-            .exec_gh_json(&[
+        let completed = self
+            .exec_gh(&[
                 "pr",
                 "checks",
                 &pr_str,
@@ -259,28 +259,7 @@ impl RemoteRepo for GhBackend {
             ])
             .await?;
 
-        let runs = value
-            .iter()
-            .map(|v| {
-                let state = v["state"].as_str().unwrap_or("");
-                // gh pr checks --json state returns terminal values directly
-                // (SUCCESS, FAILURE, NEUTRAL, SKIPPED, ERROR, CANCELLED, etc.)
-                // and PENDING/EXPECTED for in-progress checks.
-                let (status, conclusion) = match state.to_uppercase().as_str() {
-                    "PENDING" | "EXPECTED" | "QUEUED" => (state.to_string(), String::new()),
-                    _ => ("completed".to_string(), state.to_lowercase()),
-                };
-                CheckRun {
-                    name: v["name"].as_str().unwrap_or("").to_string(),
-                    status,
-                    conclusion,
-                    details_url: String::new(),
-                    completed_at: v["completedAt"].as_str().unwrap_or("").to_string(),
-                }
-            })
-            .collect();
-
-        Ok(runs)
+        parse_check_runs(completed)
     }
 
     async fn failed_run_logs(&self, run_id: i64) -> Result<String> {
@@ -369,5 +348,101 @@ impl RemoteRepo for GhBackend {
         value["id"]
             .as_i64()
             .ok_or_else(|| anyhow!("reply response missing id"))
+    }
+}
+
+/// Parse the result of `gh pr checks --json` into a list of `CheckRun`.
+/// Returns an empty Vec when gh reports "no checks reported" (exit code 1).
+fn parse_check_runs(completed: CompletedExec) -> Result<Vec<CheckRun>> {
+    if completed.exit_code != 0 {
+        let stderr = completed.stderr_text();
+        if stderr.contains("no checks reported") {
+            return Ok(Vec::new());
+        }
+        return Err(anyhow!("gh pr checks failed: {stderr}"));
+    }
+
+    let value: Vec<serde_json::Value> = serde_json::from_str(&completed.stdout_text())
+        .context("failed to parse gh pr checks JSON output")?;
+
+    let runs = value
+        .iter()
+        .map(|v| {
+            let state = v["state"].as_str().unwrap_or("");
+            // gh pr checks --json state returns terminal values directly
+            // (SUCCESS, FAILURE, NEUTRAL, SKIPPED, ERROR, CANCELLED, etc.)
+            // and PENDING/EXPECTED for in-progress checks.
+            let (status, conclusion) = match state.to_uppercase().as_str() {
+                "PENDING" | "EXPECTED" | "QUEUED" => (state.to_string(), String::new()),
+                _ => ("completed".to_string(), state.to_lowercase()),
+            };
+            CheckRun {
+                name: v["name"].as_str().unwrap_or("").to_string(),
+                status,
+                conclusion,
+                details_url: String::new(),
+                completed_at: v["completedAt"].as_str().unwrap_or("").to_string(),
+            }
+        })
+        .collect();
+
+    Ok(runs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn completed(exit_code: i32, stdout: &str, stderr: &str) -> CompletedExec {
+        CompletedExec {
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+            exit_code,
+        }
+    }
+
+    #[test]
+    fn no_checks_reported_returns_empty_vec() {
+        let exec = completed(1, "", "no checks reported on the 'my-branch' branch\n");
+        let runs = parse_check_runs(exec).unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn non_zero_exit_without_no_checks_is_error() {
+        let exec = completed(1, "", "some other gh error\n");
+        let result = parse_check_runs(exec);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("some other gh error")
+        );
+    }
+
+    #[test]
+    fn parses_successful_check_runs() {
+        let json = r#"[
+            {"name":"build","state":"SUCCESS","completedAt":"2026-01-01T00:00:00Z"},
+            {"name":"test","state":"PENDING","completedAt":""}
+        ]"#;
+        let exec = completed(0, json, "");
+        let runs = parse_check_runs(exec).unwrap();
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].name, "build");
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].conclusion, "success");
+        assert_eq!(runs[1].name, "test");
+        assert_eq!(runs[1].status, "PENDING");
+        assert_eq!(runs[1].conclusion, "");
+    }
+
+    #[test]
+    fn empty_json_array_returns_empty_vec() {
+        let exec = completed(0, "[]", "");
+        let runs = parse_check_runs(exec).unwrap();
+        assert!(runs.is_empty());
     }
 }
