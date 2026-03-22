@@ -163,6 +163,32 @@ impl TicketServiceHandler {
         Ok(())
     }
 
+    /// Convert metadata query results to minimal proto tickets.
+    fn meta_tickets_to_proto(
+        matches: Vec<ur_db::MetadataMatchTicket>,
+    ) -> Vec<ur_rpc::proto::ticket::Ticket> {
+        matches
+            .into_iter()
+            .map(|t| ur_rpc::proto::ticket::Ticket {
+                id: t.id,
+                ticket_type: t.type_,
+                status: t.status,
+                priority: 0,
+                parent_id: String::new(),
+                title: t.title,
+                body: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                project: String::new(),
+                branch: String::new(),
+                depth: 0,
+                children_completed: 0,
+                children_total: 0,
+                dispatch_status: String::new(),
+            })
+            .collect()
+    }
+
     /// Enrich a list of proto tickets with dispatch_status from active workflows.
     /// For each ticket, checks if the ticket itself or its parent has an active workflow.
     async fn enrich_dispatch_status(
@@ -191,11 +217,10 @@ impl TicketServiceHandler {
             // Check if this ticket has an active workflow.
             if let Some(status) = active_workflows.get(&ticket.id) {
                 ticket.dispatch_status = status.clone();
-            } else if !ticket.parent_id.is_empty() {
-                // Check if the parent has an active workflow.
-                if let Some(status) = active_workflows.get(&ticket.parent_id) {
-                    ticket.dispatch_status = status.clone();
-                }
+            } else if !ticket.parent_id.is_empty()
+                && let Some(status) = active_workflows.get(&ticket.parent_id)
+            {
+                ticket.dispatch_status = status.clone();
             }
         }
 
@@ -325,26 +350,7 @@ impl TicketService for TicketServiceHandler {
                     .tickets_by_metadata(key, value)
                     .await
                     .map_err(|e| TicketError::Db(e.to_string()))?;
-                matches
-                    .into_iter()
-                    .map(|t| ur_rpc::proto::ticket::Ticket {
-                        id: t.id,
-                        ticket_type: t.type_,
-                        status: t.status,
-                        priority: 0,
-                        parent_id: String::new(),
-                        title: t.title,
-                        body: String::new(),
-                        created_at: String::new(),
-                        updated_at: String::new(),
-                        project: String::new(),
-                        branch: String::new(),
-                        depth: 0,
-                        children_completed: 0,
-                        children_total: 0,
-                        dispatch_status: String::new(),
-                    })
-                    .collect()
+                Self::meta_tickets_to_proto(matches)
             }
             (Some(key), None) => {
                 let matches = self
@@ -352,26 +358,7 @@ impl TicketService for TicketServiceHandler {
                     .tickets_with_metadata_key(key)
                     .await
                     .map_err(|e| TicketError::Db(e.to_string()))?;
-                matches
-                    .into_iter()
-                    .map(|t| ur_rpc::proto::ticket::Ticket {
-                        id: t.id,
-                        ticket_type: t.type_,
-                        status: t.status,
-                        priority: 0,
-                        parent_id: String::new(),
-                        title: t.title,
-                        body: String::new(),
-                        created_at: String::new(),
-                        updated_at: String::new(),
-                        project: String::new(),
-                        branch: String::new(),
-                        depth: 0,
-                        children_completed: 0,
-                        children_total: 0,
-                        dispatch_status: String::new(),
-                    })
-                    .collect()
+                Self::meta_tickets_to_proto(matches)
             }
             _ if tree_root_id.is_some() => {
                 let root_id = tree_root_id.unwrap();

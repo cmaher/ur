@@ -302,10 +302,10 @@ fn theme_delete(config: &ur_config::Config, name: &str, output: &OutputManager) 
         .with_context(|| format!("failed to parse {}", toml_path.display()))?;
 
     // Remove [tui.themes.<name>]
-    if let Some(tui) = doc.get_mut("tui").and_then(|t| t.as_table_mut()) {
-        if let Some(themes) = tui.get_mut("themes").and_then(|t| t.as_table_mut()) {
-            themes.remove(name);
-        }
+    if let Some(tui) = doc.get_mut("tui").and_then(|t| t.as_table_mut())
+        && let Some(themes) = tui.get_mut("themes").and_then(|t| t.as_table_mut())
+    {
+        themes.remove(name);
     }
 
     // If the deleted theme was selected, revert to "dark"

@@ -99,7 +99,7 @@ enum Commands {
     /// Manage TUI settings (themes, keymaps)
     Tui {
         #[command(subcommand)]
-        command: crate::tui::TuiArgs,
+        command: Box<crate::tui::TuiArgs>,
     },
     /// Manage workflows
     Flow {
@@ -1369,7 +1369,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
         Commands::Ticket { command } => ticket::handle(port, command, output).await?,
-        Commands::Tui { command } => tui::handle(command, &config, output)?,
+        Commands::Tui { command } => tui::handle(*command, &config, output)?,
         Commands::Flow { command } => flow::handle(port, command, output).await?,
         Commands::Worker { command } => {
             handle_worker(
