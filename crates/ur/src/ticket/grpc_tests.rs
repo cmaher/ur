@@ -503,6 +503,7 @@ async fn execute_show_nonexistent_returns_error() {
     let result = super::execute(
         TicketArgs::Show {
             id: "ur-nonexistent".into(),
+            activity_author: None,
         },
         &mut client,
     )

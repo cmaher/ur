@@ -140,6 +140,7 @@ impl TicketClient {
                 .handler
                 .get_ticket(Request::new(GetTicketRequest {
                     id: candidate.id.clone(),
+                    activity_author_filter: None,
                 }))
                 .await
                 .map_err(|s| anyhow::anyhow!("get_ticket failed: {}", s.message()))?;

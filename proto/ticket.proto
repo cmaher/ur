@@ -120,6 +120,7 @@ message ListTicketsResponse {
 
 message GetTicketRequest {
   string id = 1;
+  optional string activity_author_filter = 2;
 }
 
 message GetTicketResponse {

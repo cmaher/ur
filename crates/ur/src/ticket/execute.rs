@@ -38,7 +38,10 @@ where
             status,
             lifecycle,
         } => execute_list(client, project, all, tree, ticket_type, status, lifecycle).await,
-        TicketArgs::Show { id } => execute_show(client, id).await,
+        TicketArgs::Show {
+            id,
+            activity_author,
+        } => execute_show(client, id, activity_author).await,
         TicketArgs::SetMeta { id, key, value } => execute_set_meta(client, id, key, value).await,
         TicketArgs::DeleteMeta { id, key } => execute_delete_meta(client, id, key).await,
         TicketArgs::AddActivity { id, message, meta } => {
@@ -191,7 +194,11 @@ where
     Ok(TicketOutput::Listed { tickets })
 }
 
-async fn execute_show<T>(client: &mut TicketServiceClient<T>, id: String) -> Result<TicketOutput>
+async fn execute_show<T>(
+    client: &mut TicketServiceClient<T>,
+    id: String,
+    activity_author: Option<String>,
+) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
     T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -200,7 +207,10 @@ where
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     let resp = client
-        .get_ticket(GetTicketRequest { id: id.clone() })
+        .get_ticket(GetTicketRequest {
+            id: id.clone(),
+            activity_author_filter: activity_author,
+        })
         .await
         .with_status_context("get ticket")?;
     let inner = resp.into_inner();

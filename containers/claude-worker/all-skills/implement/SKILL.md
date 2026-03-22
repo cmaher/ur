@@ -21,14 +21,13 @@ After reading the ticket, determine which mode to use:
 
 Before doing any implementation work, check for unaddressed workflow error activities on the ticket. These appear when a previous attempt failed verification, CI, or merge.
 
-1. `ur ticket --output json show <id>` — read the ticket and its activities
-2. Look for activities where `source=workflow` — these are system-generated entries from the lifecycle engine
-3. Read the **most recent** workflow activities first (they contain the latest failure output)
-4. If workflow error activities exist and are not yet addressed:
+1. `ur ticket --output json show <id> --activity-author workflow` — read the ticket with only workflow activities
+2. Read the **most recent** workflow activities first (they contain the latest failure output)
+3. If workflow error activities exist and are not yet addressed:
    - The error output describes what failed (build errors, test failures, merge conflicts, etc.)
    - Fix the errors **before** moving on to any other work or dispatching child tickets
    - The server sends `/clear` before every dispatch, so you start with a clean conversation — the ticket activities are your only source of prior context
-5. If no workflow error activities exist, proceed normally
+4. If no workflow error activities exist, proceed normally
 
 This applies to both single-ticket and epic flows. For epics (tickets with open descendants), fix any errors on the epic ticket itself before dispatching children.
 

@@ -65,6 +65,10 @@ pub enum TicketArgs {
     Show {
         /// Ticket ID
         id: String,
+
+        /// Filter activities by author (e.g. "workflow")
+        #[arg(long)]
+        activity_author: Option<String>,
     },
 
     /// Update a ticket's fields
