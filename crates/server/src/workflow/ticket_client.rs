@@ -178,6 +178,7 @@ mod tests {
             valid_projects: HashSet::new(),
             transition_tx: None,
             cancel_tx: None,
+            ui_event_poller: None,
         };
 
         let client = TicketClient::new(handler);

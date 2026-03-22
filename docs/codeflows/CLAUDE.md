@@ -13,3 +13,4 @@ Detailed flow diagrams for cross-cutting concerns. Consult these before modifyin
 - `docs/codeflows/process-launch-credentials.md` — Process launch and credential injection (how containers get Claude Code credentials)
 - `docs/codeflows/server-lifecycle.md` — Server lifecycle (`ur start`/`ur stop`, builderd spawn, compose generation, port allocation, network topology)
 - `docs/codeflows/skill-loading.md` — Skill loading (baking skills into images, selective runtime activation)
+- `docs/codeflows/ui-events.md` — UI events pipeline (SQLite triggers, UiEventPoller, gRPC streaming, TUI consumption)

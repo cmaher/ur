@@ -346,6 +346,13 @@ pub struct WorkerSlot {
     pub created_at: String,
 }
 
+pub struct UiEventRow {
+    pub id: i64,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub created_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

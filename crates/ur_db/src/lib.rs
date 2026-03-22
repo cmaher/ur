@@ -3,6 +3,7 @@ pub mod graph;
 pub mod model;
 pub mod snapshot;
 pub mod ticket_repo;
+pub mod ui_event_repo;
 pub mod worker_repo;
 
 #[cfg(test)]
@@ -12,9 +13,10 @@ pub use database::DatabaseManager;
 pub use graph::GraphManager;
 pub use model::{
     Activity, AgentStatus, DispatchableTicket, Edge, EdgeKind, LifecycleStatus,
-    MetadataMatchTicket, NewTicket, Slot, Ticket, TicketFilter, TicketStatus, TicketUpdate, Worker,
-    WorkerSlot, Workflow, WorkflowEvent, WorkflowIntent,
+    MetadataMatchTicket, NewTicket, Slot, Ticket, TicketFilter, TicketStatus, TicketUpdate,
+    UiEventRow, Worker, WorkerSlot, Workflow, WorkflowEvent, WorkflowIntent,
 };
 pub use snapshot::SnapshotManager;
 pub use ticket_repo::TicketRepo;
+pub use ui_event_repo::UiEventRepo;
 pub use worker_repo::{SlotReconcileResult, WorkerReconcileResult, WorkerRepo};

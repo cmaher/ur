@@ -355,6 +355,16 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<ur_rpc::proto::ticket::ListWorkflowsResponse>, Status> {
         Err(Status::unimplemented("not implemented in mock"))
     }
+
+    type SubscribeUiEventsStream =
+        tokio_stream::wrappers::ReceiverStream<Result<UiEventBatch, Status>>;
+
+    async fn subscribe_ui_events(
+        &self,
+        _req: Request<SubscribeUiEventsRequest>,
+    ) -> Result<Response<Self::SubscribeUiEventsStream>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
 }
 
 // --- Test helpers ---

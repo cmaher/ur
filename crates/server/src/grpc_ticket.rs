@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::pin::Pin;
 
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
@@ -19,8 +20,11 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    UpdateTicketRequest, UpdateTicketResponse, WorkflowInfo,
+    SubscribeUiEventsRequest, UiEventBatch, UpdateTicketRequest, UpdateTicketResponse,
+    WorkflowInfo,
 };
+
+use crate::UiEventPoller;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
@@ -109,6 +113,9 @@ pub struct TicketServiceHandler {
     /// Optional channel sender for workflow cancellation requests.
     /// None on the worker server (no workflow engine).
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    /// Optional UI event poller for streaming UI events to subscribers.
+    /// None on the worker server.
+    pub ui_event_poller: Option<UiEventPoller>,
 }
 
 impl TicketServiceHandler {
@@ -185,8 +192,13 @@ impl TicketServiceHandler {
     }
 }
 
+type SubscribeUiEventsOutputStream =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<UiEventBatch, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl TicketService for TicketServiceHandler {
+    type SubscribeUiEventsStream = SubscribeUiEventsOutputStream;
+
     async fn create_ticket(
         &self,
         req: Request<CreateTicketRequest>,
@@ -913,6 +925,21 @@ impl TicketService for TicketServiceHandler {
             protos.push(workflow_to_proto(wf, pr_url));
         }
         Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
+    }
+
+    async fn subscribe_ui_events(
+        &self,
+        _req: Request<SubscribeUiEventsRequest>,
+    ) -> Result<Response<Self::SubscribeUiEventsStream>, Status> {
+        let poller = self.ui_event_poller.as_ref().ok_or_else(|| {
+            Status::unavailable("UI event streaming not available on this server")
+        })?;
+
+        let rx = poller.add_listener().await;
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let mapped = tokio_stream::StreamExt::map(stream, Ok);
+
+        Ok(Response::new(Box::pin(mapped)))
     }
 }
 
