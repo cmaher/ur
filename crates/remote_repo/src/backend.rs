@@ -202,6 +202,7 @@ impl RemoteRepo for GhBackend {
                 "--repo",
                 &self.gh_repo,
                 strategy_flag,
+                "--delete-branch",
             ])
             .await?;
 
