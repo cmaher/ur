@@ -9,8 +9,6 @@ use ur_rpc::lifecycle;
 
 use super::TicketOutput;
 use super::args::{KeyValue, TicketArgs};
-use super::status::build_status_report;
-
 /// Execute a ticket subcommand against the given gRPC client.
 ///
 /// Returns a `TicketOutput` variant describing the result. The caller is
@@ -71,7 +69,6 @@ where
         TicketArgs::Dispatchable { epic_id, project } => {
             execute_dispatchable(client, epic_id, project).await
         }
-        TicketArgs::Status { project } => execute_status(client, project).await,
     }
 }
 
@@ -617,32 +614,4 @@ where
         .await
         .with_status_context("open ticket")?;
     Ok(TicketOutput::Updated { id })
-}
-
-async fn execute_status<T>(
-    client: &mut TicketServiceClient<T>,
-    project: Option<String>,
-) -> Result<TicketOutput>
-where
-    T: tonic::client::GrpcService<tonic::body::Body> + Send,
-    T::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    T::ResponseBody: http_body::Body<Data = bytes::Bytes> + Send + 'static,
-    <T::ResponseBody as http_body::Body>::Error:
-        Into<Box<dyn std::error::Error + Send + Sync>> + Send,
-{
-    let resp = client
-        .list_tickets(ListTicketsRequest {
-            project: project.clone(),
-            ticket_type: None,
-            status: None,
-            meta_key: None,
-            meta_value: None,
-            tree_root_id: None,
-        })
-        .await
-        .with_status_context("list tickets")?;
-    let tickets = resp.into_inner().tickets;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let report = build_status_report(&tickets, &today, project.as_deref());
-    Ok(TicketOutput::StatusReport { report, tickets })
 }
