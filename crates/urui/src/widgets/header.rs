@@ -42,9 +42,18 @@ pub fn render_header(
         })
         .collect();
 
-    // If a project filter is active, append a right-aligned indicator.
+    // Fill the entire header row with base_200 background first.
+    let bg_style = Style::default().bg(theme.base_200).fg(theme.base_content);
+    buf.set_style(area, bg_style);
+
+    // If a project filter is active, right-align it by inserting a filler span.
     if let Some(ref proj) = ctx.project_filter {
         let label = format!(" [{proj}] ");
+        let tabs_width: usize = spans.iter().map(|s| s.width()).sum();
+        let label_width = label.len();
+        let total_width = area.width as usize;
+        let gap = total_width.saturating_sub(tabs_width + label_width);
+        spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::styled(
             label,
             Style::default()
@@ -52,10 +61,6 @@ pub fn render_header(
                 .fg(theme.secondary_content),
         ));
     }
-
-    // Fill the entire header row with base_200 background first.
-    let bg_style = Style::default().bg(theme.base_200).fg(theme.base_content);
-    buf.set_style(area, bg_style);
 
     let line = Line::from(spans);
     line.render(area, buf);

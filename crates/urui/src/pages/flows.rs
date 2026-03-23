@@ -496,7 +496,7 @@ impl Page for FlowsPage {
             Constraint::Length(12), // Ticket ID
             Constraint::Length(14), // Status
             Constraint::Length(8),  // Progress count
-            Constraint::Fill(1),    // Progress bar
+            Constraint::Length(10), // Progress bar
             Constraint::Length(12), // Stage Time
             Constraint::Length(12), // Total Time
             Constraint::Length(45), // PR URL

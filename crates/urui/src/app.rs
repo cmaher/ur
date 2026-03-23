@@ -263,6 +263,9 @@ impl App {
             Action::CloseTicket if self.active_tab == TabId::Workers => {
                 self.kill_selected_worker();
             }
+            Action::CancelFlow | Action::CloseTicket if self.active_tab == TabId::Flows => {
+                self.cancel_selected_flow();
+            }
             other => self.dispatch_to_page(other),
         }
     }
@@ -455,10 +458,17 @@ impl App {
     /// Begin the create-ticket flow: resolve project, then open editor or show project input.
     ///
     /// Project resolution order:
-    /// 1. If a single project filter is active on the tickets page, use that project.
-    /// 2. If there is only one configured project, use it.
-    /// 3. Otherwise, show the project input overlay.
+    /// 1. If a global project filter is active (launched with -p), use that project.
+    /// 2. If a single project filter is active on the tickets page, use that project.
+    /// 3. If there is only one configured project, use it.
+    /// 4. Otherwise, show the project input overlay.
     fn begin_create_ticket(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
+        // Global project filter from CLI -p flag.
+        if let Some(ref project) = self.ctx.project_filter {
+            self.open_editor_for_ticket(project.clone(), terminal);
+            return;
+        }
+
         // Check if the ticket list has a single project filter active.
         if let Some(filtered_project) = self.tickets_page.single_project_filter() {
             let project = filtered_project.to_string();
@@ -726,24 +736,13 @@ impl App {
             .fg(self.ctx.theme.base_content);
         buf.set_style(area, base_style);
 
-        let has_sub_header =
-            self.active_page().status().is_some() || self.active_page().banner().is_some();
-        let chunks = if has_sub_header {
-            Layout::vertical([
-                Constraint::Length(1), // header
-                Constraint::Length(1), // sub-header (banner or status)
-                Constraint::Fill(1),   // content
-                Constraint::Length(1), // footer
-            ])
-            .split(area)
-        } else {
-            Layout::vertical([
-                Constraint::Length(1), // header
-                Constraint::Fill(1),   // content
-                Constraint::Length(1), // footer
-            ])
-            .split(area)
-        };
+        let chunks = Layout::vertical([
+            Constraint::Length(1), // header
+            Constraint::Length(1), // sub-header (banner or status, always reserved)
+            Constraint::Fill(1),   // content
+            Constraint::Length(1), // footer
+        ])
+        .split(area);
 
         let tabs = vec![
             TabInfo {
@@ -765,28 +764,19 @@ impl App {
 
         render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
 
-        if has_sub_header {
-            if let Some(banner) = self.active_page().banner() {
-                render_banner(chunks[1], buf, &self.ctx, banner);
-            } else if let Some(status) = self.active_page().status() {
-                render_status_header(chunks[1], buf, &self.ctx, status);
-            }
-            self.active_page().render(chunks[2], buf, &self.ctx);
-            render_footer(
-                chunks[3],
-                buf,
-                &self.ctx,
-                &self.active_page().footer_commands(&self.ctx.keymap),
-            );
-        } else {
-            self.active_page().render(chunks[1], buf, &self.ctx);
-            render_footer(
-                chunks[2],
-                buf,
-                &self.ctx,
-                &self.active_page().footer_commands(&self.ctx.keymap),
-            );
+        if let Some(banner) = self.active_page().banner() {
+            render_banner(chunks[1], buf, &self.ctx, banner);
+        } else if let Some(status) = self.active_page().status() {
+            render_status_header(chunks[1], buf, &self.ctx, status);
         }
+
+        self.active_page().render(chunks[2], buf, &self.ctx);
+        render_footer(
+            chunks[3],
+            buf,
+            &self.ctx,
+            &self.active_page().footer_commands(&self.ctx.keymap),
+        );
 
         // Render overlays on top if open.
         if let Some(ref overlay) = self.settings_overlay {
