@@ -136,6 +136,14 @@ impl FlowsPage {
         self.page_ids().get(self.selected).cloned()
     }
 
+    /// Returns true if the given ticket ID has an entry in the flows page.
+    ///
+    /// Used by ancestor-aware refresh to determine if a ticket event should
+    /// trigger a workflow fetch.
+    pub fn has_entry_for_ticket(&self, ticket_id: &str) -> bool {
+        self.entry_map.contains_key(ticket_id)
+    }
+
     /// Take the pending cancel ticket ID, if one was set by the user pressing X.
     /// Calling this clears the pending cancel so it is only dispatched once.
     pub fn take_pending_cancel(&mut self) -> Option<String> {
