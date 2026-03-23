@@ -290,6 +290,8 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     ]
 }
 
+/// The column index of the PR URL in the table.
+const PR_URL_COL: usize = 5;
 /// The column index of the progress count label in the table.
 const PROGRESS_COUNT_COL: usize = 7;
 /// The column index of the progress bar in the table.
@@ -364,6 +366,90 @@ fn render_progress_bars(
                 height: 1,
             };
             bar.render_label_styled(cell, buf, row_fg, row_bg);
+        }
+    }
+}
+
+/// Render OSC 8 hyperlinks over PR URL cells, replacing full URLs with short text.
+fn render_pr_links(
+    page: &FlowsPage,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+    widths: &[Constraint],
+) {
+    use ratatui::layout::Layout;
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
+    let Some(pr_area) = col_areas.get(PR_URL_COL) else {
+        return;
+    };
+
+    let data_start_y = inner.y + 1;
+    let entries = page.page_entries();
+
+    for (i, entry) in entries.into_iter().enumerate() {
+        let row_y = data_start_y + i as u16;
+        if row_y >= inner.y + inner.height {
+            break;
+        }
+
+        let pr_url = &entry.workflow.pr_url;
+        let Some((short_text, full_url)) = shorten_pr_url(pr_url) else {
+            continue;
+        };
+
+        let is_selected = i == page.selected;
+        let row_bg = if is_selected {
+            ctx.theme.primary
+        } else if i % 2 == 0 {
+            ctx.theme.base_100
+        } else {
+            ctx.theme.base_200
+        };
+        let row_fg = if is_selected {
+            ctx.theme.primary_content
+        } else {
+            ctx.theme.base_content
+        };
+        let style = Style::default().fg(row_fg).bg(row_bg);
+
+        // Build the OSC 8 hyperlink sequence
+        let osc_open = format!("\x1b]8;;{full_url}\x1b\\");
+        let osc_close = "\x1b]8;;\x1b\\";
+
+        // Write short text with OSC 8 wrapping into buffer cells
+        let col_width = pr_area.width as usize;
+        for (j, ch) in short_text.chars().enumerate() {
+            if j >= col_width {
+                break;
+            }
+            let cell = &mut buf[(pr_area.x + j as u16, row_y)];
+            cell.set_char(ch);
+            cell.set_style(style);
+
+            // Attach OSC 8 open to the first character, close to the last visible character
+            if j == 0 {
+                cell.set_symbol(&format!("{osc_open}{ch}"));
+            }
+            if j == short_text.len().min(col_width) - 1 {
+                let sym = cell.symbol().to_string();
+                cell.set_symbol(&format!("{sym}{osc_close}"));
+            }
+        }
+
+        // Clear remaining cells in the column after the short text
+        for j in short_text.len()..col_width {
+            let cell = &mut buf[(pr_area.x + j as u16, row_y)];
+            cell.set_char(' ');
+            cell.set_style(style);
         }
     }
 }
@@ -496,6 +582,7 @@ impl Page for FlowsPage {
         table.render(area, buf, ctx);
 
         render_progress_bars(self, area, buf, ctx, &widths);
+        render_pr_links(self, area, buf, ctx, &widths);
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
