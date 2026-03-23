@@ -99,7 +99,7 @@ cargo make install
 ur server start
 
 # Open the TUI
-ur tui
+urui
 ```
 
 Configure projects in `~/.ur/ur.toml` — each project specifies a git repository and optional container mounts. See `ur.toml` for available options.
