@@ -14,6 +14,8 @@ mod terminal;
 mod theme;
 mod widgets;
 
+use clap::Parser;
+
 use crate::app::App;
 use crate::context::TuiContext;
 use crate::data::DataManager;
@@ -22,8 +24,19 @@ use crate::keymap::Keymap;
 use crate::terminal::{restore_terminal, setup_terminal};
 use crate::theme::Theme;
 
+/// Terminal UI for the Ur coordination framework.
+#[derive(Parser)]
+#[command(name = "urui")]
+struct Cli {
+    /// Scope the UI to a single project key. If omitted, attempts to derive
+    /// the project from the current directory name.
+    #[arg(short = 'p', long = "project")]
+    project: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
     let config = ur_config::Config::load()?;
 
     // Verify server connectivity early so the user gets a clear error message.
@@ -34,6 +47,10 @@ async fn main() -> anyhow::Result<()> {
     let keymap = resolve_keymap(&config.tui);
     let mut projects: Vec<String> = config.projects.keys().cloned().collect();
     projects.sort();
+
+    // Resolve project filter: explicit flag, then cwd directory name.
+    let project_filter = resolve_project_filter(cli.project, &projects);
+
     let ctx = TuiContext {
         theme,
         keymap,
@@ -41,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         project_configs: config.projects.clone(),
         tui_config: config.tui.clone(),
         config_dir: config.config_dir.clone(),
+        project_filter: project_filter.clone(),
     };
 
     let mut terminal = setup_terminal()?;
@@ -53,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     let (event_manager, receiver) = EventManager::start();
-    let data_manager = DataManager::new(config.server_port, event_manager.sender());
+    let data_manager = DataManager::new(config.server_port, event_manager.sender(), project_filter);
     data_manager.subscribe_events();
 
     let mut app = App::new(ctx, data_manager, event_manager);
@@ -62,6 +80,21 @@ async fn main() -> anyhow::Result<()> {
     restore_terminal();
 
     result
+}
+
+/// Resolve the project filter from the CLI flag or the current working
+/// directory name, matching against known project keys.
+fn resolve_project_filter(explicit: Option<String>, project_keys: &[String]) -> Option<String> {
+    if let Some(p) = explicit {
+        return Some(p);
+    }
+    // Try to derive from cwd directory name.
+    let cwd = std::env::current_dir().ok()?;
+    let dir_name = cwd.file_name()?.to_str()?.to_owned();
+    if project_keys.contains(&dir_name) {
+        return Some(dir_name);
+    }
+    None
 }
 
 /// Resolve the keymap from TUI configuration: use the named custom keymap if
