@@ -496,7 +496,7 @@ async fn create_and_design_flow(
     Ok(ticket_id)
 }
 
-/// Resolve a ticket title from the body by running `claude -m haiku --print`.
+/// Resolve a ticket title from the body by running `claude --model haiku --print`.
 ///
 /// Falls back to a truncated body (first 80 chars) if the command fails.
 /// Returns an error only if the body is also empty.
@@ -506,7 +506,7 @@ async fn resolve_title(body: &str) -> Result<String> {
          Output ONLY the title, nothing else:\n\n{body}"
     );
     let output = tokio::process::Command::new("claude")
-        .args(["-m", "haiku", "--print", "-p", &prompt])
+        .args(["--model", "haiku", "--print", "-p", &prompt])
         .output()
         .await;
 
@@ -529,7 +529,13 @@ async fn resolve_title(body: &str) -> Result<String> {
         }
     }
 
-    // Fallback: truncate body to 80 chars
+    fallback_title(body)
+}
+
+/// Truncate the body to produce a fallback title (first line, max 80 chars).
+///
+/// Returns an error if the body is empty.
+fn fallback_title(body: &str) -> Result<String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         anyhow::bail!("Cannot resolve title: body is empty and claude command failed");
@@ -893,34 +899,33 @@ mod tests {
         assert!(matches!(workers_one, DataPayload::Workers(Ok(ref w)) if w.len() == 1));
     }
 
-    #[tokio::test]
-    async fn resolve_title_fallback_truncates_body() {
-        // claude command is not available in test, so it should fall back to truncation
+    #[test]
+    fn fallback_title_truncates_body() {
         let body = "This is a short body";
-        let title = resolve_title(body).await.unwrap();
+        let title = fallback_title(body).unwrap();
         assert_eq!(title, "This is a short body");
     }
 
-    #[tokio::test]
-    async fn resolve_title_fallback_truncates_long_body() {
+    #[test]
+    fn fallback_title_truncates_long_body() {
         let body = "A".repeat(200);
-        let title = resolve_title(&body).await.unwrap();
+        let title = fallback_title(&body).unwrap();
         assert_eq!(title.len(), 80); // 77 chars + "..."
         assert!(title.ends_with("..."));
     }
 
-    #[tokio::test]
-    async fn resolve_title_fallback_uses_first_line() {
+    #[test]
+    fn fallback_title_uses_first_line() {
         let body = "First line title\nSecond line detail\nMore detail";
-        let title = resolve_title(body).await.unwrap();
+        let title = fallback_title(body).unwrap();
         assert_eq!(title, "First line title");
     }
 
-    #[tokio::test]
-    async fn resolve_title_empty_body_errors() {
-        let result = resolve_title("").await;
+    #[test]
+    fn fallback_title_empty_body_errors() {
+        let result = fallback_title("");
         assert!(result.is_err());
-        let result2 = resolve_title("   \n  ").await;
+        let result2 = fallback_title("   \n  ");
         assert!(result2.is_err());
     }
 }
