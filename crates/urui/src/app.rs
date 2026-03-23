@@ -59,9 +59,10 @@ impl App {
     ///
     /// The initial active tab is `Tickets`.
     pub fn new(ctx: TuiContext, data_manager: DataManager) -> Self {
+        let ticket_filter_cfg = &ctx.tui_config.ticket_filter;
         Self {
             active_tab: TabId::Tickets,
-            tickets_page: TicketsPage::new(),
+            tickets_page: TicketsPage::new(ticket_filter_cfg),
             flows_page: FlowsPage::new(),
             workers_page: WorkersPage::new(),
             ctx,
@@ -170,9 +171,14 @@ impl App {
                 self.switch_tab(tab);
                 return;
             }
+            let filters_before = self.tickets_page.filters().to_config();
             if let Some((ticket_id, priority)) = self.tickets_page.handle_overlay_key(key) {
                 self.data_manager
                     .update_ticket_priority(ticket_id, priority);
+            }
+            let filters_after = self.tickets_page.filters().to_config();
+            if filters_before != filters_after {
+                save_ticket_filters(&self.ctx.config_dir, &filters_after);
             }
             return;
         }
@@ -681,6 +687,75 @@ fn deduplicate_ui_events(items: Vec<UiEventItem>) -> Vec<UiEventItem> {
         .into_iter()
         .filter(|item| seen.insert((item.entity_type.clone(), item.entity_id.clone())))
         .collect()
+}
+
+/// Persist ticket filter settings to the `[tui.ticket.filter]` section of ur.toml.
+///
+/// Best-effort: logs a warning on failure but does not propagate the error,
+/// since filter persistence should never block the TUI.
+fn save_ticket_filters(
+    config_dir: &std::path::Path,
+    filter_config: &ur_config::TicketFilterConfig,
+) {
+    let toml_path = config_dir.join("ur.toml");
+    let contents = match std::fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("failed to read ur.toml for filter persistence: {e}");
+            return;
+        }
+    };
+    let mut doc = match contents.parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("failed to parse ur.toml for filter persistence: {e}");
+            return;
+        }
+    };
+
+    // Ensure [tui] table exists
+    if !doc.contains_key("tui") {
+        doc["tui"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let tui = doc["tui"].as_table_mut().expect("tui is a table");
+
+    // Ensure [tui.ticket] table exists
+    if !tui.contains_key("ticket") {
+        tui.insert("ticket", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    let ticket = tui
+        .get_mut("ticket")
+        .and_then(|t| t.as_table_mut())
+        .expect("ticket is a table");
+
+    // Build the filter table
+    let mut filter_table = toml_edit::Table::new();
+    if let Some(ref statuses) = filter_config.statuses {
+        let mut arr = toml_edit::Array::new();
+        for s in statuses {
+            arr.push(s.as_str());
+        }
+        filter_table.insert(
+            "statuses",
+            toml_edit::Item::Value(toml_edit::Value::Array(arr)),
+        );
+    }
+    if let Some(ref projects) = filter_config.projects {
+        let mut arr = toml_edit::Array::new();
+        for p in projects {
+            arr.push(p.as_str());
+        }
+        filter_table.insert(
+            "projects",
+            toml_edit::Item::Value(toml_edit::Value::Array(arr)),
+        );
+    }
+
+    ticket.insert("filter", toml_edit::Item::Table(filter_table));
+
+    if let Err(e) = std::fs::write(&toml_path, doc.to_string()) {
+        tracing::warn!("failed to write ur.toml for filter persistence: {e}");
+    }
 }
 
 #[cfg(test)]

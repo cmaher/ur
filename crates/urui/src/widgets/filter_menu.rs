@@ -61,6 +61,27 @@ impl Default for TicketFilters {
     }
 }
 
+impl TicketFilters {
+    /// Create filters from persisted config, falling back to defaults for unset fields.
+    pub fn from_config(config: &ur_config::TicketFilterConfig) -> Self {
+        let defaults = Self::default();
+        Self {
+            statuses: config.statuses.clone().unwrap_or(defaults.statuses),
+            projects: config.projects.clone().unwrap_or(defaults.projects),
+            priorities: defaults.priorities,
+            show_children: defaults.show_children,
+        }
+    }
+
+    /// Convert current filters to a config representation for persistence.
+    pub fn to_config(&self) -> ur_config::TicketFilterConfig {
+        ur_config::TicketFilterConfig {
+            statuses: Some(self.statuses.clone()),
+            projects: Some(self.projects.clone()),
+        }
+    }
+}
+
 /// State for the filter menu overlay.
 pub struct FilterMenuState {
     /// Current cursor position (0-indexed in the top-level category list).

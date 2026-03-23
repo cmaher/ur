@@ -58,19 +58,24 @@ pub struct TicketsPage {
 }
 
 impl TicketsPage {
-    pub fn new() -> Self {
+    pub fn new(filter_config: &ur_config::TicketFilterConfig) -> Self {
         Self {
             data_state: DataState::Loading,
             selected_row: 0,
             current_page: 0,
             page_size: 20,
             overlay: None,
-            filters: TicketFilters::default(),
+            filters: TicketFilters::from_config(filter_config),
             filtered_cache: Vec::new(),
             active_banner: None,
             active_status: None,
             refreshing: false,
         }
+    }
+
+    /// Returns a reference to the current filters for persistence.
+    pub fn filters(&self) -> &TicketFilters {
+        &self.filters
     }
 
     /// Total number of pages given the current ticket count and page size.
@@ -819,13 +824,13 @@ mod tests {
 
     #[test]
     fn new_page_needs_data() {
-        let page = TicketsPage::new();
+        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         assert!(page.needs_data());
     }
 
     #[test]
     fn on_data_tickets_ok() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First"), make_ticket("t-2", "Second")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
         assert!(!page.needs_data());
@@ -834,7 +839,7 @@ mod tests {
 
     #[test]
     fn on_data_tickets_error() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.on_data(&DataPayload::Tickets(Err("connection refused".into())));
         assert!(!page.needs_data());
         assert!(matches!(page.data_state, DataState::Error(_)));
@@ -842,14 +847,14 @@ mod tests {
 
     #[test]
     fn on_data_ignores_flows() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.on_data(&DataPayload::Flows(Ok(vec![])));
         assert!(page.needs_data()); // still loading
     }
 
     #[test]
     fn navigate_down_and_up() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), "T"))
             .collect();
@@ -866,7 +871,7 @@ mod tests {
 
     #[test]
     fn navigate_up_does_not_underflow() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
@@ -876,7 +881,7 @@ mod tests {
 
     #[test]
     fn navigate_down_does_not_overflow() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One"), make_ticket("t-2", "Two")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
 
@@ -888,7 +893,7 @@ mod tests {
 
     #[test]
     fn pagination() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 2;
         let tickets = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), "T"))
@@ -920,7 +925,7 @@ mod tests {
 
     #[test]
     fn update_page_size_from_area() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         // 23 lines total - 3 chrome = 20 rows
         page.update_page_size(23);
         assert_eq!(page.page_size, 20);
@@ -932,26 +937,26 @@ mod tests {
 
     #[test]
     fn quit_action_returns_quit() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         assert_eq!(page.handle_action(Action::Quit), PageResult::Quit);
     }
 
     #[test]
     fn unhandled_action_returns_ignored() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         assert_eq!(page.handle_action(Action::Select), PageResult::Ignored);
         assert_eq!(page.handle_action(Action::Back), PageResult::Ignored);
     }
 
     #[test]
     fn tab_id_is_tickets() {
-        let page = TicketsPage::new();
+        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         assert_eq!(page.tab_id(), TabId::Tickets);
     }
 
     #[test]
     fn footer_commands_not_empty() {
-        let page = TicketsPage::new();
+        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let keymap = Keymap::default();
         let cmds = page.footer_commands(&keymap);
         assert!(!cmds.is_empty());
@@ -959,7 +964,7 @@ mod tests {
 
     #[test]
     fn refresh_keeps_data_visible() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
         assert!(!page.needs_data());
@@ -974,7 +979,7 @@ mod tests {
 
     #[test]
     fn visible_tickets_respects_page() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 2;
         let tickets: Vec<_> = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), &format!("Ticket {i}")))
@@ -993,7 +998,7 @@ mod tests {
 
     #[test]
     fn default_filter_hides_children() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![
             make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-2", "open", 2, "test", "t-1", 0), // child
@@ -1007,7 +1012,7 @@ mod tests {
 
     #[test]
     fn filter_by_status() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![
             make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-2", "closed", 2, "test", "", 0),
@@ -1026,7 +1031,7 @@ mod tests {
 
     #[test]
     fn filter_by_priority() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear(); // Show all statuses
         let tickets = vec![
             make_ticket_with_fields("t-1", "open", 0, "test", "", 0),
@@ -1044,7 +1049,7 @@ mod tests {
 
     #[test]
     fn filter_by_project() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![
             make_ticket_with_fields("t-1", "open", 2, "alpha", "", 0),
@@ -1060,7 +1065,7 @@ mod tests {
 
     #[test]
     fn sorting_priority_ascending() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![
             make_ticket_with_fields("t-3", "open", 4, "test", "", 0),
@@ -1076,7 +1081,7 @@ mod tests {
 
     #[test]
     fn sorting_children_rank_higher() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![
             make_ticket_with_fields("t-leaf", "open", 2, "test", "", 0),
@@ -1091,7 +1096,7 @@ mod tests {
 
     #[test]
     fn filters_persist_across_refresh() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.priorities = vec![0, 1];
 
         let tickets = vec![make_ticket("t-1", "First")];
@@ -1109,7 +1114,7 @@ mod tests {
 
     #[test]
     fn open_filter_menu_creates_overlay() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         assert!(!page.has_overlay());
 
         open_filter_menu(&mut page, &["proj1".to_string()]);
@@ -1118,7 +1123,7 @@ mod tests {
 
     #[test]
     fn overlay_footer_differs() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let keymap = Keymap::default();
         let normal_cmds = page.footer_commands(&keymap);
 
@@ -1131,7 +1136,7 @@ mod tests {
 
     #[test]
     fn full_list_load_clears_and_rebuilds() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch1 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
         page.on_data(&DataPayload::Tickets(Ok(batch1)));
@@ -1146,7 +1151,7 @@ mod tests {
 
     #[test]
     fn single_upsert_adds_ticket() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch = vec![make_ticket("t-1", "A")];
         page.on_data(&DataPayload::Tickets(Ok(batch)));
@@ -1160,7 +1165,7 @@ mod tests {
 
     #[test]
     fn single_upsert_updates_existing() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch = vec![make_ticket("t-1", "A")];
         page.on_data(&DataPayload::Tickets(Ok(batch)));
@@ -1177,7 +1182,7 @@ mod tests {
 
     #[test]
     fn selection_preserved_by_id_across_rebuild() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![
             make_ticket("t-1", "A"),
@@ -1203,7 +1208,7 @@ mod tests {
 
     #[test]
     fn selection_clamped_when_id_disappears() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![
             make_ticket("t-1", "A"),
@@ -1227,7 +1232,7 @@ mod tests {
 
     #[test]
     fn single_upsert_preserves_selection() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
         page.on_data(&DataPayload::Tickets(Ok(tickets)));
@@ -1244,7 +1249,7 @@ mod tests {
 
     #[test]
     fn ticket_update_ignored_before_initial_load() {
-        let mut page = TicketsPage::new();
+        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         // TicketUpdate before initial Tickets load should be ignored
         let ticket = make_ticket("t-1", "A");
         page.on_data(&DataPayload::TicketUpdate(Ok(ticket)));
