@@ -15,6 +15,7 @@ use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
+use crate::widgets::force_close_confirm::{ForceCloseConfirmResult, ForceCloseConfirmState};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
@@ -33,6 +34,17 @@ enum DataState {
 enum Overlay {
     FilterMenu(FilterMenuState),
     PriorityPicker(PriorityPickerState),
+    ForceCloseConfirm(ForceCloseConfirmState),
+}
+
+/// Result from handling an overlay key event.
+pub enum OverlayAction {
+    /// No action needed by the caller.
+    None,
+    /// User selected a priority for the given ticket.
+    SetPriority { ticket_id: String, priority: i64 },
+    /// User confirmed force-closing the given ticket.
+    ForceClose { ticket_id: String },
 }
 
 /// The Tickets tab page.
@@ -317,14 +329,13 @@ impl TicketsPage {
     }
 
     /// Handle a raw key event when the overlay is active.
-    /// Returns `None` if the event was consumed or closed without selection.
-    /// Returns `Some((ticket_id, priority))` if the user selected a priority.
-    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> Option<(String, i64)> {
+    /// Returns an `OverlayAction` indicating what the caller should do.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> OverlayAction {
         match self.overlay {
             Some(Overlay::FilterMenu(ref mut menu)) => {
                 // First check if Esc should collapse submenu before closing
                 if matches!(key.code, crossterm::event::KeyCode::Esc) && menu.collapse() {
-                    return None;
+                    return OverlayAction::None;
                 }
 
                 let result = menu.handle_key(key, &mut self.filters);
@@ -339,24 +350,45 @@ impl TicketsPage {
                         self.overlay = None;
                     }
                 }
-                None
+                OverlayAction::None
             }
             Some(Overlay::PriorityPicker(ref mut picker)) => {
                 let result = picker.handle_key(key);
                 match result {
-                    PriorityPickerResult::Consumed => None,
+                    PriorityPickerResult::Consumed => OverlayAction::None,
                     PriorityPickerResult::Close => {
                         self.overlay = None;
-                        None
+                        OverlayAction::None
                     }
                     PriorityPickerResult::Selected(priority) => {
                         let ticket_id = self.selected_ticket_id();
                         self.overlay = None;
-                        ticket_id.map(|id| (id, priority))
+                        match ticket_id {
+                            Some(id) => OverlayAction::SetPriority {
+                                ticket_id: id,
+                                priority,
+                            },
+                            None => OverlayAction::None,
+                        }
                     }
                 }
             }
-            None => None,
+            Some(Overlay::ForceCloseConfirm(ref mut state)) => {
+                let result = state.handle_key(key);
+                match result {
+                    ForceCloseConfirmResult::Consumed => OverlayAction::None,
+                    ForceCloseConfirmResult::Cancelled => {
+                        self.overlay = None;
+                        OverlayAction::None
+                    }
+                    ForceCloseConfirmResult::Confirmed => {
+                        let ticket_id = state.ticket_id.clone();
+                        self.overlay = None;
+                        OverlayAction::ForceClose { ticket_id }
+                    }
+                }
+            }
+            None => OverlayAction::None,
         }
     }
 
@@ -394,6 +426,16 @@ impl TicketsPage {
         } else {
             None
         }
+    }
+
+    /// Returns a reference to the currently selected ticket, if any.
+    pub fn selected_ticket(&self) -> Option<&Ticket> {
+        let map = match &self.data_state {
+            DataState::Loaded(m) => m,
+            _ => return None,
+        };
+        let id = self.visible_ids().get(self.selected_row)?;
+        map.get(id)
     }
 
     /// Set an in-progress status message (e.g., for dispatch).
@@ -631,6 +673,9 @@ impl Page for TicketsPage {
             Some(Overlay::PriorityPicker(picker)) => {
                 picker.render(area, buf, ctx);
             }
+            Some(Overlay::ForceCloseConfirm(state)) => {
+                state.render(area, buf, ctx);
+            }
             None => {}
         }
     }
@@ -639,6 +684,7 @@ impl Page for TicketsPage {
         match &self.overlay {
             Some(Overlay::FilterMenu(menu)) => return menu.footer_commands(),
             Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
+            Some(Overlay::ForceCloseConfirm(state)) => return state.footer_commands(),
             None => {}
         }
         vec![
@@ -768,6 +814,14 @@ impl Page for TicketsPage {
 /// Open the filter menu overlay on the tickets page.
 pub fn open_filter_menu(page: &mut TicketsPage, projects: &[String]) {
     page.overlay = Some(Overlay::FilterMenu(FilterMenuState::new(projects.to_vec())));
+}
+
+/// Open the force-close confirmation overlay on the tickets page.
+pub fn open_force_close_confirm(page: &mut TicketsPage, ticket_id: String, open_children: i32) {
+    page.overlay = Some(Overlay::ForceCloseConfirm(ForceCloseConfirmState {
+        ticket_id,
+        open_children,
+    }));
 }
 
 /// Open the priority picker overlay on the tickets page, initialized to the

@@ -146,7 +146,7 @@ impl DataManager {
 
         tokio::spawn(async move {
             debug!(port, %ticket_id, %status, "updating ticket status");
-            let result = update_ticket_status_rpc(port, &ticket_id, &status).await;
+            let result = update_ticket_status_rpc(port, &ticket_id, &status, false).await;
             let action_result = match result {
                 Ok(()) => ActionResult {
                     result: Ok(format!("{ticket_id} → {status}")),
@@ -154,6 +154,33 @@ impl DataManager {
                 },
                 Err(e) => {
                     error!(port, %ticket_id, error = %e, "status update failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that force-closes a ticket (recursively closing
+    /// all open children) via `UpdateTicket` with `force: true`.
+    /// On success, no banner is shown. On failure, an error banner appears.
+    pub fn force_close_ticket(&self, ticket_id: String) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "force-closing ticket");
+            let result = update_ticket_status_rpc(port, &ticket_id, "closed", true).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("{ticket_id} → closed (force)")),
+                    silent_on_success: true,
+                },
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "force close failed");
                     ActionResult {
                         result: Err(e.to_string()),
                         silent_on_success: false,
@@ -527,7 +554,12 @@ async fn cancel_workflow_rpc(port: u16, ticket_id: &str) -> Result<()> {
 }
 
 /// Perform the UpdateTicket RPC to change a ticket's status.
-async fn update_ticket_status_rpc(port: u16, ticket_id: &str, status: &str) -> Result<()> {
+async fn update_ticket_status_rpc(
+    port: u16,
+    ticket_id: &str,
+    status: &str,
+    force: bool,
+) -> Result<()> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     client
@@ -537,7 +569,7 @@ async fn update_ticket_status_rpc(port: u16, ticket_id: &str, status: &str) -> R
             status: Some(status.to_owned()),
             title: None,
             body: None,
-            force: false,
+            force,
             ticket_type: None,
             parent_id: None,
             branch: None,
