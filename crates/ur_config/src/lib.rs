@@ -431,6 +431,13 @@ struct RawBackupConfig {
     retain_count: Option<u64>,
 }
 
+/// Raw TOML representation for the `[tui.notifications]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawNotificationConfig {
+    flow_stalled: Option<bool>,
+    flow_in_review: Option<bool>,
+}
+
 /// Raw TOML representation for the `[tui.ticket.filter]` section.
 #[derive(Debug, Default, Deserialize)]
 struct RawTicketFilterConfig {
@@ -457,6 +464,7 @@ struct RawTuiConfig {
     #[serde(default)]
     keymaps: HashMap<String, RawKeymapOverrides>,
     ticket: Option<RawTicketConfig>,
+    notifications: Option<RawNotificationConfig>,
 }
 
 /// Raw TOML representation for a `[tui.themes.<name>]` entry.
@@ -687,6 +695,24 @@ pub struct TicketFilterConfig {
     pub projects: Option<Vec<String>>,
 }
 
+/// Notification settings from the `[tui.notifications]` section of `ur.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationConfig {
+    /// Whether to notify when a flow stalls.
+    pub flow_stalled: bool,
+    /// Whether to notify when a flow enters review.
+    pub flow_in_review: bool,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            flow_stalled: true,
+            flow_in_review: true,
+        }
+    }
+}
+
 /// Resolved TUI configuration from the `[tui]` section of `ur.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiConfig {
@@ -702,6 +728,8 @@ pub struct TuiConfig {
     pub custom_keymaps: HashMap<String, KeymapOverrides>,
     /// Persisted ticket filter settings.
     pub ticket_filter: TicketFilterConfig,
+    /// Notification toggles.
+    pub notifications: NotificationConfig,
 }
 
 pub const DEFAULT_KEY_REPEAT_INTERVAL_MS: u64 = 200;
@@ -715,6 +743,7 @@ impl Default for TuiConfig {
             custom_themes: HashMap::new(),
             custom_keymaps: HashMap::new(),
             ticket_filter: TicketFilterConfig::default(),
+            notifications: NotificationConfig::default(),
         }
     }
 }
@@ -1316,6 +1345,13 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
                 },
                 None => TicketFilterConfig::default(),
             };
+            let notifications = match t.notifications {
+                Some(raw_notif) => NotificationConfig {
+                    flow_stalled: raw_notif.flow_stalled.unwrap_or(true),
+                    flow_in_review: raw_notif.flow_in_review.unwrap_or(true),
+                },
+                None => NotificationConfig::default(),
+            };
             TuiConfig {
                 theme_name: t.theme.unwrap_or_else(|| DEFAULT_TUI_THEME.to_string()),
                 keymap_name: t.keymap.unwrap_or_else(|| DEFAULT_TUI_KEYMAP.to_string()),
@@ -1325,6 +1361,7 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
                 custom_themes,
                 custom_keymaps,
                 ticket_filter,
+                notifications,
             }
         }
         None => TuiConfig::default(),
@@ -2763,5 +2800,53 @@ quit = ["q"]
         assert_eq!(cfg.tui.custom_keymaps.len(), 2);
         assert!(cfg.tui.custom_keymaps.contains_key("emacs"));
         assert!(cfg.tui.custom_keymaps.contains_key("vim"));
+    }
+
+    #[test]
+    fn notification_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.tui.notifications.flow_stalled);
+        assert!(cfg.tui.notifications.flow_in_review);
+    }
+
+    #[test]
+    fn notification_explicit_true() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[tui.notifications]\nflow_stalled = true\nflow_in_review = true\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.tui.notifications.flow_stalled);
+        assert!(cfg.tui.notifications.flow_in_review);
+    }
+
+    #[test]
+    fn notification_explicit_false() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[tui.notifications]\nflow_stalled = false\nflow_in_review = false\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(!cfg.tui.notifications.flow_stalled);
+        assert!(!cfg.tui.notifications.flow_in_review);
+    }
+
+    #[test]
+    fn notification_partial_specification() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "[tui.notifications]\nflow_stalled = false\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(!cfg.tui.notifications.flow_stalled);
+        assert!(cfg.tui.notifications.flow_in_review);
     }
 }

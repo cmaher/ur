@@ -10,6 +10,8 @@ use ratatui::widgets::{Clear, Widget};
 
 use std::collections::HashSet;
 
+use tracing::warn;
+
 use crate::context::TuiContext;
 use crate::create_ticket::{
     PendingTicket, generate_template, is_title_placeholder, parse_ticket_file,
@@ -17,6 +19,7 @@ use crate::create_ticket::{
 use crate::data::DataManager;
 use crate::event::{AppEvent, EventManager, EventReceiver, UiEventItem};
 use crate::keymap::Action;
+use crate::notifications::NotificationManager;
 use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
@@ -55,6 +58,8 @@ pub struct App {
     project_input: Option<ProjectInputState>,
     /// The pending ticket being created, stored between editor return and action selection.
     pending_ticket: Option<PendingTicket>,
+    /// Manages desktop notifications for workflow state transitions.
+    notification_manager: NotificationManager,
 }
 
 impl App {
@@ -63,6 +68,15 @@ impl App {
     /// The initial active tab is `Tickets`.
     pub fn new(ctx: TuiContext, data_manager: DataManager, event_manager: EventManager) -> Self {
         let ticket_filter_cfg = &ctx.tui_config.ticket_filter;
+        let notification_manager = NotificationManager::new(ctx.tui_config.notifications.clone());
+        let notif_config = &ctx.tui_config.notifications;
+        if !notification_manager.is_available()
+            && (notif_config.flow_stalled || notif_config.flow_in_review)
+        {
+            warn!(
+                "terminal-notifier not found; desktop notifications are enabled in config but will not fire"
+            );
+        }
         Self {
             active_tab: TabId::Tickets,
             tickets_page: TicketsPage::new(ticket_filter_cfg),
@@ -77,6 +91,7 @@ impl App {
             pending_project: None,
             project_input: None,
             pending_ticket: None,
+            notification_manager,
         }
     }
 
@@ -262,6 +277,15 @@ impl App {
 
     /// Handle a DataReady event: route the payload to the relevant page.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
+        match &payload {
+            crate::data::DataPayload::Flows(Ok(workflows)) => {
+                self.notification_manager.seed_flows(workflows);
+            }
+            crate::data::DataPayload::FlowUpdate(Ok(workflow)) => {
+                self.notification_manager.check_flow_update(workflow);
+            }
+            _ => {}
+        }
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);
         self.workers_page.on_data(&payload);
