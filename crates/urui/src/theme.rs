@@ -98,31 +98,65 @@ pub fn builtin_theme(name: &str) -> Option<Theme> {
 /// All built-in theme names, sorted alphabetically.
 pub const BUILTIN_THEME_NAMES: &[&str] = generated::BUILTIN_THEME_NAMES;
 
+/// Returns a theme that uses ANSI color indices, delegating color rendering to
+/// the terminal's own palette. Works in any terminal without truecolor support.
+pub fn system_theme() -> Theme {
+    Theme {
+        base_100: Color::Reset,
+        base_200: Color::Black,
+        base_300: Color::DarkGray,
+        base_content: Color::Reset,
+        primary: Color::Blue,
+        primary_content: Color::White,
+        secondary: Color::Cyan,
+        secondary_content: Color::White,
+        accent: Color::Magenta,
+        accent_content: Color::White,
+        neutral: Color::Black,
+        neutral_content: Color::DarkGray,
+        info: Color::Cyan,
+        info_content: Color::DarkGray,
+        success: Color::Green,
+        success_content: Color::White,
+        warning: Color::Yellow,
+        warning_content: Color::Black,
+        error: Color::Red,
+        error_content: Color::White,
+        border_rounded: true,
+    }
+}
+
 impl Theme {
     /// Resolve the active theme from configuration.
     ///
     /// Resolution order:
-    /// 1. If the configured theme name matches a custom theme, use it (with
-    ///    unspecified fields falling back to the dark built-in defaults).
-    /// 2. If the name matches a built-in theme, use it directly.
-    /// 3. Fall back to the "dark" built-in theme.
+    /// 1. If the configured theme name is "system", use system_theme().
+    /// 2. If the name matches a custom theme, use it (with unspecified fields
+    ///    falling back to the dark built-in defaults).
+    /// 3. If the name matches a built-in theme, use it directly.
+    /// 4. Fall back to system_theme().
     pub fn resolve(config: &TuiConfig) -> Self {
-        check_truecolor_support();
+        // 1. System theme shortcut.
+        if config.theme_name == "system" {
+            return system_theme();
+        }
 
         let dark = builtin_theme("dark").expect("dark theme must exist in built-in themes");
 
-        // 1. Check custom themes from config.
+        // 2. Check custom themes from config.
         if let Some(custom) = config.custom_themes.get(&config.theme_name) {
+            check_truecolor_support();
             return apply_custom_overrides(&dark, custom);
         }
 
-        // 2. Check built-in themes.
+        // 3. Check built-in themes.
         if let Some(builtin) = builtin_theme(&config.theme_name) {
+            check_truecolor_support();
             return builtin;
         }
 
-        // 3. Fall back to dark.
-        dark
+        // 4. Fall back to system theme.
+        system_theme()
     }
 }
 
@@ -230,14 +264,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_falls_back_to_dark() {
+    fn resolve_falls_back_to_system() {
         let config = TuiConfig {
             theme_name: "nonexistent_theme_xyz".to_string(),
             ..TuiConfig::default()
         };
         let resolved = Theme::resolve(&config);
-        let dark = builtin_theme("dark").unwrap();
-        assert_eq!(resolved, dark);
+        assert_eq!(resolved, system_theme());
     }
 
     #[test]
@@ -281,5 +314,55 @@ mod tests {
         // Non-overridden fields should match dark.
         let dark = builtin_theme("dark").unwrap();
         assert_eq!(resolved.primary, dark.primary);
+    }
+
+    /// Helper: returns true when a color is an ANSI variant (not Rgb).
+    fn is_ansi(color: Color) -> bool {
+        !matches!(color, Color::Rgb(_, _, _))
+    }
+
+    #[test]
+    fn system_theme_uses_ansi_colors() {
+        let t = system_theme();
+        assert!(is_ansi(t.base_100), "base_100 should be ANSI");
+        assert!(is_ansi(t.base_200), "base_200 should be ANSI");
+        assert!(is_ansi(t.base_300), "base_300 should be ANSI");
+        assert!(is_ansi(t.base_content), "base_content should be ANSI");
+        assert!(is_ansi(t.primary), "primary should be ANSI");
+        assert!(is_ansi(t.primary_content), "primary_content should be ANSI");
+        assert!(is_ansi(t.secondary), "secondary should be ANSI");
+        assert!(
+            is_ansi(t.secondary_content),
+            "secondary_content should be ANSI"
+        );
+        assert!(is_ansi(t.accent), "accent should be ANSI");
+        assert!(is_ansi(t.accent_content), "accent_content should be ANSI");
+        assert!(is_ansi(t.neutral), "neutral should be ANSI");
+        assert!(is_ansi(t.neutral_content), "neutral_content should be ANSI");
+        assert!(is_ansi(t.info), "info should be ANSI");
+        assert!(is_ansi(t.info_content), "info_content should be ANSI");
+        assert!(is_ansi(t.success), "success should be ANSI");
+        assert!(is_ansi(t.success_content), "success_content should be ANSI");
+        assert!(is_ansi(t.warning), "warning should be ANSI");
+        assert!(is_ansi(t.warning_content), "warning_content should be ANSI");
+        assert!(is_ansi(t.error), "error should be ANSI");
+        assert!(is_ansi(t.error_content), "error_content should be ANSI");
+    }
+
+    #[test]
+    fn resolve_defaults_to_system() {
+        let config = TuiConfig::default();
+        let resolved = Theme::resolve(&config);
+        assert_eq!(resolved, system_theme());
+    }
+
+    #[test]
+    fn resolve_system_by_name() {
+        let config = TuiConfig {
+            theme_name: "system".to_string(),
+            ..TuiConfig::default()
+        };
+        let resolved = Theme::resolve(&config);
+        assert_eq!(resolved, system_theme());
     }
 }

@@ -579,7 +579,7 @@ pub struct ServerConfig {
 }
 
 /// Default TUI theme name.
-pub const DEFAULT_TUI_THEME: &str = "dark";
+pub const DEFAULT_TUI_THEME: &str = "system";
 
 /// Default TUI keymap name.
 pub const DEFAULT_TUI_KEYMAP: &str = "default";
@@ -716,7 +716,7 @@ impl Default for NotificationConfig {
 /// Resolved TUI configuration from the `[tui]` section of `ur.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiConfig {
-    /// Active theme name (default: "dark").
+    /// Active theme name (default: "system").
     pub theme_name: String,
     /// Active keymap name (default: "default").
     pub keymap_name: String,
