@@ -671,7 +671,7 @@ bg = "#112233"
 
         let config2 = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(!config2.tui.custom_themes.contains_key("mytheme"));
-        assert_eq!(config2.tui.theme_name, "dark");
+        assert_eq!(config2.tui.theme_name, ur_config::DEFAULT_TUI_THEME);
     }
 
     #[test]
