@@ -2,6 +2,7 @@ mod banner;
 pub mod create_action_menu;
 pub mod filter_menu;
 mod footer;
+pub mod force_close_confirm;
 pub mod header;
 pub mod overlay;
 pub mod priority_picker;
