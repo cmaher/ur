@@ -127,11 +127,18 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         &self,
         request: Request<SendMessageRequest>,
     ) -> Result<Response<SendMessageResponse>, Status> {
-        let message = &request.into_inner().message;
-        info!(message, "SendMessage received");
+        let req = request.into_inner();
+        let message = &req.message;
+        let submit = req.submit;
+        info!(message, submit, "SendMessage received");
 
         let session = tmux::Session::agent();
-        match session.send_keys(message).await {
+        let result = if submit {
+            session.send_keys(message).await
+        } else {
+            session.send_keys_no_enter(message).await
+        };
+        match result {
             Ok(()) => {
                 info!("send-keys succeeded");
                 Ok(Response::new(SendMessageResponse {
