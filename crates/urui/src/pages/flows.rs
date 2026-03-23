@@ -265,7 +265,7 @@ fn workflow_progress(wf: &WorkflowInfo) -> (u32, u32) {
 fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     let wf = &entry.workflow;
     let stalled_text = if wf.stalled {
-        format!("!! {}", wf.stall_reason)
+        "X".to_string()
     } else {
         String::new()
     };
@@ -463,7 +463,7 @@ impl Page for FlowsPage {
             Constraint::Length(12), // Stage Time
             Constraint::Length(12), // Total Time
             Constraint::Length(45), // PR URL
-            Constraint::Length(20), // Stalled
+            Constraint::Length(8),  // Stalled
         ];
 
         let table = ThemedTable {
@@ -856,7 +856,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[7], "!! test stall");
+        assert_eq!(row[7], "X");
     }
 
     #[test]
