@@ -253,6 +253,21 @@ fn workflow_progress(wf: &WorkflowInfo) -> (u32, u32) {
     }
 }
 
+/// Parse a full GitHub PR URL into a shortened display form and the original URL.
+///
+/// Returns `Some(("owner/repo#number", original_url))` for valid GitHub PR URLs,
+/// or `None` for empty strings, non-GitHub URLs, or malformed URLs.
+fn shorten_pr_url(url: &str) -> Option<(String, String)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let mut parts = path.splitn(4, '/');
+    let owner = parts.next().filter(|s| !s.is_empty())?;
+    let repo = parts.next().filter(|s| !s.is_empty())?;
+    let pull_segment = parts.next().filter(|&s| s == "pull")?;
+    let _ = pull_segment;
+    let number = parts.next().filter(|s| !s.is_empty())?;
+    Some((format!("{owner}/{repo}#{number}"), url.to_string()))
+}
+
 /// Convert a FlowEntry into a row of display strings.
 fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     let wf = &entry.workflow;
@@ -1176,5 +1191,40 @@ mod tests {
         let (completed, total) = workflow_progress(&wf);
         assert_eq!(completed, 0);
         assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn shorten_pr_url_valid() {
+        let result = shorten_pr_url("https://github.com/acme/widgets/pull/42");
+        assert_eq!(
+            result,
+            Some((
+                "acme/widgets#42".to_string(),
+                "https://github.com/acme/widgets/pull/42".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn shorten_pr_url_empty() {
+        assert_eq!(shorten_pr_url(""), None);
+    }
+
+    #[test]
+    fn shorten_pr_url_non_github() {
+        assert_eq!(shorten_pr_url("https://gitlab.com/owner/repo/pull/1"), None);
+    }
+
+    #[test]
+    fn shorten_pr_url_malformed_missing_number() {
+        assert_eq!(shorten_pr_url("https://github.com/owner/repo/pull/"), None);
+        assert_eq!(shorten_pr_url("https://github.com/owner/repo/pull"), None);
+    }
+
+    #[test]
+    fn shorten_pr_url_malformed_missing_components() {
+        assert_eq!(shorten_pr_url("https://github.com/owner"), None);
+        assert_eq!(shorten_pr_url("https://github.com/"), None);
+        assert_eq!(shorten_pr_url("https://github.com"), None);
     }
 }
