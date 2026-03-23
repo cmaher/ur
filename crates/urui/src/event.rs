@@ -100,6 +100,16 @@ impl EventManager {
         self.paused.store(false, Ordering::SeqCst);
     }
 
+    /// Create a lightweight `EventManager` for tests without spawning background tasks.
+    #[cfg(test)]
+    pub fn test_new() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            sender: tx,
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Returns whether the crossterm reader is currently paused.
     #[cfg(test)]
     pub fn is_paused(&self) -> bool {

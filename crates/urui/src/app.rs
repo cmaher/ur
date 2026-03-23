@@ -791,7 +791,8 @@ mod tests {
         let ctx = make_ctx();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let data_manager = DataManager::new(42069, tx);
-        App::new(ctx, data_manager)
+        let event_manager = EventManager::test_new();
+        App::new(ctx, data_manager, event_manager)
     }
 
     #[test]
@@ -924,7 +925,8 @@ mod tests {
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let data_manager = DataManager::new(42069, tx);
-        App::new(ctx, data_manager)
+        let event_manager = EventManager::test_new();
+        App::new(ctx, data_manager, event_manager)
     }
 
     #[test]
