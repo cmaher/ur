@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let data_manager = DataManager::new(config.server_port, event_manager.sender());
     data_manager.subscribe_events();
 
-    let mut app = App::new(ctx, data_manager);
+    let mut app = App::new(ctx, data_manager, event_manager);
     let result = app.run(&mut terminal, receiver).await;
 
     restore_terminal();

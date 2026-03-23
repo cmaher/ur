@@ -15,7 +15,7 @@ use crate::create_ticket::{
     PendingTicket, generate_template, is_title_placeholder, parse_ticket_file,
 };
 use crate::data::DataManager;
-use crate::event::{AppEvent, EventReceiver, UiEventItem};
+use crate::event::{AppEvent, EventManager, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{open_filter_menu, open_priority_picker};
@@ -41,6 +41,7 @@ pub struct App {
     workers_page: WorkersPage,
     ctx: TuiContext,
     data_manager: DataManager,
+    event_manager: EventManager,
     should_quit: bool,
     /// Global settings overlay state, present when the overlay is open.
     settings_overlay: Option<SettingsOverlayState>,
@@ -58,7 +59,7 @@ impl App {
     /// Create a new `App` with the given context and data manager.
     ///
     /// The initial active tab is `Tickets`.
-    pub fn new(ctx: TuiContext, data_manager: DataManager) -> Self {
+    pub fn new(ctx: TuiContext, data_manager: DataManager, event_manager: EventManager) -> Self {
         let ticket_filter_cfg = &ctx.tui_config.ticket_filter;
         Self {
             active_tab: TabId::Tickets,
@@ -67,6 +68,7 @@ impl App {
             workers_page: WorkersPage::new(),
             ctx,
             data_manager,
+            event_manager,
             should_quit: false,
             settings_overlay: None,
             create_action_menu: None,
@@ -381,15 +383,21 @@ impl App {
             }
         };
 
+        // Pause crossterm reader so it stops competing for stdin with the editor.
+        self.event_manager.pause();
+
         // Suspend TUI, run editor, restore TUI.
         terminal::restore_terminal();
         let status = std::process::Command::new(&editor).arg(&tmp_path).status();
         // Re-setup terminal — recreate the backend in-place.
         if let Err(e) = reinit_terminal(terminal) {
+            self.event_manager.resume();
             // If we can't restore the terminal, we have to bail.
             self.show_app_error_banner(format!("Failed to restore terminal: {e}"));
             return;
         }
+
+        self.event_manager.resume();
 
         self.process_editor_result(status, &tmp_path, project);
         let _ = std::fs::remove_file(&tmp_path);
