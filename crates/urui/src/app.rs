@@ -228,6 +228,9 @@ impl App {
             Action::OpenTicket if self.active_tab == TabId::Tickets => {
                 self.update_selected_ticket_status("open");
             }
+            Action::CloseTicket if self.active_tab == TabId::Workers => {
+                self.kill_selected_worker();
+            }
             other => self.dispatch_to_page(other),
         }
     }
@@ -251,7 +254,11 @@ impl App {
     /// then trigger a data refresh so the UI reflects the change.
     fn handle_action_result(&mut self, result: crate::data::ActionResult) {
         let success = result.result.is_ok();
-        self.tickets_page.on_action_result(&result);
+        match self.active_tab {
+            TabId::Tickets => self.tickets_page.on_action_result(&result),
+            TabId::Flows => self.flows_page.on_action_result(&result),
+            TabId::Workers => self.workers_page.on_action_result(&result),
+        }
         if success {
             self.fetch_active_tab_data();
         }
@@ -287,6 +294,13 @@ impl App {
                 .set_status(format!("Dispatching ticket {ticket_id}..."));
             self.data_manager
                 .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
+    /// Stop the currently selected worker on the workers page.
+    fn kill_selected_worker(&mut self) {
+        if let Some(worker_id) = self.workers_page.selected_worker_id() {
+            self.data_manager.stop_worker(worker_id);
         }
     }
 
