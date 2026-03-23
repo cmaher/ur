@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyEvent};
@@ -46,6 +48,7 @@ const CROSSTERM_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 #[derive(Clone)]
 pub struct EventManager {
     sender: mpsc::UnboundedSender<AppEvent>,
+    paused: Arc<AtomicBool>,
 }
 
 /// Owned receiver half, consumed by the main application loop.
@@ -62,11 +65,12 @@ impl EventManager {
     /// that the main loop should `select!` on.
     pub fn start() -> (Self, EventReceiver) {
         let (tx, rx) = mpsc::unbounded_channel();
+        let paused = Arc::new(AtomicBool::new(false));
 
-        let crossterm_handle = spawn_crossterm_reader(tx.clone());
+        let crossterm_handle = spawn_crossterm_reader(tx.clone(), Arc::clone(&paused));
         let tick_handle = spawn_tick_timer(tx.clone());
 
-        let manager = Self { sender: tx };
+        let manager = Self { sender: tx, paused };
 
         let receiver = EventReceiver {
             receiver: rx,
@@ -80,6 +84,36 @@ impl EventManager {
     /// Get a sender that data-fetch tasks can use to push `DataReady` events.
     pub fn sender(&self) -> mpsc::UnboundedSender<AppEvent> {
         self.sender.clone()
+    }
+
+    /// Pause the crossterm reader so it stops polling stdin.
+    ///
+    /// Call this before handing stdin to an external process (e.g. `$EDITOR`).
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    /// Resume the crossterm reader so it resumes polling stdin.
+    ///
+    /// Call this after the external process exits and the terminal is restored.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+    }
+
+    /// Create a lightweight `EventManager` for tests without spawning background tasks.
+    #[cfg(test)]
+    pub fn test_new() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            sender: tx,
+            paused: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Returns whether the crossterm reader is currently paused.
+    #[cfg(test)]
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
     }
 }
 
@@ -100,12 +134,22 @@ impl EventReceiver {
 
 /// Spawns a blocking task that reads crossterm terminal events and forwards
 /// `Key` and `Resize` variants through the channel.
-fn spawn_crossterm_reader(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || while read_and_forward_event(&tx) {})
+fn spawn_crossterm_reader(
+    tx: mpsc::UnboundedSender<AppEvent>,
+    paused: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    tokio::task::spawn_blocking(move || while read_and_forward_event(&tx, &paused) {})
 }
 
 /// Poll for one crossterm event and forward it. Returns `false` to stop the loop.
-fn read_and_forward_event(tx: &mpsc::UnboundedSender<AppEvent>) -> bool {
+///
+/// When the pause flag is set, skips polling stdin and sleeps instead, yielding
+/// stdin entirely to external processes like `$EDITOR`.
+fn read_and_forward_event(tx: &mpsc::UnboundedSender<AppEvent>, paused: &AtomicBool) -> bool {
+    if paused.load(Ordering::SeqCst) {
+        std::thread::sleep(CROSSTERM_POLL_TIMEOUT);
+        return !tx.is_closed();
+    }
     match event::poll(CROSSTERM_POLL_TIMEOUT) {
         Ok(true) => forward_event(tx),
         Ok(false) => !tx.is_closed(),
@@ -197,5 +241,39 @@ mod tests {
     fn event_manager_sender_is_clone() {
         fn assert_clone<T: Clone>() {}
         assert_clone::<EventManager>();
+    }
+
+    #[test]
+    fn pause_resume_toggles_flag() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let paused = Arc::new(AtomicBool::new(false));
+        let manager = EventManager { sender: tx, paused };
+
+        assert!(!manager.is_paused());
+        manager.pause();
+        assert!(manager.is_paused());
+        manager.resume();
+        assert!(!manager.is_paused());
+    }
+
+    #[test]
+    fn read_and_forward_event_skips_poll_when_paused() {
+        let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+        let paused = AtomicBool::new(true);
+
+        // When paused, should return true (continue loop) without polling stdin.
+        let result = read_and_forward_event(&tx, &paused);
+        assert!(result, "should continue the loop when paused");
+    }
+
+    #[test]
+    fn read_and_forward_event_stops_when_paused_and_channel_closed() {
+        let (tx, rx) = mpsc::unbounded_channel::<AppEvent>();
+        drop(rx);
+        let paused = AtomicBool::new(true);
+
+        // Channel is closed — should return false to stop the loop.
+        let result = read_and_forward_event(&tx, &paused);
+        assert!(!result, "should stop the loop when channel is closed");
     }
 }
