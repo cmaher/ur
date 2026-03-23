@@ -58,6 +58,11 @@ impl NotificationManager {
         }
     }
 
+    /// Returns `true` if `terminal-notifier` was found on PATH.
+    pub fn is_available(&self) -> bool {
+        self.available
+    }
+
     /// Bulk-seed known workflow states without firing any notifications.
     ///
     /// Call this on initial data load so that the first incremental update
