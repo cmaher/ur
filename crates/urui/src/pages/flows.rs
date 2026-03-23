@@ -555,7 +555,7 @@ impl Page for FlowsPage {
             Constraint::Length(10), // Stage Time
             Constraint::Length(10), // Total Time
             Constraint::Length(8),  // Cycles
-            Constraint::Length(45), // PR URL
+            Constraint::Length(30), // PR
             Constraint::Length(20), // Stalled
             Constraint::Length(8),  // Progress count
             Constraint::Fill(1),    // Progress bar
@@ -568,7 +568,7 @@ impl Page for FlowsPage {
                 "Stage Time",
                 "Total Time",
                 "Cycles",
-                "PR URL",
+                "PR",
                 "Stalled",
                 "Progress",
                 "",
