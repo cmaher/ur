@@ -32,6 +32,8 @@ pub enum AppEvent {
     Resize(u16, u16),
     /// A batch of UI events received from the server's event stream.
     UiEvent(Vec<UiEventItem>),
+    /// Set the active page's status message (for intermediate progress updates).
+    SetStatus(String),
 }
 
 const TICK_INTERVAL: Duration = Duration::from_secs(5);

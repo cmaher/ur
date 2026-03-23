@@ -8,7 +8,8 @@ use ur_config::ProjectConfig;
 use ur_rpc::connection::connect;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{
-    WorkerLaunchRequest, WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerSummary,
+    SendWorkerMessageRequest, WorkerLaunchRequest, WorkerListRequest, WorkerListResponse,
+    WorkerStopRequest, WorkerSummary,
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
@@ -402,7 +403,7 @@ impl DataManager {
 
         tokio::spawn(async move {
             let action_result =
-                match create_and_dispatch_flow(port, pending, &project_key, &image_id).await {
+                match create_and_dispatch_flow(port, pending, &project_key, &image_id, &tx).await {
                     Ok(ticket_id) => ActionResult {
                         result: Ok(format!("Created and dispatched {ticket_id}")),
                         silent_on_success: false,
@@ -435,7 +436,7 @@ impl DataManager {
 
         tokio::spawn(async move {
             let action_result =
-                match create_and_design_flow(port, pending, &project_key, &image_id).await {
+                match create_and_design_flow(port, pending, &project_key, &image_id, &tx).await {
                     Ok(ticket_id) => ActionResult {
                         result: Ok(format!("Created {ticket_id} with design worker")),
                         silent_on_success: false,
@@ -463,6 +464,7 @@ async fn create_ticket_flow(port: u16, pending: PendingTicket) -> Result<String>
         &title,
         pending.priority,
         &pending.body,
+        "task",
     )
     .await
 }
@@ -473,6 +475,7 @@ async fn create_and_dispatch_flow(
     pending: PendingTicket,
     project_key: &str,
     image_id: &str,
+    tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> Result<String> {
     let title = if is_title_placeholder(&pending.title) {
         resolve_title(&pending.body).await?
@@ -485,8 +488,12 @@ async fn create_and_dispatch_flow(
         &title,
         pending.priority,
         &pending.body,
+        "task",
     )
     .await?;
+    let _ = tx.send(AppEvent::SetStatus(format!(
+        "Launching worker for {ticket_id}..."
+    )));
     dispatch_ticket_rpc(port, &ticket_id, project_key, image_id).await?;
     Ok(ticket_id)
 }
@@ -497,6 +504,7 @@ async fn create_and_design_flow(
     pending: PendingTicket,
     project_key: &str,
     image_id: &str,
+    tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> Result<String> {
     let title = if is_title_placeholder(&pending.title) {
         resolve_title(&pending.body).await?
@@ -509,9 +517,14 @@ async fn create_and_design_flow(
         &title,
         pending.priority,
         &pending.body,
+        "design",
     )
     .await?;
+    let _ = tx.send(AppEvent::SetStatus(format!(
+        "Launching worker for {ticket_id}..."
+    )));
     launch_design_worker_rpc(port, &ticket_id, project_key, image_id).await?;
+    send_worker_message_rpc(port, &ticket_id, &format!("/design {ticket_id}"), false).await?;
     Ok(ticket_id)
 }
 
@@ -746,13 +759,14 @@ async fn create_ticket_rpc(
     title: &str,
     priority: i64,
     body: &str,
+    ticket_type: &str,
 ) -> Result<String> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     let resp = client
         .create_ticket(CreateTicketRequest {
             project: project.to_owned(),
-            ticket_type: "task".to_owned(),
+            ticket_type: ticket_type.to_owned(),
             status: String::new(),
             priority,
             parent_id: None,
@@ -789,6 +803,29 @@ async fn launch_design_worker_rpc(
         })
         .await?;
     debug!(ticket_id, "design worker launched");
+    Ok(())
+}
+
+/// Send a message to a worker's tmux session via SendWorkerMessage RPC.
+async fn send_worker_message_rpc(
+    port: u16,
+    worker_id: &str,
+    message: &str,
+    submit: bool,
+) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut core_client = CoreServiceClient::new(channel);
+    let resp = core_client
+        .send_worker_message(SendWorkerMessageRequest {
+            worker_id: worker_id.to_owned(),
+            message: message.to_owned(),
+            submit,
+        })
+        .await?;
+    let inner = resp.into_inner();
+    if !inner.success {
+        anyhow::bail!("SendWorkerMessage failed: {}", inner.error);
+    }
     Ok(())
 }
 

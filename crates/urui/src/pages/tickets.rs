@@ -798,6 +798,13 @@ impl Page for TicketsPage {
         self.active_status.as_ref()
     }
 
+    fn set_status(&mut self, text: String) {
+        self.active_status = Some(StatusMessage {
+            text,
+            dismissable: true,
+        });
+    }
+
     fn dismiss_status(&mut self) {
         self.active_status = None;
     }
