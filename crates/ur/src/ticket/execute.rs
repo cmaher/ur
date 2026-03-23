@@ -8,6 +8,8 @@ use ur_rpc::proto::ticket::*;
 use ur_rpc::lifecycle;
 
 use super::TicketOutput;
+use ur_db::model::TicketType;
+
 use super::args::{KeyValue, TicketArgs};
 /// Execute a ticket subcommand against the given gRPC client.
 ///
@@ -179,6 +181,7 @@ where
 {
     let project_filter = if all { None } else { project };
     let _ = lifecycle; // lifecycle filtering removed from proto; reserved for future use
+    let ticket_type = ticket_type.map(|t| TicketType::normalize(&t));
     let resp = client
         .list_tickets(ListTicketsRequest {
             project: project_filter,
@@ -447,6 +450,7 @@ where
     <T::ResponseBody as http_body::Body>::Error:
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
+    let ticket_type = TicketType::normalize(&ticket_type);
     let resp = client
         .create_ticket(CreateTicketRequest {
             project: project.unwrap_or_default(),
@@ -502,6 +506,7 @@ where
         branch
     };
     let _ = lifecycle; // lifecycle_status removed from proto; reserved for future use
+    let ticket_type = ticket_type.map(|t| TicketType::normalize(&t));
     client
         .update_ticket(UpdateTicketRequest {
             id: id.clone(),

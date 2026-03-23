@@ -257,7 +257,7 @@ mod grpc_tests;
 mod tests {
     use clap::Parser;
 
-    use crate::ticket::args::TicketCommand;
+    use crate::ticket::args::{TicketArgs, TicketCommand};
 
     fn parse(args: &[&str]) -> TicketCommand {
         TicketCommand::parse_from(args)
@@ -328,9 +328,16 @@ mod tests {
     }
 
     #[test]
-    fn test_create_rejects_epic_type() {
-        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "epic"]);
-        assert!(result.is_err(), "epic type should be rejected");
+    fn test_create_accepts_epic_type_as_task() {
+        let result =
+            TicketCommand::try_parse_from(["ticket", "create", "My Epic", "--type", "epic"]);
+        let cmd = result.expect("epic type should be accepted");
+        match cmd.command {
+            TicketArgs::Create { ticket_type, .. } => {
+                assert_eq!(ticket_type, "epic", "clap stores raw value");
+            }
+            other => panic!("expected Create, got {other:?}"),
+        }
     }
 
     #[test]

@@ -86,8 +86,17 @@ impl TicketType {
         }
     }
 
-    /// All valid ticket type strings.
-    pub const VALID: &[&str] = &["task", "design"];
+    /// All valid ticket type strings (includes aliases like "epic" → "task").
+    pub const VALID: &[&str] = &["task", "design", "epic"];
+
+    /// Normalize a ticket type string, mapping aliases to their canonical form.
+    /// e.g. "epic" → "task"
+    pub fn normalize(s: &str) -> String {
+        match s {
+            "epic" => "task".to_owned(),
+            other => other.to_owned(),
+        }
+    }
 }
 
 impl FromStr for TicketType {
@@ -95,7 +104,7 @@ impl FromStr for TicketType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "task" => Ok(Self::Task),
+            "task" | "epic" => Ok(Self::Task),
             "design" => Ok(Self::Design),
             _ => Err(format!(
                 "invalid ticket type '{s}': valid types are {}",
@@ -458,7 +467,7 @@ mod tests {
 
     #[test]
     fn ticket_type_rejects_removed_types() {
-        for invalid in ["epic", "bug", "feature", "chore"] {
+        for invalid in ["bug", "feature", "chore"] {
             let result = invalid.parse::<TicketType>();
             assert!(result.is_err(), "should reject '{invalid}'");
             assert!(
@@ -469,7 +478,15 @@ mod tests {
     }
 
     #[test]
+    fn ticket_type_epic_aliases_to_task() {
+        let parsed: TicketType = "epic".parse().unwrap();
+        assert_eq!(parsed, TicketType::Task);
+        assert_eq!(TicketType::normalize("epic"), "task");
+        assert_eq!(TicketType::normalize("design"), "design");
+    }
+
+    #[test]
     fn ticket_type_valid_list() {
-        assert_eq!(TicketType::VALID, &["task", "design"]);
+        assert_eq!(TicketType::VALID, &["task", "design", "epic"]);
     }
 }
