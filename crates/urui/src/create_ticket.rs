@@ -1,7 +1,7 @@
-/// Template generation and front-matter parsing for ticket creation via an external editor.
-///
-/// The editor receives a temp file with front matter (title, priority) delimited by `---`
-/// from the body. This module generates that template and parses the result back.
+//! Template generation and front-matter parsing for ticket creation via an external editor.
+//!
+//! The editor receives a temp file with front matter (title, priority) delimited by `---`
+//! from the body. This module generates that template and parses the result back.
 
 /// A ticket parsed from editor output, ready to be sent to the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,10 +54,10 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
     for line in front_matter.lines() {
         if let Some(val) = line.strip_prefix("title:") {
             title = val.trim().to_string();
-        } else if let Some(val) = line.strip_prefix("priority:") {
-            if let Ok(p) = val.trim().parse::<i64>() {
-                priority = p;
-            }
+        } else if let Some(val) = line.strip_prefix("priority:")
+            && let Ok(p) = val.trim().parse::<i64>()
+        {
+            priority = p;
         }
     }
 
