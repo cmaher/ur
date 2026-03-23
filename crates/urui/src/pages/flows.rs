@@ -458,11 +458,11 @@ impl Page for FlowsPage {
 
         let widths = vec![
             Constraint::Length(12), // Ticket ID
-            Constraint::Length(20), // Status
+            Constraint::Length(14), // Status
             Constraint::Length(8),  // Progress count
             Constraint::Fill(1),    // Progress bar
-            Constraint::Length(10), // Stage Time
-            Constraint::Length(10), // Total Time
+            Constraint::Length(12), // Stage Time
+            Constraint::Length(12), // Total Time
             Constraint::Length(8),  // Cycles
             Constraint::Length(45), // PR URL
             Constraint::Length(20), // Stalled
