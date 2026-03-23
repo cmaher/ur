@@ -328,9 +328,22 @@ mod tests {
     }
 
     #[test]
-    fn test_create_rejects_epic_type() {
-        let result = TicketCommand::try_parse_from(["ticket", "create", "Bad", "--type", "epic"]);
-        assert!(result.is_err(), "epic type should be rejected");
+    fn test_create_accepts_epic_type_as_task() {
+        let result =
+            TicketCommand::try_parse_from(["ticket", "create", "My ticket", "--type", "epic"]);
+        assert!(
+            result.is_ok(),
+            "epic type should be accepted as an alias for task"
+        );
+        match result.unwrap().command {
+            super::TicketArgs::Create { ticket_type, .. } => {
+                assert_eq!(
+                    ticket_type, "epic",
+                    "raw string stays epic; normalization happens in execute"
+                );
+            }
+            other => panic!("expected Create, got {other:?}"),
+        }
     }
 
     #[test]

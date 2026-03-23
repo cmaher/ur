@@ -9,7 +9,7 @@ Parse `$ARGUMENTS` for two required positional arguments: `<epic_id>` and `<pr_n
 
 Run `ur ticket show <epic_id> --output json` to get the ticket's details. Record its `project` and `title`.
 
-If the ticket's type is `epic`, also run `ur ticket list --epic <epic_id> --output json` to see existing child tickets — avoid creating duplicates of feedback already tracked.
+If the ticket has children (i.e., it is an epic), also run `ur ticket list --parent <epic_id> --output json` to see existing child tickets — avoid creating duplicates of feedback already tracked.
 
 ## 2. Fetch PR review comments
 

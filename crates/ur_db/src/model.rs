@@ -86,8 +86,18 @@ impl TicketType {
         }
     }
 
-    /// All valid ticket type strings.
-    pub const VALID: &[&str] = &["task", "design"];
+    /// All valid ticket type strings (including aliases).
+    pub const VALID: &[&str] = &["task", "design", "epic"];
+
+    /// Normalize a ticket type string: maps aliases to their canonical form.
+    ///
+    /// Currently maps "epic" → "task". All other values pass through unchanged.
+    pub fn normalize(s: &str) -> String {
+        match s {
+            "epic" => "task".to_owned(),
+            other => other.to_owned(),
+        }
+    }
 }
 
 impl FromStr for TicketType {
@@ -95,7 +105,7 @@ impl FromStr for TicketType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "task" => Ok(Self::Task),
+            "task" | "epic" => Ok(Self::Task),
             "design" => Ok(Self::Design),
             _ => Err(format!(
                 "invalid ticket type '{s}': valid types are {}",
@@ -457,8 +467,26 @@ mod tests {
     }
 
     #[test]
+    fn ticket_type_epic_alias() {
+        let result = "epic".parse::<TicketType>();
+        assert!(
+            result.is_ok(),
+            "epic should be accepted as an alias for task"
+        );
+        assert_eq!(result.unwrap(), TicketType::Task);
+    }
+
+    #[test]
+    fn ticket_type_normalize_epic() {
+        assert_eq!(TicketType::normalize("epic"), "task");
+        assert_eq!(TicketType::normalize("task"), "task");
+        assert_eq!(TicketType::normalize("design"), "design");
+        assert_eq!(TicketType::normalize("other"), "other");
+    }
+
+    #[test]
     fn ticket_type_rejects_removed_types() {
-        for invalid in ["epic", "bug", "feature", "chore"] {
+        for invalid in ["bug", "feature", "chore"] {
             let result = invalid.parse::<TicketType>();
             assert!(result.is_err(), "should reject '{invalid}'");
             assert!(
@@ -470,6 +498,6 @@ mod tests {
 
     #[test]
     fn ticket_type_valid_list() {
-        assert_eq!(TicketType::VALID, &["task", "design"]);
+        assert_eq!(TicketType::VALID, &["task", "design", "epic"]);
     }
 }
