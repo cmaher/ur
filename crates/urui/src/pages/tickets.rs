@@ -704,6 +704,11 @@ impl Page for TicketsPage {
                 common: false,
             },
             FooterCommand {
+                key_label: keymap.label_for(&Action::LaunchDesign),
+                description: "Design".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: keymap.label_for(&Action::CloseTicket),
                 description: "Close".to_string(),
                 common: false,
