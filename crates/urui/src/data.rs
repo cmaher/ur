@@ -356,6 +356,39 @@ impl DataManager {
         });
     }
 
+    /// Spawn a background task that launches a design worker for an existing ticket.
+    ///
+    /// Resolves the project from the ticket ID prefix, then calls
+    /// `launch_design_worker_rpc` (no workflow). Sends `AppEvent::ActionResult`.
+    pub fn launch_design_worker(
+        &self,
+        ticket_id: String,
+        projects: &HashMap<String, ProjectConfig>,
+    ) {
+        let port = self.port;
+        let tx = self.sender.clone();
+        let project_key = resolve_project_from_ticket(&ticket_id, projects);
+        let image_id = projects
+            .get(&project_key)
+            .map(|p| p.container.image.clone())
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let action_result =
+                match launch_design_worker_rpc(port, &ticket_id, &project_key, &image_id).await {
+                    Ok(()) => ActionResult {
+                        result: Ok(format!("Launched design worker for {ticket_id}")),
+                        silent_on_success: false,
+                    },
+                    Err(e) => ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    },
+                };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
     /// Spawn a background task that creates a ticket from a `PendingTicket`.
     ///
     /// If the title is a placeholder, resolves it via `resolve_title` before

@@ -236,6 +236,9 @@ impl App {
             Action::Dispatch if self.active_tab == TabId::Tickets => {
                 self.dispatch_selected_ticket();
             }
+            Action::LaunchDesign if self.active_tab == TabId::Tickets => {
+                self.launch_design_for_selected_ticket();
+            }
             Action::CloseTicket if self.active_tab == TabId::Tickets => {
                 self.close_or_force_close_ticket();
             }
@@ -379,6 +382,16 @@ impl App {
                 .set_status(format!("Dispatching ticket {ticket_id}..."));
             self.data_manager
                 .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
+    /// Launch a design worker for the currently selected ticket on the tickets page.
+    fn launch_design_for_selected_ticket(&mut self) {
+        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+            self.tickets_page
+                .set_status(format!("Launching design worker for {ticket_id}..."));
+            self.data_manager
+                .launch_design_worker(ticket_id, &self.ctx.project_configs);
         }
     }
 
