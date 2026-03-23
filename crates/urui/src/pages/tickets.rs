@@ -370,6 +370,15 @@ impl TicketsPage {
         self.visible_ids().get(self.selected_row).cloned()
     }
 
+    /// Returns the single active project filter, if exactly one project is selected.
+    pub fn single_project_filter(&self) -> Option<&str> {
+        if self.filters.projects.len() == 1 {
+            Some(&self.filters.projects[0])
+        } else {
+            None
+        }
+    }
+
     /// Set an in-progress status message (e.g., for dispatch).
     pub fn set_status(&mut self, text: String) {
         self.active_status = Some(StatusMessage {

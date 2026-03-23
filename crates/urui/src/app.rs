@@ -308,7 +308,19 @@ impl App {
     }
 
     /// Begin the create-ticket flow: resolve project, then open editor or show project input.
+    ///
+    /// Project resolution order:
+    /// 1. If a single project filter is active on the tickets page, use that project.
+    /// 2. If there is only one configured project, use it.
+    /// 3. Otherwise, show the project input overlay.
     fn begin_create_ticket(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) {
+        // Check if the ticket list has a single project filter active.
+        if let Some(filtered_project) = self.tickets_page.single_project_filter() {
+            let project = filtered_project.to_string();
+            self.open_editor_for_ticket(project, terminal);
+            return;
+        }
+
         let projects = &self.ctx.projects;
         if projects.len() == 1 {
             // Single project — go straight to editor.
