@@ -277,7 +277,6 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
         String::new(), // placeholder for progress bar
         compute_stage_time(entry, now),
         compute_total_time(entry, now),
-        wf.implement_cycles.to_string(),
         wf.pr_url.clone(),
         stalled_text,
     ]
@@ -463,7 +462,6 @@ impl Page for FlowsPage {
             Constraint::Fill(1),    // Progress bar
             Constraint::Length(12), // Stage Time
             Constraint::Length(12), // Total Time
-            Constraint::Length(8),  // Cycles
             Constraint::Length(45), // PR URL
             Constraint::Length(20), // Stalled
         ];
@@ -476,7 +474,6 @@ impl Page for FlowsPage {
                 "",
                 "Stage Time",
                 "Total Time",
-                "Cycles",
                 "PR URL",
                 "Stalled",
             ],
@@ -859,7 +856,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[8], "!! test stall");
+        assert_eq!(row[7], "!! test stall");
     }
 
     #[test]
@@ -871,7 +868,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[8], "");
+        assert_eq!(row[7], "");
     }
 
     #[test]
