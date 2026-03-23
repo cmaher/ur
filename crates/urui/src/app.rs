@@ -563,11 +563,12 @@ impl App {
             .fg(self.ctx.theme.base_content);
         buf.set_style(area, base_style);
 
-        let has_status = self.active_page().status().is_some();
-        let chunks = if has_status {
+        let has_sub_header =
+            self.active_page().status().is_some() || self.active_page().banner().is_some();
+        let chunks = if has_sub_header {
             Layout::vertical([
                 Constraint::Length(1), // header
-                Constraint::Length(1), // status header
+                Constraint::Length(1), // sub-header (banner or status)
                 Constraint::Fill(1),   // content
                 Constraint::Length(1), // footer
             ])
@@ -599,14 +600,12 @@ impl App {
             },
         ];
 
-        if let Some(banner) = self.active_page().banner() {
-            render_banner(chunks[0], buf, &self.ctx, banner);
-        } else {
-            render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
-        }
+        render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
 
-        if has_status {
-            if let Some(status) = self.active_page().status() {
+        if has_sub_header {
+            if let Some(banner) = self.active_page().banner() {
+                render_banner(chunks[1], buf, &self.ctx, banner);
+            } else if let Some(status) = self.active_page().status() {
                 render_status_header(chunks[1], buf, &self.ctx, status);
             }
             self.active_page().render(chunks[2], buf, &self.ctx);
