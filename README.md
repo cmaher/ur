@@ -4,6 +4,8 @@ Run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents in secu
 
 Ur ADE coordinates containerized Claude Code workers via gRPC, managing the full lifecycle from design through implementation and PR creation. All agent activity is sandboxed: workers run on isolated Docker networks with no direct host or internet access, while a Lua-scripted command gateway mediates every host interaction.
 
+> **Warning:** Ur ADE is under active development and highly unstable. APIs, configuration formats, and behavior may change without notice.
+
 ## How It Works
 
 ```
