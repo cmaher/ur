@@ -144,4 +144,4 @@ docs/
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+MIT
