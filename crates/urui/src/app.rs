@@ -18,7 +18,9 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
-use crate::pages::tickets::{open_filter_menu, open_priority_picker};
+use crate::pages::tickets::{
+    OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
+};
 use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
 use crate::terminal;
 use crate::widgets::create_action_menu::{
@@ -172,9 +174,18 @@ impl App {
                 return;
             }
             let filters_before = self.tickets_page.filters().to_config();
-            if let Some((ticket_id, priority)) = self.tickets_page.handle_overlay_key(key) {
-                self.data_manager
-                    .update_ticket_priority(ticket_id, priority);
+            match self.tickets_page.handle_overlay_key(key) {
+                OverlayAction::SetPriority {
+                    ticket_id,
+                    priority,
+                } => {
+                    self.data_manager
+                        .update_ticket_priority(ticket_id, priority);
+                }
+                OverlayAction::ForceClose { ticket_id } => {
+                    self.data_manager.force_close_ticket(ticket_id);
+                }
+                OverlayAction::None => {}
             }
             let filters_after = self.tickets_page.filters().to_config();
             if filters_before != filters_after {
@@ -223,7 +234,7 @@ impl App {
                 self.dispatch_selected_ticket();
             }
             Action::CloseTicket if self.active_tab == TabId::Tickets => {
-                self.update_selected_ticket_status("closed");
+                self.close_or_force_close_ticket();
             }
             Action::OpenTicket if self.active_tab == TabId::Tickets => {
                 self.update_selected_ticket_status("open");
@@ -277,6 +288,20 @@ impl App {
         if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
             self.data_manager
                 .update_ticket_status(ticket_id, status.to_owned());
+        }
+    }
+
+    /// Close the selected ticket, opening a force-close confirmation if it has open children.
+    fn close_or_force_close_ticket(&mut self) {
+        let Some(ticket) = self.tickets_page.selected_ticket() else {
+            return;
+        };
+        let open_children = ticket.children_total - ticket.children_completed;
+        if open_children > 0 {
+            let ticket_id = ticket.id.clone();
+            open_force_close_confirm(&mut self.tickets_page, ticket_id, open_children);
+        } else {
+            self.update_selected_ticket_status("closed");
         }
     }
 
