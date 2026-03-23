@@ -22,6 +22,8 @@ pub struct TuiContext {
     pub tui_config: TuiConfig,
     /// Root config directory for persisting settings.
     pub config_dir: PathBuf,
+    /// When set, scopes the TUI to a single project key.
+    pub project_filter: Option<String>,
 }
 
 impl TuiContext {

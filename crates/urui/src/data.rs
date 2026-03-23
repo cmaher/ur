@@ -55,13 +55,23 @@ pub struct ActionResult {
 pub struct DataManager {
     port: u16,
     sender: mpsc::UnboundedSender<AppEvent>,
+    /// When set, scopes all data fetching to a single project key.
+    project_filter: Option<String>,
 }
 
 impl DataManager {
     /// Create a new `DataManager` targeting the given server port and pushing
     /// results through the provided event sender.
-    pub fn new(port: u16, sender: mpsc::UnboundedSender<AppEvent>) -> Self {
-        Self { port, sender }
+    pub fn new(
+        port: u16,
+        sender: mpsc::UnboundedSender<AppEvent>,
+        project_filter: Option<String>,
+    ) -> Self {
+        Self {
+            port,
+            sender,
+            project_filter,
+        }
     }
 
     /// Spawn a background task that fetches all tickets via `ListTickets` and
@@ -69,10 +79,11 @@ impl DataManager {
     pub fn fetch_tickets(&self) {
         let port = self.port;
         let tx = self.sender.clone();
+        let project = self.project_filter.clone();
 
         tokio::spawn(async move {
             debug!(port, "fetching tickets");
-            let payload = match fetch_tickets_rpc(port).await {
+            let payload = match fetch_tickets_rpc(port, project).await {
                 Ok(resp) => DataPayload::Tickets(Ok(resp.tickets)),
                 Err(e) => {
                     error!(port, error = %e, "ticket fetch failed");
@@ -196,11 +207,15 @@ impl DataManager {
     pub fn fetch_flows(&self) {
         let port = self.port;
         let tx = self.sender.clone();
+        let project = self.project_filter.clone();
 
         tokio::spawn(async move {
             debug!(port, "fetching workflows");
             let payload = match fetch_workflows_rpc(port).await {
-                Ok(resp) => DataPayload::Flows(Ok(resp.workflows)),
+                Ok(resp) => {
+                    let workflows = filter_workflows_by_project(resp.workflows, &project);
+                    DataPayload::Flows(Ok(workflows))
+                }
                 Err(e) => {
                     error!(port, error = %e, "workflow fetch failed");
                     DataPayload::Flows(Err(e.to_string()))
@@ -322,11 +337,15 @@ impl DataManager {
     pub fn fetch_workers(&self) {
         let port = self.port;
         let tx = self.sender.clone();
+        let project = self.project_filter.clone();
 
         tokio::spawn(async move {
             debug!(port, "fetching workers");
             let payload = match fetch_workers_rpc(port).await {
-                Ok(resp) => DataPayload::Workers(Ok(resp.workers)),
+                Ok(resp) => {
+                    let workers = filter_workers_by_project(resp.workers, &project);
+                    DataPayload::Workers(Ok(workers))
+                }
                 Err(e) => {
                     error!(port, error = %e, "worker fetch failed");
                     DataPayload::Workers(Err(e.to_string()))
@@ -549,11 +568,11 @@ fn fallback_title(body: &str) -> Result<String> {
 }
 
 /// Perform the ListTickets RPC call, returning the full response.
-async fn fetch_tickets_rpc(port: u16) -> Result<ListTicketsResponse> {
+async fn fetch_tickets_rpc(port: u16, project: Option<String>) -> Result<ListTicketsResponse> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     let request = tonic::Request::new(ListTicketsRequest {
-        project: None,
+        project,
         ticket_type: None,
         status: None,
         meta_key: None,
@@ -562,6 +581,38 @@ async fn fetch_tickets_rpc(port: u16) -> Result<ListTicketsResponse> {
     });
     let response = client.list_tickets(request).await?;
     Ok(response.into_inner())
+}
+
+/// Filter workflows by project: keep only those whose `ticket_id` starts with
+/// the project prefix (e.g., "ur-" for project "ur"). Returns all workflows
+/// when no project filter is set.
+fn filter_workflows_by_project(
+    workflows: Vec<WorkflowInfo>,
+    project: &Option<String>,
+) -> Vec<WorkflowInfo> {
+    let Some(proj) = project else {
+        return workflows;
+    };
+    let prefix = format!("{proj}-");
+    workflows
+        .into_iter()
+        .filter(|w| w.ticket_id.starts_with(&prefix))
+        .collect()
+}
+
+/// Filter workers by project key. Returns all workers when no project filter
+/// is set.
+fn filter_workers_by_project(
+    workers: Vec<WorkerSummary>,
+    project: &Option<String>,
+) -> Vec<WorkerSummary> {
+    let Some(proj) = project else {
+        return workers;
+    };
+    workers
+        .into_iter()
+        .filter(|w| w.project_key == *proj)
+        .collect()
 }
 
 /// Perform the ListWorkflows RPC call, returning the full response.
@@ -927,5 +978,84 @@ mod tests {
         assert!(result.is_err());
         let result2 = fallback_title("   \n  ");
         assert!(result2.is_err());
+    }
+
+    #[test]
+    fn filter_workflows_no_project_returns_all() {
+        let workflows = vec![
+            WorkflowInfo {
+                ticket_id: "ur-abc".into(),
+                ..Default::default()
+            },
+            WorkflowInfo {
+                ticket_id: "foo-xyz".into(),
+                ..Default::default()
+            },
+        ];
+        let result = filter_workflows_by_project(workflows, &None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filter_workflows_by_project_filters_correctly() {
+        let workflows = vec![
+            WorkflowInfo {
+                ticket_id: "ur-abc".into(),
+                ..Default::default()
+            },
+            WorkflowInfo {
+                ticket_id: "foo-xyz".into(),
+                ..Default::default()
+            },
+            WorkflowInfo {
+                ticket_id: "ur-def".into(),
+                ..Default::default()
+            },
+        ];
+        let result = filter_workflows_by_project(workflows, &Some("ur".to_string()));
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|w| w.ticket_id.starts_with("ur-")));
+    }
+
+    #[test]
+    fn filter_workers_no_project_returns_all() {
+        let workers = vec![
+            WorkerSummary {
+                worker_id: "ur-abc".into(),
+                project_key: "ur".into(),
+                ..Default::default()
+            },
+            WorkerSummary {
+                worker_id: "foo-xyz".into(),
+                project_key: "foo".into(),
+                ..Default::default()
+            },
+        ];
+        let result = filter_workers_by_project(workers, &None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn filter_workers_by_project_filters_correctly() {
+        let workers = vec![
+            WorkerSummary {
+                worker_id: "ur-abc".into(),
+                project_key: "ur".into(),
+                ..Default::default()
+            },
+            WorkerSummary {
+                worker_id: "foo-xyz".into(),
+                project_key: "foo".into(),
+                ..Default::default()
+            },
+            WorkerSummary {
+                worker_id: "ur-def".into(),
+                project_key: "ur".into(),
+                ..Default::default()
+            },
+        ];
+        let result = filter_workers_by_project(workers, &Some("ur".to_string()));
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|w| w.project_key == "ur"));
     }
 }

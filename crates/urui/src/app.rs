@@ -883,13 +883,14 @@ mod tests {
             project_configs: std::collections::HashMap::new(),
             tui_config: TuiConfig::default(),
             config_dir: std::path::PathBuf::from("/tmp/test-urui"),
+            project_filter: None,
         }
     }
 
     fn make_app() -> App {
         let ctx = make_ctx();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let data_manager = DataManager::new(42069, tx);
+        let data_manager = DataManager::new(42069, tx, None);
         let event_manager = EventManager::test_new();
         App::new(ctx, data_manager, event_manager)
     }
@@ -1021,9 +1022,10 @@ mod tests {
             project_configs: std::collections::HashMap::new(),
             tui_config: TuiConfig::default(),
             config_dir: std::path::PathBuf::from("/tmp/test-urui"),
+            project_filter: None,
         };
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let data_manager = DataManager::new(42069, tx);
+        let data_manager = DataManager::new(42069, tx, None);
         let event_manager = EventManager::test_new();
         App::new(ctx, data_manager, event_manager)
     }

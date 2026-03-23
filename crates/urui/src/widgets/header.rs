@@ -28,7 +28,7 @@ pub fn render_header(
 ) {
     let theme = &ctx.theme;
 
-    let spans: Vec<Span> = tabs
+    let mut spans: Vec<Span> = tabs
         .iter()
         .map(|tab| {
             let label_lower = tab.label.to_lowercase();
@@ -41,6 +41,17 @@ pub fn render_header(
             Span::styled(text, style)
         })
         .collect();
+
+    // If a project filter is active, append a right-aligned indicator.
+    if let Some(ref proj) = ctx.project_filter {
+        let label = format!(" [{proj}] ");
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .bg(theme.secondary)
+                .fg(theme.secondary_content),
+        ));
+    }
 
     // Fill the entire header row with base_200 background first.
     let bg_style = Style::default().bg(theme.base_200).fg(theme.base_content);
