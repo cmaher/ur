@@ -5,6 +5,7 @@ use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
+use ur_db::model::TicketType;
 use ur_rpc::lifecycle;
 
 use super::TicketOutput;
@@ -182,7 +183,7 @@ where
     let resp = client
         .list_tickets(ListTicketsRequest {
             project: project_filter,
-            ticket_type,
+            ticket_type: ticket_type.map(|t| TicketType::normalize(&t)),
             status,
             meta_key: None,
             meta_value: None,
@@ -450,7 +451,7 @@ where
     let resp = client
         .create_ticket(CreateTicketRequest {
             project: project.unwrap_or_default(),
-            ticket_type,
+            ticket_type: TicketType::normalize(&ticket_type),
             status: lifecycle::OPEN.to_owned(),
             priority,
             parent_id: parent,
@@ -510,7 +511,7 @@ where
             title,
             body,
             force,
-            ticket_type,
+            ticket_type: ticket_type.map(|t| TicketType::normalize(&t)),
             parent_id,
             branch: branch_value,
             project,
