@@ -272,10 +272,8 @@ impl App {
                         &mut fetched_workflows,
                     );
                 }
-                "workflow" => {
-                    if fetched_workflows.insert(item.entity_id.clone()) {
-                        self.data_manager.fetch_workflow(item.entity_id.clone());
-                    }
+                "workflow" if fetched_workflows.insert(item.entity_id.clone()) => {
+                    self.data_manager.fetch_workflow(item.entity_id.clone());
                 }
                 "worker" => self.data_manager.fetch_workers(),
                 _ => {} // unknown events ignored

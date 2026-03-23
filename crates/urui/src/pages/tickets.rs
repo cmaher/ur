@@ -374,14 +374,12 @@ impl TicketsPage {
     ///
     /// Returns `None` if the ticket is not loaded or has no parent (empty string).
     pub fn get_parent_id(&self, ticket_id: &str) -> Option<String> {
-        if let DataState::Loaded(ref map) = self.data_state {
-            if let Some(ticket) = map.get(ticket_id) {
-                if !ticket.parent_id.is_empty() {
-                    return Some(ticket.parent_id.clone());
-                }
-            }
-        }
-        None
+        let DataState::Loaded(ref map) = self.data_state else {
+            return None;
+        };
+        map.get(ticket_id)
+            .filter(|t| !t.parent_id.is_empty())
+            .map(|t| t.parent_id.clone())
     }
 
     /// Set an in-progress status message (e.g., for dispatch).
