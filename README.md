@@ -129,6 +129,8 @@ cargo make clippy    # Run clippy lints
 cargo make audit     # Check dependency vulnerabilities
 ```
 
+Alternatively, run `cargo make install-hooks` and rely on pre-push hooks.
+
 ## Project Structure
 
 ```
