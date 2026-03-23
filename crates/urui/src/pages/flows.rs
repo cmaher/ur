@@ -15,6 +15,7 @@ use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
+use crate::pages::flow_detail::{detail_footer_commands, render_flow_detail};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
 const PAGE_SIZE: usize = 20;
@@ -50,6 +51,8 @@ pub struct FlowsPage {
     active_banner: Option<Banner>,
     /// Ticket ID for which a cancel was requested but not yet dispatched.
     pending_cancel: Option<String>,
+    /// When Some, the detail sub-page is shown for this workflow.
+    detail_workflow: Option<WorkflowInfo>,
 }
 
 impl FlowsPage {
@@ -65,6 +68,7 @@ impl FlowsPage {
             active_status: None,
             active_banner: None,
             pending_cancel: None,
+            detail_workflow: None,
         }
     }
 
@@ -191,6 +195,79 @@ impl FlowsPage {
                 timestamps,
             },
         );
+    }
+
+    /// Handle actions when in detail view mode.
+    fn handle_detail_action(&mut self, action: Action) -> PageResult {
+        match action {
+            Action::Back => {
+                self.detail_workflow = None;
+                PageResult::Consumed
+            }
+            Action::Quit => PageResult::Quit,
+            _ => PageResult::Consumed,
+        }
+    }
+
+    /// Handle actions when in list view mode.
+    fn handle_list_action(&mut self, action: Action) -> PageResult {
+        match action {
+            Action::NavigateUp => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                }
+                PageResult::Consumed
+            }
+            Action::NavigateDown => {
+                let count = self.page_row_count();
+                if count > 0 && self.selected < count - 1 {
+                    self.selected += 1;
+                }
+                PageResult::Consumed
+            }
+            Action::PageLeft => {
+                if self.page > 0 {
+                    self.page -= 1;
+                    self.selected = 0;
+                }
+                PageResult::Consumed
+            }
+            Action::PageRight => {
+                if self.page + 1 < self.total_pages() {
+                    self.page += 1;
+                    self.selected = 0;
+                }
+                PageResult::Consumed
+            }
+            Action::Select => {
+                if let Some(ticket_id) = self.selected_ticket_id()
+                    && let Some(entry) = self.entry_map.get(&ticket_id)
+                {
+                    self.detail_workflow = Some(entry.workflow.clone());
+                }
+                PageResult::Consumed
+            }
+            Action::Refresh => {
+                self.refreshing = true;
+                self.active_status = Some(StatusMessage {
+                    text: "Refreshing flows...".to_string(),
+                    dismissable: true,
+                });
+                PageResult::Consumed
+            }
+            Action::CancelFlow | Action::CloseTicket => {
+                if let Some(ticket_id) = self.selected_ticket_id() {
+                    self.active_status = Some(StatusMessage {
+                        text: format!("Cancelling workflow for {ticket_id}..."),
+                        dismissable: false,
+                    });
+                    self.pending_cancel = Some(ticket_id);
+                }
+                PageResult::Consumed
+            }
+            Action::Quit => PageResult::Quit,
+            _ => PageResult::Ignored,
+        }
     }
 }
 
@@ -374,55 +451,10 @@ impl Page for FlowsPage {
     }
 
     fn handle_action(&mut self, action: Action) -> PageResult {
-        match action {
-            Action::NavigateUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                }
-                PageResult::Consumed
-            }
-            Action::NavigateDown => {
-                let count = self.page_row_count();
-                if count > 0 && self.selected < count - 1 {
-                    self.selected += 1;
-                }
-                PageResult::Consumed
-            }
-            Action::PageLeft => {
-                if self.page > 0 {
-                    self.page -= 1;
-                    self.selected = 0;
-                }
-                PageResult::Consumed
-            }
-            Action::PageRight => {
-                if self.page + 1 < self.total_pages() {
-                    self.page += 1;
-                    self.selected = 0;
-                }
-                PageResult::Consumed
-            }
-            Action::Refresh => {
-                self.refreshing = true;
-                self.active_status = Some(StatusMessage {
-                    text: "Refreshing flows...".to_string(),
-                    dismissable: true,
-                });
-                PageResult::Consumed
-            }
-            Action::CancelFlow | Action::CloseTicket => {
-                if let Some(ticket_id) = self.selected_ticket_id() {
-                    self.active_status = Some(StatusMessage {
-                        text: format!("Cancelling workflow for {ticket_id}..."),
-                        dismissable: false,
-                    });
-                    self.pending_cancel = Some(ticket_id);
-                }
-                PageResult::Consumed
-            }
-            Action::Quit => PageResult::Quit,
-            _ => PageResult::Ignored,
+        if self.detail_workflow.is_some() {
+            return self.handle_detail_action(action);
         }
+        self.handle_list_action(action)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
@@ -437,6 +469,11 @@ impl Page for FlowsPage {
             let msg = Line::raw(format!("Error: {err}"));
             let paragraph = Paragraph::new(msg).style(Style::default().fg(ctx.theme.error));
             paragraph.render(area, buf);
+            return;
+        }
+
+        if let Some(ref wf) = self.detail_workflow {
+            render_flow_detail(wf, area, buf, ctx);
             return;
         }
 
@@ -489,6 +526,9 @@ impl Page for FlowsPage {
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        if self.detail_workflow.is_some() {
+            return detail_footer_commands(keymap);
+        }
         vec![
             FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
@@ -503,6 +543,11 @@ impl Page for FlowsPage {
             FooterCommand {
                 key_label: keymap.combined_label(&Action::PageLeft, &Action::PageRight),
                 description: "Page".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Select),
+                description: "Select".to_string(),
                 common: true,
             },
             FooterCommand {
@@ -553,6 +598,11 @@ impl Page for FlowsPage {
                 self.display_ids.clear();
             }
             DataPayload::FlowUpdate(Ok(workflow)) if self.loaded => {
+                if let Some(ref mut detail) = self.detail_workflow
+                    && detail.ticket_id == workflow.ticket_id
+                {
+                    *detail = workflow.clone();
+                }
                 self.upsert_workflow(workflow.clone());
                 self.preserve_selection_and_rebuild();
             }
@@ -835,7 +885,6 @@ mod tests {
     #[test]
     fn unhandled_action_ignored() {
         let mut page = FlowsPage::new();
-        assert_eq!(page.handle_action(Action::Select), PageResult::Ignored);
         assert_eq!(page.handle_action(Action::Back), PageResult::Ignored);
     }
 
@@ -1181,5 +1230,129 @@ mod tests {
         let (completed, total) = workflow_progress(&wf);
         assert_eq!(completed, 0);
         assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn select_enters_detail_mode() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        assert!(page.detail_workflow.is_none());
+        let result = page.handle_action(Action::Select);
+        assert_eq!(result, PageResult::Consumed);
+        assert!(page.detail_workflow.is_some());
+        assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
+    }
+
+    #[test]
+    fn back_exits_detail_mode() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        page.handle_action(Action::Select);
+        assert!(page.detail_workflow.is_some());
+
+        let result = page.handle_action(Action::Back);
+        assert_eq!(result, PageResult::Consumed);
+        assert!(page.detail_workflow.is_none());
+    }
+
+    #[test]
+    fn detail_mode_ignores_navigation() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        page.handle_action(Action::Select);
+        assert!(page.detail_workflow.is_some());
+
+        // Navigation actions are consumed but do nothing meaningful
+        let result = page.handle_action(Action::NavigateDown);
+        assert_eq!(result, PageResult::Consumed);
+    }
+
+    #[test]
+    fn detail_mode_quit_works() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        page.handle_action(Action::Select);
+        let result = page.handle_action(Action::Quit);
+        assert_eq!(result, PageResult::Quit);
+    }
+
+    #[test]
+    fn flow_update_updates_detail_workflow() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        page.handle_action(Action::Select);
+        assert!(!page.detail_workflow.as_ref().unwrap().stalled);
+
+        let mut updated = make_workflow("wf-1", "ur-abc", true);
+        updated.implement_cycles = 10;
+        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
+
+        let detail = page.detail_workflow.as_ref().unwrap();
+        assert!(detail.stalled);
+        assert_eq!(detail.implement_cycles, 10);
+    }
+
+    #[test]
+    fn flow_update_does_not_update_different_detail() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![
+            make_workflow("wf-1", "ur-abc", false),
+            make_workflow("wf-2", "ur-def", false),
+        ];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+
+        page.handle_action(Action::Select); // selects ur-abc
+        assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
+
+        let updated = make_workflow("wf-2", "ur-def", true);
+        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
+
+        // detail_workflow should still be ur-abc, unchanged
+        assert!(!page.detail_workflow.as_ref().unwrap().stalled);
+    }
+
+    #[test]
+    fn select_noop_when_empty() {
+        let mut page = FlowsPage::new();
+        page.on_data(&DataPayload::Flows(Ok(vec![])));
+
+        let result = page.handle_action(Action::Select);
+        assert_eq!(result, PageResult::Consumed);
+        assert!(page.detail_workflow.is_none());
+    }
+
+    #[test]
+    fn footer_includes_select_in_list_mode() {
+        let page = FlowsPage::new();
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Select"));
+    }
+
+    #[test]
+    fn footer_in_detail_mode_has_back_and_quit() {
+        let mut page = FlowsPage::new();
+        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
+        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.handle_action(Action::Select);
+
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
+        assert_eq!(cmds.len(), 2);
+        assert!(cmds.iter().any(|c| c.description == "Back"));
+        assert!(cmds.iter().any(|c| c.description == "Quit"));
     }
 }
