@@ -432,6 +432,15 @@ impl App {
         }
     }
 
+    /// Cancel the workflow for the currently selected flow.
+    fn cancel_selected_flow(&mut self) {
+        if let Some(ticket_id) = self.flows_page.selected_ticket_id() {
+            self.flows_page
+                .set_status(format!("Cancelling workflow for {ticket_id}..."));
+            self.data_manager.cancel_flow(ticket_id);
+        }
+    }
+
     /// Open the global settings overlay.
     fn open_settings_overlay(&mut self) {
         let custom_names: Vec<String> = self.ctx.tui_config.custom_themes.keys().cloned().collect();

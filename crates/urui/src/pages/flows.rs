@@ -49,8 +49,6 @@ pub struct FlowsPage {
     active_status: Option<StatusMessage>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
-    /// Ticket ID for which a cancel was requested but not yet dispatched.
-    pending_cancel: Option<String>,
     /// When Some, the detail sub-page is shown for this workflow.
     detail_workflow: Option<WorkflowInfo>,
 }
@@ -67,7 +65,6 @@ impl FlowsPage {
             refreshing: false,
             active_status: None,
             active_banner: None,
-            pending_cancel: None,
             detail_workflow: None,
         }
     }
@@ -146,12 +143,6 @@ impl FlowsPage {
     /// trigger a workflow fetch.
     pub fn has_entry_for_ticket(&self, ticket_id: &str) -> bool {
         self.entry_map.contains_key(ticket_id)
-    }
-
-    /// Take the pending cancel ticket ID, if one was set by the user pressing X.
-    /// Calling this clears the pending cancel so it is only dispatched once.
-    pub fn take_pending_cancel(&mut self) -> Option<String> {
-        self.pending_cancel.take()
     }
 
     /// Handle an async action result by showing a success or error banner.
@@ -256,14 +247,8 @@ impl FlowsPage {
                 PageResult::Consumed
             }
             Action::CancelFlow | Action::CloseTicket => {
-                if let Some(ticket_id) = self.selected_ticket_id() {
-                    self.active_status = Some(StatusMessage {
-                        text: format!("Cancelling workflow for {ticket_id}..."),
-                        dismissable: false,
-                    });
-                    self.pending_cancel = Some(ticket_id);
-                }
-                PageResult::Consumed
+                // Handled at the app level in cancel_selected_flow().
+                PageResult::Ignored
             }
             Action::Quit => PageResult::Quit,
             _ => PageResult::Ignored,
@@ -638,6 +623,13 @@ impl Page for FlowsPage {
         self.active_status = None;
     }
 
+    fn set_status(&mut self, text: String) {
+        self.active_status = Some(StatusMessage {
+            text,
+            dismissable: false,
+        });
+    }
+
     fn clear_status(&mut self) {
         self.active_status = None;
     }
@@ -942,54 +934,14 @@ mod tests {
     }
 
     #[test]
-    fn cancel_flow_sets_pending_and_status() {
+    fn cancel_flow_returns_ignored_for_app_handling() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
         page.on_data(&DataPayload::Flows(Ok(wfs)));
 
-        let result = page.handle_action(Action::CloseTicket);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.active_status.is_some());
-        assert_eq!(
-            page.active_status.as_ref().unwrap().text,
-            "Cancelling workflow for ur-abc..."
-        );
-        assert_eq!(page.pending_cancel, Some("ur-abc".to_string()));
-    }
-
-    #[test]
-    fn cancel_flow_action_sets_pending_and_status() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
-
-        let result = page.handle_action(Action::CancelFlow);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.active_status.is_some());
-        assert_eq!(page.pending_cancel, Some("ur-abc".to_string()));
-    }
-
-    #[test]
-    fn cancel_flow_noop_when_empty() {
-        let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
-
-        let result = page.handle_action(Action::CloseTicket);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.pending_cancel.is_none());
-        assert!(page.active_status.is_none());
-    }
-
-    #[test]
-    fn take_pending_cancel_clears() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
-
-        page.handle_action(Action::CloseTicket);
-        let taken = page.take_pending_cancel();
-        assert_eq!(taken, Some("ur-abc".to_string()));
-        assert!(page.take_pending_cancel().is_none());
+        // Cancel actions are handled at the app level, so the page returns Ignored.
+        assert_eq!(page.handle_action(Action::CloseTicket), PageResult::Ignored);
+        assert_eq!(page.handle_action(Action::CancelFlow), PageResult::Ignored);
     }
 
     #[test]
