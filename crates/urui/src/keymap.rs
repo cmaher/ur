@@ -190,7 +190,7 @@ fn insert_tab_and_ui_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
 /// Insert ticket and workflow action bindings: select, back, quit, priority,
 /// dispatch, close, open, create, launch design.
 fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
-    // select = [Enter]
+    // select = [Enter, Space]
     bindings.insert(
         KeyBinding {
             code: KeyCode::Enter,
@@ -198,11 +198,18 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::Select,
     );
-
-    // back = [q]
     bindings.insert(
         KeyBinding {
-            code: KeyCode::Char('q'),
+            code: KeyCode::Char(' '),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Select,
+    );
+
+    // back = [Esc]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Esc,
             modifiers: KeyModifiers::NONE,
         },
         Action::Back,
@@ -459,6 +466,7 @@ fn normalize_modifiers(event: KeyEvent) -> KeyModifiers {
 /// Convert a `KeyBinding` to a human-readable display string.
 fn key_binding_display(kb: &KeyBinding) -> String {
     let base = match kb.code {
+        KeyCode::Char(' ') => "Space",
         KeyCode::Char(c) => {
             if kb.modifiers.contains(KeyModifiers::CONTROL) {
                 return format!("C-{c}");
@@ -694,7 +702,7 @@ mod tests {
             Some(Action::Select),
         );
         assert_eq!(
-            keymap.resolve(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            keymap.resolve(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(Action::Back),
         );
         assert_eq!(
