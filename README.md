@@ -57,14 +57,15 @@ Dispatch the ticket and let workers implement it autonomously:
 
 1. In the TUI **Tickets** page, select the design ticket
 2. Press **D** to dispatch — the server creates a workflow that assigns workers to sub-tasks
-3. Workers implement tickets in parallel (or sequentially for dependent tasks), each committing to a feature branch
-4. The workflow coordinator manages the full lifecycle: claiming tickets, running CI, creating PRs
+3. Monitor dispatch progress from the TUI **Flows** page
+4. Workers implement tickets in parallel (or sequentially for dependent tasks), each committing to a feature branch
+5. The workflow coordinator manages the full lifecycle: claiming tickets, running CI, creating PRs
 
 ### 3. Review
 
 Review and merge the results:
 
-1. When the workflow completes, a PR is created automatically
+1. When the workflow completes, a PR is created automatically — tickets show as `in_review` on the **Flows** page during this step
 2. Review the PR on GitHub
 3. Use `ur approve` to approve or `ur respond` to request changes — workers will address feedback and update the PR
 
