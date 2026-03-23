@@ -273,20 +273,20 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     vec![
         wf.ticket_id.clone(),
         wf.status.clone(),
+        String::new(), // placeholder for progress count
+        String::new(), // placeholder for progress bar
         compute_stage_time(entry, now),
         compute_total_time(entry, now),
         wf.implement_cycles.to_string(),
         wf.pr_url.clone(),
         stalled_text,
-        String::new(), // placeholder for progress count
-        String::new(), // placeholder for progress bar
     ]
 }
 
 /// The column index of the progress count label in the table.
-const PROGRESS_COUNT_COL: usize = 7;
+const PROGRESS_COUNT_COL: usize = 2;
 /// The column index of the progress bar in the table.
-const PROGRESS_BAR_COL: usize = 8;
+const PROGRESS_BAR_COL: usize = 3;
 
 /// Render mini progress bars and count labels over the placeholder columns.
 fn render_progress_bars(
@@ -459,26 +459,26 @@ impl Page for FlowsPage {
         let widths = vec![
             Constraint::Length(12), // Ticket ID
             Constraint::Length(20), // Status
+            Constraint::Length(8),  // Progress count
+            Constraint::Fill(1),    // Progress bar
             Constraint::Length(10), // Stage Time
             Constraint::Length(10), // Total Time
             Constraint::Length(8),  // Cycles
             Constraint::Length(45), // PR URL
             Constraint::Length(20), // Stalled
-            Constraint::Length(8),  // Progress count
-            Constraint::Fill(1),    // Progress bar
         ];
 
         let table = ThemedTable {
             headers: vec![
                 "Ticket ID",
                 "Status",
+                "Progress",
+                "",
                 "Stage Time",
                 "Total Time",
                 "Cycles",
                 "PR URL",
                 "Stalled",
-                "Progress",
-                "",
             ],
             rows,
             selected,
@@ -859,7 +859,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[6], "!! test stall");
+        assert_eq!(row[8], "!! test stall");
     }
 
     #[test]
@@ -871,7 +871,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[6], "");
+        assert_eq!(row[8], "");
     }
 
     #[test]
