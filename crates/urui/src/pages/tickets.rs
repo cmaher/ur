@@ -642,6 +642,11 @@ impl Page for TicketsPage {
                 common: false,
             },
             FooterCommand {
+                key_label: keymap.label_for(&Action::CreateTicket),
+                description: "Create".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
                 description: "Down".to_string(),
                 common: true,
