@@ -16,7 +16,7 @@ use crate::event::{AppEvent, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::page::{Page, PageResult, TabId};
 use crate::pages::tickets::{open_filter_menu, open_priority_picker};
-use crate::pages::{FlowsPage, TicketsPage};
+use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
 use crate::widgets::header::TabInfo;
 use crate::widgets::settings_overlay::{SettingsOverlayState, SettingsResult};
 use crate::widgets::{render_banner, render_footer, render_header, render_status_header};
@@ -30,6 +30,7 @@ pub struct App {
     active_tab: TabId,
     tickets_page: TicketsPage,
     flows_page: FlowsPage,
+    workers_page: WorkersPage,
     ctx: TuiContext,
     data_manager: DataManager,
     should_quit: bool,
@@ -46,6 +47,7 @@ impl App {
             active_tab: TabId::Tickets,
             tickets_page: TicketsPage::new(),
             flows_page: FlowsPage::new(),
+            workers_page: WorkersPage::new(),
             ctx,
             data_manager,
             should_quit: false,
@@ -193,6 +195,7 @@ impl App {
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);
+        self.workers_page.on_data(&payload);
     }
 
     /// Handle an ActionResult event: route to the active page for banner display,
@@ -214,7 +217,8 @@ impl App {
             match item.entity_type.as_str() {
                 "ticket" => self.data_manager.fetch_ticket(item.entity_id),
                 "workflow" => self.data_manager.fetch_workflow(item.entity_id),
-                _ => {} // worker and unknown events ignored
+                "worker" => self.data_manager.fetch_workers(),
+                _ => {} // unknown events ignored
             }
         }
     }
@@ -291,6 +295,7 @@ impl App {
         match self.active_tab {
             TabId::Tickets => self.data_manager.fetch_tickets(),
             TabId::Flows => self.data_manager.fetch_flows(),
+            TabId::Workers => self.data_manager.fetch_workers(),
         }
     }
 
@@ -299,6 +304,7 @@ impl App {
         match self.active_tab {
             TabId::Tickets => &self.tickets_page,
             TabId::Flows => &self.flows_page,
+            TabId::Workers => &self.workers_page,
         }
     }
 
@@ -307,6 +313,7 @@ impl App {
         match self.active_tab {
             TabId::Tickets => &mut self.tickets_page,
             TabId::Flows => &mut self.flows_page,
+            TabId::Workers => &mut self.workers_page,
         }
     }
 
@@ -370,6 +377,11 @@ impl App {
                 id: TabId::Flows,
                 label: self.flows_page.title().to_string(),
                 shortcut: self.flows_page.shortcut_char(),
+            },
+            TabInfo {
+                id: TabId::Workers,
+                label: self.workers_page.title().to_string(),
+                shortcut: self.workers_page.shortcut_char(),
             },
         ];
 
