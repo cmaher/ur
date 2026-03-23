@@ -72,11 +72,12 @@ impl WorkerdClient {
     /// Send a message to the workerd instance and return the result.
     /// Returns `Ok(())` on success, or `Err(reason)` if workerd reports failure
     /// or is unreachable.
-    pub async fn send_message(&self, message: &str) -> Result<(), String> {
+    pub async fn send_message(&self, message: &str, submit: bool) -> Result<(), String> {
         let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
         let req = SendMessageRequest {
             message: message.to_string(),
+            submit,
             ..Default::default()
         };
 

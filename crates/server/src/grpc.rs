@@ -461,7 +461,7 @@ impl CoreService for CoreServiceHandler {
             worker.worker_id.clone(),
         );
         workerd_client
-            .send_message(&req.message)
+            .send_message(&req.message, req.submit)
             .await
             .map_err(|e| CoreError::SendMessageFailed { reason: e })?;
 
