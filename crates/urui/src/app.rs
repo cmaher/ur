@@ -252,17 +252,76 @@ impl App {
     }
 
     /// Handle a batch of UI events: deduplicate by (entity_type, entity_id),
-    /// then trigger per-entity fetches for tickets and workflows. Worker events
-    /// are ignored.
+    /// then trigger per-entity fetches for tickets and workflows.
+    ///
+    /// For ticket events, also walks the ancestor chain (via parent_id) to fetch
+    /// parent tickets so progress bars stay current. Additionally, checks if the
+    /// ticket or any ancestor matches a workflow in the flows page, and fetches
+    /// that workflow so flow entries with parent tickets refresh on child changes.
     fn handle_ui_events(&self, items: Vec<UiEventItem>) {
         let unique = deduplicate_ui_events(items);
-        for item in unique {
+        let mut fetched_tickets = HashSet::new();
+        let mut fetched_workflows = HashSet::new();
+
+        for item in &unique {
             match item.entity_type.as_str() {
-                "ticket" => self.data_manager.fetch_ticket(item.entity_id),
-                "workflow" => self.data_manager.fetch_workflow(item.entity_id),
+                "ticket" => {
+                    self.handle_ticket_ui_event(
+                        &item.entity_id,
+                        &mut fetched_tickets,
+                        &mut fetched_workflows,
+                    );
+                }
+                "workflow" => {
+                    if fetched_workflows.insert(item.entity_id.clone()) {
+                        self.data_manager.fetch_workflow(item.entity_id.clone());
+                    }
+                }
                 "worker" => self.data_manager.fetch_workers(),
                 _ => {} // unknown events ignored
             }
+        }
+    }
+
+    /// Process a single ticket UI event: fetch the ticket, walk its ancestor
+    /// chain to fetch parents, and check if any ID in the chain matches a
+    /// workflow displayed on the flows page.
+    fn handle_ticket_ui_event(
+        &self,
+        ticket_id: &str,
+        fetched_tickets: &mut HashSet<String>,
+        fetched_workflows: &mut HashSet<String>,
+    ) {
+        // Fetch the ticket itself
+        if fetched_tickets.insert(ticket_id.to_owned()) {
+            self.data_manager.fetch_ticket(ticket_id.to_owned());
+        }
+
+        // Check if this ticket matches a flows entry
+        if self.flows_page.has_entry_for_ticket(ticket_id)
+            && fetched_workflows.insert(ticket_id.to_owned())
+        {
+            self.data_manager.fetch_workflow(ticket_id.to_owned());
+        }
+
+        // Walk the ancestor chain via parent_id
+        let mut current = ticket_id.to_owned();
+        // Limit depth to prevent infinite loops from data inconsistency
+        for _ in 0..50 {
+            let Some(parent_id) = self.tickets_page.get_parent_id(&current) else {
+                break;
+            };
+            // Fetch ancestor ticket for progress bar updates
+            if fetched_tickets.insert(parent_id.clone()) {
+                self.data_manager.fetch_ticket(parent_id.clone());
+            }
+            // Check if ancestor matches a flows entry
+            if self.flows_page.has_entry_for_ticket(&parent_id)
+                && fetched_workflows.insert(parent_id.clone())
+            {
+                self.data_manager.fetch_workflow(parent_id.clone());
+            }
+            current = parent_id;
         }
     }
 

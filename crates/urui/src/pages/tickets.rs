@@ -370,6 +370,20 @@ impl TicketsPage {
         self.visible_ids().get(self.selected_row).cloned()
     }
 
+    /// Returns the parent_id of a ticket if it exists in the loaded data.
+    ///
+    /// Returns `None` if the ticket is not loaded or has no parent (empty string).
+    pub fn get_parent_id(&self, ticket_id: &str) -> Option<String> {
+        if let DataState::Loaded(ref map) = self.data_state {
+            if let Some(ticket) = map.get(ticket_id) {
+                if !ticket.parent_id.is_empty() {
+                    return Some(ticket.parent_id.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// Set an in-progress status message (e.g., for dispatch).
     pub fn set_status(&mut self, text: String) {
         self.active_status = Some(StatusMessage {
