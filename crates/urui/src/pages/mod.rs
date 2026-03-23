@@ -1,3 +1,4 @@
+pub mod flow_detail;
 mod flows;
 pub mod tickets;
 mod workers;
