@@ -95,6 +95,12 @@ Required tooling (installed by mise): `rust`, `protoc`, `zig`, `cargo-make`, `ca
 # Build and install the ur CLI + container images
 cargo make install
 
+# Initialize the config directory (~/.ur/) with default ur.toml, squid allowlist, etc.
+ur init
+
+# Add a project (auto-detects repo URL from the git remote)
+ur project add /path/to/your/repo --image ur-worker
+
 # Start the server (launches Docker Compose, builderd, Squid proxy)
 ur server start
 
@@ -102,7 +108,15 @@ ur server start
 urui
 ```
 
-Configure projects in `~/.ur/ur.toml` — each project specifies a git repository and optional container mounts. See `ur.toml` for available options.
+Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifies a git repository and container configuration. Key options:
+
+- **`container.image`** — Container image for workers (e.g. `"ur-worker"`, `"ur-worker-rust"`)
+- **`container.mounts`** — Additional volume mounts for the container
+- **`git_hooks_dir`** — Template path to git hook scripts run during verification (e.g. `"%PROJECT%/.ur/git-hooks"`)
+- **`skill_hooks_dir`** — Template path to skill hook snippets copied to `~/.claude/skill-hooks/` at container startup (e.g. `"%PROJECT%/.ur/skill-hooks"`)
+- **`workflow_hooks_dir`** — Template path to workflow hook scripts for lifecycle automation
+
+Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
 
 ## Development
 
