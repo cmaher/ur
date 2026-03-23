@@ -23,6 +23,9 @@ pub struct WorkersPage {
     entry_map: HashMap<String, WorkerSummary>,
     /// Sorted display list of worker IDs, rebuilt on data changes.
     display_ids: Vec<String>,
+    /// Workers optimistically removed while a kill RPC is in flight.
+    /// Restored on error; cleared when fresh server data arrives.
+    pending_kills: HashMap<String, WorkerSummary>,
     selected: usize,
     page: usize,
     loaded: bool,
@@ -36,6 +39,7 @@ impl WorkersPage {
         Self {
             entry_map: HashMap::new(),
             display_ids: Vec::new(),
+            pending_kills: HashMap::new(),
             selected: 0,
             page: 0,
             loaded: false,
@@ -113,7 +117,18 @@ impl WorkersPage {
         self.page_ids().get(self.selected).cloned()
     }
 
+    /// Optimistically remove a worker from the display list while a kill RPC
+    /// is in flight. The worker is stashed in `pending_kills` so it can be
+    /// restored if the kill fails.
+    pub fn optimistic_remove(&mut self, worker_id: &str) {
+        if let Some(worker) = self.entry_map.remove(worker_id) {
+            self.pending_kills.insert(worker_id.to_string(), worker);
+            self.preserve_selection_and_rebuild();
+        }
+    }
+
     /// Handle an async action result by showing a success or error banner.
+    /// On error, restores any optimistically removed workers.
     pub fn on_action_result(&mut self, result: &ActionResult) {
         match &result.result {
             Ok(msg) => {
@@ -126,6 +141,12 @@ impl WorkersPage {
                 }
             }
             Err(msg) => {
+                // Restore optimistically removed workers on failure.
+                if !self.pending_kills.is_empty() {
+                    self.entry_map
+                        .extend(std::mem::take(&mut self.pending_kills));
+                    self.preserve_selection_and_rebuild();
+                }
                 self.active_banner = Some(Banner {
                     message: msg.clone(),
                     variant: BannerVariant::Error,
@@ -303,6 +324,7 @@ impl Page for WorkersPage {
             DataPayload::Workers(Ok(workers)) => {
                 self.loaded = true;
                 self.refreshing = false;
+                self.pending_kills.clear();
                 self.entry_map.clear();
                 for w in workers {
                     self.entry_map.insert(w.worker_id.clone(), w.clone());
@@ -581,5 +603,88 @@ mod tests {
 
         page.mark_stale();
         assert!(page.needs_data());
+    }
+
+    #[test]
+    fn optimistic_remove_hides_worker_immediately() {
+        let mut page = WorkersPage::new();
+        let workers = vec![
+            make_worker("ur-abc"),
+            make_worker("ur-def"),
+            make_worker("ur-ghi"),
+        ];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+        assert_eq!(page.entry_map.len(), 3);
+
+        page.optimistic_remove("ur-def");
+        assert_eq!(page.entry_map.len(), 2);
+        assert!(!page.entry_map.contains_key("ur-def"));
+        assert_eq!(page.display_ids.len(), 2);
+        assert!(page.pending_kills.contains_key("ur-def"));
+    }
+
+    #[test]
+    fn optimistic_remove_restores_on_error() {
+        let mut page = WorkersPage::new();
+        let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.optimistic_remove("ur-abc");
+        assert_eq!(page.entry_map.len(), 1);
+
+        // Simulate kill failure
+        let result = ActionResult {
+            result: Err("connection refused".into()),
+            silent_on_success: false,
+        };
+        page.on_action_result(&result);
+
+        assert_eq!(page.entry_map.len(), 2);
+        assert!(page.entry_map.contains_key("ur-abc"));
+        assert!(page.pending_kills.is_empty());
+    }
+
+    #[test]
+    fn optimistic_remove_cleared_on_fresh_data() {
+        let mut page = WorkersPage::new();
+        let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.optimistic_remove("ur-abc");
+        assert!(!page.pending_kills.is_empty());
+
+        // Fresh server data clears pending kills
+        let fresh = vec![make_worker("ur-def")];
+        page.on_data(&DataPayload::Workers(Ok(fresh)));
+        assert!(page.pending_kills.is_empty());
+        assert_eq!(page.entry_map.len(), 1);
+    }
+
+    #[test]
+    fn optimistic_remove_noop_for_unknown_worker() {
+        let mut page = WorkersPage::new();
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.optimistic_remove("ur-unknown");
+        assert_eq!(page.entry_map.len(), 1);
+        assert!(page.pending_kills.is_empty());
+    }
+
+    #[test]
+    fn optimistic_remove_clamps_selection() {
+        let mut page = WorkersPage::new();
+        let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        // Select the last worker (ur-def at index 1)
+        page.handle_action(Action::NavigateDown);
+        assert_eq!(page.selected_worker_id(), Some("ur-def".to_string()));
+
+        // Remove the last worker — selection should clamp
+        page.optimistic_remove("ur-def");
+        assert_eq!(page.display_ids.len(), 1);
+        assert!(page.selected_worker_id().is_some());
+        assert_eq!(page.selected_worker_id(), Some("ur-abc".to_string()));
     }
 }

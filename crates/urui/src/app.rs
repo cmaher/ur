@@ -382,8 +382,11 @@ impl App {
     }
 
     /// Stop the currently selected worker on the workers page.
+    /// Optimistically removes the worker from the list immediately;
+    /// restores it if the kill RPC fails.
     fn kill_selected_worker(&mut self) {
         if let Some(worker_id) = self.workers_page.selected_worker_id() {
+            self.workers_page.optimistic_remove(&worker_id);
             self.data_manager.stop_worker(worker_id);
         }
     }
