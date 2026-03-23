@@ -121,9 +121,15 @@ fn insert_navigation_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     );
 }
 
-/// Insert fixed action bindings: tabs, refresh, filter, priority, dispatch,
-/// select, back, quit. These are not overridable via KeymapOverrides.
+/// Insert fixed action bindings: tabs, refresh, filter, settings.
+/// These are not overridable via KeymapOverrides.
 fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+    insert_tab_and_ui_bindings(bindings);
+    insert_ticket_action_bindings(bindings);
+}
+
+/// Insert tab switching, refresh, filter, and settings bindings.
+fn insert_tab_and_ui_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // tab_tickets = [t]
     bindings.insert(
         KeyBinding {
@@ -140,6 +146,15 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
             modifiers: KeyModifiers::NONE,
         },
         Action::SwitchTab(TabId::Flows),
+    );
+
+    // tab_workers = [w]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('w'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::SwitchTab(TabId::Workers),
     );
 
     // refresh = [r]
@@ -162,24 +177,19 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::Filter,
     );
 
-    // set_priority = [P]
+    // open_settings = [,]
     bindings.insert(
         KeyBinding {
-            code: KeyCode::Char('P'),
-            modifiers: KeyModifiers::SHIFT,
+            code: KeyCode::Char(','),
+            modifiers: KeyModifiers::NONE,
         },
-        Action::SetPriority,
+        Action::OpenSettings,
     );
+}
 
-    // dispatch = [D]
-    bindings.insert(
-        KeyBinding {
-            code: KeyCode::Char('D'),
-            modifiers: KeyModifiers::SHIFT,
-        },
-        Action::Dispatch,
-    );
-
+/// Insert ticket and workflow action bindings: select, back, quit, priority,
+/// dispatch, close, open, create, launch design.
+fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // select = [Enter]
     bindings.insert(
         KeyBinding {
@@ -207,6 +217,24 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::Quit,
     );
 
+    // set_priority = [P]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('P'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::SetPriority,
+    );
+
+    // dispatch = [D]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('D'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::Dispatch,
+    );
+
     // close_ticket = [X]
     bindings.insert(
         KeyBinding {
@@ -225,15 +253,6 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::OpenTicket,
     );
 
-    // tab_workers = [w]
-    bindings.insert(
-        KeyBinding {
-            code: KeyCode::Char('w'),
-            modifiers: KeyModifiers::NONE,
-        },
-        Action::SwitchTab(TabId::Workers),
-    );
-
     // create_ticket = [C]
     bindings.insert(
         KeyBinding {
@@ -250,15 +269,6 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
             modifiers: KeyModifiers::SHIFT,
         },
         Action::LaunchDesign,
-    );
-
-    // open_settings = [,]
-    bindings.insert(
-        KeyBinding {
-            code: KeyCode::Char(','),
-            modifiers: KeyModifiers::NONE,
-        },
-        Action::OpenSettings,
     );
 }
 
