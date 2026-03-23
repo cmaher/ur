@@ -119,6 +119,9 @@ pub trait Page {
     /// Dismiss the active status message on this page.
     fn dismiss_status(&mut self) {}
 
+    /// Set the status message to the given text (for intermediate progress updates).
+    fn set_status(&mut self, _text: String) {}
+
     /// Clear the status message (called when the async action completes).
     fn clear_status(&mut self) {}
 

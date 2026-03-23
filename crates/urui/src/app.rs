@@ -128,6 +128,7 @@ impl App {
             AppEvent::ActionResult(result) => self.handle_action_result(result),
             AppEvent::Resize(_, _) => {} // Just redraw
             AppEvent::UiEvent(items) => self.handle_ui_events(items),
+            AppEvent::SetStatus(msg) => self.active_page_mut().set_status(msg),
         }
     }
 
