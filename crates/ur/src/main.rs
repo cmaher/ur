@@ -1004,6 +1004,7 @@ async fn handle_worker_send(
         .send_worker_message(SendWorkerMessageRequest {
             worker_id: worker_id.clone(),
             message,
+            ..Default::default()
         })
         .await?;
     if output.is_json() {

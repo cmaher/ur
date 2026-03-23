@@ -75,6 +75,9 @@ message WorkerListResponse {
 message SendWorkerMessageRequest {
   string worker_id = 1;
   string message = 2;
+  // When true (or unset), workerd appends an Enter keypress after the literal
+  // text via tmux send-keys. Set to false to send text without submitting.
+  bool submit = 3;
 }
 
 message SendWorkerMessageResponse {

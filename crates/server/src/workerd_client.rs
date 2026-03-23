@@ -77,6 +77,7 @@ impl WorkerdClient {
 
         let req = SendMessageRequest {
             message: message.to_string(),
+            ..Default::default()
         };
 
         let response = client
