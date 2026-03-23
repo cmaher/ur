@@ -431,6 +431,21 @@ struct RawBackupConfig {
     retain_count: Option<u64>,
 }
 
+/// Raw TOML representation for the `[tui.ticket.filter]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawTicketFilterConfig {
+    #[serde(default)]
+    statuses: Option<Vec<String>>,
+    #[serde(default)]
+    projects: Option<Vec<String>>,
+}
+
+/// Raw TOML representation for the `[tui.ticket]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawTicketConfig {
+    filter: Option<RawTicketFilterConfig>,
+}
+
 /// Raw TOML representation for the `[tui]` section.
 #[derive(Debug, Default, Deserialize)]
 struct RawTuiConfig {
@@ -441,6 +456,7 @@ struct RawTuiConfig {
     themes: HashMap<String, RawThemeColors>,
     #[serde(default)]
     keymaps: HashMap<String, RawKeymapOverrides>,
+    ticket: Option<RawTicketConfig>,
 }
 
 /// Raw TOML representation for a `[tui.themes.<name>]` entry.
@@ -662,6 +678,15 @@ pub struct KeymapOverrides {
     pub toggle_panel: Option<Vec<String>>,
 }
 
+/// Persisted ticket filter settings from the `[tui.ticket.filter]` section of `ur.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TicketFilterConfig {
+    /// Which statuses to show. `None` means use defaults (open + in_progress).
+    pub statuses: Option<Vec<String>>,
+    /// Which projects to show. `None` means show all.
+    pub projects: Option<Vec<String>>,
+}
+
 /// Resolved TUI configuration from the `[tui]` section of `ur.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiConfig {
@@ -675,6 +700,8 @@ pub struct TuiConfig {
     pub custom_themes: HashMap<String, ThemeColors>,
     /// User-defined keymap overrides, keyed by name.
     pub custom_keymaps: HashMap<String, KeymapOverrides>,
+    /// Persisted ticket filter settings.
+    pub ticket_filter: TicketFilterConfig,
 }
 
 pub const DEFAULT_KEY_REPEAT_INTERVAL_MS: u64 = 200;
@@ -687,6 +714,7 @@ impl Default for TuiConfig {
             key_repeat_interval_ms: DEFAULT_KEY_REPEAT_INTERVAL_MS,
             custom_themes: HashMap::new(),
             custom_keymaps: HashMap::new(),
+            ticket_filter: TicketFilterConfig::default(),
         }
     }
 }
@@ -1281,6 +1309,13 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
                     (name, km)
                 })
                 .collect();
+            let ticket_filter = match t.ticket.and_then(|tc| tc.filter) {
+                Some(raw_filter) => TicketFilterConfig {
+                    statuses: raw_filter.statuses,
+                    projects: raw_filter.projects,
+                },
+                None => TicketFilterConfig::default(),
+            };
             TuiConfig {
                 theme_name: t.theme.unwrap_or_else(|| DEFAULT_TUI_THEME.to_string()),
                 keymap_name: t.keymap.unwrap_or_else(|| DEFAULT_TUI_KEYMAP.to_string()),
@@ -1289,6 +1324,7 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
                     .unwrap_or(DEFAULT_KEY_REPEAT_INTERVAL_MS),
                 custom_themes,
                 custom_keymaps,
+                ticket_filter,
             }
         }
         None => TuiConfig::default(),

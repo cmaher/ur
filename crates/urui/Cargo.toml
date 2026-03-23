@@ -13,6 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 crossterm = "0.28"
 ratatui = "0.29"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+toml_edit = "0.22"
 tonic = { workspace = true }
 tracing = { workspace = true }
 ur_config = { path = "../ur_config" }
