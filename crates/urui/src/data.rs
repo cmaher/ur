@@ -8,7 +8,7 @@ use ur_config::ProjectConfig;
 use ur_rpc::connection::connect;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{
-    WorkerLaunchRequest, WorkerListRequest, WorkerListResponse, WorkerSummary,
+    WorkerLaunchRequest, WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerSummary,
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
@@ -281,6 +281,32 @@ impl DataManager {
                 },
                 Err(e) => {
                     error!(port, %ticket_id, error = %e, "workflow cancel failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that stops a worker via `WorkerStop`
+    /// and sends the result as `AppEvent::ActionResult`.
+    pub fn stop_worker(&self, worker_id: String) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %worker_id, "stopping worker");
+            let result = stop_worker_rpc(port, &worker_id).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("Killed {worker_id}")),
+                    silent_on_success: false,
+                },
+                Err(e) => {
+                    error!(port, %worker_id, error = %e, "worker stop failed");
                     ActionResult {
                         result: Err(e.to_string()),
                         silent_on_success: false,
@@ -706,6 +732,18 @@ async fn launch_design_worker_rpc(
         })
         .await?;
     debug!(ticket_id, "design worker launched");
+    Ok(())
+}
+
+/// Perform the WorkerStop RPC to stop a running worker.
+async fn stop_worker_rpc(port: u16, worker_id: &str) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut client = CoreServiceClient::new(channel);
+    client
+        .worker_stop(WorkerStopRequest {
+            worker_id: worker_id.to_owned(),
+        })
+        .await?;
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
@@ -9,9 +10,9 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_rpc::proto::core::WorkerSummary;
 
 use crate::context::TuiContext;
-use crate::data::DataPayload;
+use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{FooterCommand, Page, PageResult, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
 use crate::widgets::ThemedTable;
 
 const PAGE_SIZE: usize = 20;
@@ -27,6 +28,7 @@ pub struct WorkersPage {
     loaded: bool,
     error: Option<String>,
     refreshing: bool,
+    active_banner: Option<Banner>,
 }
 
 impl WorkersPage {
@@ -39,6 +41,7 @@ impl WorkersPage {
             loaded: false,
             error: None,
             refreshing: false,
+            active_banner: None,
         }
     }
 
@@ -108,6 +111,28 @@ impl WorkersPage {
     /// Returns the worker ID of the currently selected worker, if any.
     pub fn selected_worker_id(&self) -> Option<String> {
         self.page_ids().get(self.selected).cloned()
+    }
+
+    /// Handle an async action result by showing a success or error banner.
+    pub fn on_action_result(&mut self, result: &ActionResult) {
+        match &result.result {
+            Ok(msg) => {
+                if !result.silent_on_success {
+                    self.active_banner = Some(Banner {
+                        message: msg.clone(),
+                        variant: BannerVariant::Success,
+                        created_at: Instant::now(),
+                    });
+                }
+            }
+            Err(msg) => {
+                self.active_banner = Some(Banner {
+                    message: msg.clone(),
+                    variant: BannerVariant::Error,
+                    created_at: Instant::now(),
+                });
+            }
+        }
     }
 }
 
@@ -222,6 +247,11 @@ impl Page for WorkersPage {
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
+                key_label: keymap.label_for(&Action::CloseTicket),
+                description: "Kill".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
                 description: "Down".to_string(),
                 common: true,
@@ -252,6 +282,20 @@ impl Page for WorkersPage {
                 common: true,
             },
         ]
+    }
+
+    fn banner(&self) -> Option<&Banner> {
+        self.active_banner.as_ref()
+    }
+
+    fn dismiss_banner(&mut self) {
+        self.active_banner = None;
+    }
+
+    fn tick_banner(&mut self) {
+        if self.active_banner.as_ref().is_some_and(|b| b.is_expired()) {
+            self.active_banner = None;
+        }
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
