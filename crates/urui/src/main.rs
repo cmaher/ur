@@ -8,6 +8,7 @@ mod create_ticket;
 mod data;
 mod event;
 mod keymap;
+mod notifications;
 mod page;
 mod pages;
 mod terminal;
