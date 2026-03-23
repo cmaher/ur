@@ -253,21 +253,6 @@ fn workflow_progress(wf: &WorkflowInfo) -> (u32, u32) {
     }
 }
 
-/// Parse a full GitHub PR URL into a shortened display form and the original URL.
-///
-/// Returns `Some(("owner/repo#number", original_url))` for valid GitHub PR URLs,
-/// or `None` for empty strings, non-GitHub URLs, or malformed URLs.
-fn shorten_pr_url(url: &str) -> Option<(String, String)> {
-    let path = url.strip_prefix("https://github.com/")?;
-    let mut parts = path.splitn(4, '/');
-    let owner = parts.next().filter(|s| !s.is_empty())?;
-    let repo = parts.next().filter(|s| !s.is_empty())?;
-    let pull_segment = parts.next().filter(|&s| s == "pull")?;
-    let _ = pull_segment;
-    let number = parts.next().filter(|s| !s.is_empty())?;
-    Some((format!("{owner}/{repo}#{number}"), url.to_string()))
-}
-
 /// Convert a FlowEntry into a row of display strings.
 fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     let wf = &entry.workflow;
@@ -290,8 +275,6 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     ]
 }
 
-/// The column index of the PR URL in the table.
-const PR_URL_COL: usize = 5;
 /// The column index of the progress count label in the table.
 const PROGRESS_COUNT_COL: usize = 7;
 /// The column index of the progress bar in the table.
@@ -366,90 +349,6 @@ fn render_progress_bars(
                 height: 1,
             };
             bar.render_label_styled(cell, buf, row_fg, row_bg);
-        }
-    }
-}
-
-/// Render OSC 8 hyperlinks over PR URL cells, replacing full URLs with short text.
-fn render_pr_links(
-    page: &FlowsPage,
-    area: Rect,
-    buf: &mut Buffer,
-    ctx: &TuiContext,
-    widths: &[Constraint],
-) {
-    use ratatui::layout::Layout;
-
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-
-    let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
-    let Some(pr_area) = col_areas.get(PR_URL_COL) else {
-        return;
-    };
-
-    let data_start_y = inner.y + 1;
-    let entries = page.page_entries();
-
-    for (i, entry) in entries.into_iter().enumerate() {
-        let row_y = data_start_y + i as u16;
-        if row_y >= inner.y + inner.height {
-            break;
-        }
-
-        let pr_url = &entry.workflow.pr_url;
-        let Some((short_text, full_url)) = shorten_pr_url(pr_url) else {
-            continue;
-        };
-
-        let is_selected = i == page.selected;
-        let row_bg = if is_selected {
-            ctx.theme.primary
-        } else if i % 2 == 0 {
-            ctx.theme.base_100
-        } else {
-            ctx.theme.base_200
-        };
-        let row_fg = if is_selected {
-            ctx.theme.primary_content
-        } else {
-            ctx.theme.base_content
-        };
-        let style = Style::default().fg(row_fg).bg(row_bg);
-
-        // Build the OSC 8 hyperlink sequence
-        let osc_open = format!("\x1b]8;;{full_url}\x1b\\");
-        let osc_close = "\x1b]8;;\x1b\\";
-
-        // Write short text with OSC 8 wrapping into buffer cells
-        let col_width = pr_area.width as usize;
-        for (j, ch) in short_text.chars().enumerate() {
-            if j >= col_width {
-                break;
-            }
-            let cell = &mut buf[(pr_area.x + j as u16, row_y)];
-            cell.set_char(ch);
-            cell.set_style(style);
-
-            // Attach OSC 8 open to the first character, close to the last visible character
-            if j == 0 {
-                cell.set_symbol(&format!("{osc_open}{ch}"));
-            }
-            if j == short_text.len().min(col_width) - 1 {
-                let sym = cell.symbol().to_string();
-                cell.set_symbol(&format!("{sym}{osc_close}"));
-            }
-        }
-
-        // Clear remaining cells in the column after the short text
-        for j in short_text.len()..col_width {
-            let cell = &mut buf[(pr_area.x + j as u16, row_y)];
-            cell.set_char(' ');
-            cell.set_style(style);
         }
     }
 }
@@ -555,7 +454,7 @@ impl Page for FlowsPage {
             Constraint::Length(10), // Stage Time
             Constraint::Length(10), // Total Time
             Constraint::Length(8),  // Cycles
-            Constraint::Length(30), // PR
+            Constraint::Length(45), // PR URL
             Constraint::Length(20), // Stalled
             Constraint::Length(8),  // Progress count
             Constraint::Fill(1),    // Progress bar
@@ -568,7 +467,7 @@ impl Page for FlowsPage {
                 "Stage Time",
                 "Total Time",
                 "Cycles",
-                "PR",
+                "PR URL",
                 "Stalled",
                 "Progress",
                 "",
@@ -582,7 +481,6 @@ impl Page for FlowsPage {
         table.render(area, buf, ctx);
 
         render_progress_bars(self, area, buf, ctx, &widths);
-        render_pr_links(self, area, buf, ctx, &widths);
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
@@ -1278,40 +1176,5 @@ mod tests {
         let (completed, total) = workflow_progress(&wf);
         assert_eq!(completed, 0);
         assert_eq!(total, 1);
-    }
-
-    #[test]
-    fn shorten_pr_url_valid() {
-        let result = shorten_pr_url("https://github.com/acme/widgets/pull/42");
-        assert_eq!(
-            result,
-            Some((
-                "acme/widgets#42".to_string(),
-                "https://github.com/acme/widgets/pull/42".to_string(),
-            ))
-        );
-    }
-
-    #[test]
-    fn shorten_pr_url_empty() {
-        assert_eq!(shorten_pr_url(""), None);
-    }
-
-    #[test]
-    fn shorten_pr_url_non_github() {
-        assert_eq!(shorten_pr_url("https://gitlab.com/owner/repo/pull/1"), None);
-    }
-
-    #[test]
-    fn shorten_pr_url_malformed_missing_number() {
-        assert_eq!(shorten_pr_url("https://github.com/owner/repo/pull/"), None);
-        assert_eq!(shorten_pr_url("https://github.com/owner/repo/pull"), None);
-    }
-
-    #[test]
-    fn shorten_pr_url_malformed_missing_components() {
-        assert_eq!(shorten_pr_url("https://github.com/owner"), None);
-        assert_eq!(shorten_pr_url("https://github.com/"), None);
-        assert_eq!(shorten_pr_url("https://github.com"), None);
     }
 }
