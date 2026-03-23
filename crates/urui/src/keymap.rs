@@ -24,6 +24,7 @@ pub enum Action {
     OpenTicket,
     CancelFlow,
     OpenSettings,
+    CreateTicket,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -223,6 +224,24 @@ fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::OpenTicket,
     );
 
+    // tab_workers = [w]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('w'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::SwitchTab(TabId::Workers),
+    );
+
+    // create_ticket = [C]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('C'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::CreateTicket,
+    );
+
     // open_settings = [,]
     bindings.insert(
         KeyBinding {
@@ -309,6 +328,20 @@ impl Keymap {
                 modifiers: KeyModifiers::SHIFT,
             },
             Action::OpenTicket,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('w'),
+                modifiers: KeyModifiers::NONE,
+            },
+            Action::SwitchTab(TabId::Workers),
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('C'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::CreateTicket,
         );
         bindings.insert(
             KeyBinding {
@@ -655,7 +688,7 @@ mod tests {
     #[test]
     fn from_config_replaces_defaults() {
         let overrides = KeymapOverrides {
-            scroll_up: Some(vec!["w".into()]),
+            scroll_up: Some(vec!["i".into()]),
             scroll_down: Some(vec!["s".into()]),
             quit: Some(vec!["C-c".into()]),
             ..KeymapOverrides::default()
@@ -665,7 +698,7 @@ mod tests {
 
         // Custom bindings work
         assert_eq!(
-            keymap.resolve(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)),
+            keymap.resolve(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
             Some(Action::NavigateUp),
         );
         assert_eq!(
@@ -749,6 +782,39 @@ mod tests {
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT)),
             Some(Action::Dispatch),
+        );
+    }
+
+    #[test]
+    fn default_keymap_tab_workers() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)),
+            Some(Action::SwitchTab(TabId::Workers)),
+        );
+    }
+
+    #[test]
+    fn default_keymap_create_ticket() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)),
+            Some(Action::CreateTicket),
+        );
+    }
+
+    #[test]
+    fn from_config_preserves_workers_tab_and_create_ticket() {
+        let overrides = KeymapOverrides::default();
+        let keymap = Keymap::from_config(overrides);
+
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE)),
+            Some(Action::SwitchTab(TabId::Workers)),
+        );
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)),
+            Some(Action::CreateTicket),
         );
     }
 }

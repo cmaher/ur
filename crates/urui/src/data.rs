@@ -6,15 +6,19 @@ use tracing::{debug, error};
 
 use ur_config::ProjectConfig;
 use ur_rpc::connection::connect;
-use ur_rpc::proto::core::WorkerLaunchRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+use ur_rpc::proto::core::{
+    WorkerLaunchRequest, WorkerListRequest, WorkerListResponse, WorkerSummary,
+};
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
-    CancelWorkflowRequest, CreateWorkflowRequest, GetTicketRequest, GetWorkflowRequest,
-    ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest, ListWorkflowsResponse,
-    SubscribeUiEventsRequest, Ticket, UiEventType, UpdateTicketRequest, WorkflowInfo,
+    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, GetTicketRequest,
+    GetWorkflowRequest, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
+    ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType, UpdateTicketRequest,
+    WorkflowInfo,
 };
 
+use crate::create_ticket::{PendingTicket, is_title_placeholder};
 use crate::event::{AppEvent, UiEventItem};
 
 /// Payload delivered by gRPC data-fetch tasks.
@@ -28,6 +32,8 @@ pub enum DataPayload {
     TicketUpdate(Result<Ticket, String>),
     /// A single workflow fetched after a UI event notification.
     FlowUpdate(Result<WorkflowInfo, String>),
+    /// Worker list fetched from the server.
+    Workers(Result<Vec<WorkerSummary>, String>),
 }
 
 /// Result of an async action (dispatch, etc.) sent back via `AppEvent::ActionResult`.
@@ -257,6 +263,230 @@ impl DataManager {
             let _ = tx.send(AppEvent::ActionResult(action_result));
         });
     }
+
+    /// Spawn a background task that fetches all workers via `WorkerList`
+    /// and sends the result as `DataPayload::Workers`.
+    pub fn fetch_workers(&self) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, "fetching workers");
+            let payload = match fetch_workers_rpc(port).await {
+                Ok(resp) => DataPayload::Workers(Ok(resp.workers)),
+                Err(e) => {
+                    error!(port, error = %e, "worker fetch failed");
+                    DataPayload::Workers(Err(e.to_string()))
+                }
+            };
+            let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
+        });
+    }
+
+    /// Spawn a background task that creates a ticket from a `PendingTicket`.
+    ///
+    /// If the title is a placeholder, resolves it via `resolve_title` before
+    /// calling `CreateTicket` RPC. Sends the result as `AppEvent::ActionResult`.
+    pub fn create_ticket(&self, pending: PendingTicket, projects: &HashMap<String, ProjectConfig>) {
+        let port = self.port;
+        let tx = self.sender.clone();
+        let project_key = pending.project.clone();
+        let _image_id = projects
+            .get(&project_key)
+            .map(|p| p.container.image.clone())
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let action_result = match create_ticket_flow(port, pending).await {
+                Ok(ticket_id) => ActionResult {
+                    result: Ok(format!("Created {ticket_id}")),
+                    silent_on_success: false,
+                },
+                Err(e) => ActionResult {
+                    result: Err(e.to_string()),
+                    silent_on_success: false,
+                },
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that creates a ticket and dispatches it.
+    ///
+    /// Resolves title if placeholder, creates via RPC, then dispatches
+    /// (CreateWorkflow + WorkerLaunch). Sends `AppEvent::ActionResult`.
+    pub fn create_and_dispatch_ticket(
+        &self,
+        pending: PendingTicket,
+        projects: &HashMap<String, ProjectConfig>,
+    ) {
+        let port = self.port;
+        let tx = self.sender.clone();
+        let project_key = pending.project.clone();
+        let image_id = projects
+            .get(&project_key)
+            .map(|p| p.container.image.clone())
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let action_result =
+                match create_and_dispatch_flow(port, pending, &project_key, &image_id).await {
+                    Ok(ticket_id) => ActionResult {
+                        result: Ok(format!("Created and dispatched {ticket_id}")),
+                        silent_on_success: false,
+                    },
+                    Err(e) => ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    },
+                };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that creates a ticket and launches a design worker.
+    ///
+    /// Resolves title if placeholder, creates via RPC, then launches a worker
+    /// with mode=design (no workflow). Sends `AppEvent::ActionResult`.
+    pub fn create_and_design_ticket(
+        &self,
+        pending: PendingTicket,
+        projects: &HashMap<String, ProjectConfig>,
+    ) {
+        let port = self.port;
+        let tx = self.sender.clone();
+        let project_key = pending.project.clone();
+        let image_id = projects
+            .get(&project_key)
+            .map(|p| p.container.image.clone())
+            .unwrap_or_default();
+
+        tokio::spawn(async move {
+            let action_result =
+                match create_and_design_flow(port, pending, &project_key, &image_id).await {
+                    Ok(ticket_id) => ActionResult {
+                        result: Ok(format!("Created {ticket_id} with design worker")),
+                        silent_on_success: false,
+                    },
+                    Err(e) => ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    },
+                };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+}
+
+/// Create a ticket, resolving the title first if it's a placeholder.
+async fn create_ticket_flow(port: u16, pending: PendingTicket) -> Result<String> {
+    let title = if is_title_placeholder(&pending.title) {
+        resolve_title(&pending.body).await?
+    } else {
+        pending.title
+    };
+    create_ticket_rpc(
+        port,
+        &pending.project,
+        &title,
+        pending.priority,
+        &pending.body,
+    )
+    .await
+}
+
+/// Create a ticket and dispatch it (CreateWorkflow + WorkerLaunch).
+async fn create_and_dispatch_flow(
+    port: u16,
+    pending: PendingTicket,
+    project_key: &str,
+    image_id: &str,
+) -> Result<String> {
+    let title = if is_title_placeholder(&pending.title) {
+        resolve_title(&pending.body).await?
+    } else {
+        pending.title
+    };
+    let ticket_id = create_ticket_rpc(
+        port,
+        &pending.project,
+        &title,
+        pending.priority,
+        &pending.body,
+    )
+    .await?;
+    dispatch_ticket_rpc(port, &ticket_id, project_key, image_id).await?;
+    Ok(ticket_id)
+}
+
+/// Create a ticket and launch a design worker (no workflow).
+async fn create_and_design_flow(
+    port: u16,
+    pending: PendingTicket,
+    project_key: &str,
+    image_id: &str,
+) -> Result<String> {
+    let title = if is_title_placeholder(&pending.title) {
+        resolve_title(&pending.body).await?
+    } else {
+        pending.title
+    };
+    let ticket_id = create_ticket_rpc(
+        port,
+        &pending.project,
+        &title,
+        pending.priority,
+        &pending.body,
+    )
+    .await?;
+    launch_design_worker_rpc(port, &ticket_id, project_key, image_id).await?;
+    Ok(ticket_id)
+}
+
+/// Resolve a ticket title from the body by running `claude -m haiku --print`.
+///
+/// Falls back to a truncated body (first 80 chars) if the command fails.
+/// Returns an error only if the body is also empty.
+async fn resolve_title(body: &str) -> Result<String> {
+    let prompt = format!(
+        "Generate a concise ticket title (under 80 chars) for this description. \
+         Output ONLY the title, nothing else:\n\n{body}"
+    );
+    let output = tokio::process::Command::new("claude")
+        .args(["-m", "haiku", "--print", "-p", &prompt])
+        .output()
+        .await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let title = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !title.is_empty() {
+                return Ok(title);
+            }
+        }
+        Ok(o) => {
+            debug!(
+                status = %o.status,
+                stderr = %String::from_utf8_lossy(&o.stderr),
+                "claude title generation failed, falling back to truncation"
+            );
+        }
+        Err(e) => {
+            debug!(error = %e, "claude command not available, falling back to truncation");
+        }
+    }
+
+    // Fallback: truncate body to 80 chars
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cannot resolve title: body is empty and claude command failed");
+    }
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+    if first_line.len() <= 80 {
+        Ok(first_line.to_string())
+    } else {
+        Ok(format!("{}...", &first_line[..77]))
+    }
 }
 
 /// Perform the ListTickets RPC call, returning the full response.
@@ -394,6 +624,67 @@ async fn dispatch_ticket_rpc(
     Ok(())
 }
 
+/// Perform the CreateTicket RPC, returning the created ticket ID.
+async fn create_ticket_rpc(
+    port: u16,
+    project: &str,
+    title: &str,
+    priority: i64,
+    body: &str,
+) -> Result<String> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .create_ticket(CreateTicketRequest {
+            project: project.to_owned(),
+            ticket_type: "task".to_owned(),
+            status: String::new(),
+            priority,
+            parent_id: None,
+            title: title.to_owned(),
+            body: body.to_owned(),
+            id: None,
+            created_at: None,
+            wip: false,
+        })
+        .await?;
+    Ok(resp.into_inner().id)
+}
+
+/// Launch a design worker for a ticket (no workflow).
+async fn launch_design_worker_rpc(
+    port: u16,
+    ticket_id: &str,
+    project_key: &str,
+    image_id: &str,
+) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut core_client = CoreServiceClient::new(channel);
+    core_client
+        .worker_launch(WorkerLaunchRequest {
+            worker_id: ticket_id.to_owned(),
+            image_id: image_id.to_owned(),
+            cpus: 2,
+            memory: "8G".into(),
+            workspace_dir: String::new(),
+            claude_credentials: String::new(),
+            mode: "design".to_owned(),
+            skills: Vec::new(),
+            project_key: project_key.to_owned(),
+        })
+        .await?;
+    debug!(ticket_id, "design worker launched");
+    Ok(())
+}
+
+/// Perform the WorkerList RPC, returning the full response.
+async fn fetch_workers_rpc(port: u16) -> Result<WorkerListResponse> {
+    let channel = connect(port).await?;
+    let mut client = CoreServiceClient::new(channel);
+    let response = client.worker_list(WorkerListRequest {}).await?;
+    Ok(response.into_inner())
+}
+
 /// Fetch a single ticket by ID via GetTicket RPC.
 async fn fetch_ticket_rpc(port: u16, ticket_id: &str) -> Result<Ticket> {
     let channel = connect(port).await?;
@@ -514,5 +805,52 @@ mod tests {
         assert_eq!(ui_event_type_to_str(UiEventType::Workflow), "workflow");
         assert_eq!(ui_event_type_to_str(UiEventType::Worker), "worker");
         assert_eq!(ui_event_type_to_str(UiEventType::Unknown), "unknown");
+    }
+
+    #[test]
+    fn workers_variant_round_trip() {
+        let workers_ok = DataPayload::Workers(Ok(vec![]));
+        assert!(matches!(workers_ok, DataPayload::Workers(Ok(ref w)) if w.is_empty()));
+
+        let workers_err = DataPayload::Workers(Err("connection refused".into()));
+        assert!(matches!(workers_err, DataPayload::Workers(Err(_))));
+
+        let summary = WorkerSummary {
+            worker_id: "ur-abc".into(),
+            ..Default::default()
+        };
+        let workers_one = DataPayload::Workers(Ok(vec![summary]));
+        assert!(matches!(workers_one, DataPayload::Workers(Ok(ref w)) if w.len() == 1));
+    }
+
+    #[tokio::test]
+    async fn resolve_title_fallback_truncates_body() {
+        // claude command is not available in test, so it should fall back to truncation
+        let body = "This is a short body";
+        let title = resolve_title(body).await.unwrap();
+        assert_eq!(title, "This is a short body");
+    }
+
+    #[tokio::test]
+    async fn resolve_title_fallback_truncates_long_body() {
+        let body = "A".repeat(200);
+        let title = resolve_title(&body).await.unwrap();
+        assert_eq!(title.len(), 80); // 77 chars + "..."
+        assert!(title.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn resolve_title_fallback_uses_first_line() {
+        let body = "First line title\nSecond line detail\nMore detail";
+        let title = resolve_title(body).await.unwrap();
+        assert_eq!(title, "First line title");
+    }
+
+    #[tokio::test]
+    async fn resolve_title_empty_body_errors() {
+        let result = resolve_title("").await;
+        assert!(result.is_err());
+        let result2 = resolve_title("   \n  ").await;
+        assert!(result2.is_err());
     }
 }
