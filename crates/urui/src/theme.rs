@@ -315,4 +315,54 @@ mod tests {
         let dark = builtin_theme("dark").unwrap();
         assert_eq!(resolved.primary, dark.primary);
     }
+
+    /// Helper: returns true when a color is an ANSI variant (not Rgb).
+    fn is_ansi(color: Color) -> bool {
+        !matches!(color, Color::Rgb(_, _, _))
+    }
+
+    #[test]
+    fn system_theme_uses_ansi_colors() {
+        let t = system_theme();
+        assert!(is_ansi(t.base_100), "base_100 should be ANSI");
+        assert!(is_ansi(t.base_200), "base_200 should be ANSI");
+        assert!(is_ansi(t.base_300), "base_300 should be ANSI");
+        assert!(is_ansi(t.base_content), "base_content should be ANSI");
+        assert!(is_ansi(t.primary), "primary should be ANSI");
+        assert!(is_ansi(t.primary_content), "primary_content should be ANSI");
+        assert!(is_ansi(t.secondary), "secondary should be ANSI");
+        assert!(
+            is_ansi(t.secondary_content),
+            "secondary_content should be ANSI"
+        );
+        assert!(is_ansi(t.accent), "accent should be ANSI");
+        assert!(is_ansi(t.accent_content), "accent_content should be ANSI");
+        assert!(is_ansi(t.neutral), "neutral should be ANSI");
+        assert!(is_ansi(t.neutral_content), "neutral_content should be ANSI");
+        assert!(is_ansi(t.info), "info should be ANSI");
+        assert!(is_ansi(t.info_content), "info_content should be ANSI");
+        assert!(is_ansi(t.success), "success should be ANSI");
+        assert!(is_ansi(t.success_content), "success_content should be ANSI");
+        assert!(is_ansi(t.warning), "warning should be ANSI");
+        assert!(is_ansi(t.warning_content), "warning_content should be ANSI");
+        assert!(is_ansi(t.error), "error should be ANSI");
+        assert!(is_ansi(t.error_content), "error_content should be ANSI");
+    }
+
+    #[test]
+    fn resolve_defaults_to_system() {
+        let config = TuiConfig::default();
+        let resolved = Theme::resolve(&config);
+        assert_eq!(resolved, system_theme());
+    }
+
+    #[test]
+    fn resolve_system_by_name() {
+        let config = TuiConfig {
+            theme_name: "system".to_string(),
+            ..TuiConfig::default()
+        };
+        let resolved = Theme::resolve(&config);
+        assert_eq!(resolved, system_theme());
+    }
 }
