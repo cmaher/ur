@@ -45,10 +45,11 @@ Ur ADE is built around the TUI for day-to-day use. The typical development cycle
 Create a design ticket in the TUI and let a worker architect the solution:
 
 1. Open the TUI and navigate to the **Tickets** page
-2. Press **C** to create a new ticket, selecting **design** as the type
-3. Attach to the design worker with `ur worker attach`
-4. In the worker session, run `/design <ticket-id>` to generate a design and implementation plan
-5. The design worker breaks the ticket into sub-tasks with dependencies
+2. Press **C** to open the ticket editor — fill in the title and description, then save and exit
+3. Select **Create as Design** from the ticket type menu
+4. Attach to the design worker with `ur worker attach`
+5. In the worker session, run `/design <ticket-id>` to generate a design and implementation plan
+6. The design worker breaks the ticket into sub-tasks with dependencies
 
 ### 2. Implement
 
