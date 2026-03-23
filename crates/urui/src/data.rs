@@ -376,10 +376,26 @@ impl DataManager {
         tokio::spawn(async move {
             let action_result =
                 match launch_design_worker_rpc(port, &ticket_id, &project_key, &image_id).await {
-                    Ok(()) => ActionResult {
-                        result: Ok(format!("Launched design worker for {ticket_id}")),
-                        silent_on_success: false,
-                    },
+                    Ok(()) => {
+                        // Send /design command to the worker after launch
+                        match send_worker_message_rpc(
+                            port,
+                            &ticket_id,
+                            &format!("/design {ticket_id}"),
+                            true,
+                        )
+                        .await
+                        {
+                            Ok(()) => ActionResult {
+                                result: Ok(format!("Launched design worker for {ticket_id}")),
+                                silent_on_success: false,
+                            },
+                            Err(e) => ActionResult {
+                                result: Err(e.to_string()),
+                                silent_on_success: false,
+                            },
+                        }
+                    }
                     Err(e) => ActionResult {
                         result: Err(e.to_string()),
                         silent_on_success: false,
@@ -557,7 +573,7 @@ async fn create_and_design_flow(
         "Launching worker for {ticket_id}..."
     )));
     launch_design_worker_rpc(port, &ticket_id, project_key, image_id).await?;
-    send_worker_message_rpc(port, &ticket_id, &format!("/design {ticket_id}"), false).await?;
+    send_worker_message_rpc(port, &ticket_id, &format!("/design {ticket_id}"), true).await?;
     Ok(ticket_id)
 }
 
