@@ -98,6 +98,34 @@ pub fn builtin_theme(name: &str) -> Option<Theme> {
 /// All built-in theme names, sorted alphabetically.
 pub const BUILTIN_THEME_NAMES: &[&str] = generated::BUILTIN_THEME_NAMES;
 
+/// Returns a theme that uses ANSI color indices, delegating color rendering to
+/// the terminal's own palette. Works in any terminal without truecolor support.
+pub fn system_theme() -> Theme {
+    Theme {
+        base_100: Color::Reset,
+        base_200: Color::Black,
+        base_300: Color::DarkGray,
+        base_content: Color::Reset,
+        primary: Color::Blue,
+        primary_content: Color::White,
+        secondary: Color::Cyan,
+        secondary_content: Color::White,
+        accent: Color::Magenta,
+        accent_content: Color::White,
+        neutral: Color::Black,
+        neutral_content: Color::DarkGray,
+        info: Color::Cyan,
+        info_content: Color::DarkGray,
+        success: Color::Green,
+        success_content: Color::White,
+        warning: Color::Yellow,
+        warning_content: Color::Black,
+        error: Color::Red,
+        error_content: Color::White,
+        border_rounded: true,
+    }
+}
+
 impl Theme {
     /// Resolve the active theme from configuration.
     ///
