@@ -130,27 +130,33 @@ impl Theme {
     /// Resolve the active theme from configuration.
     ///
     /// Resolution order:
-    /// 1. If the configured theme name matches a custom theme, use it (with
-    ///    unspecified fields falling back to the dark built-in defaults).
-    /// 2. If the name matches a built-in theme, use it directly.
-    /// 3. Fall back to the "dark" built-in theme.
+    /// 1. If the configured theme name is "system", use system_theme().
+    /// 2. If the name matches a custom theme, use it (with unspecified fields
+    ///    falling back to the dark built-in defaults).
+    /// 3. If the name matches a built-in theme, use it directly.
+    /// 4. Fall back to system_theme().
     pub fn resolve(config: &TuiConfig) -> Self {
-        check_truecolor_support();
+        // 1. System theme shortcut.
+        if config.theme_name == "system" {
+            return system_theme();
+        }
 
         let dark = builtin_theme("dark").expect("dark theme must exist in built-in themes");
 
-        // 1. Check custom themes from config.
+        // 2. Check custom themes from config.
         if let Some(custom) = config.custom_themes.get(&config.theme_name) {
+            check_truecolor_support();
             return apply_custom_overrides(&dark, custom);
         }
 
-        // 2. Check built-in themes.
+        // 3. Check built-in themes.
         if let Some(builtin) = builtin_theme(&config.theme_name) {
+            check_truecolor_support();
             return builtin;
         }
 
-        // 3. Fall back to dark.
-        dark
+        // 4. Fall back to system theme.
+        system_theme()
     }
 }
 
@@ -258,14 +264,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_falls_back_to_dark() {
+    fn resolve_falls_back_to_system() {
         let config = TuiConfig {
             theme_name: "nonexistent_theme_xyz".to_string(),
             ..TuiConfig::default()
         };
         let resolved = Theme::resolve(&config);
-        let dark = builtin_theme("dark").unwrap();
-        assert_eq!(resolved, dark);
+        assert_eq!(resolved, system_theme());
     }
 
     #[test]
