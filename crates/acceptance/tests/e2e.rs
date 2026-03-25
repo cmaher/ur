@@ -18,6 +18,12 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
+use std::time::Duration;
+
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::fmt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Read the image tag to use for all container images in tests.
 /// Uses `UR_IMAGE_TAG` env var if set, otherwise defaults to "latest".
@@ -408,6 +414,36 @@ impl TestEnv {
     }
 }
 
+/// Initialize file logging for acceptance tests.
+///
+/// Writes structured JSON logs to `<logs_dir>/acceptance.log`. The returned
+/// guard must be held for the lifetime of the test — dropping it flushes and
+/// stops the background writer.
+fn init_test_logging(logs_dir: &Path) -> tracing_appender::non_blocking::WorkerGuard {
+    std::fs::create_dir_all(logs_dir).expect("failed to create logs dir");
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::NEVER)
+        .filename_prefix("acceptance.log")
+        .build(logs_dir)
+        .expect("failed to create acceptance log appender");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .json()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_writer(non_blocking),
+        )
+        .init();
+
+    guard
+}
+
+/// Timeout for the entire acceptance test run (10 minutes).
+const TEST_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Single `#[test]` entry point. Sets up the environment once, runs all
 /// scenarios sequentially, then tears down.
 #[test]
@@ -429,6 +465,10 @@ fn e2e_all() {
     // ---- (1) Create temp UR_CONFIG dir ----
     let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
     let config_path = config_dir.path().to_path_buf();
+
+    // ---- (1a) Initialize file logging ----
+    let logs_dir = config_path.join("logs");
+    let _log_guard = init_test_logging(&logs_dir);
 
     // Create bare repo BEFORE writing config (config references it)
     let bare_repo = create_bare_repo(&config_path);
@@ -489,7 +529,43 @@ fn e2e_all() {
         project_key,
     };
 
-    // ---- (2) ur start, run scenarios, always tear down ----
+    // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
+    // The entire test body runs in a spawned thread with a 10-minute join
+    // deadline. If the deadline expires, we panic — which triggers the
+    // existing catch_unwind cleanup logic in each scenario.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_scenarios(env, ur, config_path);
+        }));
+        let _ = tx.send(());
+        result
+    });
+
+    match rx.recv_timeout(TEST_TIMEOUT) {
+        Ok(()) => match handle.join().expect("scenario thread panicked") {
+            Ok(()) => {}
+            Err(e) => std::panic::resume_unwind(e),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!(
+                "acceptance tests exceeded {}-minute timeout",
+                TEST_TIMEOUT.as_secs() / 60
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            // Thread dropped the sender without sending — it panicked before send.
+            match handle.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => std::panic::resume_unwind(e),
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
+    }
+}
+
+/// Run all scenarios with a 10-minute timeout, cleaning up on completion or failure.
+fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     // Everything from `ur start` onward is wrapped in catch_unwind so that
     // teardown runs even if `ur start` itself fails (e.g., port conflict).
     let scenario_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
