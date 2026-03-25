@@ -689,7 +689,14 @@ impl App {
     /// Fetch data for the currently active tab.
     fn fetch_active_tab_data(&self) {
         match self.active_tab {
-            TabId::Tickets => self.data_manager.fetch_tickets(None, None, None),
+            TabId::Tickets => {
+                let params = self.tickets_page.pagination_params();
+                self.data_manager.fetch_tickets(
+                    Some(params.page_size),
+                    Some(params.offset),
+                    Some(params.include_children),
+                );
+            }
             TabId::Flows => self.data_manager.fetch_flows(
                 Some(self.flows_page.page_size()),
                 Some(self.flows_page.page_offset()),
