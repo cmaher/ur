@@ -8,8 +8,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Clear, Widget};
 
-use std::collections::HashSet;
-
 use tracing::warn;
 
 use crate::context::TuiContext;
@@ -322,25 +320,16 @@ impl App {
     /// accumulate them in the throttle. If no cooldown is active the
     /// throttle will flush immediately on the next `should_flush` check.
     fn handle_ui_events(&mut self, items: Vec<UiEventItem>) {
-        let unique = deduplicate_ui_events(items);
-        let mut dirty_tabs: HashSet<TabId> = HashSet::new();
-
-        for item in &unique {
+        let dirty_tabs = items.iter().flat_map(|item| {
             match item.entity_type.as_str() {
-                "ticket" => {
-                    dirty_tabs.insert(TabId::Tickets);
-                    // Ticket changes can affect flows (workflow entries with parent tickets).
-                    dirty_tabs.insert(TabId::Flows);
-                }
-                "workflow" => {
-                    dirty_tabs.insert(TabId::Flows);
-                }
-                "worker" => {
-                    dirty_tabs.insert(TabId::Workers);
-                }
-                _ => {} // unknown events ignored
+                "ticket" => &[TabId::Tickets, TabId::Flows] as &[TabId],
+                "workflow" => &[TabId::Flows],
+                "worker" => &[TabId::Workers],
+                _ => &[],
             }
-        }
+            .iter()
+            .copied()
+        });
 
         self.throttle.mark_dirty(dirty_tabs);
 
@@ -830,15 +819,6 @@ fn reinit_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> any
     Ok(())
 }
 
-/// Deduplicate UI events by (entity_type, entity_id), preserving first-seen order.
-fn deduplicate_ui_events(items: Vec<UiEventItem>) -> Vec<UiEventItem> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert((item.entity_type.clone(), item.entity_id.clone())))
-        .collect()
-}
-
 /// Persist ticket filter settings to the `[tui.ticket.filter]` section of ur.toml.
 ///
 /// Best-effort: logs a warning on failure but does not propagate the error,
@@ -997,61 +977,6 @@ mod tests {
         let mut app = make_app();
         app.switch_tab(TabId::Flows);
         assert_eq!(app.active_tab, TabId::Flows);
-    }
-
-    #[test]
-    fn deduplicate_removes_exact_duplicates() {
-        let items = vec![
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "ur-abc".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "ur-abc".into(),
-            },
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "ur-abc".into(),
-            },
-        ];
-        let result = deduplicate_ui_events(items);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].entity_type, "ticket");
-        assert_eq!(result[1].entity_type, "workflow");
-    }
-
-    #[test]
-    fn deduplicate_preserves_order() {
-        let items = vec![
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "w1".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "t1".into(),
-            },
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "w1".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "t2".into(),
-            },
-        ];
-        let result = deduplicate_ui_events(items);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].entity_id, "w1");
-        assert_eq!(result[1].entity_id, "t1");
-        assert_eq!(result[2].entity_id, "t2");
-    }
-
-    #[test]
-    fn deduplicate_empty_batch() {
-        let result = deduplicate_ui_events(vec![]);
-        assert!(result.is_empty());
     }
 
     fn make_app_with_projects(projects: Vec<&str>) -> App {
