@@ -278,12 +278,9 @@ impl App {
         }
     }
 
-    /// Handle a tick: auto-dismiss expired banners and refresh active page data if stale.
+    /// Handle a tick: auto-dismiss expired banners.
     fn handle_tick(&mut self) {
         self.active_page_mut().tick_banner();
-        if self.active_page().needs_data() {
-            self.fetch_active_tab_data();
-        }
     }
 
     /// Handle a DataReady event: route the payload to the relevant page.

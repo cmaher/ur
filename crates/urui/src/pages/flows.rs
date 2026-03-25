@@ -49,7 +49,6 @@ pub struct FlowsPage {
     total_count: i32,
     loaded: bool,
     error: Option<String>,
-    refreshing: bool,
     /// In-progress status message shown below the tab header.
     active_status: Option<StatusMessage>,
     /// Active notification banner (success/error from async actions).
@@ -70,7 +69,6 @@ impl FlowsPage {
             total_count: 0,
             loaded: false,
             error: None,
-            refreshing: false,
             active_status: None,
             active_banner: None,
             detail_workflow: None,
@@ -240,7 +238,7 @@ impl FlowsPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.refreshing = true;
+                self.loaded = false;
                 self.active_status = Some(StatusMessage {
                     text: "Refreshing flows...".to_string(),
                     dismissable: true,
@@ -568,7 +566,6 @@ impl Page for FlowsPage {
         match payload {
             DataPayload::Flows(Ok((workflows, total_count))) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.pending_fetch = false;
                 self.active_status = None;
                 self.error = None;
@@ -576,7 +573,6 @@ impl Page for FlowsPage {
             }
             DataPayload::Flows(Err(msg)) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.pending_fetch = false;
                 self.active_status = None;
                 self.error = Some(msg.clone());
@@ -588,7 +584,7 @@ impl Page for FlowsPage {
     }
 
     fn needs_data(&self) -> bool {
-        !self.loaded || self.refreshing || self.pending_fetch
+        !self.loaded || self.pending_fetch
     }
 
     fn banner(&self) -> Option<&Banner> {
@@ -1014,7 +1010,7 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(page.refreshing);
+        assert!(!page.loaded);
     }
 
     #[test]

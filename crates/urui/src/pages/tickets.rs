@@ -71,8 +71,6 @@ pub struct TicketsPage {
     active_banner: Option<Banner>,
     /// In-progress status message shown below the tab header.
     active_status: Option<StatusMessage>,
-    /// When true, a background refresh is in progress but stale data stays visible.
-    refreshing: bool,
 }
 
 impl TicketsPage {
@@ -87,7 +85,6 @@ impl TicketsPage {
             filters: TicketFilters::from_config(filter_config),
             active_banner: None,
             active_status: None,
-            refreshing: false,
         }
     }
 
@@ -207,7 +204,7 @@ impl TicketsPage {
         if self.current_page > 0 {
             self.current_page -= 1;
             self.selected_row = 0;
-            self.refreshing = true;
+            self.mark_stale();
         }
     }
 
@@ -216,7 +213,7 @@ impl TicketsPage {
         if self.current_page + 1 < self.total_pages() {
             self.current_page += 1;
             self.selected_row = 0;
-            self.refreshing = true;
+            self.mark_stale();
         }
     }
 
@@ -232,16 +229,12 @@ impl TicketsPage {
             self.page_size = available;
             self.current_page = 0;
             self.selected_row = 0;
-            self.refreshing = true;
+            self.mark_stale();
         }
     }
 
-    /// Apply a server page result, preserving selection on refresh.
-    fn apply_page_result(
-        &mut self,
-        result: &Result<(Vec<Ticket>, i32), String>,
-        was_refreshing: bool,
-    ) {
+    /// Apply a server page result, clamping selection to the new data range.
+    fn apply_page_result(&mut self, result: &Result<(Vec<Ticket>, i32), String>) {
         match result {
             Ok((tickets, total_count)) => {
                 self.total_count = *total_count;
@@ -250,15 +243,11 @@ impl TicketsPage {
                 if self.total_count > 0 && self.current_page > max_page {
                     self.current_page = max_page;
                     // Need another fetch at the clamped offset.
-                    self.refreshing = true;
+                    self.mark_stale();
                     return;
                 }
                 self.data_state = DataState::Loaded(tickets.clone());
-                if was_refreshing {
-                    self.clamp_selection();
-                } else {
-                    self.selected_row = 0;
-                }
+                self.clamp_selection();
             }
             Err(msg) => {
                 self.data_state = DataState::Error(msg.clone());
@@ -293,7 +282,7 @@ impl TicketsPage {
                         // Filters changed; reset to page 0 and re-fetch from server.
                         self.current_page = 0;
                         self.selected_row = 0;
-                        self.refreshing = true;
+                        self.mark_stale();
                     }
                     FilterMenuResult::Close => {
                         self.overlay = None;
@@ -523,7 +512,7 @@ impl Page for TicketsPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.refreshing = true;
+                self.mark_stale();
                 self.active_status = Some(StatusMessage {
                     text: "Refreshing tickets...".to_string(),
                     dismissable: true,
@@ -677,22 +666,19 @@ impl Page for TicketsPage {
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
             DataPayload::Tickets(Ok((tickets, total_count))) => {
-                let was_refreshing = self.refreshing;
-                self.refreshing = false;
                 self.active_status = None;
-                self.apply_page_result(&Ok((tickets.clone(), *total_count)), was_refreshing);
+                self.apply_page_result(&Ok((tickets.clone(), *total_count)));
             }
             DataPayload::Tickets(Err(msg)) => {
-                self.refreshing = false;
                 self.active_status = None;
-                self.apply_page_result(&Err(msg.clone()), false);
+                self.apply_page_result(&Err(msg.clone()));
             }
             _ => {}
         }
     }
 
     fn needs_data(&self) -> bool {
-        matches!(self.data_state, DataState::Loading) || self.refreshing
+        matches!(self.data_state, DataState::Loading)
     }
 
     fn banner(&self) -> Option<&Banner> {
@@ -892,11 +878,11 @@ mod tests {
         assert_eq!(page.current_page, 0);
         assert_eq!(page.total_pages(), 3); // 5 tickets / 2 per page = 3 pages
 
-        // PageRight triggers server fetch (sets refreshing)
+        // PageRight triggers server fetch (marks stale)
         page.handle_action(Action::PageRight);
         assert_eq!(page.current_page, 1);
         assert_eq!(page.selected_row, 0);
-        assert!(page.needs_data()); // refreshing=true for server fetch
+        assert!(page.needs_data()); // marked stale for server fetch
 
         // Simulate server response for page 1
         let tickets_p1 = vec![make_ticket("t-2", "T"), make_ticket("t-3", "T")];
@@ -907,19 +893,26 @@ mod tests {
         assert_eq!(page.current_page, 2);
         assert!(page.needs_data());
 
+        // Simulate fetch complete
+        let tickets_p2 = vec![make_ticket("t-4", "T")];
+        page.on_data(&DataPayload::Tickets(Ok((tickets_p2, 5))));
+
         // Can't go past last page
-        page.refreshing = false; // simulate fetch complete
         page.handle_action(Action::PageRight);
         assert_eq!(page.current_page, 2);
 
         page.handle_action(Action::PageLeft);
         assert_eq!(page.current_page, 1);
 
+        // Simulate fetch complete
+        let tickets_p1b = vec![make_ticket("t-2", "T"), make_ticket("t-3", "T")];
+        page.on_data(&DataPayload::Tickets(Ok((tickets_p1b, 5))));
+
         // Can't go before first page
-        page.refreshing = false;
         page.handle_action(Action::PageLeft);
         assert_eq!(page.current_page, 0);
-        page.refreshing = false;
+        let tickets_p0b = vec![make_ticket("t-0", "T"), make_ticket("t-1", "T")];
+        page.on_data(&DataPayload::Tickets(Ok((tickets_p0b, 5))));
         page.handle_action(Action::PageLeft);
         assert_eq!(page.current_page, 0);
     }
@@ -930,7 +923,6 @@ mod tests {
         let tickets = vec![make_ticket("t-1", "A")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 10))));
         page.current_page = 2;
-        page.refreshing = false;
 
         // Change page size triggers reset to page 0 and re-fetch
         page.update_page_size(13); // 13 - 3 chrome = 10
@@ -945,11 +937,13 @@ mod tests {
         // Default page_size is 20, so area_height=23 gives 20
         page.update_page_size(23);
         assert_eq!(page.page_size, 20);
-        page.refreshing = false;
+        // Load data so page is no longer stale
+        let tickets = vec![make_ticket("t-1", "A")];
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 1))));
 
         // Same size again should not trigger re-fetch
         page.update_page_size(23);
-        assert!(!page.refreshing);
+        assert!(!page.needs_data());
     }
 
     #[test]
@@ -980,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_keeps_data_visible() {
+    fn refresh_marks_stale_for_refetch() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 1))));
@@ -989,9 +983,6 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(page.refreshing);
-        // Data state is still Loaded, not Loading — stale data stays visible.
-        assert!(matches!(page.data_state, DataState::Loaded(_)));
     }
 
     #[test]
@@ -1120,11 +1111,10 @@ mod tests {
         page.handle_action(Action::NavigateDown);
         assert_eq!(page.selected_row, 2);
 
-        // Refresh with fewer tickets
-        page.refreshing = true;
+        // Load fewer tickets — selection should be clamped
+        page.mark_stale();
         let tickets2 = vec![make_ticket("t-1", "A")];
         page.on_data(&DataPayload::Tickets(Ok((tickets2, 1))));
-        // Selection should be clamped
         assert_eq!(page.selected_row, 0);
     }
 }
