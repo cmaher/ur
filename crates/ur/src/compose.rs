@@ -285,6 +285,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         )
         .unwrap();
     }
+    writeln!(out, "      - ${{UR_LOGS_DIR:-~/.ur/logs}}:/logs").unwrap();
 
     // Environment
     writeln!(out, "    environment:").unwrap();
@@ -296,6 +297,11 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     )
     .unwrap();
     writeln!(out, "      - FASTEMBED_CACHE_DIR=/fastembed").unwrap();
+    writeln!(
+        out,
+        "      - UR_HOST_LOGS_DIR=${{UR_LOGS_DIR:-${{HOME}}/.ur/logs}}"
+    )
+    .unwrap();
     if params.backup_path.is_some() {
         writeln!(
             out,
@@ -379,6 +385,11 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
     if let Ok(val) = std::env::var("UR_CONTAINER") {
         env_vars.push(("UR_CONTAINER".to_string(), val));
     }
+
+    env_vars.push((
+        "UR_LOGS_DIR".to_string(),
+        config.logs_dir.to_string_lossy().into_owned(),
+    ));
 
     let compose_content =
         generate_compose(&config.network, &config.proxy, &config.rag, &config.backup);
@@ -468,6 +479,11 @@ mod tests {
                 .env_vars
                 .contains(&("UR_SERVER_PORT".to_string(), "9999".to_string()))
         );
+        assert!(
+            manager
+                .env_vars
+                .contains(&("UR_LOGS_DIR".to_string(), "/test/config/logs".to_string()))
+        );
     }
 
     #[test]
@@ -517,6 +533,10 @@ mod tests {
         assert!(generated.contains("nc -z 127.0.0.1"));
         assert!(generated.contains("interval: 1s"));
         assert!(generated.contains("retries: 10"));
+
+        // Verify logs volume mount and env var
+        assert!(generated.contains("${UR_LOGS_DIR:-~/.ur/logs}:/logs"));
+        assert!(generated.contains("UR_HOST_LOGS_DIR="));
 
         // Verify squid volume
         assert!(generated.contains("allowlist.txt:/etc/squid/allowlist.txt:ro"));
