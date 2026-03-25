@@ -828,6 +828,7 @@ async fn process_launch(
             mode: mode.to_owned(),
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
+            context_repos: vec![],
         })
         .await?;
 

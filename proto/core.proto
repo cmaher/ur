@@ -46,6 +46,8 @@ message WorkerLaunchRequest {
   repeated string skills = 8;
   // Project key for repo pool launches (empty for raw workspace mounts).
   string project_key = 9;
+  // Project keys to mount as read-only context repositories.
+  repeated string context_repos = 10;
 }
 
 message WorkerLaunchResponse {
