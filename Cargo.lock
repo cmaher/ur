@@ -8,6 +8,8 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tempfile",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4479,6 +4481,7 @@ dependencies = [
  "toml",
  "tonic 0.13.1",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "ur_config",
  "ur_db",
@@ -5216,6 +5219,7 @@ dependencies = [
  "tokio",
  "tonic 0.13.1",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "ur_config",
  "ur_rpc",

@@ -7,29 +7,17 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build a WorkerManager, WorkerRepo, and CoreServiceHandler for testing.
-async fn make_test_components(
-    dir: &Path,
-) -> (
-    ur_server::WorkerManager,
-    ur_db::WorkerRepo,
-    ur_server::grpc::CoreServiceHandler,
-) {
-    let workspace = dir.join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-
+fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_config::NetworkConfig) {
     let network_config = ur_config::NetworkConfig {
         name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
         worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
         worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = ur_config::Config {
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
-        workspace: workspace.clone(),
+        workspace: workspace.to_path_buf(),
         server_port: ur_config::DEFAULT_SERVER_PORT,
         builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
         compose_file: dir.join("docker-compose.yml"),
@@ -65,6 +53,23 @@ async fn make_test_components(
         projects: HashMap::new(),
         tui: ur_config::TuiConfig::default(),
     };
+    (config, network_config)
+}
+
+/// Build a WorkerManager, WorkerRepo, and CoreServiceHandler for testing.
+async fn make_test_components(
+    dir: &Path,
+) -> (
+    ur_server::WorkerManager,
+    ur_db::WorkerRepo,
+    ur_server::grpc::CoreServiceHandler,
+) {
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let (config, network_config) = make_test_config(dir, &workspace);
+    let network_manager =
+        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let db = ur_db::DatabaseManager::open(":memory:")
         .await
         .expect("failed to open in-memory db");
