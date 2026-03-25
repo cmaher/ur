@@ -257,6 +257,7 @@ mod tests {
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
             config_dir: std::path::PathBuf::from("/tmp/test"),
+            logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
             server_port: ur_config::DEFAULT_SERVER_PORT,
             builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
