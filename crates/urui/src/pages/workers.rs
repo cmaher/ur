@@ -30,7 +30,6 @@ pub struct WorkersPage {
     page: usize,
     loaded: bool,
     error: Option<String>,
-    refreshing: bool,
     active_banner: Option<Banner>,
 }
 
@@ -44,7 +43,6 @@ impl WorkersPage {
             page: 0,
             loaded: false,
             error: None,
-            refreshing: false,
             active_banner: None,
         }
     }
@@ -212,7 +210,7 @@ impl Page for WorkersPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.refreshing = true;
+                self.loaded = false;
                 PageResult::Consumed
             }
             Action::Quit => PageResult::Quit,
@@ -323,7 +321,6 @@ impl Page for WorkersPage {
         match payload {
             DataPayload::Workers(Ok(workers)) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.pending_kills.clear();
                 self.entry_map.clear();
                 for w in workers {
@@ -334,7 +331,6 @@ impl Page for WorkersPage {
             }
             DataPayload::Workers(Err(msg)) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.error = Some(msg.clone());
                 self.entry_map.clear();
                 self.display_ids.clear();
@@ -344,7 +340,7 @@ impl Page for WorkersPage {
     }
 
     fn needs_data(&self) -> bool {
-        !self.loaded || self.refreshing
+        !self.loaded
     }
 
     fn mark_stale(&mut self) {
@@ -564,7 +560,7 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(page.refreshing);
+        assert!(!page.loaded);
     }
 
     #[test]

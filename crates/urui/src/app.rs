@@ -8,8 +8,6 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Clear, Widget};
 
-use std::collections::HashSet;
-
 use tracing::warn;
 
 use crate::context::TuiContext;
@@ -26,6 +24,7 @@ use crate::pages::tickets::{
 };
 use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
 use crate::terminal;
+use crate::throttle::PageThrottle;
 use crate::widgets::create_action_menu::{
     CreateAction, CreateActionMenuState, CreateActionResult, PendingTicket as MenuPendingTicket,
 };
@@ -60,6 +59,8 @@ pub struct App {
     pending_ticket: Option<PendingTicket>,
     /// Manages desktop notifications for workflow state transitions.
     notification_manager: NotificationManager,
+    /// Throttles UI-event-driven data fetches with a cooldown window.
+    throttle: PageThrottle,
 }
 
 impl App {
@@ -92,6 +93,7 @@ impl App {
             project_input: None,
             pending_ticket: None,
             notification_manager,
+            throttle: PageThrottle::new(),
         }
     }
 
@@ -118,6 +120,12 @@ impl App {
             // multiple key presses into a single redraw.
             while let Ok(ev) = receiver.try_recv() {
                 self.process_event(ev, terminal);
+            }
+
+            // After draining events, check if the throttle cooldown has
+            // elapsed and dirty pages need fetching.
+            if self.throttle.should_flush() {
+                self.flush_throttle();
             }
 
             if self.should_quit {
@@ -270,24 +278,15 @@ impl App {
         }
     }
 
-    /// Handle a tick: auto-dismiss expired banners and refresh active page data if stale.
+    /// Handle a tick: auto-dismiss expired banners.
     fn handle_tick(&mut self) {
         self.active_page_mut().tick_banner();
-        if self.active_page().needs_data() {
-            self.fetch_active_tab_data();
-        }
     }
 
     /// Handle a DataReady event: route the payload to the relevant page.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
-        match &payload {
-            crate::data::DataPayload::Flows(Ok((workflows, _total_count))) => {
-                self.notification_manager.seed_flows(workflows);
-            }
-            crate::data::DataPayload::FlowUpdate(Ok(workflow)) => {
-                self.notification_manager.check_flow_update(workflow);
-            }
-            _ => {}
+        if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
+            self.notification_manager.seed_flows(workflows);
         }
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);
@@ -308,75 +307,52 @@ impl App {
         }
     }
 
-    /// Handle a batch of UI events: deduplicate by (entity_type, entity_id),
-    /// then trigger per-entity fetches for tickets and workflows.
-    ///
-    /// For ticket events, also walks the ancestor chain (via parent_id) to fetch
-    /// parent tickets so progress bars stay current. Additionally, checks if the
-    /// ticket or any ancestor matches a workflow in the flows page, and fetches
-    /// that workflow so flow entries with parent tickets refresh on child changes.
-    fn handle_ui_events(&self, items: Vec<UiEventItem>) {
-        let unique = deduplicate_ui_events(items);
-        let mut fetched_tickets = HashSet::new();
-        let mut fetched_workflows = HashSet::new();
-
-        for item in &unique {
+    /// Handle a batch of UI events: map entity types to dirty tabs and
+    /// accumulate them in the throttle. If no cooldown is active the
+    /// throttle will flush immediately on the next `should_flush` check.
+    fn handle_ui_events(&mut self, items: Vec<UiEventItem>) {
+        let dirty_tabs = items.iter().flat_map(|item| {
             match item.entity_type.as_str() {
-                "ticket" => {
-                    self.handle_ticket_ui_event(
-                        &item.entity_id,
-                        &mut fetched_tickets,
-                        &mut fetched_workflows,
-                    );
-                }
-                "workflow" if fetched_workflows.insert(item.entity_id.clone()) => {
-                    self.data_manager.fetch_workflow(item.entity_id.clone());
-                }
-                "worker" => self.data_manager.fetch_workers(),
-                _ => {} // unknown events ignored
+                "ticket" => &[TabId::Tickets, TabId::Flows] as &[TabId],
+                "workflow" => &[TabId::Flows],
+                "worker" => &[TabId::Workers],
+                _ => &[],
+            }
+            .iter()
+            .copied()
+        });
+
+        self.throttle.mark_dirty(dirty_tabs);
+
+        // If no cooldown is active, flush immediately.
+        if self.throttle.should_flush() {
+            self.flush_throttle();
+        }
+    }
+
+    /// Flush the throttle: fetch data for the active tab if it is dirty,
+    /// and mark non-active dirty tabs as stale for lazy refresh.
+    fn flush_throttle(&mut self) {
+        let dirty = self.throttle.flush();
+        if dirty.is_empty() {
+            return;
+        }
+
+        for tab in &dirty {
+            if *tab == self.active_tab {
+                self.fetch_active_tab_data();
+            } else {
+                self.page_mut_for_tab(*tab).mark_stale();
             }
         }
     }
 
-    /// Process a single ticket UI event: fetch the ticket, walk its ancestor
-    /// chain to fetch parents, and check if any ID in the chain matches a
-    /// workflow displayed on the flows page.
-    fn handle_ticket_ui_event(
-        &self,
-        ticket_id: &str,
-        fetched_tickets: &mut HashSet<String>,
-        fetched_workflows: &mut HashSet<String>,
-    ) {
-        // Fetch the ticket itself
-        if fetched_tickets.insert(ticket_id.to_owned()) {
-            self.data_manager.fetch_ticket(ticket_id.to_owned());
-        }
-
-        // Check if this ticket matches a flows entry
-        if self.flows_page.has_entry_for_ticket(ticket_id)
-            && fetched_workflows.insert(ticket_id.to_owned())
-        {
-            self.data_manager.fetch_workflow(ticket_id.to_owned());
-        }
-
-        // Walk the ancestor chain via parent_id
-        let mut current = ticket_id.to_owned();
-        // Limit depth to prevent infinite loops from data inconsistency
-        for _ in 0..50 {
-            let Some(parent_id) = self.tickets_page.get_parent_id(&current) else {
-                break;
-            };
-            // Fetch ancestor ticket for progress bar updates
-            if fetched_tickets.insert(parent_id.clone()) {
-                self.data_manager.fetch_ticket(parent_id.clone());
-            }
-            // Check if ancestor matches a flows entry
-            if self.flows_page.has_entry_for_ticket(&parent_id)
-                && fetched_workflows.insert(parent_id.clone())
-            {
-                self.data_manager.fetch_workflow(parent_id.clone());
-            }
-            current = parent_id;
+    /// Get a mutable reference to the page for a specific tab.
+    fn page_mut_for_tab(&mut self, tab: TabId) -> &mut dyn Page {
+        match tab {
+            TabId::Tickets => &mut self.tickets_page,
+            TabId::Flows => &mut self.flows_page,
+            TabId::Workers => &mut self.workers_page,
         }
     }
 
@@ -834,15 +810,6 @@ fn reinit_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> any
     Ok(())
 }
 
-/// Deduplicate UI events by (entity_type, entity_id), preserving first-seen order.
-fn deduplicate_ui_events(items: Vec<UiEventItem>) -> Vec<UiEventItem> {
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter(|item| seen.insert((item.entity_type.clone(), item.entity_id.clone())))
-        .collect()
-}
-
 /// Persist ticket filter settings to the `[tui.ticket.filter]` section of ur.toml.
 ///
 /// Best-effort: logs a warning on failure but does not propagate the error,
@@ -1001,61 +968,6 @@ mod tests {
         let mut app = make_app();
         app.switch_tab(TabId::Flows);
         assert_eq!(app.active_tab, TabId::Flows);
-    }
-
-    #[test]
-    fn deduplicate_removes_exact_duplicates() {
-        let items = vec![
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "ur-abc".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "ur-abc".into(),
-            },
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "ur-abc".into(),
-            },
-        ];
-        let result = deduplicate_ui_events(items);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].entity_type, "ticket");
-        assert_eq!(result[1].entity_type, "workflow");
-    }
-
-    #[test]
-    fn deduplicate_preserves_order() {
-        let items = vec![
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "w1".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "t1".into(),
-            },
-            UiEventItem {
-                entity_type: "workflow".into(),
-                entity_id: "w1".into(),
-            },
-            UiEventItem {
-                entity_type: "ticket".into(),
-                entity_id: "t2".into(),
-            },
-        ];
-        let result = deduplicate_ui_events(items);
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].entity_id, "w1");
-        assert_eq!(result[1].entity_id, "t1");
-        assert_eq!(result[2].entity_id, "t2");
-    }
-
-    #[test]
-    fn deduplicate_empty_batch() {
-        let result = deduplicate_ui_events(vec![]);
-        assert!(result.is_empty());
     }
 
     fn make_app_with_projects(projects: Vec<&str>) -> App {

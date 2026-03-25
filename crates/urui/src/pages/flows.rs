@@ -49,7 +49,6 @@ pub struct FlowsPage {
     total_count: i32,
     loaded: bool,
     error: Option<String>,
-    refreshing: bool,
     /// In-progress status message shown below the tab header.
     active_status: Option<StatusMessage>,
     /// Active notification banner (success/error from async actions).
@@ -70,7 +69,6 @@ impl FlowsPage {
             total_count: 0,
             loaded: false,
             error: None,
-            refreshing: false,
             active_status: None,
             active_banner: None,
             detail_workflow: None,
@@ -127,14 +125,6 @@ impl FlowsPage {
     /// Returns the ticket ID of the currently selected workflow, if any.
     pub fn selected_ticket_id(&self) -> Option<String> {
         self.display_ids.get(self.selected).cloned()
-    }
-
-    /// Returns true if the given ticket ID has an entry in the flows page.
-    ///
-    /// Used by ancestor-aware refresh to determine if a ticket event should
-    /// trigger a workflow fetch.
-    pub fn has_entry_for_ticket(&self, ticket_id: &str) -> bool {
-        self.entry_map.contains_key(ticket_id)
     }
 
     /// Handle an async action result by showing a success or error banner.
@@ -248,7 +238,7 @@ impl FlowsPage {
                 PageResult::Consumed
             }
             Action::Refresh => {
-                self.refreshing = true;
+                self.loaded = false;
                 self.active_status = Some(StatusMessage {
                     text: "Refreshing flows...".to_string(),
                     dismissable: true,
@@ -576,7 +566,6 @@ impl Page for FlowsPage {
         match payload {
             DataPayload::Flows(Ok((workflows, total_count))) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.pending_fetch = false;
                 self.active_status = None;
                 self.error = None;
@@ -584,37 +573,18 @@ impl Page for FlowsPage {
             }
             DataPayload::Flows(Err(msg)) => {
                 self.loaded = true;
-                self.refreshing = false;
                 self.pending_fetch = false;
                 self.active_status = None;
                 self.error = Some(msg.clone());
                 self.entry_map.clear();
                 self.display_ids.clear();
             }
-            DataPayload::FlowUpdate(Ok(workflow)) if self.loaded => {
-                if let Some(ref mut detail) = self.detail_workflow
-                    && detail.ticket_id == workflow.ticket_id
-                {
-                    *detail = workflow.clone();
-                }
-                // For single-entity updates on the current page, upsert in place.
-                let timestamps = parse_timestamps(workflow);
-                let ticket_id = workflow.ticket_id.clone();
-                self.entry_map.insert(
-                    ticket_id,
-                    FlowEntry {
-                        workflow: workflow.clone(),
-                        timestamps,
-                    },
-                );
-                self.rebuild_display_ids();
-            }
             _ => {}
         }
     }
 
     fn needs_data(&self) -> bool {
-        !self.loaded || self.refreshing || self.pending_fetch
+        !self.loaded || self.pending_fetch
     }
 
     fn banner(&self) -> Option<&Banner> {
@@ -1040,7 +1010,7 @@ mod tests {
         let result = page.handle_action(Action::Refresh);
         assert_eq!(result, PageResult::Consumed);
         assert!(page.needs_data());
-        assert!(page.refreshing);
+        assert!(!page.loaded);
     }
 
     #[test]
@@ -1170,64 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn single_upsert_adds_workflow() {
-        let mut page = FlowsPage::new();
-        let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((batch, 1))));
-        assert_eq!(page.entry_map.len(), 1);
-
-        // Single-entity upsert adds a new workflow
-        let new_wf = make_workflow("wf-2", "ur-def", false);
-        page.on_data(&DataPayload::FlowUpdate(Ok(new_wf)));
-        assert_eq!(page.entry_map.len(), 2);
-        assert_eq!(page.display_ids.len(), 2);
-    }
-
-    #[test]
-    fn single_upsert_updates_existing() {
-        let mut page = FlowsPage::new();
-        let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((batch, 1))));
-
-        // Upsert with same ticket_id updates the workflow
-        let mut updated = make_workflow("wf-1", "ur-abc", true);
-        updated.implement_cycles = 5;
-        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
-        assert_eq!(page.entry_map.len(), 1);
-        let entry = page.entry_map.get("ur-abc").unwrap();
-        assert!(entry.workflow.stalled);
-        assert_eq!(entry.workflow.implement_cycles, 5);
-    }
-
-    #[test]
-    fn single_upsert_preserves_selection() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
-
-        // Select ur-def
-        page.handle_action(Action::NavigateDown);
-        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
-
-        // Upsert ur-abc -- selection should stay on ur-def
-        let updated = make_workflow("wf-1", "ur-abc", true);
-        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
-        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
-    }
-
-    #[test]
-    fn flow_update_ignored_before_initial_load() {
-        let mut page = FlowsPage::new();
-        let wf = make_workflow("wf-1", "ur-abc", false);
-        page.on_data(&DataPayload::FlowUpdate(Ok(wf)));
-        assert!(!page.loaded);
-        assert!(page.entry_map.is_empty());
-    }
-
-    #[test]
     fn workflow_progress_with_children() {
         let mut wf = make_workflow("wf-1", "ur-abc", false);
         wf.ticket_children_open = 3;
@@ -1307,43 +1219,6 @@ mod tests {
         page.handle_action(Action::Select);
         let result = page.handle_action(Action::Quit);
         assert_eq!(result, PageResult::Quit);
-    }
-
-    #[test]
-    fn flow_update_updates_detail_workflow() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
-
-        page.handle_action(Action::Select);
-        assert!(!page.detail_workflow.as_ref().unwrap().stalled);
-
-        let mut updated = make_workflow("wf-1", "ur-abc", true);
-        updated.implement_cycles = 10;
-        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
-
-        let detail = page.detail_workflow.as_ref().unwrap();
-        assert!(detail.stalled);
-        assert_eq!(detail.implement_cycles, 10);
-    }
-
-    #[test]
-    fn flow_update_does_not_update_different_detail() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
-
-        page.handle_action(Action::Select); // selects ur-abc
-        assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
-
-        let updated = make_workflow("wf-2", "ur-def", true);
-        page.on_data(&DataPayload::FlowUpdate(Ok(updated)));
-
-        // detail_workflow should still be ur-abc, unchanged
-        assert!(!page.detail_workflow.as_ref().unwrap().stalled);
     }
 
     #[test]

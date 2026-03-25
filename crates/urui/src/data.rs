@@ -12,10 +12,9 @@ use ur_rpc::proto::core::{
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
-    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, GetTicketRequest,
-    GetWorkflowRequest, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
-    ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType, UpdateTicketRequest,
-    WorkflowInfo,
+    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, ListTicketsRequest,
+    ListTicketsResponse, ListWorkflowsRequest, ListWorkflowsResponse, SubscribeUiEventsRequest,
+    UiEventType, UpdateTicketRequest,
 };
 
 use crate::create_ticket::{PendingTicket, is_title_placeholder};
@@ -25,13 +24,9 @@ use crate::event::{AppEvent, UiEventItem};
 #[derive(Debug, Clone)]
 pub enum DataPayload {
     /// Ticket list fetched from the server (data, total_count).
-    Tickets(Result<(Vec<Ticket>, i32), String>),
+    Tickets(Result<(Vec<ur_rpc::proto::ticket::Ticket>, i32), String>),
     /// Workflow list fetched from the server (data, total_count).
-    Flows(Result<(Vec<WorkflowInfo>, i32), String>),
-    /// A single ticket fetched after a UI event notification.
-    TicketUpdate(Result<Ticket, String>),
-    /// A single workflow fetched after a UI event notification.
-    FlowUpdate(Result<WorkflowInfo, String>),
+    Flows(Result<(Vec<ur_rpc::proto::ticket::WorkflowInfo>, i32), String>),
     /// Worker list fetched from the server.
     Workers(Result<Vec<WorkerSummary>, String>),
 }
@@ -250,44 +245,6 @@ impl DataManager {
             if let Err(e) = consume_ui_event_stream(port, &tx).await {
                 tracing::warn!(port, error = %e, "UI event stream disconnected");
             }
-        });
-    }
-
-    /// Spawn a background task that fetches a single ticket by ID via `GetTicket`
-    /// and sends the result as `DataPayload::TicketUpdate`.
-    pub fn fetch_ticket(&self, ticket_id: String) {
-        let port = self.port;
-        let tx = self.sender.clone();
-
-        tokio::spawn(async move {
-            debug!(port, %ticket_id, "fetching single ticket");
-            let payload = match fetch_ticket_rpc(port, &ticket_id).await {
-                Ok(ticket) => DataPayload::TicketUpdate(Ok(ticket)),
-                Err(e) => {
-                    error!(port, %ticket_id, error = %e, "single ticket fetch failed");
-                    DataPayload::TicketUpdate(Err(e.to_string()))
-                }
-            };
-            let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
-        });
-    }
-
-    /// Spawn a background task that fetches a single workflow by ticket ID via
-    /// `GetWorkflow` and sends the result as `DataPayload::FlowUpdate`.
-    pub fn fetch_workflow(&self, ticket_id: String) {
-        let port = self.port;
-        let tx = self.sender.clone();
-
-        tokio::spawn(async move {
-            debug!(port, %ticket_id, "fetching single workflow");
-            let payload = match fetch_workflow_rpc(port, &ticket_id).await {
-                Ok(workflow) => DataPayload::FlowUpdate(Ok(workflow)),
-                Err(e) => {
-                    error!(port, %ticket_id, error = %e, "single workflow fetch failed");
-                    DataPayload::FlowUpdate(Err(e.to_string()))
-                }
-            };
-            let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
         });
     }
 
@@ -873,35 +830,6 @@ async fn fetch_workers_rpc(port: u16) -> Result<WorkerListResponse> {
     Ok(response.into_inner())
 }
 
-/// Fetch a single ticket by ID via GetTicket RPC.
-async fn fetch_ticket_rpc(port: u16, ticket_id: &str) -> Result<Ticket> {
-    let channel = connect(port).await?;
-    let mut client = TicketServiceClient::new(channel);
-    let resp = client
-        .get_ticket(GetTicketRequest {
-            id: ticket_id.to_owned(),
-            activity_author_filter: None,
-        })
-        .await?;
-    resp.into_inner()
-        .ticket
-        .ok_or_else(|| anyhow::anyhow!("GetTicket returned no ticket for {ticket_id}"))
-}
-
-/// Fetch a single workflow by ticket ID via GetWorkflow RPC.
-async fn fetch_workflow_rpc(port: u16, ticket_id: &str) -> Result<WorkflowInfo> {
-    let channel = connect(port).await?;
-    let mut client = TicketServiceClient::new(channel);
-    let resp = client
-        .get_workflow(GetWorkflowRequest {
-            ticket_id: ticket_id.to_owned(),
-        })
-        .await?;
-    resp.into_inner()
-        .workflow
-        .ok_or_else(|| anyhow::anyhow!("GetWorkflow returned no workflow for {ticket_id}"))
-}
-
 /// Connect to the UI event stream and forward batches as `AppEvent::UiEvent`.
 async fn consume_ui_event_stream(port: u16, tx: &mpsc::UnboundedSender<AppEvent>) -> Result<()> {
     let channel = connect(port).await?;
@@ -959,32 +887,6 @@ mod tests {
         assert!(matches!(tickets_err, DataPayload::Tickets(Err(_))));
         assert!(matches!(flows_ok, DataPayload::Flows(Ok(_))));
         assert!(matches!(flows_err, DataPayload::Flows(Err(_))));
-    }
-
-    #[test]
-    fn ticket_update_variant_round_trip() {
-        let ticket = Ticket {
-            id: "ur-test".into(),
-            ..Default::default()
-        };
-        let payload = DataPayload::TicketUpdate(Ok(ticket.clone()));
-        assert!(matches!(payload, DataPayload::TicketUpdate(Ok(ref t)) if t.id == "ur-test"));
-
-        let err_payload = DataPayload::TicketUpdate(Err("not found".into()));
-        assert!(matches!(err_payload, DataPayload::TicketUpdate(Err(_))));
-    }
-
-    #[test]
-    fn flow_update_variant_round_trip() {
-        let flow = WorkflowInfo {
-            ticket_id: "ur-flow".into(),
-            ..Default::default()
-        };
-        let payload = DataPayload::FlowUpdate(Ok(flow.clone()));
-        assert!(matches!(payload, DataPayload::FlowUpdate(Ok(ref f)) if f.ticket_id == "ur-flow"));
-
-        let err_payload = DataPayload::FlowUpdate(Err("timeout".into()));
-        assert!(matches!(err_payload, DataPayload::FlowUpdate(Err(_))));
     }
 
     #[test]
