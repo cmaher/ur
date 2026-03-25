@@ -288,14 +288,8 @@ impl App {
 
     /// Handle a DataReady event: route the payload to the relevant page.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
-        match &payload {
-            crate::data::DataPayload::Flows(Ok((workflows, _total_count))) => {
-                self.notification_manager.seed_flows(workflows);
-            }
-            crate::data::DataPayload::FlowUpdate(Ok(workflow)) => {
-                self.notification_manager.check_flow_update(workflow);
-            }
-            _ => {}
+        if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
+            self.notification_manager.seed_flows(workflows);
         }
         self.tickets_page.on_data(&payload);
         self.flows_page.on_data(&payload);

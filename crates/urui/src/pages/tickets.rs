@@ -267,18 +267,6 @@ impl TicketsPage {
         }
     }
 
-    /// Apply a single-ticket update: update in-place for immediate UI feedback
-    /// and trigger a full page re-fetch for accurate server state.
-    fn apply_ticket_update(&mut self, ticket: &Ticket) {
-        let DataState::Loaded(ref mut tickets) = self.data_state else {
-            return;
-        };
-        if let Some(existing) = tickets.iter_mut().find(|t| t.id == ticket.id) {
-            *existing = ticket.clone();
-        }
-        self.refreshing = true;
-    }
-
     /// Clamp selection to valid range within the current page.
     fn clamp_selection(&mut self) {
         let visible_count = self.visible_tickets().len();
@@ -368,20 +356,6 @@ impl TicketsPage {
         self.visible_tickets()
             .get(self.selected_row)
             .map(|t| t.id.clone())
-    }
-
-    /// Returns the parent_id of a ticket if it exists in the loaded data.
-    ///
-    /// Returns `None` if the ticket is not loaded or has no parent (empty string).
-    pub fn get_parent_id(&self, ticket_id: &str) -> Option<String> {
-        let DataState::Loaded(ref tickets) = self.data_state else {
-            return None;
-        };
-        tickets
-            .iter()
-            .find(|t| t.id == ticket_id)
-            .filter(|t| !t.parent_id.is_empty())
-            .map(|t| t.parent_id.clone())
     }
 
     /// Returns the single active project filter, if exactly one project is selected.
@@ -712,9 +686,6 @@ impl Page for TicketsPage {
                 self.refreshing = false;
                 self.active_status = None;
                 self.apply_page_result(&Err(msg.clone()), false);
-            }
-            DataPayload::TicketUpdate(Ok(ticket)) => {
-                self.apply_ticket_update(ticket);
             }
             _ => {}
         }
@@ -1114,44 +1085,6 @@ mod tests {
         page.on_data(&DataPayload::Tickets(Ok((batch2, 1))));
         assert_eq!(page.visible_tickets().len(), 1);
         assert_eq!(page.visible_tickets()[0].id, "t-3");
-    }
-
-    #[test]
-    fn single_upsert_triggers_refetch() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        let batch = vec![make_ticket("t-1", "A")];
-        page.on_data(&DataPayload::Tickets(Ok((batch, 1))));
-        assert!(!page.needs_data());
-
-        // Single-entity upsert triggers a server re-fetch
-        let new_ticket = make_ticket("t-1", "Updated A");
-        page.on_data(&DataPayload::TicketUpdate(Ok(new_ticket)));
-        assert!(page.needs_data());
-        // But the local data is updated immediately for the UI
-        assert_eq!(page.visible_tickets()[0].title, "Updated A");
-    }
-
-    #[test]
-    fn single_upsert_updates_existing_in_place() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        let batch = vec![make_ticket("t-1", "A")];
-        page.on_data(&DataPayload::Tickets(Ok((batch, 1))));
-
-        let mut updated = make_ticket("t-1", "Updated A");
-        updated.priority = 0;
-        page.on_data(&DataPayload::TicketUpdate(Ok(updated)));
-        let visible = page.visible_tickets();
-        assert_eq!(visible[0].title, "Updated A");
-        assert_eq!(visible[0].priority, 0);
-    }
-
-    #[test]
-    fn ticket_update_ignored_before_initial_load() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        // TicketUpdate before initial Tickets load should be ignored
-        let ticket = make_ticket("t-1", "A");
-        page.on_data(&DataPayload::TicketUpdate(Ok(ticket)));
-        assert!(page.needs_data()); // Still in Loading state
     }
 
     #[test]
