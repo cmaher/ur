@@ -14,7 +14,8 @@ use ur_db::{
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
-    BackupTaskManager, Config, GithubPollerManager, RepoPoolManager, WorkerManager, WorkflowEngine,
+    BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, RepoPoolManager,
+    WorkerManager, WorkflowEngine,
 };
 
 #[derive(Parser)]
@@ -23,6 +24,16 @@ use ur_server::{
     about = "Ur server — coordination server for containerized agents"
 )]
 struct Cli {}
+
+fn resolve_logs_dir(cfg: &Config) -> anyhow::Result<PathBuf> {
+    let logs_dir = if std::path::Path::new("/logs").exists() {
+        PathBuf::from("/logs")
+    } else {
+        cfg.logs_dir.clone()
+    };
+    std::fs::create_dir_all(&logs_dir)?;
+    Ok(logs_dir)
+}
 
 fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
     let host_workspace = std::env::var(ur_config::UR_HOST_WORKSPACE_ENV)
@@ -113,6 +124,19 @@ fn init_backup(
         .spawn(shutdown_rx)
         .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
     Ok((shutdown_tx, backup_handle))
+}
+
+fn init_log_cleanup(
+    logs_dir: &std::path::Path,
+) -> (watch::Sender<bool>, tokio::task::JoinHandle<()>) {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let manager = LogCleanupManager::new(
+        logs_dir.to_path_buf(),
+        std::time::Duration::from_secs(10 * 60),
+        std::time::Duration::from_secs(7 * 86400),
+    );
+    let handle = manager.spawn(shutdown_rx);
+    (shutdown_tx, handle)
 }
 
 async fn reconcile_slots(
@@ -415,14 +439,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Config::load()?;
 
-    // Resolve logs directory: inside the container we mount /logs; outside
-    // fall back to the config-level logs_dir.
-    let logs_dir = if std::path::Path::new("/logs").exists() {
-        PathBuf::from("/logs")
-    } else {
-        cfg.logs_dir.clone()
-    };
-    std::fs::create_dir_all(&logs_dir)?;
+    let logs_dir = resolve_logs_dir(&cfg)?;
     let _log_guard = ur_server::logging::init(&logs_dir);
     info!(
         config_dir = %cfg.config_dir.display(),
@@ -458,6 +475,8 @@ async fn main() -> anyhow::Result<()> {
     let prompt_modes = load_prompt_modes(&cfg)?;
     let db = init_database(&cfg).await?;
     let (shutdown_tx, backup_handle) = init_backup(&db, &cfg)?;
+
+    let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
     let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
@@ -522,11 +541,13 @@ async fn main() -> anyhow::Result<()> {
     )
     .await;
 
-    // Signal backup task to stop and wait for it
+    // Signal background tasks to stop and wait for them
     let _ = shutdown_tx.send(true);
     if let Some(handle) = backup_handle {
         let _ = handle.await;
     }
+    let _ = log_cleanup_shutdown_tx.send(true);
+    let _ = log_cleanup_handle.await;
 
     let _ = tokio::fs::remove_file(&pid_file).await;
 

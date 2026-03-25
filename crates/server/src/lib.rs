@@ -7,6 +7,7 @@ pub mod grpc_remote_repo;
 pub mod grpc_server;
 pub mod grpc_ticket;
 pub mod hostexec;
+pub mod log_cleanup;
 pub mod logging;
 pub mod pool;
 pub mod proxy;
@@ -21,6 +22,7 @@ pub mod workflow;
 
 pub use backup::BackupTaskManager;
 pub use config::Config;
+pub use log_cleanup::LogCleanupManager;
 pub use pool::RepoPoolManager;
 pub use proxy::SquidManager;
 pub use strategy::WorkerStrategy;
