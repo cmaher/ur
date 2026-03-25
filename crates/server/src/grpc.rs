@@ -322,6 +322,27 @@ impl CoreService for CoreServiceHandler {
             persist_pool_branch(&self.ticket_repo, &process_id, &worker_id_str).await?;
         }
 
+        // Design workers get the /design command dispatched automatically once
+        // the workerd daemon is ready (reports idle). This runs in the
+        // background so the launch RPC returns immediately.
+        if strategy == crate::WorkerStrategy::Design {
+            let worker_repo = self.worker_repo.clone();
+            let network_config = self.network_config.clone();
+            let pid = process_id.clone();
+            let wid = worker_id_str.clone();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    dispatch_design_on_ready(&worker_repo, &network_config, &pid, &wid).await
+                {
+                    error!(
+                        process_id = %pid,
+                        error = %e,
+                        "failed to dispatch /design command to worker"
+                    );
+                }
+            });
+        }
+
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
 
@@ -865,6 +886,63 @@ async fn send_transition(
         })
         .await
         .map_err(|e| anyhow::anyhow!("failed to send transition request: {e}"))?;
+    Ok(())
+}
+
+/// Wait for a design worker to become idle, then send `/design {ticket_id}`.
+///
+/// Polls the worker's agent status at short intervals. Once idle, derives the
+/// workerd gRPC address and sends the design command via `SendWorkerMessage`.
+/// Times out after 60 seconds if the worker never becomes idle.
+async fn dispatch_design_on_ready(
+    worker_repo: &WorkerRepo,
+    network_config: &ur_config::NetworkConfig,
+    process_id: &str,
+    worker_id: &str,
+) -> Result<(), anyhow::Error> {
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(60);
+    let poll_interval = Duration::from_millis(500);
+    let start = Instant::now();
+
+    loop {
+        if start.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for worker {process_id} to become idle");
+        }
+
+        let worker = worker_repo
+            .get_worker(worker_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found"))?;
+
+        if worker.agent_status == AgentStatus::Idle.as_str() {
+            break;
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    let container_name = format!("{}{}", network_config.worker_prefix, process_id);
+    let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
+
+    info!(
+        process_id = %process_id,
+        workerd_addr = %workerd_addr,
+        "design worker ready — dispatching /design command"
+    );
+
+    let workerd_client = crate::WorkerdClient::with_status_tracking(
+        workerd_addr,
+        worker_repo.clone(),
+        worker_id.to_owned(),
+    );
+    workerd_client
+        .send_message(&format!("/design {process_id}"), true)
+        .await
+        .map_err(|e| anyhow::anyhow!("workerd SendMessage failed: {e}"))?;
+
+    info!(process_id = %process_id, "/design command dispatched successfully");
     Ok(())
 }
 
