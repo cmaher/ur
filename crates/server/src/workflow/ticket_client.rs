@@ -194,7 +194,7 @@ mod tests {
 
         // Create a parent ticket first.
         let parent = ur_db::NewTicket {
-            id: "ur-parent".to_owned(),
+            id: Some("ur-parent".to_owned()),
             project: "ur".to_owned(),
             type_: "task".to_owned(),
             priority: 0,
@@ -239,7 +239,7 @@ mod tests {
 
         // Create parent.
         let parent = ur_db::NewTicket {
-            id: "ur-parent2".to_owned(),
+            id: Some("ur-parent2".to_owned()),
             project: "ur".to_owned(),
             type_: "task".to_owned(),
             priority: 0,
@@ -284,7 +284,7 @@ mod tests {
 
         // Create parent.
         let parent = ur_db::NewTicket {
-            id: "ur-parent3".to_owned(),
+            id: Some("ur-parent3".to_owned()),
             project: "ur".to_owned(),
             type_: "task".to_owned(),
             priority: 0,

@@ -581,7 +581,7 @@ mod tests {
 
     async fn create_test_ticket(repo: &TicketRepo, id: &str) {
         let ticket = NewTicket {
-            id: id.to_string(),
+            id: Some(id.to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,

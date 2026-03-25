@@ -16,7 +16,7 @@ fn managers(db: &TestDb) -> (TicketRepo, GraphManager) {
 /// Create a minimal ticket via TicketRepo.
 async fn create_ticket(repo: &TicketRepo, id: &str) {
     repo.create_ticket(&NewTicket {
-        id: id.into(),
+        id: Some(id.into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -85,7 +85,7 @@ async fn transitive_blockers_cross_epic() {
 
     // Create tickets in two different epics
     repo.create_ticket(&NewTicket {
-        id: "epic-x".into(),
+        id: Some("epic-x".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -98,7 +98,7 @@ async fn transitive_blockers_cross_epic() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "epic-y".into(),
+        id: Some("epic-y".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -111,7 +111,7 @@ async fn transitive_blockers_cross_epic() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "x-task".into(),
+        id: Some("x-task".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("epic-x".into()),
@@ -124,7 +124,7 @@ async fn transitive_blockers_cross_epic() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "y-task".into(),
+        id: Some("y-task".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("epic-y".into()),

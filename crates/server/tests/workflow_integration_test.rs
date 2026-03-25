@@ -344,7 +344,7 @@ async fn seed_ticket_and_worker(
     worker_id: &str,
 ) {
     let ticket = NewTicket {
-        id: ticket_id.to_string(),
+        id: Some(ticket_id.to_string()),
         project: "ur".to_string(),
         type_: "task".to_string(),
         priority: 2,

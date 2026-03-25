@@ -349,7 +349,7 @@ impl TicketService for TicketServiceHandler {
         };
 
         let new_ticket = NewTicket {
-            id: id.clone(),
+            id: Some(id.clone()),
             project: req.project,
             type_: req.ticket_type,
             priority: req.priority as i32,
@@ -1135,7 +1135,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-found".into(),
+                id: Some("t-found".into()),
                 type_: "task".into(),
                 priority: 1,
                 parent_id: None,
@@ -1187,7 +1187,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wfhist".into(),
+                id: Some("t-wfhist".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Workflow history".into(),
@@ -1201,7 +1201,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wfhist-c1".into(),
+                id: Some("t-wfhist-c1".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Child 1".into(),
@@ -1247,7 +1247,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wflist".into(),
+                id: Some("t-wflist".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Workflow list".into(),

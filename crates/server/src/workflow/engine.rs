@@ -361,7 +361,7 @@ mod tests {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
-            id: "ur-test1".to_string(),
+            id: Some("ur-test1".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,
@@ -426,7 +426,7 @@ mod tests {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
-            id: "ur-test2".to_string(),
+            id: Some("ur-test2".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,
@@ -502,7 +502,7 @@ mod tests {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
-            id: "ur-ad01".to_string(),
+            id: Some("ur-ad01".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,
@@ -576,7 +576,7 @@ mod tests {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
-            id: "ur-ad02".to_string(),
+            id: Some("ur-ad02".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,
@@ -687,7 +687,7 @@ mod tests {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
-            id: "ur-test4".to_string(),
+            id: Some("ur-test4".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 2,
