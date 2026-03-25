@@ -13,6 +13,7 @@ mod page;
 mod pages;
 mod terminal;
 mod theme;
+mod throttle;
 mod widgets;
 
 use clap::Parser;
