@@ -528,6 +528,8 @@ mod tests {
         crate::WorkerManager::new(
             std::path::PathBuf::from("/tmp/test/workspace"),
             std::path::PathBuf::from("/tmp/test"),
+            std::path::PathBuf::from("/tmp/test/logs"),
+            std::path::PathBuf::from("/tmp/test/logs"),
             pool,
             network_manager,
             config.network.clone(),

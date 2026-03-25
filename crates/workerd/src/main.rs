@@ -41,7 +41,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    logging::init();
+    let _log_guard = logging::init();
 
     let cli = Cli::parse();
 

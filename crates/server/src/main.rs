@@ -482,9 +482,14 @@ async fn main() -> anyhow::Result<()> {
         local_repo,
         worker_repo.clone(),
     );
+    let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| logs_dir.clone());
     let worker_manager = WorkerManager::new(
         local_workspace,
         host_config_dir,
+        logs_dir,
+        host_logs_dir,
         repo_pool_manager.clone(),
         network_manager,
         cfg.network.clone(),

@@ -97,6 +97,8 @@ async fn make_components_with_db(
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
+        workspace.join("logs"),
+        workspace.join("logs"),
         repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),

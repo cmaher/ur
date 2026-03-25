@@ -249,6 +249,12 @@ pub struct WorkerManager {
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
     host_config_dir: PathBuf,
+    /// Local (container-side) logs directory, used to create per-worker log
+    /// directories before launching containers.
+    logs_dir: PathBuf,
+    /// Host-side logs directory path, used as the volume mount source for
+    /// per-worker log directories (e.g., `~/.ur/logs/workers/<worker_id>/`).
+    host_logs_dir: PathBuf,
     repo_pool_manager: RepoPoolManager,
     network_manager: NetworkManager,
     network_config: NetworkConfig,
@@ -264,6 +270,8 @@ impl WorkerManager {
     pub fn new(
         workspace: PathBuf,
         host_config_dir: PathBuf,
+        logs_dir: PathBuf,
+        host_logs_dir: PathBuf,
         repo_pool_manager: RepoPoolManager,
         network_manager: NetworkManager,
         network_config: NetworkConfig,
@@ -274,6 +282,8 @@ impl WorkerManager {
         Self {
             workspace,
             host_config_dir,
+            logs_dir,
+            host_logs_dir,
             repo_pool_manager,
             network_manager,
             network_config,
@@ -436,6 +446,13 @@ impl WorkerManager {
     /// Generates and stores a worker secret (UUID v4) for auth.
     /// Returns `(container_id, worker_secret)`.
     pub async fn run_and_record(&self, config: WorkerConfig) -> Result<(String, String), String> {
+        // Create per-worker log directory on the local filesystem so the
+        // volume mount has a source directory when the container starts.
+        let worker_logs_dir = self.logs_dir.join("workers").join(&config.worker_id.0);
+        tokio::fs::create_dir_all(&worker_logs_dir)
+            .await
+            .map_err(|e| format!("failed to create worker logs dir: {e}"))?;
+
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
@@ -491,6 +508,7 @@ impl WorkerManager {
         .memory(config.memory.clone())
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
+        .add_logs_dir(&self.host_logs_dir, &config.worker_id.0)
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
@@ -791,6 +809,8 @@ mod tests {
         let mgr = WorkerManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
+            workspace.path().join("logs"),
+            workspace.path().join("logs"),
             repo_pool_manager,
             network_manager,
             network_config,

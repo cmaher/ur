@@ -193,6 +193,20 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add per-worker logs directory mount.
+    ///
+    /// Mounts `<host_logs_dir>/workers/<worker_id>/` from the host into
+    /// `/var/ur/logs` inside the container and sets `UR_LOGS_DIR=/var/ur/logs`
+    /// so workerd writes file-based logs there.
+    pub fn add_logs_dir(mut self, host_logs_dir: &Path, worker_id: &str) -> Self {
+        let host_path = host_logs_dir.join("workers").join(worker_id);
+        self.volumes
+            .push((host_path, PathBuf::from("/var/ur/logs")));
+        self.env_vars
+            .push(("UR_LOGS_DIR".into(), "/var/ur/logs".into()));
+        self
+    }
+
     /// Add context repository mounts as read-only volumes.
     ///
     /// Each entry maps a host path to `/context/<project-key>/` inside the container.
@@ -516,6 +530,23 @@ mod tests {
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
         assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/skills");
+    }
+
+    #[test]
+    fn add_logs_dir_creates_mount_and_env() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_logs_dir(Path::new("/home/user/.ur/logs"), "worker-ab12")
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(
+            opts.volumes[0].0,
+            PathBuf::from("/home/user/.ur/logs/workers/worker-ab12")
+        );
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/logs"));
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_LOGS_DIR");
+        assert_eq!(opts.env_vars[0].1, "/var/ur/logs");
     }
 
     #[test]
