@@ -763,11 +763,17 @@ impl Page for TicketsPage {
 
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
-            DataPayload::Tickets(result) => {
+            DataPayload::Tickets(Ok((tickets, _total_count))) => {
                 let was_refreshing = self.refreshing;
                 self.refreshing = false;
                 self.active_status = None;
-                self.apply_tickets_result(result, was_refreshing);
+                self.apply_tickets_result(&Ok(tickets.clone()), was_refreshing);
+            }
+            DataPayload::Tickets(Err(msg)) => {
+                let was_refreshing = self.refreshing;
+                self.refreshing = false;
+                self.active_status = None;
+                self.apply_tickets_result(&Err(msg.clone()), was_refreshing);
             }
             DataPayload::TicketUpdate(Ok(ticket)) => {
                 if let DataState::Loaded(ref mut map) = self.data_state {
@@ -910,7 +916,7 @@ mod tests {
     fn on_data_tickets_ok() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First"), make_ticket("t-2", "Second")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
         assert!(!page.needs_data());
         assert_eq!(page.ticket_count(), 2);
     }
@@ -926,7 +932,7 @@ mod tests {
     #[test]
     fn on_data_ignores_flows() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
+        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
         assert!(page.needs_data()); // still loading
     }
 
@@ -936,7 +942,7 @@ mod tests {
         let tickets = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), "T"))
             .collect();
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         assert_eq!(page.selected_row, 0);
         page.handle_action(Action::NavigateDown);
@@ -951,7 +957,7 @@ mod tests {
     fn navigate_up_does_not_underflow() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         page.handle_action(Action::NavigateUp);
         assert_eq!(page.selected_row, 0);
@@ -961,7 +967,7 @@ mod tests {
     fn navigate_down_does_not_overflow() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One"), make_ticket("t-2", "Two")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         page.handle_action(Action::NavigateDown);
         page.handle_action(Action::NavigateDown);
@@ -976,7 +982,7 @@ mod tests {
         let tickets = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), "T"))
             .collect();
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         assert_eq!(page.current_page, 0);
         assert_eq!(page.total_pages(), 3); // 5 tickets / 2 per page = 3 pages
@@ -1044,7 +1050,7 @@ mod tests {
     fn refresh_keeps_data_visible() {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
         assert!(!page.needs_data());
 
         let result = page.handle_action(Action::Refresh);
@@ -1062,7 +1068,7 @@ mod tests {
         let tickets: Vec<_> = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), &format!("Ticket {i}")))
             .collect();
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Page 0: first 2 tickets
         let visible = page.visible_tickets();
@@ -1081,7 +1087,7 @@ mod tests {
             make_ticket_with_fields("t-1", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-2", "open", 2, "test", "t-1", 0), // child
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Default: show_children=off, so child is hidden
         assert_eq!(page.ticket_count(), 1);
@@ -1096,7 +1102,7 @@ mod tests {
             make_ticket_with_fields("t-2", "closed", 2, "test", "", 0),
             make_ticket_with_fields("t-3", "in_progress", 2, "test", "", 0),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Default: status=open,in_progress
         assert_eq!(page.ticket_count(), 2);
@@ -1116,7 +1122,7 @@ mod tests {
             make_ticket_with_fields("t-2", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-3", "open", 4, "test", "", 0),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Filter to P0 only
         page.filters.priorities = vec![0];
@@ -1133,7 +1139,7 @@ mod tests {
             make_ticket_with_fields("t-1", "open", 2, "alpha", "", 0),
             make_ticket_with_fields("t-2", "open", 2, "beta", "", 0),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         page.filters.projects = vec!["alpha".to_string()];
         page.rebuild_cache();
@@ -1150,7 +1156,7 @@ mod tests {
             make_ticket_with_fields("t-1", "open", 0, "test", "", 0),
             make_ticket_with_fields("t-2", "open", 2, "test", "", 0),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         assert_eq!(page.filtered_cache[0], "t-1"); // P0
         assert_eq!(page.filtered_cache[1], "t-2"); // P2
@@ -1165,7 +1171,7 @@ mod tests {
             make_ticket_with_fields("t-leaf", "open", 2, "test", "", 0),
             make_ticket_with_fields("t-parent", "open", 2, "test", "", 3),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Parent (has children) should come before leaf at same priority
         assert_eq!(page.filtered_cache[0], "t-parent");
@@ -1178,7 +1184,7 @@ mod tests {
         page.filters.priorities = vec![0, 1];
 
         let tickets = vec![make_ticket("t-1", "First")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Refresh
         page.handle_action(Action::Refresh);
@@ -1186,7 +1192,7 @@ mod tests {
 
         // Reload data — filters should still be set
         let tickets2 = vec![make_ticket("t-2", "Second")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets2, 0))));
         assert_eq!(page.filters.priorities, vec![0, 1]);
     }
 
@@ -1217,12 +1223,12 @@ mod tests {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch1 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
-        page.on_data(&DataPayload::Tickets(Ok(batch1)));
+        page.on_data(&DataPayload::Tickets(Ok((batch1, 0))));
         assert_eq!(page.ticket_count(), 2);
 
         // Full list load with different tickets replaces all
         let batch2 = vec![make_ticket("t-3", "C")];
-        page.on_data(&DataPayload::Tickets(Ok(batch2)));
+        page.on_data(&DataPayload::Tickets(Ok((batch2, 0))));
         assert_eq!(page.ticket_count(), 1);
         assert_eq!(page.filtered_cache[0], "t-3");
     }
@@ -1232,7 +1238,7 @@ mod tests {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch = vec![make_ticket("t-1", "A")];
-        page.on_data(&DataPayload::Tickets(Ok(batch)));
+        page.on_data(&DataPayload::Tickets(Ok((batch, 0))));
         assert_eq!(page.ticket_count(), 1);
 
         // Single-entity upsert adds a new ticket
@@ -1246,7 +1252,7 @@ mod tests {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let batch = vec![make_ticket("t-1", "A")];
-        page.on_data(&DataPayload::Tickets(Ok(batch)));
+        page.on_data(&DataPayload::Tickets(Ok((batch, 0))));
 
         // Upsert with same ID updates the ticket
         let mut updated = make_ticket("t-1", "Updated A");
@@ -1267,7 +1273,7 @@ mod tests {
             make_ticket("t-2", "B"),
             make_ticket("t-3", "C"),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Select the second ticket
         page.handle_action(Action::NavigateDown);
@@ -1280,7 +1286,7 @@ mod tests {
             make_ticket("t-2", "B"),
             make_ticket("t-3", "C"),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets2, 0))));
         assert_eq!(page.selected_ticket_id(), Some("t-2".to_string()));
     }
 
@@ -1293,7 +1299,7 @@ mod tests {
             make_ticket("t-2", "B"),
             make_ticket("t-3", "C"),
         ];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Select the third ticket
         page.handle_action(Action::NavigateDown);
@@ -1303,7 +1309,7 @@ mod tests {
         // Refresh with fewer tickets — t-3 gone
         page.handle_action(Action::Refresh);
         let tickets2 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets2)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets2, 0))));
         // Selection should be clamped to last valid index
         assert!(page.selected_ticket_id().is_some());
     }
@@ -1313,7 +1319,7 @@ mod tests {
         let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
         page.filters.statuses.clear();
         let tickets = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
-        page.on_data(&DataPayload::Tickets(Ok(tickets)));
+        page.on_data(&DataPayload::Tickets(Ok((tickets, 0))));
 
         // Select t-2
         page.handle_action(Action::NavigateDown);

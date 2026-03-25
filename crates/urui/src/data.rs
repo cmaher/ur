@@ -24,10 +24,10 @@ use crate::event::{AppEvent, UiEventItem};
 /// Payload delivered by gRPC data-fetch tasks.
 #[derive(Debug, Clone)]
 pub enum DataPayload {
-    /// Ticket list fetched from the server.
-    Tickets(Result<Vec<Ticket>, String>),
-    /// Workflow list fetched from the server.
-    Flows(Result<Vec<WorkflowInfo>, String>),
+    /// Ticket list fetched from the server (data, total_count).
+    Tickets(Result<(Vec<Ticket>, i32), String>),
+    /// Workflow list fetched from the server (data, total_count).
+    Flows(Result<(Vec<WorkflowInfo>, i32), String>),
     /// A single ticket fetched after a UI event notification.
     TicketUpdate(Result<Ticket, String>),
     /// A single workflow fetched after a UI event notification.
@@ -74,22 +74,28 @@ impl DataManager {
         }
     }
 
-    /// Spawn a background task that fetches all tickets via `ListTickets` and
+    /// Spawn a background task that fetches tickets via `ListTickets` and
     /// sends the result as `DataPayload::Tickets`.
-    pub fn fetch_tickets(&self) {
+    pub fn fetch_tickets(
+        &self,
+        page_size: Option<i32>,
+        offset: Option<i32>,
+        include_children: Option<bool>,
+    ) {
         let port = self.port;
         let tx = self.sender.clone();
         let project = self.project_filter.clone();
 
         tokio::spawn(async move {
             debug!(port, "fetching tickets");
-            let payload = match fetch_tickets_rpc(port, project).await {
-                Ok(resp) => DataPayload::Tickets(Ok(resp.tickets)),
-                Err(e) => {
-                    error!(port, error = %e, "ticket fetch failed");
-                    DataPayload::Tickets(Err(e.to_string()))
-                }
-            };
+            let payload =
+                match fetch_tickets_rpc(port, project, page_size, offset, include_children).await {
+                    Ok(resp) => DataPayload::Tickets(Ok((resp.tickets, resp.total_count))),
+                    Err(e) => {
+                        error!(port, error = %e, "ticket fetch failed");
+                        DataPayload::Tickets(Err(e.to_string()))
+                    }
+                };
             let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
         });
     }
@@ -202,20 +208,17 @@ impl DataManager {
         });
     }
 
-    /// Spawn a background task that fetches all workflows via `ListWorkflows`
+    /// Spawn a background task that fetches workflows via `ListWorkflows`
     /// and sends the result as `DataPayload::Flows`.
-    pub fn fetch_flows(&self) {
+    pub fn fetch_flows(&self, page_size: Option<i32>, offset: Option<i32>) {
         let port = self.port;
         let tx = self.sender.clone();
         let project = self.project_filter.clone();
 
         tokio::spawn(async move {
             debug!(port, "fetching workflows");
-            let payload = match fetch_workflows_rpc(port).await {
-                Ok(resp) => {
-                    let workflows = filter_workflows_by_project(resp.workflows, &project);
-                    DataPayload::Flows(Ok(workflows))
-                }
+            let payload = match fetch_workflows_rpc(port, page_size, offset, project).await {
+                Ok(resp) => DataPayload::Flows(Ok((resp.workflows, resp.total_count))),
                 Err(e) => {
                     error!(port, error = %e, "workflow fetch failed");
                     DataPayload::Flows(Err(e.to_string()))
@@ -612,7 +615,13 @@ fn fallback_title(body: &str) -> Result<String> {
 }
 
 /// Perform the ListTickets RPC call, returning the full response.
-async fn fetch_tickets_rpc(port: u16, project: Option<String>) -> Result<ListTicketsResponse> {
+async fn fetch_tickets_rpc(
+    port: u16,
+    project: Option<String>,
+    page_size: Option<i32>,
+    offset: Option<i32>,
+    include_children: Option<bool>,
+) -> Result<ListTicketsResponse> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     let request = tonic::Request::new(ListTicketsRequest {
@@ -622,29 +631,12 @@ async fn fetch_tickets_rpc(port: u16, project: Option<String>) -> Result<ListTic
         meta_key: None,
         meta_value: None,
         tree_root_id: None,
-        page_size: None,
-        offset: None,
-        include_children: None,
+        page_size,
+        offset,
+        include_children,
     });
     let response = client.list_tickets(request).await?;
     Ok(response.into_inner())
-}
-
-/// Filter workflows by project: keep only those whose `ticket_id` starts with
-/// the project prefix (e.g., "ur-" for project "ur"). Returns all workflows
-/// when no project filter is set.
-fn filter_workflows_by_project(
-    workflows: Vec<WorkflowInfo>,
-    project: &Option<String>,
-) -> Vec<WorkflowInfo> {
-    let Some(proj) = project else {
-        return workflows;
-    };
-    let prefix = format!("{proj}-");
-    workflows
-        .into_iter()
-        .filter(|w| w.ticket_id.starts_with(&prefix))
-        .collect()
 }
 
 /// Filter workers by project key. Returns all workers when no project filter
@@ -663,14 +655,19 @@ fn filter_workers_by_project(
 }
 
 /// Perform the ListWorkflows RPC call, returning the full response.
-async fn fetch_workflows_rpc(port: u16) -> Result<ListWorkflowsResponse> {
+async fn fetch_workflows_rpc(
+    port: u16,
+    page_size: Option<i32>,
+    offset: Option<i32>,
+    project: Option<String>,
+) -> Result<ListWorkflowsResponse> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     let request = tonic::Request::new(ListWorkflowsRequest {
         status: None,
-        page_size: None,
-        offset: None,
-        project: None,
+        page_size,
+        offset,
+        project,
     });
     let response = client.list_workflows(request).await?;
     Ok(response.into_inner())
@@ -942,9 +939,9 @@ mod tests {
     #[test]
     fn data_payload_variants() {
         // Verify the enum variants can be constructed with the expected types.
-        let tickets_ok = DataPayload::Tickets(Ok(vec![]));
+        let tickets_ok = DataPayload::Tickets(Ok((vec![], 0)));
         let tickets_err = DataPayload::Tickets(Err("connection refused".into()));
-        let flows_ok = DataPayload::Flows(Ok(vec![]));
+        let flows_ok = DataPayload::Flows(Ok((vec![], 0)));
         let flows_err = DataPayload::Flows(Err("timeout".into()));
 
         assert!(matches!(tickets_ok, DataPayload::Tickets(Ok(_))));
@@ -1031,43 +1028,6 @@ mod tests {
         assert!(result.is_err());
         let result2 = fallback_title("   \n  ");
         assert!(result2.is_err());
-    }
-
-    #[test]
-    fn filter_workflows_no_project_returns_all() {
-        let workflows = vec![
-            WorkflowInfo {
-                ticket_id: "ur-abc".into(),
-                ..Default::default()
-            },
-            WorkflowInfo {
-                ticket_id: "foo-xyz".into(),
-                ..Default::default()
-            },
-        ];
-        let result = filter_workflows_by_project(workflows, &None);
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn filter_workflows_by_project_filters_correctly() {
-        let workflows = vec![
-            WorkflowInfo {
-                ticket_id: "ur-abc".into(),
-                ..Default::default()
-            },
-            WorkflowInfo {
-                ticket_id: "foo-xyz".into(),
-                ..Default::default()
-            },
-            WorkflowInfo {
-                ticket_id: "ur-def".into(),
-                ..Default::default()
-            },
-        ];
-        let result = filter_workflows_by_project(workflows, &Some("ur".to_string()));
-        assert_eq!(result.len(), 2);
-        assert!(result.iter().all(|w| w.ticket_id.starts_with("ur-")));
     }
 
     #[test]

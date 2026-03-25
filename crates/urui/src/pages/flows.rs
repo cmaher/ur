@@ -565,7 +565,7 @@ impl Page for FlowsPage {
 
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
-            DataPayload::Flows(Ok(workflows)) => {
+            DataPayload::Flows(Ok((workflows, _total_count))) => {
                 self.loaded = true;
                 self.refreshing = false;
                 self.active_status = None;
@@ -781,7 +781,7 @@ mod tests {
     fn on_data_loads_workflows() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs.clone())));
+        page.on_data(&DataPayload::Flows(Ok((wfs.clone(), 0))));
         assert!(page.loaded);
         assert!(!page.needs_data());
         assert_eq!(page.entry_map.len(), 1);
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn on_data_ignores_tickets_payload() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Tickets(Ok(vec![])));
+        page.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
         assert!(!page.loaded);
     }
 
@@ -810,7 +810,7 @@ mod tests {
         let wfs: Vec<WorkflowInfo> = (0..3)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         assert_eq!(page.selected, 0);
         assert_eq!(
@@ -845,7 +845,7 @@ mod tests {
         let wfs: Vec<WorkflowInfo> = (0..45)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         assert_eq!(page.total_pages(), 3);
         assert_eq!(page.page, 0);
@@ -916,7 +916,7 @@ mod tests {
     fn refresh_resets_to_loading() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
         assert!(!page.needs_data());
 
         let result = page.handle_action(Action::Refresh);
@@ -937,7 +937,7 @@ mod tests {
     fn cancel_flow_returns_ignored_for_app_handling() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         // Cancel actions are handled at the app level, so the page returns Ignored.
         assert_eq!(page.handle_action(Action::CloseTicket), PageResult::Ignored);
@@ -951,7 +951,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         assert_eq!(page.selected_ticket_id(), Some("ur-abc".to_string()));
         page.handle_action(Action::NavigateDown);
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn selected_ticket_id_none_when_empty() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
+        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
         assert!(page.selected_ticket_id().is_none());
     }
 
@@ -1040,12 +1040,12 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(batch1)));
+        page.on_data(&DataPayload::Flows(Ok((batch1, 0))));
         assert_eq!(page.entry_map.len(), 2);
 
         // Full list load with different workflows replaces all
         let batch2 = vec![make_workflow("wf-3", "ur-ghi", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch2)));
+        page.on_data(&DataPayload::Flows(Ok((batch2, 0))));
         assert_eq!(page.entry_map.len(), 1);
         assert!(page.entry_map.contains_key("ur-ghi"));
         assert!(!page.entry_map.contains_key("ur-abc"));
@@ -1055,7 +1055,7 @@ mod tests {
     fn single_upsert_adds_workflow() {
         let mut page = FlowsPage::new();
         let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch)));
+        page.on_data(&DataPayload::Flows(Ok((batch, 0))));
         assert_eq!(page.entry_map.len(), 1);
 
         // Single-entity upsert adds a new workflow
@@ -1069,7 +1069,7 @@ mod tests {
     fn single_upsert_updates_existing() {
         let mut page = FlowsPage::new();
         let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch)));
+        page.on_data(&DataPayload::Flows(Ok((batch, 0))));
 
         // Upsert with same ticket_id updates the workflow
         let mut updated = make_workflow("wf-1", "ur-abc", true);
@@ -1089,7 +1089,7 @@ mod tests {
             make_workflow("wf-2", "ur-def", false),
             make_workflow("wf-3", "ur-ghi", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         // Select ur-def (sorted: ur-abc=0, ur-def=1, ur-ghi=2)
         page.handle_action(Action::NavigateDown);
@@ -1101,7 +1101,7 @@ mod tests {
             make_workflow("wf-2", "ur-def", false),
             make_workflow("wf-3", "ur-ghi", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs2)));
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 0))));
         assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
     }
 
@@ -1113,7 +1113,7 @@ mod tests {
             make_workflow("wf-2", "ur-def", false),
             make_workflow("wf-3", "ur-ghi", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         // Select ur-ghi (index 2)
         page.handle_action(Action::NavigateDown);
@@ -1125,7 +1125,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs2)));
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 0))));
         assert!(page.selected_ticket_id().is_some());
     }
 
@@ -1136,7 +1136,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         // Select ur-def
         page.handle_action(Action::NavigateDown);
@@ -1188,7 +1188,7 @@ mod tests {
     fn select_enters_detail_mode() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         assert!(page.detail_workflow.is_none());
         let result = page.handle_action(Action::Select);
@@ -1201,7 +1201,7 @@ mod tests {
     fn back_exits_detail_mode() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         page.handle_action(Action::Select);
         assert!(page.detail_workflow.is_some());
@@ -1218,7 +1218,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         page.handle_action(Action::Select);
         assert!(page.detail_workflow.is_some());
@@ -1232,7 +1232,7 @@ mod tests {
     fn detail_mode_quit_works() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         page.handle_action(Action::Select);
         let result = page.handle_action(Action::Quit);
@@ -1243,7 +1243,7 @@ mod tests {
     fn flow_update_updates_detail_workflow() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         page.handle_action(Action::Select);
         assert!(!page.detail_workflow.as_ref().unwrap().stalled);
@@ -1264,7 +1264,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
 
         page.handle_action(Action::Select); // selects ur-abc
         assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
@@ -1279,7 +1279,7 @@ mod tests {
     #[test]
     fn select_noop_when_empty() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
+        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
 
         let result = page.handle_action(Action::Select);
         assert_eq!(result, PageResult::Consumed);
@@ -1298,7 +1298,7 @@ mod tests {
     fn footer_in_detail_mode_has_back_and_quit() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 0))));
         page.handle_action(Action::Select);
 
         let keymap = Keymap::default();
