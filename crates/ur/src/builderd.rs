@@ -70,6 +70,8 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
             &config.builderd_port.to_string(),
             "--workspace",
             &config.workspace.display().to_string(),
+            "--logs-dir",
+            &config.logs_dir.display().to_string(),
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
