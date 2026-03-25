@@ -118,6 +118,10 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
         output,
     )?;
 
+    // Load config to resolve logs_dir (may be customized in ur.toml).
+    let config = ur_config::Config::load_from(&config_dir)?;
+    init_dir(&config.logs_dir, output)?;
+
     // Credentials file must exist on the host for Docker file mounts to work
     // (otherwise Docker creates a directory at the mount path).
     write_file(
@@ -205,6 +209,7 @@ mod tests {
         assert!(tmp.path().join("rag/docs").is_dir());
         assert!(tmp.path().join("rag/docs/rust").is_dir());
         assert!(tmp.path().join("rag/qdrant").is_dir());
+        assert!(tmp.path().join("logs").is_dir());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());
     }
