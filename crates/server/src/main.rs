@@ -411,11 +411,19 @@ async fn serve_grpc_servers(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    ur_server::logging::init();
-
     let _cli = Cli::parse();
 
     let cfg = Config::load()?;
+
+    // Resolve logs directory: inside the container we mount /logs; outside
+    // fall back to the config-level logs_dir.
+    let logs_dir = if std::path::Path::new("/logs").exists() {
+        PathBuf::from("/logs")
+    } else {
+        cfg.logs_dir.clone()
+    };
+    std::fs::create_dir_all(&logs_dir)?;
+    let _log_guard = ur_server::logging::init(&logs_dir);
     info!(
         config_dir = %cfg.config_dir.display(),
         server_port = cfg.server_port,
