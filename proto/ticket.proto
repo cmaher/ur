@@ -112,10 +112,17 @@ message ListTicketsRequest {
   // Field 7 removed (was lifecycle_status).
   // When set, return the root ticket and all descendants (recursive tree walk).
   optional string tree_root_id = 8;
+  // Pagination: max results to return. When absent, return all.
+  optional int32 page_size = 9;
+  // Pagination: number of results to skip.
+  optional int32 offset = 10;
+  // When true, include child tickets in the result set.
+  optional bool include_children = 11;
 }
 
 message ListTicketsResponse {
   repeated Ticket tickets = 1;
+  int32 total_count = 2;
 }
 
 // --- GetTicket ---
@@ -312,10 +319,17 @@ message GetWorkflowResponse {
 
 message ListWorkflowsRequest {
   optional string status = 1;
+  // Pagination: max results to return. When absent, return all.
+  optional int32 page_size = 2;
+  // Pagination: number of results to skip.
+  optional int32 offset = 3;
+  // Filter by project key.
+  optional string project = 4;
 }
 
 message ListWorkflowsResponse {
   repeated WorkflowInfo workflows = 1;
+  int32 total_count = 2;
 }
 
 // --- SubscribeUiEvents ---

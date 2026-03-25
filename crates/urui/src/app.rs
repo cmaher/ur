@@ -281,7 +281,7 @@ impl App {
     /// Handle a DataReady event: route the payload to the relevant page.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
         match &payload {
-            crate::data::DataPayload::Flows(Ok(workflows)) => {
+            crate::data::DataPayload::Flows(Ok((workflows, _total_count))) => {
                 self.notification_manager.seed_flows(workflows);
             }
             crate::data::DataPayload::FlowUpdate(Ok(workflow)) => {
@@ -689,8 +689,18 @@ impl App {
     /// Fetch data for the currently active tab.
     fn fetch_active_tab_data(&self) {
         match self.active_tab {
-            TabId::Tickets => self.data_manager.fetch_tickets(),
-            TabId::Flows => self.data_manager.fetch_flows(),
+            TabId::Tickets => {
+                let params = self.tickets_page.pagination_params();
+                self.data_manager.fetch_tickets(
+                    Some(params.page_size),
+                    Some(params.offset),
+                    Some(params.include_children),
+                );
+            }
+            TabId::Flows => self.data_manager.fetch_flows(
+                Some(self.flows_page.page_size()),
+                Some(self.flows_page.page_offset()),
+            ),
             TabId::Workers => self.data_manager.fetch_workers(),
         }
     }
@@ -972,7 +982,7 @@ mod tests {
     #[test]
     fn data_ready_routes_to_pages() {
         let mut app = make_app();
-        let payload = DataPayload::Tickets(Ok(vec![]));
+        let payload = DataPayload::Tickets(Ok((vec![], 0)));
         app.handle_data_ready(payload);
         assert!(!app.tickets_page.needs_data());
     }

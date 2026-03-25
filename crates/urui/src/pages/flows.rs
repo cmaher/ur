@@ -34,14 +34,19 @@ struct FlowEntry {
     timestamps: ParsedTimestamps,
 }
 
-/// State for the Flows tab, showing all workflows in a paginated table.
+/// State for the Flows tab, showing workflows in a server-paginated table.
+///
+/// Only one page of data is held at a time. Page navigation triggers a new
+/// gRPC fetch with the appropriate offset.
 pub struct FlowsPage {
-    /// Map of ticket_id -> FlowEntry for efficient lookups and upserts.
+    /// Map of ticket_id -> FlowEntry for the current page only.
     entry_map: HashMap<String, FlowEntry>,
-    /// Sorted display list of ticket IDs, rebuilt on data changes.
+    /// Sorted display list of ticket IDs for the current page.
     display_ids: Vec<String>,
     selected: usize,
     page: usize,
+    /// Server-reported total number of workflows (across all pages).
+    total_count: i32,
     loaded: bool,
     error: Option<String>,
     refreshing: bool,
@@ -51,6 +56,8 @@ pub struct FlowsPage {
     active_banner: Option<Banner>,
     /// When Some, the detail sub-page is shown for this workflow.
     detail_workflow: Option<WorkflowInfo>,
+    /// When true, a page navigation is pending and needs a server fetch.
+    pending_fetch: bool,
 }
 
 impl FlowsPage {
@@ -60,42 +67,45 @@ impl FlowsPage {
             display_ids: Vec::new(),
             selected: 0,
             page: 0,
+            total_count: 0,
             loaded: false,
             error: None,
             refreshing: false,
             active_status: None,
             active_banner: None,
             detail_workflow: None,
+            pending_fetch: false,
         }
     }
 
+    /// Total number of pages based on server-reported total_count.
     fn total_pages(&self) -> usize {
-        if self.display_ids.is_empty() {
+        if self.total_count <= 0 {
             1
         } else {
-            self.display_ids.len().div_ceil(PAGE_SIZE)
+            (self.total_count as usize).div_ceil(PAGE_SIZE)
         }
     }
 
-    fn page_ids(&self) -> &[String] {
-        let start = self.page * PAGE_SIZE;
-        let end = (start + PAGE_SIZE).min(self.display_ids.len());
-        if start >= self.display_ids.len() {
-            &[]
-        } else {
-            &self.display_ids[start..end]
-        }
+    /// Returns the page size used for server pagination requests.
+    pub fn page_size(&self) -> i32 {
+        PAGE_SIZE as i32
+    }
+
+    /// Returns the current offset for server pagination requests.
+    pub fn page_offset(&self) -> i32 {
+        (self.page * PAGE_SIZE) as i32
     }
 
     fn page_entries(&self) -> Vec<&FlowEntry> {
-        self.page_ids()
+        self.display_ids
             .iter()
             .filter_map(|id| self.entry_map.get(id))
             .collect()
     }
 
     fn page_row_count(&self) -> usize {
-        self.page_ids().len()
+        self.display_ids.len()
     }
 
     fn clamp_selection(&mut self) {
@@ -111,30 +121,12 @@ impl FlowsPage {
     fn rebuild_display_ids(&mut self) {
         self.display_ids = self.entry_map.keys().cloned().collect();
         self.display_ids.sort();
-    }
-
-    /// Preserve selection by ticket ID, rebuild display list, restore selection.
-    fn preserve_selection_and_rebuild(&mut self) {
-        let selected_id = self.selected_ticket_id();
-        self.rebuild_display_ids();
-        self.restore_selection_by_id(selected_id.as_deref());
-    }
-
-    /// Restore selection to a ticket ID, or clamp if the ID is gone.
-    fn restore_selection_by_id(&mut self, ticket_id: Option<&str>) {
-        if let Some(id) = ticket_id
-            && let Some(pos) = self.display_ids.iter().position(|tid| tid == id)
-        {
-            self.page = pos / PAGE_SIZE;
-            self.selected = pos % PAGE_SIZE;
-            return;
-        }
         self.clamp_selection();
     }
 
     /// Returns the ticket ID of the currently selected workflow, if any.
     pub fn selected_ticket_id(&self) -> Option<String> {
-        self.page_ids().get(self.selected).cloned()
+        self.display_ids.get(self.selected).cloned()
     }
 
     /// Returns true if the given ticket ID has an entry in the flows page.
@@ -168,24 +160,39 @@ impl FlowsPage {
         }
     }
 
-    /// Bulk-load workflows from a full list response.
-    fn load_workflows(&mut self, workflows: &[WorkflowInfo]) {
+    /// Load a page of workflows from the server response, replacing current data.
+    fn load_page(&mut self, workflows: &[WorkflowInfo], total_count: i32) {
+        self.entry_map.clear();
         for wf in workflows {
-            self.upsert_workflow(wf.clone());
+            let timestamps = parse_timestamps(wf);
+            let ticket_id = wf.ticket_id.clone();
+            self.entry_map.insert(
+                ticket_id,
+                FlowEntry {
+                    workflow: wf.clone(),
+                    timestamps,
+                },
+            );
         }
+        self.total_count = total_count;
+        // Clamp page if offset is past the end (e.g. items were deleted).
+        self.clamp_page_to_valid();
+        self.rebuild_display_ids();
     }
 
-    /// Insert or update a workflow, parsing its timestamps.
-    fn upsert_workflow(&mut self, wf: WorkflowInfo) {
-        let timestamps = parse_timestamps(&wf);
-        let ticket_id = wf.ticket_id.clone();
-        self.entry_map.insert(
-            ticket_id,
-            FlowEntry {
-                workflow: wf,
-                timestamps,
-            },
-        );
+    /// Clamp the current page to the last valid page if offset >= total_count.
+    fn clamp_page_to_valid(&mut self) {
+        let max_page = if self.total_count <= 0 {
+            0
+        } else {
+            ((self.total_count as usize).saturating_sub(1)) / PAGE_SIZE
+        };
+        if self.page > max_page {
+            self.page = max_page;
+            self.selected = 0;
+            // Need another fetch at the clamped offset.
+            self.pending_fetch = true;
+        }
     }
 
     /// Handle actions when in detail view mode.
@@ -220,6 +227,7 @@ impl FlowsPage {
                 if self.page > 0 {
                     self.page -= 1;
                     self.selected = 0;
+                    self.pending_fetch = true;
                 }
                 PageResult::Consumed
             }
@@ -227,6 +235,7 @@ impl FlowsPage {
                 if self.page + 1 < self.total_pages() {
                     self.page += 1;
                     self.selected = 0;
+                    self.pending_fetch = true;
                 }
                 PageResult::Consumed
             }
@@ -565,18 +574,18 @@ impl Page for FlowsPage {
 
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
-            DataPayload::Flows(Ok(workflows)) => {
+            DataPayload::Flows(Ok((workflows, total_count))) => {
                 self.loaded = true;
                 self.refreshing = false;
+                self.pending_fetch = false;
                 self.active_status = None;
-                self.entry_map.clear();
-                self.load_workflows(workflows);
                 self.error = None;
-                self.preserve_selection_and_rebuild();
+                self.load_page(workflows, *total_count);
             }
             DataPayload::Flows(Err(msg)) => {
                 self.loaded = true;
                 self.refreshing = false;
+                self.pending_fetch = false;
                 self.active_status = None;
                 self.error = Some(msg.clone());
                 self.entry_map.clear();
@@ -588,15 +597,24 @@ impl Page for FlowsPage {
                 {
                     *detail = workflow.clone();
                 }
-                self.upsert_workflow(workflow.clone());
-                self.preserve_selection_and_rebuild();
+                // For single-entity updates on the current page, upsert in place.
+                let timestamps = parse_timestamps(workflow);
+                let ticket_id = workflow.ticket_id.clone();
+                self.entry_map.insert(
+                    ticket_id,
+                    FlowEntry {
+                        workflow: workflow.clone(),
+                        timestamps,
+                    },
+                );
+                self.rebuild_display_ids();
             }
             _ => {}
         }
     }
 
     fn needs_data(&self) -> bool {
-        !self.loaded || self.refreshing
+        !self.loaded || self.refreshing || self.pending_fetch
     }
 
     fn banner(&self) -> Option<&Banner> {
@@ -781,11 +799,12 @@ mod tests {
     fn on_data_loads_workflows() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs.clone())));
+        page.on_data(&DataPayload::Flows(Ok((wfs.clone(), 1))));
         assert!(page.loaded);
         assert!(!page.needs_data());
         assert_eq!(page.entry_map.len(), 1);
         assert!(page.error.is_none());
+        assert_eq!(page.total_count, 1);
     }
 
     #[test]
@@ -800,7 +819,7 @@ mod tests {
     #[test]
     fn on_data_ignores_tickets_payload() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Tickets(Ok(vec![])));
+        page.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
         assert!(!page.loaded);
     }
 
@@ -810,7 +829,7 @@ mod tests {
         let wfs: Vec<WorkflowInfo> = (0..3)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 3))));
 
         assert_eq!(page.selected, 0);
         assert_eq!(
@@ -840,32 +859,131 @@ mod tests {
     }
 
     #[test]
-    fn pagination() {
+    fn page_right_triggers_fetch() {
         let mut page = FlowsPage::new();
-        let wfs: Vec<WorkflowInfo> = (0..45)
-            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
+        // Simulate server returning first page of 20 items, total 45
+        let wfs: Vec<WorkflowInfo> = (0..20)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
 
         assert_eq!(page.total_pages(), 3);
         assert_eq!(page.page, 0);
-        assert_eq!(page.page_row_count(), 20);
+        assert!(!page.needs_data());
 
+        // PageRight should trigger a pending fetch
         assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
         assert_eq!(page.page, 1);
         assert_eq!(page.selected, 0);
-        assert_eq!(page.page_row_count(), 20);
+        assert!(page.pending_fetch);
+        assert!(page.needs_data());
+        assert_eq!(page.page_offset(), 20);
+    }
 
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
-        assert_eq!(page.page, 2);
-        assert_eq!(page.page_row_count(), 5);
+    #[test]
+    fn page_left_triggers_fetch() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..20)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
 
-        // Can't go past last page
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
-        assert_eq!(page.page, 2);
+        // Move to page 1
+        page.handle_action(Action::PageRight);
+        // Simulate server response for page 1
+        let wfs2: Vec<WorkflowInfo> = (20..40)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+        assert!(!page.needs_data());
 
+        // PageLeft should trigger a pending fetch
         assert_eq!(page.handle_action(Action::PageLeft), PageResult::Consumed);
+        assert_eq!(page.page, 0);
+        assert!(page.pending_fetch);
+        assert!(page.needs_data());
+        assert_eq!(page.page_offset(), 0);
+    }
+
+    #[test]
+    fn cannot_page_past_last() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..5)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 5))));
+
+        // Only 1 page total, PageRight should not change anything
+        assert_eq!(page.total_pages(), 1);
+        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
+        assert_eq!(page.page, 0);
+        assert!(!page.pending_fetch);
+    }
+
+    #[test]
+    fn cannot_page_before_first() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..5)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 25))));
+
+        // Already on page 0, PageLeft should not change anything
+        assert_eq!(page.handle_action(Action::PageLeft), PageResult::Consumed);
+        assert_eq!(page.page, 0);
+        assert!(!page.pending_fetch);
+    }
+
+    #[test]
+    fn total_pages_uses_server_total_count() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..10)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
+            .collect();
+        // Server says 45 total, even though we only got 10 on this page
+        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        assert_eq!(page.total_pages(), 3);
+    }
+
+    #[test]
+    fn page_offset_and_size() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..20)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 60))));
+
+        assert_eq!(page.page_size(), 20);
+        assert_eq!(page.page_offset(), 0);
+
+        page.handle_action(Action::PageRight);
+        assert_eq!(page.page_offset(), 20);
+
+        // Simulate receiving page 1
+        let wfs2: Vec<WorkflowInfo> = (20..40)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 60))));
+
+        page.handle_action(Action::PageRight);
+        assert_eq!(page.page_offset(), 40);
+    }
+
+    #[test]
+    fn clamp_page_when_offset_past_end() {
+        let mut page = FlowsPage::new();
+        // Start on page 2 (offset 40)
+        page.page = 2;
+        // Server now says total is only 25 (pages 0 and 1 only)
+        let wfs: Vec<WorkflowInfo> = (0..5)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 25))));
+
+        // Page should be clamped to last valid page (1)
         assert_eq!(page.page, 1);
+        // A re-fetch should be pending to get the correct page data
+        assert!(page.pending_fetch);
     }
 
     #[test]
@@ -916,7 +1034,7 @@ mod tests {
     fn refresh_resets_to_loading() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
         assert!(!page.needs_data());
 
         let result = page.handle_action(Action::Refresh);
@@ -937,7 +1055,7 @@ mod tests {
     fn cancel_flow_returns_ignored_for_app_handling() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
         // Cancel actions are handled at the app level, so the page returns Ignored.
         assert_eq!(page.handle_action(Action::CloseTicket), PageResult::Ignored);
@@ -951,7 +1069,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
 
         assert_eq!(page.selected_ticket_id(), Some("ur-abc".to_string()));
         page.handle_action(Action::NavigateDown);
@@ -961,7 +1079,7 @@ mod tests {
     #[test]
     fn selected_ticket_id_none_when_empty() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
+        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
         assert!(page.selected_ticket_id().is_none());
     }
 
@@ -1040,12 +1158,12 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(batch1)));
+        page.on_data(&DataPayload::Flows(Ok((batch1, 2))));
         assert_eq!(page.entry_map.len(), 2);
 
         // Full list load with different workflows replaces all
         let batch2 = vec![make_workflow("wf-3", "ur-ghi", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch2)));
+        page.on_data(&DataPayload::Flows(Ok((batch2, 1))));
         assert_eq!(page.entry_map.len(), 1);
         assert!(page.entry_map.contains_key("ur-ghi"));
         assert!(!page.entry_map.contains_key("ur-abc"));
@@ -1055,7 +1173,7 @@ mod tests {
     fn single_upsert_adds_workflow() {
         let mut page = FlowsPage::new();
         let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch)));
+        page.on_data(&DataPayload::Flows(Ok((batch, 1))));
         assert_eq!(page.entry_map.len(), 1);
 
         // Single-entity upsert adds a new workflow
@@ -1069,7 +1187,7 @@ mod tests {
     fn single_upsert_updates_existing() {
         let mut page = FlowsPage::new();
         let batch = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(batch)));
+        page.on_data(&DataPayload::Flows(Ok((batch, 1))));
 
         // Upsert with same ticket_id updates the workflow
         let mut updated = make_workflow("wf-1", "ur-abc", true);
@@ -1082,61 +1200,13 @@ mod tests {
     }
 
     #[test]
-    fn selection_preserved_by_id_across_rebuild() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-            make_workflow("wf-3", "ur-ghi", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
-
-        // Select ur-def (sorted: ur-abc=0, ur-def=1, ur-ghi=2)
-        page.handle_action(Action::NavigateDown);
-        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
-
-        // Full reload -- selection preserved by ID
-        let wfs2 = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-            make_workflow("wf-3", "ur-ghi", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok(wfs2)));
-        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
-    }
-
-    #[test]
-    fn selection_clamped_when_id_disappears() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-            make_workflow("wf-3", "ur-ghi", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
-
-        // Select ur-ghi (index 2)
-        page.handle_action(Action::NavigateDown);
-        page.handle_action(Action::NavigateDown);
-        assert_eq!(page.selected_ticket_id(), Some("ur-ghi".to_string()));
-
-        // Reload without ur-ghi -- selection clamped
-        let wfs2 = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok(wfs2)));
-        assert!(page.selected_ticket_id().is_some());
-    }
-
-    #[test]
     fn single_upsert_preserves_selection() {
         let mut page = FlowsPage::new();
         let wfs = vec![
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
 
         // Select ur-def
         page.handle_action(Action::NavigateDown);
@@ -1188,7 +1258,7 @@ mod tests {
     fn select_enters_detail_mode() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
         assert!(page.detail_workflow.is_none());
         let result = page.handle_action(Action::Select);
@@ -1201,7 +1271,7 @@ mod tests {
     fn back_exits_detail_mode() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
         page.handle_action(Action::Select);
         assert!(page.detail_workflow.is_some());
@@ -1218,7 +1288,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
 
         page.handle_action(Action::Select);
         assert!(page.detail_workflow.is_some());
@@ -1232,7 +1302,7 @@ mod tests {
     fn detail_mode_quit_works() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
         page.handle_action(Action::Select);
         let result = page.handle_action(Action::Quit);
@@ -1243,7 +1313,7 @@ mod tests {
     fn flow_update_updates_detail_workflow() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
         page.handle_action(Action::Select);
         assert!(!page.detail_workflow.as_ref().unwrap().stalled);
@@ -1264,7 +1334,7 @@ mod tests {
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
 
         page.handle_action(Action::Select); // selects ur-abc
         assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
@@ -1279,7 +1349,7 @@ mod tests {
     #[test]
     fn select_noop_when_empty() {
         let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok(vec![])));
+        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
 
         let result = page.handle_action(Action::Select);
         assert_eq!(result, PageResult::Consumed);
@@ -1298,7 +1368,7 @@ mod tests {
     fn footer_in_detail_mode_has_back_and_quit() {
         let mut page = FlowsPage::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok(wfs)));
+        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
         page.handle_action(Action::Select);
 
         let keymap = Keymap::default();
@@ -1306,5 +1376,47 @@ mod tests {
         assert_eq!(cmds.len(), 2);
         assert!(cmds.iter().any(|c| c.description == "Back"));
         assert!(cmds.iter().any(|c| c.description == "Quit"));
+    }
+
+    #[test]
+    fn pending_fetch_cleared_on_data_receipt() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..20)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+
+        page.handle_action(Action::PageRight);
+        assert!(page.pending_fetch);
+
+        // Receiving data clears pending_fetch
+        let wfs2: Vec<WorkflowInfo> = (20..40)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+        assert!(!page.pending_fetch);
+        assert!(!page.needs_data());
+    }
+
+    #[test]
+    fn only_holds_one_page_of_data() {
+        let mut page = FlowsPage::new();
+        let wfs: Vec<WorkflowInfo> = (0..20)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        assert_eq!(page.entry_map.len(), 20);
+
+        // Navigate to page 1 and load new data
+        page.handle_action(Action::PageRight);
+        let wfs2: Vec<WorkflowInfo> = (20..40)
+            .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
+            .collect();
+        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+
+        // Should only hold page 1 data, not both pages
+        assert_eq!(page.entry_map.len(), 20);
+        assert!(!page.entry_map.contains_key("ur-00"));
+        assert!(page.entry_map.contains_key("ur-20"));
     }
 }

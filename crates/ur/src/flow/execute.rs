@@ -66,7 +66,12 @@ where
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     let resp = client
-        .list_workflows(ListWorkflowsRequest { status })
+        .list_workflows(ListWorkflowsRequest {
+            status,
+            page_size: None,
+            offset: None,
+            project: None,
+        })
         .await
         .with_status_context("list workflows")?;
     let workflows = resp.into_inner().workflows;

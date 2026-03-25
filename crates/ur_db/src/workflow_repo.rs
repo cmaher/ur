@@ -11,6 +11,13 @@ use crate::model::{
     WorkflowIntent,
 };
 
+/// A workflow with pre-joined ticket children counts, returned by paginated queries.
+pub struct PaginatedWorkflow {
+    pub workflow: Workflow,
+    pub ticket_children_open: i64,
+    pub ticket_children_closed: i64,
+}
+
 #[derive(Clone)]
 pub struct WorkflowRepo {
     pool: SqlitePool,
@@ -209,6 +216,40 @@ impl WorkflowRepo {
         };
 
         Ok(rows.into_iter().map(row_to_workflow).collect())
+    }
+
+    /// List workflows with pagination, optional status/project filters, and pre-joined
+    /// ticket children counts. Returns (workflows, total_count).
+    ///
+    /// When `page_size` is `None`, all matching rows are returned.
+    /// Project filtering JOINs on the ticket table via `workflow.ticket_id`.
+    pub async fn list_workflows_paginated(
+        &self,
+        page_size: Option<i32>,
+        offset: i32,
+        status: Option<LifecycleStatus>,
+        project: Option<&str>,
+    ) -> Result<(Vec<PaginatedWorkflow>, i32), sqlx::Error> {
+        let sql = build_paginated_sql(page_size, offset, status.as_ref(), project);
+        let bind_values = build_paginated_binds(&status, project);
+
+        // Safety: the SQL is built from trusted format strings with bind placeholders.
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.clone()));
+        for val in &bind_values {
+            query = query.bind(val);
+        }
+
+        use sqlx::Row as _;
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let total_count: i32 = rows.first().map(|r| r.get("total_count")).unwrap_or(0);
+
+        let workflows = rows
+            .into_iter()
+            .map(|r| sqlite_row_to_paginated(&r))
+            .collect();
+
+        Ok((workflows, total_count))
     }
 
     /// Update the status of a workflow.
@@ -763,6 +804,93 @@ impl WorkflowRepo {
     }
 }
 
+fn build_paginated_sql(
+    page_size: Option<i32>,
+    offset: i32,
+    status: Option<&LifecycleStatus>,
+    project: Option<&str>,
+) -> String {
+    let mut conditions = Vec::new();
+
+    if status.is_some() {
+        conditions.push("w.status = ?".to_string());
+    } else {
+        conditions.push("w.status NOT IN ('done', 'cancelled')".to_string());
+    }
+
+    let ticket_join = if project.is_some() {
+        conditions.push("t.project = ?".to_string());
+        "INNER JOIN ticket t ON t.id = w.ticket_id"
+    } else {
+        ""
+    };
+
+    let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
+    let limit_clause = match page_size {
+        Some(ps) => format!("LIMIT {} OFFSET {}", ps, offset),
+        None => String::new(),
+    };
+
+    format!(
+        "SELECT w.id, w.ticket_id, w.status, w.stalled, w.stall_reason, \
+         w.implement_cycles, w.worker_id, w.noverify, w.feedback_mode, \
+         w.ci_status, w.mergeable, w.review_status, w.created_at, \
+         COUNT(*) OVER() AS total_count, \
+         COALESCE(tc.children_closed, 0) AS children_closed, \
+         COALESCE(tc.children_total, 0) - COALESCE(tc.children_closed, 0) AS children_open \
+         FROM workflow w \
+         {ticket_join} \
+         LEFT JOIN ( \
+           SELECT parent_id, \
+             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS children_closed, \
+             COUNT(*) AS children_total \
+           FROM ticket WHERE parent_id != '' GROUP BY parent_id \
+         ) tc ON tc.parent_id = w.ticket_id \
+         {where_clause} \
+         ORDER BY w.created_at \
+         {limit_clause}"
+    )
+}
+
+fn build_paginated_binds(status: &Option<LifecycleStatus>, project: Option<&str>) -> Vec<String> {
+    let mut binds = Vec::new();
+    if let Some(s) = status {
+        binds.push(s.as_str().to_string());
+    }
+    if let Some(p) = project {
+        binds.push(p.to_string());
+    }
+    binds
+}
+
+fn sqlite_row_to_paginated(r: &sqlx::sqlite::SqliteRow) -> PaginatedWorkflow {
+    use sqlx::Row as _;
+    let workflow = Workflow {
+        id: r.get("id"),
+        ticket_id: r.get("ticket_id"),
+        status: r
+            .get::<String, _>("status")
+            .parse::<LifecycleStatus>()
+            .unwrap_or_default(),
+        stalled: r.get("stalled"),
+        stall_reason: r.get("stall_reason"),
+        implement_cycles: r.get("implement_cycles"),
+        worker_id: r.get("worker_id"),
+        noverify: r.get("noverify"),
+        feedback_mode: r.get("feedback_mode"),
+        ci_status: r.get("ci_status"),
+        mergeable: r.get("mergeable"),
+        review_status: r.get("review_status"),
+        created_at: r.get("created_at"),
+    };
+    PaginatedWorkflow {
+        workflow,
+        ticket_children_open: r.get("children_open"),
+        ticket_children_closed: r.get("children_closed"),
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn row_to_workflow(
     (
@@ -809,5 +937,315 @@ fn row_to_workflow(
         mergeable,
         review_status,
         created_at,
+    }
+}
+
+#[cfg(test)]
+mod paginated_tests {
+    use crate::graph::GraphManager;
+    use crate::model::{LifecycleStatus, NewTicket};
+    use crate::tests::TestDb;
+    use crate::ticket_repo::TicketRepo;
+    use crate::workflow_repo::WorkflowRepo;
+
+    fn ticket_repo(db: &TestDb) -> TicketRepo {
+        let pool = db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        TicketRepo::new(pool, graph_manager)
+    }
+
+    fn wf_repo(db: &TestDb) -> WorkflowRepo {
+        WorkflowRepo::new(db.db().pool().clone())
+    }
+
+    async fn create_test_ticket(repo: &TicketRepo, id: &str, project: &str) {
+        repo.create_ticket(&NewTicket {
+            id: id.into(),
+            type_: "task".into(),
+            priority: 1,
+            title: format!("Ticket {id}"),
+            project: project.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn create_child_ticket(repo: &TicketRepo, id: &str, parent_id: &str, project: &str) {
+        repo.create_ticket(&NewTicket {
+            id: id.into(),
+            type_: "task".into(),
+            priority: 1,
+            title: format!("Child {id}"),
+            project: project.into(),
+            parent_id: Some(parent_id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn paginated_returns_all_when_no_page_size() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-t1", "proj").await;
+        create_test_ticket(&tr, "pg-t2", "proj").await;
+        wf.create_workflow("pg-t1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-t2", LifecycleStatus::Open)
+            .await
+            .unwrap();
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 2);
+        assert_eq!(results.len(), 2);
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_respects_page_size_and_offset() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        for i in 0..5 {
+            let id = format!("pg-ps{i}");
+            create_test_ticket(&tr, &id, "proj").await;
+            wf.create_workflow(&id, LifecycleStatus::Implementing)
+                .await
+                .unwrap();
+        }
+
+        // Page 1: first 2 rows.
+        let (page1, total) = wf
+            .list_workflows_paginated(Some(2), 0, None, None)
+            .await
+            .unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(page1.len(), 2);
+
+        // Page 2: next 2 rows.
+        let (page2, total2) = wf
+            .list_workflows_paginated(Some(2), 2, None, None)
+            .await
+            .unwrap();
+        assert_eq!(total2, 5);
+        assert_eq!(page2.len(), 2);
+
+        // Page 3: last row.
+        let (page3, total3) = wf
+            .list_workflows_paginated(Some(2), 4, None, None)
+            .await
+            .unwrap();
+        assert_eq!(total3, 5);
+        assert_eq!(page3.len(), 1);
+
+        // Verify pages have different workflows.
+        assert_ne!(page1[0].workflow.ticket_id, page2[0].workflow.ticket_id);
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_filters_by_status() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-sf1", "proj").await;
+        create_test_ticket(&tr, "pg-sf2", "proj").await;
+        wf.create_workflow("pg-sf1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-sf2", LifecycleStatus::Open)
+            .await
+            .unwrap();
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, Some(LifecycleStatus::Implementing), None)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].workflow.ticket_id, "pg-sf1");
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_filters_by_project() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-pf1", "alpha").await;
+        create_test_ticket(&tr, "pg-pf2", "beta").await;
+        wf.create_workflow("pg-pf1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-pf2", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, None, Some("alpha"))
+            .await
+            .unwrap();
+
+        assert_eq!(total, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].workflow.ticket_id, "pg-pf1");
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_excludes_terminal_by_default() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-ex1", "proj").await;
+        create_test_ticket(&tr, "pg-ex2", "proj").await;
+        wf.create_workflow("pg-ex1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-ex2", LifecycleStatus::Open)
+            .await
+            .unwrap();
+
+        // Mark one as done.
+        wf.update_workflow_status("pg-ex2", LifecycleStatus::Done)
+            .await
+            .unwrap();
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].workflow.ticket_id, "pg-ex1");
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_empty_results() {
+        let db = TestDb::new().await;
+        let wf = wf_repo(&db);
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 0);
+        assert!(results.is_empty());
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_includes_ticket_children_counts() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-cc1", "proj").await;
+        create_child_ticket(&tr, "pg-cc1-c1", "pg-cc1", "proj").await;
+        create_child_ticket(&tr, "pg-cc1-c2", "pg-cc1", "proj").await;
+        create_child_ticket(&tr, "pg-cc1-c3", "pg-cc1", "proj").await;
+
+        // Close one child.
+        tr.update_ticket(
+            "pg-cc1-c3",
+            &crate::TicketUpdate {
+                status: Some("closed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        wf.create_workflow("pg-cc1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let (results, _) = wf
+            .list_workflows_paginated(None, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].ticket_children_open, 2);
+        assert_eq!(results[0].ticket_children_closed, 1);
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_zero_children_for_childless_ticket() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-nc1", "proj").await;
+        wf.create_workflow("pg-nc1", LifecycleStatus::Open)
+            .await
+            .unwrap();
+
+        let (results, _) = wf
+            .list_workflows_paginated(None, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].ticket_children_open, 0);
+        assert_eq!(results[0].ticket_children_closed, 0);
+
+        db.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn paginated_combined_status_and_project_filter() {
+        let db = TestDb::new().await;
+        let tr = ticket_repo(&db);
+        let wf = wf_repo(&db);
+
+        create_test_ticket(&tr, "pg-cp1", "alpha").await;
+        create_test_ticket(&tr, "pg-cp2", "alpha").await;
+        create_test_ticket(&tr, "pg-cp3", "beta").await;
+        wf.create_workflow("pg-cp1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-cp2", LifecycleStatus::Open)
+            .await
+            .unwrap();
+        wf.create_workflow("pg-cp3", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let (results, total) = wf
+            .list_workflows_paginated(None, 0, Some(LifecycleStatus::Implementing), Some("alpha"))
+            .await
+            .unwrap();
+
+        assert_eq!(total, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].workflow.ticket_id, "pg-cp1");
+
+        db.cleanup().await;
     }
 }

@@ -1174,6 +1174,352 @@ async fn close_open_children_returns_zero_when_already_closed() {
 }
 
 // ============================================================
+// list_tickets_paginated
+// ============================================================
+
+#[tokio::test]
+async fn paginated_returns_all_when_no_page_size() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            None,
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 8);
+    assert_eq!(tickets.len(), 8);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_limits_results() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(3),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 8);
+    assert_eq!(tickets.len(), 3);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_offset() {
+    let (db, repo) = populated_db().await;
+
+    // Get first page
+    let (page1, total1) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(3),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    // Get second page
+    let (page2, total2) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(3),
+            3,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total1, 8);
+    assert_eq!(total2, 8);
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page2.len(), 3);
+
+    // Pages should not overlap
+    let page1_ids: Vec<&str> = page1.iter().map(|t| t.id.as_str()).collect();
+    for t in &page2 {
+        assert!(!page1_ids.contains(&t.id.as_str()));
+    }
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_offset_past_end() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(10),
+            100,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 8);
+    assert!(tickets.is_empty());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_empty_results() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: Some("nonexistent_status".into()),
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(10),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 0);
+    assert!(tickets.is_empty());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_include_children_false_returns_top_level() {
+    let (db, repo) = populated_db().await;
+
+    // include_children=false should only return tickets with no parent
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            None,
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // epic-1, epic-2, standalone = 3 top-level tickets
+    assert_eq!(total, 3);
+    assert_eq!(tickets.len(), 3);
+    for t in &tickets {
+        assert!(t.parent_id.is_none());
+    }
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_include_children_true_returns_all() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            None,
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 8);
+    assert_eq!(tickets.len(), 8);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_with_status_filter() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: Some("open".into()),
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(2),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    // 7 open tickets total (all except task-1c which is closed)
+    assert_eq!(total, 7);
+    assert_eq!(tickets.len(), 2);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_with_project_filter() {
+    let (db, repo) = populated_db().await;
+
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: Some("test".into()),
+                status: None,
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(5),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 8);
+    assert_eq!(tickets.len(), 5);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_combined_filters_and_pagination() {
+    let (db, repo) = populated_db().await;
+
+    // Open tickets under epic-1, paginated
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: Some("open".into()),
+                type_: None,
+                parent_id: Some("epic-1".into()),
+                lifecycle_status: None,
+            },
+            Some(1),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total, 2);
+    assert_eq!(tickets.len(), 1);
+
+    // Second page
+    let (tickets2, total2) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: Some("open".into()),
+                type_: None,
+                parent_id: Some("epic-1".into()),
+                lifecycle_status: None,
+            },
+            Some(1),
+            1,
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(total2, 2);
+    assert_eq!(tickets2.len(), 1);
+    assert_ne!(tickets[0].id, tickets2[0].id);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn paginated_total_count_with_top_level_filter() {
+    let (db, repo) = populated_db().await;
+
+    // Top-level open tickets only
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                status: Some("open".into()),
+                type_: None,
+                parent_id: None,
+                lifecycle_status: None,
+            },
+            Some(1),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // epic-1, epic-2, standalone are all open and top-level = 3
+    assert_eq!(total, 3);
+    assert_eq!(tickets.len(), 1);
+
+    db.cleanup().await;
+}
+
+// ============================================================
 // Hierarchy queries (parent/children via list_tickets)
 // ============================================================
 

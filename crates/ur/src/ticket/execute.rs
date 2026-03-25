@@ -185,6 +185,9 @@ where
             meta_key: None,
             meta_value: None,
             tree_root_id: tree,
+            page_size: None,
+            offset: None,
+            include_children: None,
         })
         .await
         .with_status_context("list tickets")?;

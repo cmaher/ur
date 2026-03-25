@@ -161,6 +161,43 @@ impl TicketServiceHandler {
         ))
     }
 
+    /// Enrich a `PaginatedWorkflow` (which already includes children counts)
+    /// with history events and PR URL.
+    async fn enrich_paginated_workflow(
+        &self,
+        pw: ur_db::workflow_repo::PaginatedWorkflow,
+    ) -> Result<WorkflowInfo, Status> {
+        let pr_url = self
+            .ticket_repo
+            .get_meta(&pw.workflow.ticket_id, "ticket")
+            .await
+            .unwrap_or_default()
+            .remove("pr_url")
+            .unwrap_or_default();
+
+        let events = self
+            .workflow_repo
+            .get_workflow_events(&pw.workflow.id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        let history: Vec<WorkflowHistoryEvent> = events
+            .into_iter()
+            .map(|e| WorkflowHistoryEvent {
+                event: e.event,
+                created_at: e.created_at,
+            })
+            .collect();
+
+        Ok(workflow_to_proto(
+            pw.workflow,
+            pr_url,
+            history,
+            pw.ticket_children_open,
+            pw.ticket_children_closed,
+        ))
+    }
+
     /// If the ticket has an active (non-terminal) workflow, cancel it: signal
     /// the coordinator to abort the in-flight handler, delete intent rows, and
     /// set the workflow status to `Cancelled`.
@@ -414,13 +451,28 @@ impl TicketService for TicketServiceHandler {
                     lifecycle_status: None,
                 };
 
-                let db_tickets = self
+                let page_size = req.page_size;
+                let offset = req.offset.unwrap_or(0);
+                let include_children = req.include_children.unwrap_or(false);
+
+                if offset < 0 {
+                    return Err(
+                        TicketError::Validation("offset must be non-negative".into()).into(),
+                    );
+                }
+                if let Some(ps) = page_size
+                    && ps <= 0
+                {
+                    return Err(TicketError::Validation("page_size must be positive".into()).into());
+                }
+
+                let (db_tickets, total_count) = self
                     .ticket_repo
-                    .list_tickets(&filter)
+                    .list_tickets_paginated(&filter, page_size, offset, include_children)
                     .await
                     .map_err(|e| TicketError::Db(e.to_string()))?;
 
-                db_tickets
+                let tickets: Vec<_> = db_tickets
                     .into_iter()
                     .map(|t| ur_rpc::proto::ticket::Ticket {
                         id: t.id,
@@ -439,14 +491,27 @@ impl TicketService for TicketServiceHandler {
                         children_total: t.children_total,
                         dispatch_status: String::new(),
                     })
-                    .collect()
+                    .collect();
+
+                return {
+                    let mut tickets = tickets;
+                    self.enrich_dispatch_status(&mut tickets).await?;
+                    Ok(Response::new(ListTicketsResponse {
+                        tickets,
+                        total_count,
+                    }))
+                };
             }
         };
 
         let mut tickets = tickets;
         self.enrich_dispatch_status(&mut tickets).await?;
 
-        Ok(Response::new(ListTicketsResponse { tickets }))
+        let total_count = tickets.len() as i32;
+        Ok(Response::new(ListTicketsResponse {
+            tickets,
+            total_count,
+        }))
     }
 
     async fn get_ticket(
@@ -985,7 +1050,9 @@ impl TicketService for TicketServiceHandler {
         &self,
         req: Request<ListWorkflowsRequest>,
     ) -> Result<Response<ListWorkflowsResponse>, Status> {
-        let status_filter = match req.get_ref().status.as_deref() {
+        let req = req.into_inner();
+
+        let status_filter = match req.status.as_deref() {
             Some(s) => Some(
                 s.parse::<LifecycleStatus>()
                     .map_err(|e| Status::new(Code::InvalidArgument, e))?,
@@ -993,18 +1060,34 @@ impl TicketService for TicketServiceHandler {
             None => None,
         };
 
-        let workflows = self
+        let page_size = req.page_size;
+        let offset = req.offset.unwrap_or(0);
+        let project = req.project.as_deref().filter(|s| !s.is_empty());
+
+        if offset < 0 {
+            return Err(TicketError::Validation("offset must be non-negative".into()).into());
+        }
+        if let Some(ps) = page_size
+            && ps <= 0
+        {
+            return Err(TicketError::Validation("page_size must be positive".into()).into());
+        }
+
+        let (paginated, total_count) = self
             .workflow_repo
-            .list_workflows(status_filter)
+            .list_workflows_paginated(page_size, offset, status_filter, project)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        let mut protos = Vec::with_capacity(workflows.len());
-        for wf in workflows {
-            let proto = self.enrich_workflow(wf).await?;
+        let mut protos = Vec::with_capacity(paginated.len());
+        for pw in paginated {
+            let proto = self.enrich_paginated_workflow(pw).await?;
             protos.push(proto);
         }
-        Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
+        Ok(Response::new(ListWorkflowsResponse {
+            workflows: protos,
+            total_count,
+        }))
     }
 
     async fn subscribe_ui_events(
@@ -1271,7 +1354,12 @@ mod tests {
 
         let resp = TicketService::list_workflows(
             &handler,
-            Request::new(ListWorkflowsRequest { status: None }),
+            Request::new(ListWorkflowsRequest {
+                status: None,
+                page_size: None,
+                offset: None,
+                project: None,
+            }),
         )
         .await
         .unwrap();

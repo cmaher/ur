@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn on_data_ignores_tickets_payload() {
         let mut page = WorkersPage::new();
-        page.on_data(&DataPayload::Tickets(Ok(vec![])));
+        page.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
         assert!(!page.loaded);
     }
 

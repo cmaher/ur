@@ -196,7 +196,7 @@ mod tests {
     async fn data_ready_round_trip() {
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        let payload = DataPayload::Tickets(Ok(vec![]));
+        let payload = DataPayload::Tickets(Ok((vec![], 0)));
         tx.send(AppEvent::DataReady(Box::new(payload))).unwrap();
         drop(tx);
 
