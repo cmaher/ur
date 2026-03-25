@@ -1,4 +1,5 @@
 use std::os::unix::process::CommandExt;
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
@@ -70,12 +71,8 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
             "--workspace",
             &config.workspace.display().to_string(),
         ])
-        .stdout(std::fs::File::create(
-            config.config_dir.join("builderd.log"),
-        )?)
-        .stderr(std::fs::File::create(
-            config.config_dir.join("builderd.err"),
-        )?)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
         // Put builderd in its own process group so signals sent to the ur CLI
         // (e.g. Ctrl-C) don't propagate to the daemon.
         .process_group(0)
