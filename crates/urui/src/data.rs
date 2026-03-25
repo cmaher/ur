@@ -8,8 +8,7 @@ use ur_config::ProjectConfig;
 use ur_rpc::connection::connect;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{
-    SendWorkerMessageRequest, WorkerLaunchRequest, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerSummary,
+    WorkerLaunchRequest, WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerSummary,
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
@@ -376,26 +375,10 @@ impl DataManager {
         tokio::spawn(async move {
             let action_result =
                 match launch_design_worker_rpc(port, &ticket_id, &project_key, &image_id).await {
-                    Ok(()) => {
-                        // Send /design command to the worker after launch
-                        match send_worker_message_rpc(
-                            port,
-                            &ticket_id,
-                            &format!("/design {ticket_id}"),
-                            true,
-                        )
-                        .await
-                        {
-                            Ok(()) => ActionResult {
-                                result: Ok(format!("Launched design worker for {ticket_id}")),
-                                silent_on_success: false,
-                            },
-                            Err(e) => ActionResult {
-                                result: Err(e.to_string()),
-                                silent_on_success: false,
-                            },
-                        }
-                    }
+                    Ok(()) => ActionResult {
+                        result: Ok(format!("Launched design worker for {ticket_id}")),
+                        silent_on_success: false,
+                    },
                     Err(e) => ActionResult {
                         result: Err(e.to_string()),
                         silent_on_success: false,
@@ -573,7 +556,6 @@ async fn create_and_design_flow(
         "Launching worker for {ticket_id}..."
     )));
     launch_design_worker_rpc(port, &ticket_id, project_key, image_id).await?;
-    send_worker_message_rpc(port, &ticket_id, &format!("/design {ticket_id}"), true).await?;
     Ok(ticket_id)
 }
 
@@ -852,29 +834,6 @@ async fn launch_design_worker_rpc(
         })
         .await?;
     debug!(ticket_id, "design worker launched");
-    Ok(())
-}
-
-/// Send a message to a worker's tmux session via SendWorkerMessage RPC.
-async fn send_worker_message_rpc(
-    port: u16,
-    worker_id: &str,
-    message: &str,
-    submit: bool,
-) -> Result<()> {
-    let channel = connect(port).await?;
-    let mut core_client = CoreServiceClient::new(channel);
-    let resp = core_client
-        .send_worker_message(SendWorkerMessageRequest {
-            worker_id: worker_id.to_owned(),
-            message: message.to_owned(),
-            submit,
-        })
-        .await?;
-    let inner = resp.into_inner();
-    if !inner.success {
-        anyhow::bail!("SendWorkerMessage failed: {}", inner.error);
-    }
     Ok(())
 }
 
