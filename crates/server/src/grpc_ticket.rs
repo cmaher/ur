@@ -440,9 +440,14 @@ impl TicketService for TicketServiceHandler {
                     .await?
             }
             _ => {
+                let statuses: Vec<String> = req
+                    .status
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.split(',').map(|v| v.trim().to_owned()).collect())
+                    .unwrap_or_default();
                 let filter = TicketFilter {
                     project: req.project.filter(|s| !s.is_empty()),
-                    status: req.status.filter(|s| !s.is_empty()),
+                    statuses,
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
                     parent_id: None,
                     lifecycle_status: None,

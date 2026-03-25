@@ -289,7 +289,7 @@ async fn assert_integrity_data(repo: &TicketRepo) {
     let all_tickets = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: None,
             lifecycle_status: None,
