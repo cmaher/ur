@@ -7,6 +7,7 @@ version.workspace = true
 anyhow = "1"
 chrono = "0.4"
 container = { path = "../container" }
+futures = "0.3"
 fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub"] }
 qdrant-client = "1"
 clap = { workspace = true }
