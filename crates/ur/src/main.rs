@@ -270,6 +270,9 @@ enum WorkerCommands {
         /// Dispatch a ticket: validate it exists and is open, then transition to implementing
         #[arg(short = 'd', long = "dispatch")]
         dispatch: bool,
+        /// Comma-separated list of project keys to mount as read-only context repositories
+        #[arg(long = "context-repos")]
+        context_repos: Option<String>,
     },
     /// List all running processes
     List,
@@ -764,6 +767,7 @@ async fn process_launch(
     worker_prefix: &str,
     mode: &str,
     skills: &[String],
+    context_repos: &[String],
     output: &OutputManager,
     projects: &HashMap<String, ur_config::ProjectConfig>,
 ) -> Result<()> {
@@ -828,7 +832,7 @@ async fn process_launch(
             mode: mode.to_owned(),
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
-            context_repos: vec![],
+            context_repos: context_repos.to_vec(),
         })
         .await?;
 
@@ -908,6 +912,7 @@ async fn handle_worker(
             mode,
             skills,
             dispatch,
+            context_repos,
         } => {
             handle_worker_launch(
                 port,
@@ -923,6 +928,7 @@ async fn handle_worker(
                 mode,
                 skills,
                 dispatch,
+                context_repos,
             )
             .await
         }
@@ -1057,6 +1063,7 @@ async fn handle_worker_launch(
     mode: String,
     skills: Option<String>,
     dispatch: bool,
+    context_repos: Option<String>,
 ) -> Result<()> {
     input::validate_id(&ticket_id, "ticket_id")?;
     if let Some(ref p) = project {
@@ -1067,6 +1074,12 @@ async fn handle_worker_launch(
     }
 
     let skills_vec: Vec<String> = skills
+        .iter()
+        .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let context_repos_vec: Vec<String> = context_repos
         .iter()
         .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
         .filter(|s| !s.is_empty())
@@ -1092,6 +1105,7 @@ async fn handle_worker_launch(
         worker_prefix,
         &mode,
         &skills_vec,
+        &context_repos_vec,
         output,
         projects,
     )
