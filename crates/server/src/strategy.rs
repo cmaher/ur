@@ -32,28 +32,41 @@ impl WorkerStrategy {
 
     /// Acquire a pool slot for this worker strategy.
     ///
-    /// All strategies acquire an exclusive slot via `pool.acquire_slot`.
-    ///
-    /// Returns (host_path, slot_id) — the host-side path for Docker mounts and the
-    /// slot ID for linking via worker_slot.
+    /// - `Code`: acquires an exclusive slot via `pool.acquire_slot`, returning
+    ///   `(host_path, Some(slot_id))` for DB linking via worker_slot.
+    /// - `Design`: acquires a shared slot via `pool.acquire_shared_slot`, returning
+    ///   `(host_path, None)` — no DB ownership tracking.
     pub async fn acquire_slot(
         &self,
         pool: &RepoPoolManager,
         project_key: &str,
-    ) -> Result<(PathBuf, String), String> {
-        pool.acquire_slot(project_key).await
+    ) -> Result<(PathBuf, Option<String>), String> {
+        match self {
+            Self::Code => {
+                let (path, slot_id) = pool.acquire_slot(project_key).await?;
+                Ok((path, Some(slot_id)))
+            }
+            Self::Design => {
+                let path = pool.acquire_shared_slot(project_key).await?;
+                Ok((path, None))
+            }
+        }
     }
 
     /// Release a pool slot for this worker strategy.
     ///
-    /// All strategies release the slot via `pool.release_slot`.
+    /// - `Code`: releases the exclusive slot via `pool.release_slot`.
+    /// - `Design`: no-op — shared slots have no DB ownership tracking.
     pub async fn release_slot(
         &self,
         pool: &RepoPoolManager,
         worker_id: &str,
         slot_path: &Path,
     ) -> Result<(), String> {
-        pool.release_slot(worker_id, slot_path).await
+        match self {
+            Self::Code => pool.release_slot(worker_id, slot_path).await,
+            Self::Design => Ok(()),
+        }
     }
 
     /// Returns the CLAUDE.md filename (without extension) for this strategy.

@@ -250,11 +250,11 @@ impl CoreServiceHandler {
                 worker_id = req.worker_id,
                 project_key = req.project_key,
                 slot_path = %slot_path.display(),
-                slot_id = %slot_id,
+                slot_id = ?slot_id,
                 strategy = strategy.name(),
                 "acquired pool slot"
             );
-            (Some(slot_path), req.project_key.clone(), Some(slot_id))
+            (Some(slot_path), req.project_key.clone(), slot_id)
         } else if !req.workspace_dir.is_empty() {
             (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
         } else {
