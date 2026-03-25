@@ -695,6 +695,7 @@ impl App {
                     Some(params.page_size),
                     Some(params.offset),
                     Some(params.include_children),
+                    &self.tickets_page.filters().statuses,
                 );
             }
             TabId::Flows => self.data_manager.fetch_flows(

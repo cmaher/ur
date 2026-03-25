@@ -174,7 +174,8 @@ pub struct TicketUpdate {
 
 pub struct TicketFilter {
     pub project: Option<String>,
-    pub status: Option<String>,
+    /// When non-empty, filter to tickets whose status is in this list.
+    pub statuses: Vec<String>,
     pub type_: Option<String>,
     pub parent_id: Option<String>,
     pub lifecycle_status: Option<LifecycleStatus>,

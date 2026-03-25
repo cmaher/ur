@@ -309,9 +309,10 @@ impl TicketRepo {
             where_clause.push_str(" AND project = ?");
             binds.push(project.clone());
         }
-        if let Some(ref status) = filter.status {
-            where_clause.push_str(" AND status = ?");
-            binds.push(status.clone());
+        if !filter.statuses.is_empty() {
+            let placeholders: Vec<&str> = filter.statuses.iter().map(|_| "?").collect();
+            where_clause.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
+            binds.extend(filter.statuses.iter().cloned());
         }
         if let Some(ref type_) = filter.type_ {
             where_clause.push_str(" AND type = ?");
@@ -466,9 +467,10 @@ impl TicketRepo {
             query.push_str(" AND project = ?");
             binds.push(project.clone());
         }
-        if let Some(ref status) = filter.status {
-            query.push_str(" AND status = ?");
-            binds.push(status.clone());
+        if !filter.statuses.is_empty() {
+            let placeholders: Vec<&str> = filter.statuses.iter().map(|_| "?").collect();
+            query.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
+            binds.extend(filter.statuses.iter().cloned());
         }
         if let Some(ref type_) = filter.type_ {
             query.push_str(" AND type = ?");

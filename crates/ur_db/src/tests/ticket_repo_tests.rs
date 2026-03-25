@@ -502,7 +502,7 @@ async fn list_tickets_no_filter() {
     let all = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: None,
             lifecycle_status: None,
@@ -523,7 +523,7 @@ async fn list_tickets_filter_by_status() {
     let closed = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: Some("closed".into()),
+            statuses: vec!["closed".into()],
             type_: None,
             parent_id: None,
             lifecycle_status: None,
@@ -544,7 +544,7 @@ async fn list_tickets_filter_by_type() {
     let designs = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: Some("design".into()),
             parent_id: None,
             lifecycle_status: None,
@@ -565,7 +565,7 @@ async fn list_tickets_filter_by_parent() {
     let children = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: Some("epic-1".into()),
             lifecycle_status: None,
@@ -590,7 +590,7 @@ async fn list_tickets_combined_filters() {
     let results = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: Some("open".into()),
+            statuses: vec!["open".into()],
             type_: None,
             parent_id: Some("epic-1".into()),
             lifecycle_status: None,
@@ -613,7 +613,7 @@ async fn list_tickets_ordered_by_priority() {
     let children = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: Some("epic-1".into()),
             lifecycle_status: None,
@@ -1185,7 +1185,7 @@ async fn paginated_returns_all_when_no_page_size() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1211,7 +1211,7 @@ async fn paginated_limits_results() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1238,7 +1238,7 @@ async fn paginated_offset() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1255,7 +1255,7 @@ async fn paginated_offset() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1289,7 +1289,7 @@ async fn paginated_offset_past_end() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1315,7 +1315,7 @@ async fn paginated_empty_results() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: Some("nonexistent_status".into()),
+                statuses: vec!["nonexistent_status".into()],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1342,7 +1342,7 @@ async fn paginated_include_children_false_returns_top_level() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1372,7 +1372,7 @@ async fn paginated_include_children_true_returns_all() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1398,7 +1398,7 @@ async fn paginated_with_status_filter() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: Some("open".into()),
+                statuses: vec!["open".into()],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1425,7 +1425,7 @@ async fn paginated_with_project_filter() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: Some("test".into()),
-                status: None,
+                statuses: vec![],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1452,7 +1452,7 @@ async fn paginated_combined_filters_and_pagination() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: Some("open".into()),
+                statuses: vec!["open".into()],
                 type_: None,
                 parent_id: Some("epic-1".into()),
                 lifecycle_status: None,
@@ -1472,7 +1472,7 @@ async fn paginated_combined_filters_and_pagination() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: Some("open".into()),
+                statuses: vec!["open".into()],
                 type_: None,
                 parent_id: Some("epic-1".into()),
                 lifecycle_status: None,
@@ -1500,7 +1500,7 @@ async fn paginated_total_count_with_top_level_filter() {
         .list_tickets_paginated(
             &TicketFilter {
                 project: None,
-                status: Some("open".into()),
+                statuses: vec!["open".into()],
                 type_: None,
                 parent_id: None,
                 lifecycle_status: None,
@@ -1530,7 +1530,7 @@ async fn hierarchy_children_of_epic() {
     let children = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: Some("epic-2".into()),
             lifecycle_status: None,
@@ -1555,7 +1555,7 @@ async fn hierarchy_top_level_tickets() {
     let all = repo
         .list_tickets(&TicketFilter {
             project: None,
-            status: None,
+            statuses: vec![],
             type_: None,
             parent_id: None,
             lifecycle_status: None,

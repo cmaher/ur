@@ -81,15 +81,23 @@ impl DataManager {
         page_size: Option<i32>,
         offset: Option<i32>,
         include_children: Option<bool>,
+        statuses: &[String],
     ) {
         let port = self.port;
         let tx = self.sender.clone();
         let project = self.project_filter.clone();
+        let status = if statuses.is_empty() {
+            None
+        } else {
+            Some(statuses.join(","))
+        };
 
         tokio::spawn(async move {
             debug!(port, "fetching tickets");
             let payload =
-                match fetch_tickets_rpc(port, project, page_size, offset, include_children).await {
+                match fetch_tickets_rpc(port, project, page_size, offset, include_children, status)
+                    .await
+                {
                     Ok(resp) => DataPayload::Tickets(Ok((resp.tickets, resp.total_count))),
                     Err(e) => {
                         error!(port, error = %e, "ticket fetch failed");
@@ -621,13 +629,14 @@ async fn fetch_tickets_rpc(
     page_size: Option<i32>,
     offset: Option<i32>,
     include_children: Option<bool>,
+    status: Option<String>,
 ) -> Result<ListTicketsResponse> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
     let request = tonic::Request::new(ListTicketsRequest {
         project,
         ticket_type: None,
-        status: None,
+        status,
         meta_key: None,
         meta_value: None,
         tree_root_id: None,
