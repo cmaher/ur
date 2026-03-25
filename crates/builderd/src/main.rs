@@ -21,14 +21,20 @@ struct Cli {
     /// Overrides the BUILDERD_WORKSPACE environment variable.
     #[arg(long, env = "BUILDERD_WORKSPACE")]
     workspace: Option<PathBuf>,
+
+    /// Directory for log files. Defaults to `<config_dir>/logs`.
+    #[arg(long)]
+    logs_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config_dir = ur_config::resolve_config_dir()?;
-    let _log_guard = logging::init(&config_dir);
-
     let cli = Cli::parse();
+
+    let config_dir = ur_config::resolve_config_dir()?;
+    let logs_dir = cli.logs_dir.unwrap_or_else(|| config_dir.join("logs"));
+    std::fs::create_dir_all(&logs_dir)?;
+    let _log_guard = logging::init(&logs_dir);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
     info!(
