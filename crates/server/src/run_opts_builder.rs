@@ -193,6 +193,20 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add context repository mounts as read-only volumes.
+    ///
+    /// Each entry maps a host path to `/context/<project-key>/` inside the container.
+    /// The `:ro` flag prevents workers from modifying context repos.
+    pub fn add_context_repos(mut self, context_mounts: &[(String, PathBuf)]) -> Self {
+        for (key, host_path) in context_mounts {
+            // Encode `:ro` into the container path so the Docker volume flag
+            // becomes `host_path:/context/<key>:ro`.
+            let container_path = PathBuf::from(format!("/context/{key}:ro"));
+            self.volumes.push((host_path.clone(), container_path));
+        }
+        self
+    }
+
     /// Add port mappings to the container.
     ///
     /// Each [`PortMapping`] is converted to a Docker `-p host_port:container_port` flag.
@@ -502,6 +516,44 @@ mod tests {
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
         assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/skills");
+    }
+
+    #[test]
+    fn add_context_repos_empty_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_context_repos(&[])
+            .build();
+
+        assert!(opts.volumes.is_empty());
+    }
+
+    #[test]
+    fn add_context_repos_single() {
+        let mounts = vec![("frontend".into(), PathBuf::from("/host/pool/frontend/0"))];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_context_repos(&mounts)
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/pool/frontend/0"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/context/frontend:ro"));
+    }
+
+    #[test]
+    fn add_context_repos_multiple() {
+        let mounts = vec![
+            ("frontend".into(), PathBuf::from("/host/pool/frontend/0")),
+            ("backend".into(), PathBuf::from("/host/pool/backend/1")),
+        ];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_context_repos(&mounts)
+            .build();
+
+        assert_eq!(opts.volumes.len(), 2);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/pool/frontend/0"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/context/frontend:ro"));
+        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/pool/backend/1"));
+        assert_eq!(opts.volumes[1].1, PathBuf::from("/context/backend:ro"));
     }
 
     #[test]
