@@ -690,7 +690,10 @@ impl App {
     fn fetch_active_tab_data(&self) {
         match self.active_tab {
             TabId::Tickets => self.data_manager.fetch_tickets(None, None, None),
-            TabId::Flows => self.data_manager.fetch_flows(None, None),
+            TabId::Flows => self.data_manager.fetch_flows(
+                Some(self.flows_page.page_size()),
+                Some(self.flows_page.page_offset()),
+            ),
             TabId::Workers => self.data_manager.fetch_workers(),
         }
     }
