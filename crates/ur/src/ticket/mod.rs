@@ -201,7 +201,6 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             tree,
             ticket_type,
             status,
-            lifecycle,
         } => {
             let resolved = if all {
                 None
@@ -216,7 +215,6 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
                 tree,
                 ticket_type,
                 status,
-                lifecycle,
             })
         }
         TicketArgs::Dispatchable { epic_id, project } => {
@@ -362,14 +360,12 @@ mod tests {
                 tree,
                 ticket_type,
                 status,
-                lifecycle,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
                 assert!(tree.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
-                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -388,14 +384,12 @@ mod tests {
                 tree,
                 ticket_type,
                 status,
-                lifecycle,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
                 assert_eq!(tree.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
-                assert!(lifecycle.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -638,17 +632,6 @@ mod tests {
                 assert!(!feedback_later);
             }
             other => panic!("expected Approve, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_list_with_lifecycle() {
-        let cmd = parse(&["ticket", "list", "--lifecycle", "implementing"]);
-        match cmd.command {
-            super::TicketArgs::List { lifecycle, .. } => {
-                assert_eq!(lifecycle.as_deref(), Some("implementing"));
-            }
-            other => panic!("expected List, got {other:?}"),
         }
     }
 

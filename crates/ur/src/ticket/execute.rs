@@ -37,8 +37,7 @@ where
             tree,
             ticket_type,
             status,
-            lifecycle,
-        } => execute_list(client, project, all, tree, ticket_type, status, lifecycle).await,
+        } => execute_list(client, project, all, tree, ticket_type, status).await,
         TicketArgs::Show {
             id,
             activity_author,
@@ -169,7 +168,6 @@ async fn execute_list<T>(
     tree: Option<String>,
     ticket_type: Option<String>,
     status: Option<String>,
-    lifecycle: Option<String>,
 ) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
@@ -179,7 +177,6 @@ where
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
     let project_filter = if all { None } else { project };
-    let _ = lifecycle; // lifecycle filtering removed from proto; reserved for future use
     let resp = client
         .list_tickets(ListTicketsRequest {
             project: project_filter,
