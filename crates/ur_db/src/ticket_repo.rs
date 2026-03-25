@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
+use rand::Rng;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -34,27 +35,21 @@ impl TicketRepo {
         let status = ticket.status.as_deref().unwrap_or("open");
         let lifecycle_status = ticket.lifecycle_status.unwrap_or_default();
 
-        sqlx::query(
-            "INSERT INTO ticket (id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&ticket.id)
-        .bind(&ticket.project)
-        .bind(&ticket.type_)
-        .bind(status)
-        .bind(lifecycle_status.as_str())
-        .bind(ticket.priority)
-        .bind(&ticket.parent_id)
-        .bind(&ticket.title)
-        .bind(&ticket.body)
-        .bind(&ticket.branch)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
+        let id = match &ticket.id {
+            Some(provided) => provided.clone(),
+            None => {
+                self.insert_with_generated_id(ticket, status, lifecycle_status, &now)
+                    .await?
+            }
+        };
+
+        if ticket.id.is_some() {
+            self.insert_ticket(&id, ticket, status, lifecycle_status, &now)
+                .await?;
+        }
 
         Ok(Ticket {
-            id: ticket.id.clone(),
+            id,
             project: ticket.project.clone(),
             type_: ticket.type_.clone(),
             status: status.to_owned(),
@@ -70,6 +65,67 @@ impl TicketRepo {
             children_completed: 0,
             children_total: 0,
         })
+    }
+
+    /// Generate a base-36 ID and insert, retrying with longer hashes on collision.
+    async fn insert_with_generated_id(
+        &self,
+        ticket: &NewTicket,
+        status: &str,
+        lifecycle_status: LifecycleStatus,
+        now: &str,
+    ) -> Result<String, sqlx::Error> {
+        const BASE_LEN: usize = 5;
+        const MAX_EXTRA: usize = 5;
+
+        let mut hash = generate_base36(BASE_LEN);
+
+        for _ in 0..=MAX_EXTRA {
+            let id = format!("{}-{}", ticket.project, hash);
+            match self
+                .insert_ticket(&id, ticket, status, lifecycle_status, now)
+                .await
+            {
+                Ok(()) => return Ok(id),
+                Err(sqlx::Error::Database(ref db_err)) if is_unique_violation(db_err.as_ref()) => {
+                    hash.push(random_base36_char());
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(sqlx::Error::Protocol(
+            "failed to generate unique ticket ID after maximum retries".into(),
+        ))
+    }
+
+    async fn insert_ticket(
+        &self,
+        id: &str,
+        ticket: &NewTicket,
+        status: &str,
+        lifecycle_status: LifecycleStatus,
+        now: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO ticket (id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(&ticket.project)
+        .bind(&ticket.type_)
+        .bind(status)
+        .bind(lifecycle_status.as_str())
+        .bind(ticket.priority)
+        .bind(&ticket.parent_id)
+        .bind(&ticket.title)
+        .bind(&ticket.body)
+        .bind(&ticket.branch)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Fetch a single ticket by its ID. Returns `None` if no ticket exists with that ID.
@@ -1081,6 +1137,26 @@ impl TicketRepo {
             )
             .collect())
     }
+}
+
+const BASE36_CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+fn generate_base36(len: usize) -> String {
+    let mut rng = rand::thread_rng();
+    (0..len)
+        .map(|_| BASE36_CHARS[rng.gen_range(0..36)] as char)
+        .collect()
+}
+
+fn random_base36_char() -> char {
+    let mut rng = rand::thread_rng();
+    BASE36_CHARS[rng.gen_range(0..36)] as char
+}
+
+fn is_unique_violation(err: &dyn sqlx::error::DatabaseError) -> bool {
+    // SQLite unique constraint violation code is "2067" (SQLITE_CONSTRAINT_UNIQUE)
+    // but the message always contains "UNIQUE constraint failed"
+    err.message().contains("UNIQUE constraint failed")
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {

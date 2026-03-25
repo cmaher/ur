@@ -277,7 +277,7 @@ mod tests {
         let graph_manager = GraphManager::new(db.pool().clone());
         let repo = TicketRepo::new(db.pool().clone(), graph_manager);
         let ticket = NewTicket {
-            id: "ur-001".to_string(),
+            id: Some("ur-001".to_string()),
             project: "ur".to_string(),
             type_: "task".to_string(),
             priority: 1,

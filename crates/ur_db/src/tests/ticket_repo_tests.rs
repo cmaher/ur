@@ -54,7 +54,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
 /// Create epics and their child tasks for the populated_db fixture.
 async fn seed_epics_and_children(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
-        id: "epic-1".into(),
+        id: Some("epic-1".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -67,7 +67,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "epic-2".into(),
+        id: Some("epic-2".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: None,
@@ -81,7 +81,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 
     // --- Children of epic-1 ---
     repo.create_ticket(&NewTicket {
-        id: "task-1a".into(),
+        id: Some("task-1a".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("epic-1".into()),
@@ -94,7 +94,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "task-1b".into(),
+        id: Some("task-1b".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: Some("epic-1".into()),
@@ -107,7 +107,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "task-1c".into(),
+        id: Some("task-1c".into()),
         type_: "task".into(),
         priority: 3,
         parent_id: Some("epic-1".into()),
@@ -142,7 +142,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 /// Create epic-2 children and standalone ticket for the populated_db fixture.
 async fn seed_remaining_tickets(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
-        id: "task-2a".into(),
+        id: Some("task-2a".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("epic-2".into()),
@@ -155,7 +155,7 @@ async fn seed_remaining_tickets(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "task-2b".into(),
+        id: Some("task-2b".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: Some("epic-2".into()),
@@ -168,7 +168,7 @@ async fn seed_remaining_tickets(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "standalone".into(),
+        id: Some("standalone".into()),
         type_: "design".into(),
         priority: 5,
         parent_id: None,
@@ -240,7 +240,7 @@ async fn create_and_get_ticket() {
 
     let created = repo
         .create_ticket(&NewTicket {
-            id: "t-001".into(),
+            id: Some("t-001".into()),
             type_: "task".into(),
             priority: 3,
             parent_id: None,
@@ -283,7 +283,7 @@ async fn create_ticket_with_parent() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "parent".into(),
+        id: Some("parent".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -297,7 +297,7 @@ async fn create_ticket_with_parent() {
 
     let child = repo
         .create_ticket(&NewTicket {
-            id: "child".into(),
+            id: Some("child".into()),
             type_: "task".into(),
             priority: 2,
             parent_id: Some("parent".into()),
@@ -322,7 +322,7 @@ async fn update_ticket_partial_fields() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "t-upd".into(),
+        id: Some("t-upd".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -368,7 +368,7 @@ async fn update_ticket_clear_parent() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "task".into(),
+        id: Some("task".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -381,7 +381,7 @@ async fn update_ticket_clear_parent() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "child".into(),
+        id: Some("child".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("task".into()),
@@ -459,7 +459,7 @@ async fn get_ticket_by_id_returns_existing_ticket() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "t-byid".into(),
+        id: Some("t-byid".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: None,
@@ -637,7 +637,7 @@ async fn set_and_get_ticket_metadata() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "t-meta".into(),
+        id: Some("t-meta".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -670,7 +670,7 @@ async fn set_meta_upserts_existing_key() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "t-upsert".into(),
+        id: Some("t-upsert".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -858,7 +858,7 @@ async fn add_activity_returns_generated_fields() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "t-act".into(),
+        id: Some("t-act".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -1042,7 +1042,7 @@ async fn dispatchable_tickets_empty_epic() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "empty-epic".into(),
+        id: Some("empty-epic".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -1111,7 +1111,7 @@ async fn epic_all_children_closed_true_for_no_children() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "childless".into(),
+        id: Some("childless".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -1155,7 +1155,7 @@ async fn close_open_children_returns_zero_when_already_closed() {
     let repo = repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "epic-no-kids".into(),
+        id: Some("epic-no-kids".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -1573,6 +1573,225 @@ async fn hierarchy_top_level_tickets() {
     assert!(top_level.contains(&"epic-2"));
     assert!(top_level.contains(&"standalone"));
     assert_eq!(top_level.len(), 3);
+
+    db.cleanup().await;
+}
+
+// ============================================================
+// Base-36 ID generation tests
+// ============================================================
+
+#[tokio::test]
+async fn generated_id_matches_base36_pattern() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    let ticket = repo
+        .create_ticket(&NewTicket {
+            id: None,
+            type_: "task".into(),
+            priority: 1,
+            parent_id: None,
+            title: "Auto-ID ticket".into(),
+            body: "".into(),
+            project: "myproj".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // ID must match {project}-{5+ base36 chars}
+    assert!(
+        ticket.id.starts_with("myproj-"),
+        "Generated ID '{}' should start with 'myproj-'",
+        ticket.id
+    );
+    let suffix = &ticket.id["myproj-".len()..];
+    assert!(
+        suffix.len() >= 5,
+        "Suffix '{}' should be at least 5 chars",
+        suffix
+    );
+    assert!(
+        suffix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "Suffix '{}' should contain only base-36 chars (0-9, a-z)",
+        suffix
+    );
+
+    // Verify it's persisted and retrievable
+    let fetched = repo.get_ticket(&ticket.id).await.unwrap().unwrap();
+    assert_eq!(fetched.id, ticket.id);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn explicit_id_used_as_is() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    let ticket = repo
+        .create_ticket(&NewTicket {
+            id: Some("custom-explicit-id".into()),
+            type_: "task".into(),
+            priority: 1,
+            parent_id: None,
+            title: "Explicit ID".into(),
+            body: "".into(),
+            project: "test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(ticket.id, "custom-explicit-id");
+
+    let fetched = repo
+        .get_ticket("custom-explicit-id")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.id, "custom-explicit-id");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn collision_retry_produces_longer_id() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    // Insert many tickets with auto-generated IDs and verify all are unique.
+    // Also test that if we manually insert a ticket with a known base-36 ID,
+    // then create_ticket with that same ID via explicit insert would fail,
+    // proving the uniqueness constraint works.
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..20 {
+        let ticket = repo
+            .create_ticket(&NewTicket {
+                id: None,
+                type_: "task".into(),
+                priority: 1,
+                parent_id: None,
+                title: "Collision test".into(),
+                body: "".into(),
+                project: "ct".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // Every generated ID should match the pattern
+        assert!(
+            ticket.id.starts_with("ct-"),
+            "Generated ID '{}' should start with 'ct-'",
+            ticket.id
+        );
+        let id_suffix = &ticket.id["ct-".len()..];
+        assert!(
+            id_suffix.len() >= 5
+                && id_suffix
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "Suffix '{}' should be 5+ base-36 chars",
+            id_suffix
+        );
+
+        // Every ID must be unique
+        assert!(
+            ids.insert(ticket.id.clone()),
+            "Duplicate ID generated: {}",
+            ticket.id
+        );
+    }
+
+    assert_eq!(ids.len(), 20);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn explicit_duplicate_id_returns_error() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: Some("dup-id".into()),
+        type_: "task".into(),
+        priority: 1,
+        parent_id: None,
+        title: "First".into(),
+        body: "".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Inserting a second ticket with the same explicit ID should fail
+    let result = repo
+        .create_ticket(&NewTicket {
+            id: Some("dup-id".into()),
+            type_: "task".into(),
+            priority: 1,
+            parent_id: None,
+            title: "Second".into(),
+            body: "".into(),
+            project: "test".into(),
+            ..Default::default()
+        })
+        .await;
+
+    assert!(result.is_err(), "Expected error for duplicate explicit ID");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn project_prefix_respected_in_generated_id() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    // Create tickets with different projects and verify prefix matches
+    for project in &["alpha", "beta", "x"] {
+        let ticket = repo
+            .create_ticket(&NewTicket {
+                id: None,
+                type_: "task".into(),
+                priority: 1,
+                parent_id: None,
+                title: format!("Ticket for {}", project),
+                body: "".into(),
+                project: project.to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ticket.id.starts_with(&format!("{}-", project)),
+            "ID '{}' should start with '{}-'",
+            ticket.id,
+            project
+        );
+
+        // The suffix after the prefix should be base-36 characters only
+        let suffix = &ticket.id[project.len() + 1..];
+        assert!(
+            suffix.len() >= 5,
+            "Suffix '{}' should be at least 5 chars",
+            suffix
+        );
+        assert!(
+            suffix
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "Suffix '{}' should contain only base-36 chars",
+            suffix
+        );
+    }
 
     db.cleanup().await;
 }

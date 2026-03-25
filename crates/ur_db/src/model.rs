@@ -141,7 +141,7 @@ pub struct Ticket {
 
 #[derive(Default)]
 pub struct NewTicket {
-    pub id: String,
+    pub id: Option<String>,
     pub project: String,
     pub type_: String,
     pub priority: i32,

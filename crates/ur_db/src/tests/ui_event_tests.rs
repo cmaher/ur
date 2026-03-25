@@ -38,7 +38,7 @@ async fn update_child_emits_events_for_all_ancestors() {
     // Create grandparent → parent → child hierarchy.
     tickets
         .create_ticket(&NewTicket {
-            id: "gp-1".into(),
+            id: Some("gp-1".into()),
             type_: "task".into(),
             title: "Grandparent".into(),
             project: "test".into(),
@@ -49,7 +49,7 @@ async fn update_child_emits_events_for_all_ancestors() {
 
     tickets
         .create_ticket(&NewTicket {
-            id: "par-1".into(),
+            id: Some("par-1".into()),
             type_: "task".into(),
             title: "Parent".into(),
             parent_id: Some("gp-1".into()),
@@ -61,7 +61,7 @@ async fn update_child_emits_events_for_all_ancestors() {
 
     tickets
         .create_ticket(&NewTicket {
-            id: "ch-1".into(),
+            id: Some("ch-1".into()),
             type_: "task".into(),
             title: "Child".into(),
             parent_id: Some("par-1".into()),
@@ -108,7 +108,7 @@ async fn insert_child_emits_events_for_ancestors() {
     // Create parent.
     tickets
         .create_ticket(&NewTicket {
-            id: "par-2".into(),
+            id: Some("par-2".into()),
             type_: "task".into(),
             title: "Parent".into(),
             project: "test".into(),
@@ -123,7 +123,7 @@ async fn insert_child_emits_events_for_ancestors() {
     // Insert a child under the parent.
     tickets
         .create_ticket(&NewTicket {
-            id: "ch-2".into(),
+            id: Some("ch-2".into()),
             type_: "task".into(),
             title: "Child".into(),
             parent_id: Some("par-2".into()),
@@ -150,7 +150,7 @@ async fn root_ticket_update_emits_single_event() {
     // Create a root ticket (no parent).
     tickets
         .create_ticket(&NewTicket {
-            id: "root-1".into(),
+            id: Some("root-1".into()),
             type_: "task".into(),
             title: "Root".into(),
             project: "test".into(),

@@ -54,7 +54,7 @@ async fn vacuum_into_data_survives() {
 
     // Insert test data before snapshotting.
     repo.create_ticket(&NewTicket {
-        id: "snap-t1".into(),
+        id: Some("snap-t1".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -67,7 +67,7 @@ async fn vacuum_into_data_survives() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "snap-t2".into(),
+        id: Some("snap-t2".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: None,
@@ -124,7 +124,7 @@ async fn restore_into_new_file() {
 
     // Seed data.
     repo.create_ticket(&NewTicket {
-        id: "restore-t1".into(),
+        id: Some("restore-t1".into()),
         type_: "task".into(),
         priority: 3,
         parent_id: None,
@@ -224,7 +224,7 @@ async fn restore_fails_if_source_missing() {
 /// edges, and activities.
 async fn seed_integrity_data(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
-        id: "int-epic".into(),
+        id: Some("int-epic".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: None,
@@ -237,7 +237,7 @@ async fn seed_integrity_data(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "int-t1".into(),
+        id: Some("int-t1".into()),
         type_: "task".into(),
         priority: 1,
         parent_id: Some("int-epic".into()),
@@ -250,7 +250,7 @@ async fn seed_integrity_data(repo: &TicketRepo) {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "int-t2".into(),
+        id: Some("int-t2".into()),
         type_: "task".into(),
         priority: 2,
         parent_id: Some("int-epic".into()),

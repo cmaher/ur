@@ -29,7 +29,7 @@ async fn create_and_get_workflow() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-t1".into(),
+        id: Some("wf-t1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Workflow test".into(),
@@ -72,7 +72,7 @@ async fn create_workflow_allows_multiple_per_ticket() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-dup".into(),
+        id: Some("wf-dup".into()),
         type_: "task".into(),
         priority: 1,
         title: "Dup test".into(),
@@ -111,7 +111,7 @@ async fn update_workflow_status() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-upd".into(),
+        id: Some("wf-upd".into()),
         type_: "task".into(),
         priority: 1,
         title: "Update wf".into(),
@@ -142,7 +142,7 @@ async fn mark_workflow_done() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-done".into(),
+        id: Some("wf-done".into()),
         type_: "task".into(),
         priority: 1,
         title: "Done wf".into(),
@@ -186,7 +186,7 @@ async fn create_and_poll_intent() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "int-t1".into(),
+        id: Some("int-t1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Intent test".into(),
@@ -228,7 +228,7 @@ async fn delete_intent() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "int-del".into(),
+        id: Some("int-del".into()),
         type_: "task".into(),
         priority: 1,
         title: "Del intent".into(),
@@ -258,7 +258,7 @@ async fn poll_intent_returns_oldest_first() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "int-ord1".into(),
+        id: Some("int-ord1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Order 1".into(),
@@ -269,7 +269,7 @@ async fn poll_intent_returns_oldest_first() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "int-ord2".into(),
+        id: Some("int-ord2".into()),
         type_: "task".into(),
         priority: 1,
         title: "Order 2".into(),
@@ -310,7 +310,7 @@ async fn workflow_new_has_default_stall_fields() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-stall1".into(),
+        id: Some("wf-stall1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Stall test".into(),
@@ -351,7 +351,7 @@ async fn set_and_clear_workflow_stall() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-stall2".into(),
+        id: Some("wf-stall2".into()),
         type_: "task".into(),
         priority: 1,
         title: "Stall set/clear".into(),
@@ -397,7 +397,7 @@ async fn increment_implement_cycles() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-cyc1".into(),
+        id: Some("wf-cyc1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Cycle test".into(),
@@ -428,7 +428,7 @@ async fn set_workflow_worker_id() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-wid1".into(),
+        id: Some("wf-wid1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Worker id test".into(),
@@ -459,7 +459,7 @@ async fn set_workflow_noverify() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-nv1".into(),
+        id: Some("wf-nv1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Noverify test".into(),
@@ -493,7 +493,7 @@ async fn set_workflow_feedback_mode() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-fb1".into(),
+        id: Some("wf-fb1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Feedback mode test".into(),
@@ -528,7 +528,7 @@ async fn get_workflow_events_returns_ordered_events() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-evt1".into(),
+        id: Some("wf-evt1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Events test".into(),
@@ -585,7 +585,7 @@ async fn get_workflow_events_returns_empty_for_no_events() {
     let wf = wf_repo(&db);
 
     repo.create_ticket(&NewTicket {
-        id: "wf-evt2".into(),
+        id: Some("wf-evt2".into()),
         type_: "task".into(),
         priority: 1,
         title: "No events".into(),
@@ -618,7 +618,7 @@ async fn get_ticket_children_counts_returns_correct_counts() {
 
     // Create a parent ticket.
     repo.create_ticket(&NewTicket {
-        id: "wf-parent1".into(),
+        id: Some("wf-parent1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Parent".into(),
@@ -630,7 +630,7 @@ async fn get_ticket_children_counts_returns_correct_counts() {
 
     // Create children: 2 open, 1 closed.
     repo.create_ticket(&NewTicket {
-        id: "wf-child1".into(),
+        id: Some("wf-child1".into()),
         type_: "task".into(),
         priority: 1,
         title: "Child 1".into(),
@@ -642,7 +642,7 @@ async fn get_ticket_children_counts_returns_correct_counts() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "wf-child2".into(),
+        id: Some("wf-child2".into()),
         type_: "task".into(),
         priority: 1,
         title: "Child 2".into(),
@@ -654,7 +654,7 @@ async fn get_ticket_children_counts_returns_correct_counts() {
     .unwrap();
 
     repo.create_ticket(&NewTicket {
-        id: "wf-child3".into(),
+        id: Some("wf-child3".into()),
         type_: "task".into(),
         priority: 1,
         title: "Child 3".into(),

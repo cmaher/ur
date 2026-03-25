@@ -3,7 +3,6 @@ use std::pin::Pin;
 
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
-use uuid::Uuid;
 
 use ur_db::{
     EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate, WorkflowRepo,
@@ -365,10 +364,7 @@ impl TicketService for TicketServiceHandler {
             .into());
         }
 
-        let id = req
-            .id
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("ur-{}", &Uuid::new_v4().to_string()[..5]));
+        let id = req.id.filter(|s| !s.is_empty());
 
         let parent_id = req.parent_id.filter(|s| !s.is_empty());
 
@@ -386,7 +382,7 @@ impl TicketService for TicketServiceHandler {
         };
 
         let new_ticket = NewTicket {
-            id: id.clone(),
+            id,
             project: req.project,
             type_: req.ticket_type,
             priority: req.priority as i32,
@@ -399,12 +395,13 @@ impl TicketService for TicketServiceHandler {
             created_at,
         };
 
-        self.ticket_repo
+        let ticket = self
+            .ticket_repo
             .create_ticket(&new_ticket)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        Ok(Response::new(CreateTicketResponse { id }))
+        Ok(Response::new(CreateTicketResponse { id: ticket.id }))
     }
 
     async fn list_tickets(
@@ -1218,7 +1215,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-found".into(),
+                id: Some("t-found".into()),
                 type_: "task".into(),
                 priority: 1,
                 parent_id: None,
@@ -1270,7 +1267,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wfhist".into(),
+                id: Some("t-wfhist".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Workflow history".into(),
@@ -1284,7 +1281,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wfhist-c1".into(),
+                id: Some("t-wfhist-c1".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Child 1".into(),
@@ -1330,7 +1327,7 @@ mod tests {
         handler
             .ticket_repo
             .create_ticket(&NewTicket {
-                id: "t-wflist".into(),
+                id: Some("t-wflist".into()),
                 type_: "task".into(),
                 priority: 1,
                 title: "Workflow list".into(),
