@@ -236,6 +236,9 @@ pub struct WorkerConfig {
     pub ports: Vec<ur_config::PortMapping>,
     /// Slot ID if launched from a pool slot (for worker_slot linking).
     pub slot_id: Option<String>,
+    /// Context repositories to mount read-only into the container.
+    /// Each entry is (project_key, host_path) from shared pool slots.
+    pub context_mounts: Vec<(String, PathBuf)>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -492,6 +495,10 @@ impl WorkerManager {
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
+        .add_mounts(
+            &context_mount_configs(&config.context_mounts),
+            &self.host_config_dir,
+        )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)
         .build();
@@ -652,6 +659,20 @@ impl WorkerManager {
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
+}
+
+/// Convert context mounts (project_key, host_path) to `MountConfig` entries.
+///
+/// Each context repo is mounted read-only at `/context/<project_key>` inside
+/// the container. The host path is an absolute path to the shared pool slot.
+fn context_mount_configs(context_mounts: &[(String, PathBuf)]) -> Vec<ur_config::MountConfig> {
+    context_mounts
+        .iter()
+        .map(|(project_key, host_path)| ur_config::MountConfig {
+            source: host_path.display().to_string(),
+            destination: format!("/context/{project_key}"),
+        })
+        .collect()
 }
 
 /// Ensure a file exists on disk, creating it (and parent dirs) if missing.

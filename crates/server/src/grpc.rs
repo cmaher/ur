@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use futures::future::try_join_all;
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info, warn};
 
@@ -28,6 +29,9 @@ pub enum CoreError {
 
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
+
+    #[error("invalid context repo: {reason}")]
+    InvalidContextRepo { reason: String },
 
     #[error("prepare failed: {reason}")]
     PrepareFailed { reason: String },
@@ -66,6 +70,13 @@ impl From<CoreError> for Status {
                 err.to_string(),
                 DOMAIN_CORE,
                 INTERNAL,
+                HashMap::new(),
+            ),
+            CoreError::InvalidContextRepo { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
                 HashMap::new(),
             ),
             CoreError::PrepareFailed { .. } => error::status_with_info(
@@ -140,6 +151,72 @@ pub struct CoreServiceHandler {
 }
 
 impl CoreServiceHandler {
+    /// Validate context repo keys and acquire shared slots in parallel.
+    ///
+    /// Each key must be a configured project. Returns a list of (project_key, host_path)
+    /// pairs for mounting into the container.
+    async fn acquire_context_repos(
+        &self,
+        context_repos: &[String],
+    ) -> Result<Vec<(String, std::path::PathBuf)>, Status> {
+        // Validate all keys first before acquiring any slots.
+        for key in context_repos {
+            if !self.projects.contains_key(key) {
+                return Err(CoreError::InvalidContextRepo {
+                    reason: format!("unknown project key: {key}"),
+                }
+                .into());
+            }
+        }
+
+        // Acquire shared slots in parallel.
+        let futures: Vec<_> = context_repos
+            .iter()
+            .map(|key| acquire_shared_context_slot(self.repo_pool_manager.clone(), key.clone()))
+            .collect();
+
+        try_join_all(futures).await
+    }
+
+    /// Post-launch setup: bind workflow, persist branch, dispatch design command.
+    ///
+    /// Extracted from `worker_launch` to keep method body within the line limit.
+    async fn post_launch_setup(
+        &self,
+        process_id: &str,
+        worker_id_str: &str,
+        has_pool_slot: bool,
+        strategy: crate::WorkerStrategy,
+    ) -> Result<(), Status> {
+        // Bind the ticket to its worker on the workflow table (if a workflow exists).
+        self.workflow_repo
+            .set_workflow_worker_id(process_id, worker_id_str)
+            .await
+            .map_err(|e| CoreError::RunFailed {
+                reason: format!("failed to set workflow worker_id: {e}"),
+            })?;
+
+        // Pool slots check out a branch named after the worker ID; persist
+        // that on the ticket so the push handler knows which branch to push.
+        if has_pool_slot {
+            persist_pool_branch(&self.ticket_repo, process_id, worker_id_str).await?;
+        }
+
+        // Design workers get the /design command dispatched automatically once
+        // the workerd daemon is ready (reports idle). This runs in the
+        // background so the launch RPC returns immediately.
+        if strategy == crate::WorkerStrategy::Design {
+            spawn_design_dispatch(
+                self.worker_repo.clone(),
+                self.network_config.clone(),
+                process_id.to_owned(),
+                worker_id_str.to_owned(),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
     ///
     /// Extracted from `worker_launch` to keep method body within the line limit.
@@ -241,6 +318,16 @@ impl CoreService for CoreServiceHandler {
         let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy) =
             self.resolve_launch_workspace(&req).await?;
 
+        // Acquire shared slots for context repos in parallel.
+        let context_mounts = self.acquire_context_repos(&req.context_repos).await?;
+        if !context_mounts.is_empty() {
+            info!(
+                worker_id = req.worker_id,
+                context_repos = ?req.context_repos,
+                "acquired shared slots for context repos"
+            );
+        }
+
         // Phase 1: prepare (create repo, git init, register)
         let workspace_dir = self
             .worker_manager
@@ -299,6 +386,7 @@ impl CoreService for CoreServiceHandler {
             mounts,
             ports,
             slot_id,
+            context_mounts,
         };
         let (container_id, _worker_secret) = self
             .worker_manager
@@ -308,40 +396,8 @@ impl CoreService for CoreServiceHandler {
                 reason: e.to_string(),
             })?;
 
-        // Bind the ticket to its worker on the workflow table (if a workflow exists).
-        self.workflow_repo
-            .set_workflow_worker_id(&process_id, &worker_id_str)
-            .await
-            .map_err(|e| CoreError::RunFailed {
-                reason: format!("failed to set workflow worker_id: {e}"),
-            })?;
-
-        // Pool slots check out a branch named after the worker ID; persist
-        // that on the ticket so the push handler knows which branch to push.
-        if has_pool_slot {
-            persist_pool_branch(&self.ticket_repo, &process_id, &worker_id_str).await?;
-        }
-
-        // Design workers get the /design command dispatched automatically once
-        // the workerd daemon is ready (reports idle). This runs in the
-        // background so the launch RPC returns immediately.
-        if strategy == crate::WorkerStrategy::Design {
-            let worker_repo = self.worker_repo.clone();
-            let network_config = self.network_config.clone();
-            let pid = process_id.clone();
-            let wid = worker_id_str.clone();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    dispatch_design_on_ready(&worker_repo, &network_config, &pid, &wid).await
-                {
-                    error!(
-                        process_id = %pid,
-                        error = %e,
-                        "failed to dispatch /design command to worker"
-                    );
-                }
-            });
-        }
+        self.post_launch_setup(&process_id, &worker_id_str, has_pool_slot, strategy)
+            .await?;
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
@@ -708,6 +764,45 @@ async fn persist_pool_branch(
         "persisted branch name on ticket"
     );
     Ok(())
+}
+
+/// Spawn a background task to dispatch the /design command once the worker is idle.
+fn spawn_design_dispatch(
+    worker_repo: ur_db::WorkerRepo,
+    network_config: ur_config::NetworkConfig,
+    process_id: String,
+    worker_id: String,
+) {
+    tokio::spawn(async move {
+        if let Err(e) =
+            dispatch_design_on_ready(&worker_repo, &network_config, &process_id, &worker_id).await
+        {
+            error!(
+                process_id = %process_id,
+                error = %e,
+                "failed to dispatch /design command to worker"
+            );
+        }
+    });
+}
+
+/// Acquire a single shared context slot for a project key.
+///
+/// Used as a future in `try_join_all` for parallel acquisition.
+async fn acquire_shared_context_slot(
+    pool: crate::RepoPoolManager,
+    key: String,
+) -> Result<(String, std::path::PathBuf), Status> {
+    let path = pool
+        .acquire_shared_slot(&key)
+        .await
+        .map_err(|e| -> Status {
+            CoreError::InvalidContextRepo {
+                reason: format!("failed to acquire shared slot for {key}: {e}"),
+            }
+            .into()
+        })?;
+    Ok((key, path))
 }
 
 /// Looks up the worker's assigned ticket, consults the `WorkerdNextStepRouter`
