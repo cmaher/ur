@@ -446,7 +446,11 @@ impl TicketService for TicketServiceHandler {
         let mut tickets = tickets;
         self.enrich_dispatch_status(&mut tickets).await?;
 
-        Ok(Response::new(ListTicketsResponse { tickets }))
+        let total_count = tickets.len() as i32;
+        Ok(Response::new(ListTicketsResponse {
+            tickets,
+            total_count,
+        }))
     }
 
     async fn get_ticket(
@@ -1004,7 +1008,11 @@ impl TicketService for TicketServiceHandler {
             let proto = self.enrich_workflow(wf).await?;
             protos.push(proto);
         }
-        Ok(Response::new(ListWorkflowsResponse { workflows: protos }))
+        let total_count = protos.len() as i32;
+        Ok(Response::new(ListWorkflowsResponse {
+            workflows: protos,
+            total_count,
+        }))
     }
 
     async fn subscribe_ui_events(
@@ -1271,7 +1279,12 @@ mod tests {
 
         let resp = TicketService::list_workflows(
             &handler,
-            Request::new(ListWorkflowsRequest { status: None }),
+            Request::new(ListWorkflowsRequest {
+                status: None,
+                page_size: None,
+                offset: None,
+                project: None,
+            }),
         )
         .await
         .unwrap();

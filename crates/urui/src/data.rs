@@ -622,6 +622,9 @@ async fn fetch_tickets_rpc(port: u16, project: Option<String>) -> Result<ListTic
         meta_key: None,
         meta_value: None,
         tree_root_id: None,
+        page_size: None,
+        offset: None,
+        include_children: None,
     });
     let response = client.list_tickets(request).await?;
     Ok(response.into_inner())
@@ -663,7 +666,12 @@ fn filter_workers_by_project(
 async fn fetch_workflows_rpc(port: u16) -> Result<ListWorkflowsResponse> {
     let channel = connect(port).await?;
     let mut client = TicketServiceClient::new(channel);
-    let request = tonic::Request::new(ListWorkflowsRequest { status: None });
+    let request = tonic::Request::new(ListWorkflowsRequest {
+        status: None,
+        page_size: None,
+        offset: None,
+        project: None,
+    });
     let response = client.list_workflows(request).await?;
     Ok(response.into_inner())
 }

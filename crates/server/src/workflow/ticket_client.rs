@@ -131,6 +131,9 @@ impl TicketClient {
                 meta_key: Some(meta_key.to_owned()),
                 meta_value: Some("true".to_owned()),
                 tree_root_id: None,
+                page_size: None,
+                offset: None,
+                include_children: None,
             }))
             .await
             .map_err(|s| anyhow::anyhow!("list_tickets failed: {}", s.message()))?;

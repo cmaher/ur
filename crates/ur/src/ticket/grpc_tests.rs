@@ -98,7 +98,11 @@ impl TicketService for MockTicketStore {
             })
             .cloned()
             .collect();
-        Ok(Response::new(ListTicketsResponse { tickets }))
+        let total_count = tickets.len() as i32;
+        Ok(Response::new(ListTicketsResponse {
+            tickets,
+            total_count,
+        }))
     }
 
     async fn get_ticket(
