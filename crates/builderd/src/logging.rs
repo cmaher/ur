@@ -1,18 +1,26 @@
 use std::path::Path;
 
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-const LOG_FILE: &str = "builderd.log";
+const LOG_FILE_PREFIX: &str = "builderd.log";
+const MAX_LOG_FILES: usize = 7;
 
-/// Initialize structured JSON logging to `<config_dir>/builderd.log`.
+/// Initialize structured JSON logging to `<logs_dir>/builderd.log` with daily
+/// rotation, retaining up to 7 log files.
 ///
 /// Returns a [`WorkerGuard`] that **must** be held for the lifetime of the
 /// program — dropping it flushes and stops the background writer.
-pub fn init(config_dir: &Path) -> WorkerGuard {
-    let file_appender = tracing_appender::rolling::never(config_dir, LOG_FILE);
+pub fn init(logs_dir: &Path) -> WorkerGuard {
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(LOG_FILE_PREFIX)
+        .max_log_files(MAX_LOG_FILES)
+        .build(logs_dir)
+        .expect("failed to initialize rolling file appender");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::registry()

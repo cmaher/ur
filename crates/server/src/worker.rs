@@ -688,6 +688,7 @@ mod tests {
     fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
             config_dir: workspace_path.to_path_buf(),
+            logs_dir: workspace_path.join("logs"),
             workspace: workspace_path.to_path_buf(),
             server_port: ur_config::DEFAULT_SERVER_PORT,
             builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,

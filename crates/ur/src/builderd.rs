@@ -1,4 +1,5 @@
 use std::os::unix::process::CommandExt;
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
@@ -63,19 +64,29 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
 
     let bin = builderd_bin();
     debug!(bin = %bin.display(), "spawning builderd");
+
+    // Redirect stderr to a file so panics are captured but the daemon doesn't
+    // hold the parent's stderr pipe open (which would block callers using
+    // `Command::output()` to capture ur's output).
+    std::fs::create_dir_all(&config.logs_dir).context("failed to create logs directory")?;
+    let stderr_path = config.logs_dir.join("builderd.err");
+    let stderr_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&stderr_path)
+        .context("failed to open builderd stderr log")?;
+
     let child = std::process::Command::new(&bin)
         .args([
             "--port",
             &config.builderd_port.to_string(),
             "--workspace",
             &config.workspace.display().to_string(),
+            "--logs-dir",
+            &config.logs_dir.display().to_string(),
         ])
-        .stdout(std::fs::File::create(
-            config.config_dir.join("builderd.log"),
-        )?)
-        .stderr(std::fs::File::create(
-            config.config_dir.join("builderd.err"),
-        )?)
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         // Put builderd in its own process group so signals sent to the ur CLI
         // (e.g. Ctrl-C) don't propagate to the daemon.
         .process_group(0)

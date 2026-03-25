@@ -7,7 +7,6 @@ mod describe;
 mod flow;
 mod init;
 mod input;
-mod lifecycle_log;
 mod logging;
 mod output;
 mod project;
@@ -297,29 +296,26 @@ fn start_server(
     compose: &ComposeManager,
     output: &OutputManager,
 ) -> Result<()> {
-    let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
-    log.info("ur start: beginning");
     info!("starting server");
 
     match builderd::start_builderd(config, output) {
-        Ok(()) => log.info("ur start: builderd started"),
+        Ok(()) => info!("builderd started"),
         Err(e) => {
-            log.error(&format!("ur start: builderd failed: {e}"));
+            info!(error = %e, "builderd failed to start");
             return Err(e);
         }
     }
 
     match compose.up() {
-        Ok(()) => log.info("ur start: compose up succeeded"),
+        Ok(()) => info!("compose up succeeded"),
         Err(e) => {
-            log.error(&format!("ur start: compose up failed: {e}"));
+            info!(error = %e, "compose up failed");
             return Err(e);
         }
     }
 
     info!("server started successfully");
     output.print_text("server started");
-    log.info("ur start: complete");
 
     // Check if shared credentials exist; if not, hint about Keychain seeding.
     let has_credentials = credential::CredentialManager::host_credentials_path()
@@ -344,8 +340,6 @@ async fn stop_server(
     compose: &ComposeManager,
     output: &OutputManager,
 ) -> Result<()> {
-    let log = lifecycle_log::LifecycleLog::open(&config.config_dir);
-    log.info("ur stop: beginning");
     info!("stopping server");
 
     // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
@@ -353,28 +347,24 @@ async fn stop_server(
     if let Some(channel) = connection::try_connect(port) {
         let mut client = CoreServiceClient::new(channel);
         info!("server reachable — stopping workers via gRPC");
-        log.info("ur stop: stopping workers via gRPC");
         stop_workers_via_grpc(&mut client, output).await;
     } else {
         info!("server unreachable — stopping workers via Docker");
-        log.info("ur stop: stopping workers via Docker (server unreachable)");
         kill_all_containers(&config.network.worker_prefix, output)?;
     }
 
     if !compose.is_running()? {
         info!("server is not running, nothing to stop");
         output.print_text("server is not running");
-        log.info("ur stop: server was not running");
         return Ok(());
     }
     compose.down()?;
-    info!("server stopped successfully");
+    info!("compose down succeeded");
     output.print_text("server stopped");
-    log.info("ur stop: compose down succeeded");
 
     builderd::stop_builderd(config, output)?;
-    log.info("ur stop: builderd stopped");
-    log.info("ur stop: complete");
+    info!("builderd stopped");
+    info!("server stop complete");
     Ok(())
 }
 
@@ -1333,7 +1323,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
 
     // Initialize structured JSON file logging after config is loaded so we
     // know where to write the log file. The guard must live until main exits.
-    let _log_guard = logging::init(&config.config_dir);
+    let _log_guard = logging::init(&config.logs_dir);
 
     info!(
         config_dir = %config.config_dir.display(),

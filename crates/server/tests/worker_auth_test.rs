@@ -28,6 +28,7 @@ async fn make_test_components(
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = ur_config::Config {
         config_dir: dir.to_path_buf(),
+        logs_dir: dir.join("logs"),
         workspace: workspace.clone(),
         server_port: ur_config::DEFAULT_SERVER_PORT,
         builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,

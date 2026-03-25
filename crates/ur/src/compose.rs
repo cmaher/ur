@@ -405,6 +405,7 @@ mod tests {
     fn compose_manager_from_config_sets_env_vars() {
         let config = ur_config::Config {
             config_dir: PathBuf::from("/test/config"),
+            logs_dir: PathBuf::from("/test/config/logs"),
             workspace: PathBuf::from("/test/workspace"),
             server_port: 9999,
             compose_file: PathBuf::from("/test/docker-compose.yml"),
