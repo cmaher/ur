@@ -55,10 +55,6 @@ pub enum TicketArgs {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
-
-        /// Filter by lifecycle status (design, open, implementing, pushing, in_review, etc.)
-        #[arg(long)]
-        lifecycle: Option<String>,
     },
 
     /// Show a ticket's full detail

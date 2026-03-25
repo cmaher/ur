@@ -10,6 +10,12 @@ set -euo pipefail
 LOGFILE=$(mktemp /tmp/ur-pre-push.XXXXXX)
 trap 'rm -f "$LOGFILE"' EXIT
 
+# Capture the branch being pushed from stdin (format: <local ref> <local sha> <remote ref> <remote sha>)
+while IFS=' ' read -r local_ref _local_sha _remote_ref _remote_sha; do
+    export UR_PUSH_BRANCH="${local_ref#refs/heads/}"
+    break
+done
+
 run_step() {
     local label="$1"
     shift

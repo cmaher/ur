@@ -21,6 +21,7 @@ acquire_lock() {
     while true; do
         if mkdir "$LOCK_DIR" 2>/dev/null; then
             echo $$ > "$PID_FILE"
+            [ -n "${UR_PUSH_BRANCH:-}" ] && echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
             return
         fi
 
@@ -33,7 +34,9 @@ acquire_lock() {
             fi
         fi
 
-        echo "acceptance-ci: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'))..."
+        local lock_branch
+        lock_branch=$(cat "$LOCK_DIR/branch" 2>/dev/null || echo '?')
+        echo "acceptance-ci: waiting for lock (PID $(cat "$PID_FILE" 2>/dev/null || echo '?'), branch $lock_branch)..."
         sleep 10
     done
 }
