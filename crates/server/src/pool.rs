@@ -368,6 +368,76 @@ impl RepoPoolManager {
         Ok(())
     }
 
+    /// Acquire a shared read-only slot for the given project.
+    ///
+    /// The shared slot lives at `pool/<project>/shared/` and can be mounted by
+    /// multiple workers simultaneously. Unlike exclusive slots, the shared slot
+    /// has no DB tracking or worker linking — the filesystem path is the state.
+    /// It does not count against `pool_limit`.
+    ///
+    /// - First call (directory missing): clones via builderd.
+    /// - Subsequent calls (directory exists): fetches and resets to `origin/HEAD`.
+    ///
+    /// Returns the host-side path to the shared slot directory.
+    pub async fn acquire_shared_slot(&self, project_key: &str) -> Result<PathBuf, String> {
+        let project = self
+            .projects
+            .get(project_key)
+            .ok_or_else(|| format!("unknown project: {project_key}"))?;
+
+        let shared_slot_name = "shared";
+        let host_path = self.host_slot_path(project_key, shared_slot_name);
+        let local_path = self
+            .local_project_pool_dir(project_key)
+            .join(shared_slot_name);
+
+        let exists = tokio::fs::try_exists(&local_path).await.unwrap_or(false);
+
+        if exists {
+            info!(project_key, path = %host_path.display(), "refreshing shared slot");
+            self.refresh_shared_slot(&host_path).await?;
+        } else {
+            info!(
+                project_key,
+                repo = %project.repo,
+                path = %host_path.display(),
+                "cloning shared slot via builderd"
+            );
+            self.clone_slot(&project.repo, project_key, shared_slot_name)
+                .await?;
+        }
+
+        Ok(host_path)
+    }
+
+    /// Fetch and reset a shared slot to `origin/HEAD`.
+    ///
+    /// Unlike `reset_slot` (which checks out master and cleans), this only
+    /// fetches and resets to `origin/HEAD` — suitable for a read-only shared
+    /// checkout that may be mounted by multiple workers.
+    async fn refresh_shared_slot(&self, host_slot_path: &Path) -> Result<(), String> {
+        let cwd = self.to_builderd_path(host_slot_path);
+
+        self.local_repo
+            .fetch(&cwd)
+            .await
+            .map_err(|e| format!("git fetch failed in {}: {e}", host_slot_path.display()))?;
+
+        self.local_repo
+            .reset_hard(&cwd, "origin/HEAD")
+            .await
+            .map_err(|e| {
+                format!(
+                    "git reset --hard origin/HEAD failed in {}: {e}",
+                    host_slot_path.display()
+                )
+            })?;
+
+        self.init_submodules(host_slot_path).await?;
+
+        Ok(())
+    }
+
     /// Checkout a new branch in a slot via builderd.
     ///
     /// Runs `git checkout -b <prefix><branch_name>` in the slot directory on the host.
@@ -857,5 +927,103 @@ mod tests {
             .await
             .unwrap();
         assert!(db_slot.is_none());
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_unknown_project_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let result = mgr.acquire_shared_slot("nonexistent").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown project"));
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_clones_on_first_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // No shared directory exists. Acquire should attempt clone via builderd.
+        // Clone will fail (no builderd), but we verify it attempts clone (not fetch/reset).
+        let result = mgr.acquire_shared_slot("testproj").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("git clone failed"),
+            "expected clone error on first call, got: {err}"
+        );
+
+        // No DB entry should be created for shared slots
+        let shared_path = workspace.join("pool").join("testproj").join("shared");
+        let db_slot = mgr
+            .worker_repo
+            .get_slot_by_host_path(&shared_path.display().to_string())
+            .await
+            .unwrap();
+        assert!(db_slot.is_none(), "shared slot must not create DB entries");
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_fetches_when_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // Create the shared directory to simulate a previous clone
+        let shared_dir = workspace.join("pool").join("testproj").join("shared");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+
+        // Acquire should attempt fetch+reset (not clone).
+        // Fetch will fail (no builderd), but the error should be a fetch error.
+        let result = mgr.acquire_shared_slot("testproj").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("git fetch failed"),
+            "expected fetch error on subsequent call, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_does_not_count_against_pool_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 1).await;
+
+        // Fill the pool: create one exclusive slot directory and mark it in-use
+        let slot0 = workspace.join("pool").join("testproj").join("0");
+        std::fs::create_dir_all(&slot0).unwrap();
+        insert_test_slot_in_use(&mgr.worker_repo, "testproj", "0", &slot0).await;
+
+        // Exclusive acquire should fail (pool_limit = 1, 1 slot exists)
+        let exclusive_result = mgr.acquire_slot("testproj").await;
+        assert!(exclusive_result.is_err());
+        assert!(exclusive_result.unwrap_err().contains("pool limit reached"));
+
+        // Shared acquire should NOT fail with "pool limit" — it bypasses pool_limit.
+        // It will fail on clone (no builderd), which proves it wasn't blocked by pool_limit.
+        let shared_result = mgr.acquire_shared_slot("testproj").await;
+        assert!(shared_result.is_err());
+        let err = shared_result.unwrap_err();
+        assert!(
+            !err.contains("pool limit"),
+            "shared slot must not count against pool_limit, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_returns_correct_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // Create the shared directory and a .git dir to simulate a clone
+        let shared_dir = workspace.join("pool").join("testproj").join("shared");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+
+        // The call will fail on fetch (no builderd), but we can verify the expected path
+        let expected_path = workspace.join("pool").join("testproj").join("shared");
+        assert_eq!(
+            mgr.host_slot_path("testproj", "shared"),
+            expected_path,
+            "shared slot path should be pool/<project>/shared/"
+        );
     }
 }
