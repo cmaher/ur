@@ -314,6 +314,7 @@ struct RawConfig {
     rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
+    logs_dir: Option<PathBuf>,
     tui: Option<RawTuiConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
@@ -945,6 +946,8 @@ pub struct Config {
     pub server: ServerConfig,
     /// TUI display settings (theme, keymap).
     pub tui: TuiConfig,
+    /// Directory where all log files are written (default: `<config_dir>/logs`).
+    pub logs_dir: PathBuf,
     /// Prefix prepended to worker-ID branch names (e.g. `"feature/"` → `feature/myproc-a1b2`).
     /// Empty string means no prefix.
     pub git_branch_prefix: String,
@@ -1020,6 +1023,12 @@ impl Config {
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
 
+        let logs_dir = match raw.logs_dir {
+            Some(p) if p.is_absolute() => p,
+            Some(p) => config_dir.join(p),
+            None => config_dir.join("logs"),
+        };
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -1034,6 +1043,7 @@ impl Config {
             backup,
             server,
             tui,
+            logs_dir,
             git_branch_prefix,
             projects,
         })
@@ -2848,5 +2858,29 @@ quit = ["q"]
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(!cfg.tui.notifications.flow_stalled);
         assert!(cfg.tui.notifications.flow_in_review);
+    }
+
+    #[test]
+    fn logs_dir_defaults_to_config_dir_logs() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.logs_dir, tmp.path().join("logs"));
+    }
+
+    #[test]
+    fn logs_dir_absolute_path_used_as_is() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"/var/log/ur\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.logs_dir, PathBuf::from("/var/log/ur"));
+    }
+
+    #[test]
+    fn logs_dir_relative_path_joined_to_config_dir() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"custom/logs\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.logs_dir, tmp.path().join("custom/logs"));
     }
 }
