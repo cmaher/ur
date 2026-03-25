@@ -211,6 +211,192 @@ impl TicketRepo {
         })
     }
 
+    /// Paginated ticket query with total_count.
+    ///
+    /// - `page_size`: when `None`, returns all matching results (no LIMIT/OFFSET).
+    /// - `offset`: number of rows to skip (only used when `page_size` is `Some`).
+    /// - `include_children`: when `false`, adds `WHERE parent_id IS NULL` to return
+    ///   only top-level tickets; when `true`, returns tickets at all levels.
+    ///
+    /// Returns `(tickets, total_count)` where `total_count` is the total number of
+    /// matching rows before pagination.
+    pub async fn list_tickets_paginated(
+        &self,
+        filter: &TicketFilter,
+        page_size: Option<i32>,
+        offset: i32,
+        include_children: bool,
+    ) -> Result<(Vec<Ticket>, i32), sqlx::Error> {
+        let (where_clause, binds) = Self::build_ticket_filter_clause(filter, include_children);
+
+        let total_count = self.count_filtered_tickets(&where_clause, &binds).await?;
+
+        let tickets = self
+            .fetch_filtered_tickets(&where_clause, &binds, page_size, offset)
+            .await?;
+
+        Ok((tickets, total_count))
+    }
+
+    /// Build the WHERE clause and bind values for ticket filters.
+    fn build_ticket_filter_clause(
+        filter: &TicketFilter,
+        include_children: bool,
+    ) -> (String, Vec<String>) {
+        let mut where_clause = String::from(" WHERE 1=1");
+        let mut binds: Vec<String> = Vec::new();
+
+        if !include_children {
+            where_clause.push_str(" AND parent_id IS NULL");
+        }
+        if let Some(ref project) = filter.project {
+            where_clause.push_str(" AND project = ?");
+            binds.push(project.clone());
+        }
+        if let Some(ref status) = filter.status {
+            where_clause.push_str(" AND status = ?");
+            binds.push(status.clone());
+        }
+        if let Some(ref type_) = filter.type_ {
+            where_clause.push_str(" AND type = ?");
+            binds.push(type_.clone());
+        }
+        if let Some(ref parent_id) = filter.parent_id {
+            where_clause.push_str(" AND parent_id = ?");
+            binds.push(parent_id.clone());
+        }
+        if let Some(ref lifecycle_status) = filter.lifecycle_status {
+            where_clause.push_str(" AND lifecycle_status = ?");
+            binds.push(lifecycle_status.as_str().to_owned());
+        }
+
+        (where_clause, binds)
+    }
+
+    /// Count the total matching rows for a given WHERE clause.
+    async fn count_filtered_tickets(
+        &self,
+        where_clause: &str,
+        binds: &[String],
+    ) -> Result<i32, sqlx::Error> {
+        let count_query = format!("SELECT COUNT(*) FROM ticket{where_clause}");
+        let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(count_query));
+        for bind in binds {
+            q = q.bind(bind);
+        }
+        q.fetch_one(&self.pool).await
+    }
+
+    /// Fetch ticket rows for a given WHERE clause with optional pagination.
+    async fn fetch_filtered_tickets(
+        &self,
+        where_clause: &str,
+        binds: &[String],
+        page_size: Option<i32>,
+        offset: i32,
+    ) -> Result<Vec<Ticket>, sqlx::Error> {
+        let mut query = format!(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             FROM ticket{where_clause} ORDER BY priority ASC, created_at ASC"
+        );
+
+        if let Some(limit) = page_size {
+            query.push_str(&format!(" LIMIT {limit} OFFSET {offset}"));
+        }
+
+        let mut q = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+                i32,
+                i32,
+            ),
+        >(sqlx::AssertSqlSafe(query));
+        for bind in binds {
+            q = q.bind(bind);
+        }
+
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(Self::rows_to_tickets(rows))
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn rows_to_tickets(
+        rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            i32,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            i32,
+            i32,
+        )>,
+    ) -> Vec<Ticket> {
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                    children_completed,
+                    children_total,
+                )| {
+                    Ticket {
+                        id,
+                        project,
+                        type_,
+                        status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
+                        lifecycle_managed,
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        branch,
+                        created_at,
+                        updated_at,
+                        children_completed,
+                        children_total,
+                    }
+                },
+            )
+            .collect()
+    }
+
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = String::from(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
