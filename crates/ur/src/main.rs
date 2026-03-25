@@ -1333,7 +1333,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
 
     // Initialize structured JSON file logging after config is loaded so we
     // know where to write the log file. The guard must live until main exits.
-    let _log_guard = logging::init(&config.config_dir);
+    let _log_guard = logging::init(&config.logs_dir);
 
     info!(
         config_dir = %config.config_dir.display(),
