@@ -163,6 +163,47 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add project CLAUDE.md mount and env var based on project configuration.
+    ///
+    /// - If `claude_md` is `None`, this is a no-op.
+    /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a read-only volume
+    ///   mount from the host path to `/var/ur/project-claude/CLAUDE.md` and sets
+    ///   `UR_PROJECT_CLAUDE=/var/ur/project-claude/CLAUDE.md`.
+    /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
+    ///   mount and sets `UR_PROJECT_CLAUDE=/workspace/<rel>`.
+    pub fn add_project_claude_md(
+        mut self,
+        claude_md: &Option<String>,
+        host_config_dir: &Path,
+    ) -> Result<Self, String> {
+        let Some(template) = claude_md.as_deref() else {
+            return Ok(self);
+        };
+
+        let resolved = resolve_template_path(template, host_config_dir)
+            .map_err(|e| format!("failed to resolve claude_md: {e}"))?;
+
+        match resolved {
+            ResolvedTemplatePath::HostPath(host_path) => {
+                let container_path = PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro");
+                self.volumes.push((host_path, container_path));
+                self.env_vars.push((
+                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
+                    "/var/ur/project-claude/CLAUDE.md".into(),
+                ));
+            }
+            ResolvedTemplatePath::ProjectRelative(rel_path) => {
+                let container_claude = PathBuf::from("/workspace").join(&rel_path);
+                self.env_vars.push((
+                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
+                    container_claude.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+
+        Ok(self)
+    }
+
     /// Add project-configured volume mounts.
     ///
     /// Each mount entry has a template source (resolved to a host path) and an absolute
@@ -632,5 +673,74 @@ mod tests {
         assert_eq!(opts.port_maps[0].container_port, 80);
         assert_eq!(opts.port_maps[1].host_port, 3000);
         assert_eq!(opts.port_maps[1].container_port, 3000);
+    }
+
+    #[test]
+    fn add_project_claude_md_none_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_claude_md(&None, Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+        assert!(opts.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_project_claude_md_host_path_adds_mount_and_env() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_claude_md(
+                &Some("/opt/claude/ur/CLAUDE.md".into()),
+                Path::new("/unused"),
+            )
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/opt/claude/ur/CLAUDE.md"));
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro")
+        );
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
+        assert_eq!(opts.env_vars[0].1, "/var/ur/project-claude/CLAUDE.md");
+    }
+
+    #[test]
+    fn add_project_claude_md_urconfig_adds_mount_and_env() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_claude_md(
+                &Some("%URCONFIG%/projects/ur/CLAUDE.md".into()),
+                Path::new("/home/user/.ur"),
+            )
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(
+            opts.volumes[0].0,
+            PathBuf::from("/home/user/.ur/projects/ur/CLAUDE.md")
+        );
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro")
+        );
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
+        assert_eq!(opts.env_vars[0].1, "/var/ur/project-claude/CLAUDE.md");
+    }
+
+    #[test]
+    fn add_project_claude_md_project_relative_no_mount() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_claude_md(&Some("%PROJECT%/CLAUDE.md".into()), Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
+        assert_eq!(opts.env_vars[0].1, "/workspace/CLAUDE.md");
     }
 }

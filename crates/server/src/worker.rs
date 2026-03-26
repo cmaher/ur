@@ -230,6 +230,9 @@ pub struct WorkerConfig {
     pub git_hooks_dir: Option<String>,
     /// Optional skill hooks directory template string from project config.
     pub skill_hooks_dir: Option<String>,
+    /// Optional project CLAUDE.md template string from project config.
+    /// When None, the server falls back to `<config_dir>/projects/<project_key>/CLAUDE.md`.
+    pub claude_md: Option<String>,
     /// Additional volume mounts from project config (source:destination pairs).
     pub mounts: Vec<ur_config::MountConfig>,
     /// Port mappings from project config (host_port:container_port pairs).
@@ -461,41 +464,19 @@ impl WorkerManager {
         // Generate worker secret for worker auth
         let worker_secret = Uuid::new_v4().to_string();
 
-        // Build env vars
-        let server_addr = format!(
-            "{}:{}",
-            self.network_config.server_hostname, self.worker_port
+        let env_vars = build_worker_env_vars(
+            &config,
+            &worker_secret,
+            &self.network_config,
+            self.worker_port,
         );
-        let mut env_vars = vec![
-            (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
-            (
-                ur_config::UR_WORKER_ID_ENV.into(),
-                config.worker_id.0.clone(),
-            ),
-            (
-                ur_config::UR_WORKER_SECRET_ENV.into(),
-                worker_secret.clone(),
-            ),
-        ];
 
-        // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
-        env_vars.extend(proxy_env_vars(&config.proxy_hostname));
-
-        // Inject resolved skills as comma-separated list
-        if !config.skills.is_empty() {
-            env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
-        }
-
-        // Inject strategy-specific CLAUDE.md name for workerd to copy at init
-        env_vars.push((
-            "UR_WORKER_CLAUDE".into(),
-            config.strategy.claude_md_name().into(),
-        ));
-
-        // Inject project key so workers can resolve project context via env
-        if !config.project_key.is_empty() {
-            env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
-        }
+        // Resolve project CLAUDE.md: use explicit config, fall back to convention path
+        let claude_md = resolve_claude_md(
+            &config.claude_md,
+            &config.project_key,
+            &self.host_config_dir,
+        );
 
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
@@ -512,6 +493,7 @@ impl WorkerManager {
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
+        .add_project_claude_md(&claude_md, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
             &context_mount_configs(&config.context_mounts),
@@ -676,6 +658,87 @@ impl WorkerManager {
             .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
+    }
+}
+
+/// Build the environment variables for a worker container launch.
+///
+/// Assembles server address, worker identity, proxy, skills, strategy CLAUDE.md name,
+/// project key, and host workspace path into a list of key-value pairs.
+fn build_worker_env_vars(
+    config: &WorkerConfig,
+    worker_secret: &str,
+    network_config: &ur_config::NetworkConfig,
+    worker_port: u16,
+) -> Vec<(String, String)> {
+    let server_addr = format!("{}:{}", network_config.server_hostname, worker_port);
+    let mut env_vars = vec![
+        (ur_config::UR_SERVER_ADDR_ENV.into(), server_addr),
+        (
+            ur_config::UR_WORKER_ID_ENV.into(),
+            config.worker_id.0.clone(),
+        ),
+        (
+            ur_config::UR_WORKER_SECRET_ENV.into(),
+            worker_secret.to_owned(),
+        ),
+    ];
+
+    // Inject proxy env vars (Squid proxy reachable via Docker DNS on the internal network)
+    env_vars.extend(proxy_env_vars(&config.proxy_hostname));
+
+    // Inject resolved skills as comma-separated list
+    if !config.skills.is_empty() {
+        env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
+    }
+
+    // Inject strategy-specific CLAUDE.md name for workerd to copy at init
+    env_vars.push((
+        "UR_WORKER_CLAUDE".into(),
+        config.strategy.claude_md_name().into(),
+    ));
+
+    // Inject project key so workers can resolve project context via env
+    if !config.project_key.is_empty() {
+        env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
+    }
+
+    // Inject host workspace path so workers know the host-side mount source
+    if let Some(ref ws_dir) = config.workspace_dir {
+        env_vars.push((
+            ur_config::UR_HOST_WORKSPACE_ENV.into(),
+            ws_dir.display().to_string(),
+        ));
+    }
+
+    env_vars
+}
+
+/// Resolve the project CLAUDE.md template string, falling back to the convention path.
+///
+/// When `claude_md` is already set (from project config), returns it as-is.
+/// When `claude_md` is None and a non-empty `project_key` is provided, checks
+/// `<host_config_dir>/projects/<project_key>/CLAUDE.md` — if it exists, returns
+/// the absolute path as a host path string.
+fn resolve_claude_md(
+    claude_md: &Option<String>,
+    project_key: &str,
+    host_config_dir: &std::path::Path,
+) -> Option<String> {
+    if claude_md.is_some() {
+        return claude_md.clone();
+    }
+    if project_key.is_empty() {
+        return None;
+    }
+    let convention_path = host_config_dir
+        .join("projects")
+        .join(project_key)
+        .join("CLAUDE.md");
+    if convention_path.exists() {
+        Some(convention_path.to_string_lossy().into_owned())
+    } else {
+        None
     }
 }
 
@@ -1197,5 +1260,38 @@ skills = ["only-one"]
         )
         .await;
         assert!(mgr.get_worker_context(&wid).await.is_none());
+    }
+
+    #[test]
+    fn resolve_claude_md_returns_explicit_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_claude_md(&Some("%PROJECT%/CLAUDE.md".into()), "myproj", tmp.path());
+        assert_eq!(result.as_deref(), Some("%PROJECT%/CLAUDE.md"));
+    }
+
+    #[test]
+    fn resolve_claude_md_none_empty_project_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_claude_md(&None, "", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_claude_md_convention_fallback_when_file_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_dir = tmp.path().join("projects").join("myproj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(proj_dir.join("CLAUDE.md"), "# Project").unwrap();
+
+        let result = resolve_claude_md(&None, "myproj", tmp.path());
+        let expected = proj_dir.join("CLAUDE.md").to_string_lossy().into_owned();
+        assert_eq!(result.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn resolve_claude_md_convention_fallback_no_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_claude_md(&None, "myproj", tmp.path());
+        assert_eq!(result, None);
     }
 }
