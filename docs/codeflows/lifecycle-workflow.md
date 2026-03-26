@@ -36,7 +36,7 @@ The system uses four database tables:
                                            |       (failures: CI fail   ──┘      |       \(changes
                                            |        or merge conflict)           |        requested)
                                            |                                     |         v
-                                           |               (approve-only,        |   FeedbackCreating
+                                           |               (approve-only,        |   AddressingFeedback
                                            |                all 3 green)         |    /           \
                                            |                    |                | (now)/         \(later)
                                            |                    v                |    /             |
@@ -64,7 +64,7 @@ The `Pushing` state no longer polls CI or loops back to `Implementing` on CI fai
 | `Verifying` | Server runs pre-push verification hook |
 | `Pushing` | Server pushes branch, creates/updates PR, initializes conditions, then advances directly to InReview |
 | `InReview` | PR is open; poller evaluates three conditions (CI, mergeability, review) each scan cycle |
-| `FeedbackCreating` | Worker creates feedback summary from review |
+| `AddressingFeedback` | Worker creates feedback summary from review |
 | `Merging` | Server verifies all three conditions, merges PR (squash), kills worker, closes ticket |
 | `Done` | Terminal state |
 
@@ -101,14 +101,14 @@ The step router is a pure function mapping `workflow_status` → `NextStepResult
 | Current Status | Result |
 |----------------|--------|
 | `Implementing` | `Advance { to: Verifying }` |
-| `FeedbackCreating` | `AdvanceByFeedbackMode` |
+| `AddressingFeedback` | `AdvanceByFeedbackMode` |
 | All others | `Ignore` |
 
 `AdvanceByFeedbackMode` routes based on `feedback_mode` ticket metadata:
 - `now` (changes requested) → `Implementing`
 - `later` (approved) → `Merging`
 
-The router only handles workerd-driven transitions. Poller-driven transitions (InReview → FeedbackCreating/Merging/Implementing) and handler-driven transitions (Verifying → Pushing, Pushing → InReview) bypass the router entirely.
+The router only handles workerd-driven transitions. Poller-driven transitions (InReview → AddressingFeedback/Merging/Implementing) and handler-driven transitions (Verifying → Pushing, Pushing → InReview) bypass the router entirely.
 
 Source: `crates/server/src/workflow/step_router.rs`
 
@@ -123,7 +123,7 @@ Handlers are keyed by **target status**, not by transition. Each handler runs wh
 | `Verifying` | `VerifyHandler` | Runs pre-push verification hook via builderd |
 | `Pushing` | `PushHandler` | Pushes branch, creates/updates PR, initializes conditions, advances to InReview |
 | `InReview` | `ReviewStartHandler` | No-op signal handler |
-| `FeedbackCreating` | `FeedbackCreateHandler` | Queries pending comments, sends feedback create RPC to worker |
+| `AddressingFeedback` | `FeedbackAddressHandler` | Queries pending comments, sends feedback create RPC to worker |
 | `Merging` | `MergeHandler` | Pre-merge gate checks all 3 conditions, merges PR (squash), kills worker, closes ticket |
 
 Source: `crates/server/src/workflow/handlers/mod.rs` (`build_handlers()`)
@@ -141,10 +141,10 @@ Different lifecycle transitions are triggered by different sources:
 | Verifying → Implementing | VerifyHandler (hook fails, under fix limit) |
 | Pushing → InReview | PushHandler (push success + PR created/updated, conditions initialized) |
 | InReview → Implementing | GithubPollerManager (CI failure or merge conflict, no review feedback) |
-| InReview → FeedbackCreating | GithubPollerManager (changes requested, or approval with other unseen comments, or autoapprove) |
+| InReview → AddressingFeedback | GithubPollerManager (changes requested, or approval with other unseen comments, or autoapprove) |
 | InReview → Merging | GithubPollerManager (approve-only: all 3 conditions green, approve is the only unseen comment) |
-| FeedbackCreating → Implementing | Worker step complete + `feedback_mode=now` |
-| FeedbackCreating → Merging | Worker step complete + `feedback_mode=later` |
+| AddressingFeedback → Implementing | Worker step complete + `feedback_mode=now` |
+| AddressingFeedback → Merging | Worker step complete + `feedback_mode=later` |
 | Merging → Implementing | MergeHandler (merge conflict or merge rejection, child ticket created via TicketClient) |
 
 ## gRPC Interface
@@ -292,7 +292,7 @@ Workflow event type constants are defined in `ur_rpc::workflow_event`:
 | `VERIFYING` | lifecycle | Entered verifying |
 | `PUSHING` | lifecycle | Entered pushing |
 | `IN_REVIEW` | lifecycle | Entered in_review |
-| `FEEDBACK_CREATING` | lifecycle | Entered feedback_creating |
+| `ADDRESSING_FEEDBACK` | lifecycle | Entered addressing_feedback |
 | `MERGING` | lifecycle | Entered merging |
 | `DONE` | lifecycle | Entered done |
 | `CANCELLED` | lifecycle | Workflow cancelled |
@@ -412,7 +412,7 @@ Source: `crates/server/src/workflow/handlers/push.rs`
 
 ## Two-Phase Comment Handling and Feedback Flow
 
-The feedback flow uses two-phase comment tracking to deduplicate PR comments across multiple feedback cycles (e.g., when a ticket goes through Implementing -> Pushing -> InReview -> FeedbackCreating multiple times).
+The feedback flow uses two-phase comment tracking to deduplicate PR comments across multiple feedback cycles (e.g., when a ticket goes through Implementing -> Pushing -> InReview -> AddressingFeedback multiple times).
 
 ### Phase 1: Comment Discovery (GithubPollerManager)
 
@@ -426,12 +426,12 @@ When scanning `InReview` tickets, the poller:
 
 This ensures that comments from previous review rounds do not re-trigger transitions.
 
-### Phase 2: Feedback Creation (FeedbackCreateHandler)
+### Phase 2: Feedback Creation (FeedbackAddressHandler)
 
-When a ticket reaches `FeedbackCreating`, the `FeedbackCreateHandler`:
+When a ticket reaches `AddressingFeedback`, the `FeedbackAddressHandler`:
 
 1. Queries `workflow_comments` for pending comments (`feedback_created = 0`) and handled comments (`feedback_created = 1`)
-2. Sends the `CreateFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC to the worker, passing handled IDs so the worker skips comments that already have feedback tickets
+2. Sends the `AddressFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC to the worker, passing handled IDs so the worker skips comments that already have feedback tickets
 3. The worker creates child tickets from new PR review comments and signals step complete
 4. On step completion, `WorkerCoreServiceHandler` calls `mark_feedback_created` to flip all pending comments to `feedback_created = 1`
 5. The step router routes via `AdvanceByFeedbackMode`:
@@ -440,7 +440,7 @@ When a ticket reaches `FeedbackCreating`, the `FeedbackCreateHandler`:
 
 If the worker dies before step completion, pending comments remain at `feedback_created = 0` and will be re-processed on recovery.
 
-Source: `crates/server/src/workflow/handlers/feedback_create.rs`, `crates/server/src/workflow/step_router.rs`, `crates/server/src/grpc.rs`
+Source: `crates/server/src/workflow/handlers/feedback_address.rs`, `crates/server/src/workflow/step_router.rs`, `crates/server/src/grpc.rs`
 
 ## Merge Flow
 
@@ -488,13 +488,13 @@ Scans every 30s for tickets in the `in_review` workflow state. Each scan cycle c
 - If `mergeable` = `conflict`: creates a child ticket via `TicketClient` (issue type `merge_conflict`)
 
 **Step 5: Evaluate transition** (`evaluate_transition`)
-- PR merged by human → `FeedbackCreating` (mode=later)
+- PR merged by human → `AddressingFeedback` (mode=later)
 - PR closed without merge → cancel workflow, revert ticket to Open
-- Changes requested → `FeedbackCreating` (mode=now), resets implement cycles
+- Changes requested → `AddressingFeedback` (mode=now), resets implement cycles
 - Failures (CI or merge conflict) without review feedback → `Implementing`
 - All three conditions green + approved:
   - Approve-only (1 or fewer unseen comments) → `Merging` (skip feedback)
-  - Other unseen comments → `FeedbackCreating` (mode=later)
+  - Other unseen comments → `AddressingFeedback` (mode=later)
 - Otherwise → stay in InReview (conditions not yet met)
 
 Source: `crates/server/src/workflow/github_poller.rs`

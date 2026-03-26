@@ -28,7 +28,7 @@ impl WorkerdNextStepRouter {
             LifecycleStatus::Implementing => NextStepResult::Advance {
                 to: LifecycleStatus::Verifying,
             },
-            LifecycleStatus::FeedbackCreating => NextStepResult::AdvanceByFeedbackMode,
+            LifecycleStatus::AddressingFeedback => NextStepResult::AdvanceByFeedbackMode,
             _ => NextStepResult::Ignore,
         }
     }
@@ -53,9 +53,9 @@ mod tests {
     }
 
     #[test]
-    fn feedback_creating_advances_by_feedback_mode() {
+    fn addressing_feedback_advances_by_feedback_mode() {
         assert_eq!(
-            router().route(LifecycleStatus::FeedbackCreating),
+            router().route(LifecycleStatus::AddressingFeedback),
             NextStepResult::AdvanceByFeedbackMode,
         );
     }

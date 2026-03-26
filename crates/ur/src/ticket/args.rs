@@ -212,7 +212,7 @@ pub enum TicketArgs {
         project: Option<String>,
     },
 
-    /// Approve a ticket (transition lifecycle from in_review to feedback_creating)
+    /// Approve a ticket (transition lifecycle from in_review to addressing_feedback)
     Approve {
         /// Ticket ID
         id: String,

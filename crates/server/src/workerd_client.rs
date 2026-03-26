@@ -2,7 +2,7 @@ use tracing::warn;
 use ur_db::WorkerRepo;
 use ur_db::model::AgentStatus;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
-use ur_rpc::proto::workerd::{CreateFeedbackRequest, ImplementRequest, SendMessageRequest};
+use ur_rpc::proto::workerd::{AddressFeedbackRequest, ImplementRequest, SendMessageRequest};
 use ur_rpc::retry::{RetryChannel, RetryConfig};
 
 /// Thin client for sending messages to a workerd instance inside a worker container.
@@ -111,11 +111,11 @@ impl WorkerdClient {
         Ok(())
     }
 
-    /// Fire-and-forget: send a /create-feedback skill invocation to the worker.
+    /// Fire-and-forget: send an /address-feedback skill invocation to the worker.
     ///
     /// `handled_comment_ids` lists comment IDs that already have feedback tickets,
     /// so the worker can skip them when processing PR comments.
-    pub async fn create_feedback_tickets(
+    pub async fn address_feedback_tickets(
         &self,
         ticket_id: &str,
         pr_number: u32,
@@ -123,16 +123,16 @@ impl WorkerdClient {
     ) -> Result<(), String> {
         let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
 
-        let req = CreateFeedbackRequest {
+        let req = AddressFeedbackRequest {
             ticket_id: ticket_id.to_string(),
             pr_number,
             handled_comment_ids,
         };
 
         client
-            .create_feedback_tickets(req)
+            .address_feedback_tickets(req)
             .await
-            .map_err(|e| format!("workerd CreateFeedbackTickets failed: {e}"))?;
+            .map_err(|e| format!("workerd AddressFeedbackTickets failed: {e}"))?;
 
         self.mark_working().await;
         Ok(())

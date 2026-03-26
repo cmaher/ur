@@ -2,7 +2,7 @@
 
 mod awaiting_dispatch;
 mod dispatch_implement;
-mod feedback_create;
+mod feedback_address;
 mod merge;
 mod push;
 mod review_start;
@@ -10,7 +10,7 @@ mod verify;
 
 pub use awaiting_dispatch::AwaitingDispatchHandler;
 pub use dispatch_implement::ImplementHandler;
-pub use feedback_create::FeedbackCreateHandler;
+pub use feedback_address::FeedbackAddressHandler;
 pub use merge::MergeHandler;
 pub use push::PushHandler;
 pub use review_start::ReviewStartHandler;
@@ -39,10 +39,10 @@ pub fn build_handlers(ticket_client: TicketClient) -> Vec<HandlerEntry> {
         (LifecycleStatus::Verifying, Arc::new(VerifyHandler)),
         // Pushing: workflow-driven push handler
         (LifecycleStatus::Pushing, Arc::new(PushHandler)),
-        // FeedbackCreating: dispatch feedback create RPC to worker
+        // AddressingFeedback: dispatch address feedback RPC to worker
         (
-            LifecycleStatus::FeedbackCreating,
-            Arc::new(FeedbackCreateHandler),
+            LifecycleStatus::AddressingFeedback,
+            Arc::new(FeedbackAddressHandler),
         ),
         // Merging: merge PR (squash), kill worker, close epic, dispatch children
         (

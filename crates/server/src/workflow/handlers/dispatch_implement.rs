@@ -12,7 +12,7 @@ use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 /// - Verification failure re-dispatch (Verifying → Implementing)
 /// - CI failure re-dispatch (Pushing → Implementing via poller)
 /// - Merge conflict re-dispatch (Merging → Implementing)
-/// - Feedback re-dispatch (FeedbackCreating → Implementing)
+/// - Feedback re-dispatch (AddressingFeedback → Implementing)
 ///
 /// Looks up the ticket's branch field:
 /// - If set, the worker will check out and pull that branch.

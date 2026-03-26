@@ -566,7 +566,7 @@ where
             project: None,
         })
         .await
-        .with_status_context("transition lifecycle to feedback_creating")?;
+        .with_status_context("transition lifecycle to addressing_feedback")?;
 
     Ok(TicketOutput::Approved { id, feedback_mode })
 }
