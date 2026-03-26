@@ -12,9 +12,9 @@ use ur_rpc::proto::core::{
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
-    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, ListTicketsRequest,
-    ListTicketsResponse, ListWorkflowsRequest, ListWorkflowsResponse, SubscribeUiEventsRequest,
-    UiEventType, UpdateTicketRequest,
+    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, GetTicketRequest,
+    GetTicketResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
+    ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType, UpdateTicketRequest,
 };
 
 use crate::create_ticket::{PendingTicket, is_title_placeholder};
@@ -29,6 +29,8 @@ pub enum DataPayload {
     Flows(Result<(Vec<ur_rpc::proto::ticket::WorkflowInfo>, i32), String>),
     /// Worker list fetched from the server.
     Workers(Result<Vec<WorkerSummary>, String>),
+    /// Full ticket detail: the ticket with metadata/activities, child tickets, and total child count.
+    TicketDetail(Result<(GetTicketResponse, Vec<Ticket>, i32), String>),
 }
 
 /// Result of an async action (dispatch, etc.) sent back via `AppEvent::ActionResult`.
@@ -323,6 +325,40 @@ impl DataManager {
         });
     }
 
+    /// Spawn a background task that fetches full ticket detail by firing both
+    /// `GetTicket` and `ListTickets` (with `tree_root_id`) concurrently, then
+    /// sends the combined result as `DataPayload::TicketDetail`.
+    pub fn fetch_ticket_detail(
+        &self,
+        ticket_id: String,
+        child_page_size: Option<i32>,
+        child_offset: Option<i32>,
+    ) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "fetching ticket detail");
+            let payload = match fetch_ticket_detail_rpc(
+                port,
+                &ticket_id,
+                child_page_size,
+                child_offset,
+            )
+            .await
+            {
+                Ok((detail, children, total)) => {
+                    DataPayload::TicketDetail(Ok((detail, children, total)))
+                }
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "ticket detail fetch failed");
+                    DataPayload::TicketDetail(Err(e.to_string()))
+                }
+            };
+            let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
+        });
+    }
+
     /// Spawn a background task that launches a design worker for an existing ticket.
     ///
     /// Resolves the project from the ticket ID prefix, then calls
@@ -603,6 +639,57 @@ async fn fetch_tickets_rpc(
     });
     let response = client.list_tickets(request).await?;
     Ok(response.into_inner())
+}
+
+/// Fire `GetTicket` and `ListTickets` (with `tree_root_id`) concurrently and
+/// return `(detail_response, children, total_child_count)`.
+///
+/// Both RPCs create their own gRPC channels. If either fails, the error is
+/// returned and the `DataPayload::TicketDetail` variant will hold the `Err`
+/// side.
+async fn fetch_ticket_detail_rpc(
+    port: u16,
+    ticket_id: &str,
+    child_page_size: Option<i32>,
+    child_offset: Option<i32>,
+) -> Result<(GetTicketResponse, Vec<Ticket>, i32)> {
+    let ticket_id_owned = ticket_id.to_owned();
+    let ticket_id_for_children = ticket_id.to_owned();
+
+    let get_ticket_fut = async move {
+        let channel = connect(port).await?;
+        let mut client = TicketServiceClient::new(channel);
+        let resp = client
+            .get_ticket(GetTicketRequest {
+                id: ticket_id_owned,
+                activity_author_filter: None,
+            })
+            .await?;
+        anyhow::Ok(resp.into_inner())
+    };
+
+    let list_children_fut = async move {
+        let channel = connect(port).await?;
+        let mut client = TicketServiceClient::new(channel);
+        let resp = client
+            .list_tickets(ListTicketsRequest {
+                project: None,
+                ticket_type: None,
+                status: None,
+                meta_key: None,
+                meta_value: None,
+                tree_root_id: Some(ticket_id_for_children),
+                page_size: child_page_size,
+                offset: child_offset,
+                include_children: None,
+            })
+            .await?;
+        let inner = resp.into_inner();
+        anyhow::Ok((inner.tickets, inner.total_count))
+    };
+
+    let (detail, (children, total)) = tokio::try_join!(get_ticket_fut, list_children_fut)?;
+    Ok((detail, children, total))
 }
 
 /// Filter workers by project key. Returns all workers when no project filter
@@ -887,6 +974,80 @@ mod tests {
         assert!(matches!(tickets_err, DataPayload::Tickets(Err(_))));
         assert!(matches!(flows_ok, DataPayload::Flows(Ok(_))));
         assert!(matches!(flows_err, DataPayload::Flows(Err(_))));
+    }
+
+    #[test]
+    fn ticket_detail_variant_ok() {
+        use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
+
+        let detail = GetTicketResponse {
+            ticket: Some(Ticket {
+                id: "ur-abc".into(),
+                ..Default::default()
+            }),
+            metadata: vec![],
+            activities: vec![],
+        };
+        let children: Vec<Ticket> = vec![];
+        let total = 0i32;
+
+        let payload = DataPayload::TicketDetail(Ok((detail, children, total)));
+        assert!(matches!(payload, DataPayload::TicketDetail(Ok(_))));
+
+        if let DataPayload::TicketDetail(Ok((resp, ch, tc))) = payload {
+            assert_eq!(resp.ticket.unwrap().id, "ur-abc");
+            assert!(ch.is_empty());
+            assert_eq!(tc, 0);
+        } else {
+            panic!("expected TicketDetail(Ok(...))");
+        }
+    }
+
+    #[test]
+    fn ticket_detail_variant_err() {
+        let payload = DataPayload::TicketDetail(Err("rpc failed".into()));
+        assert!(matches!(payload, DataPayload::TicketDetail(Err(_))));
+
+        if let DataPayload::TicketDetail(Err(msg)) = payload {
+            assert_eq!(msg, "rpc failed");
+        } else {
+            panic!("expected TicketDetail(Err(...))");
+        }
+    }
+
+    #[test]
+    fn ticket_detail_variant_with_children() {
+        use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
+
+        let children = vec![
+            Ticket {
+                id: "ur-child1".into(),
+                ..Default::default()
+            },
+            Ticket {
+                id: "ur-child2".into(),
+                ..Default::default()
+            },
+        ];
+        let detail = GetTicketResponse {
+            ticket: Some(Ticket {
+                id: "ur-parent".into(),
+                ..Default::default()
+            }),
+            metadata: vec![],
+            activities: vec![],
+        };
+        let total = 2i32;
+
+        let payload = DataPayload::TicketDetail(Ok((detail, children, total)));
+
+        if let DataPayload::TicketDetail(Ok((resp, ch, tc))) = payload {
+            assert_eq!(resp.ticket.unwrap().id, "ur-parent");
+            assert_eq!(ch.len(), 2);
+            assert_eq!(tc, 2);
+        } else {
+            panic!("expected TicketDetail(Ok(...))");
+        }
     }
 
     #[test]
