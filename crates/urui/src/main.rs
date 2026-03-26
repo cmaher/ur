@@ -50,8 +50,8 @@ async fn main() -> anyhow::Result<()> {
     let mut projects: Vec<String> = config.projects.keys().cloned().collect();
     projects.sort();
 
-    // Resolve project filter: explicit flag, then cwd directory name.
-    let project_filter = resolve_project_filter(cli.project, &projects);
+    // Resolve project filter: explicit flag, UR_PROJECT env, then cwd directory name.
+    let project_filter = ur_config::resolve_project(cli.project, &config.projects);
 
     let ctx = TuiContext {
         theme,
@@ -82,21 +82,6 @@ async fn main() -> anyhow::Result<()> {
     restore_terminal();
 
     result
-}
-
-/// Resolve the project filter from the CLI flag or the current working
-/// directory name, matching against known project keys.
-fn resolve_project_filter(explicit: Option<String>, project_keys: &[String]) -> Option<String> {
-    if let Some(p) = explicit {
-        return Some(p);
-    }
-    // Try to derive from cwd directory name.
-    let cwd = std::env::current_dir().ok()?;
-    let dir_name = cwd.file_name()?.to_str()?.to_owned();
-    if project_keys.contains(&dir_name) {
-        return Some(dir_name);
-    }
-    None
 }
 
 /// Resolve the keymap from TUI configuration: use the named custom keymap if
