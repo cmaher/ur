@@ -1590,11 +1590,12 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
             "cancelled workflow should have status 'cancelled'.\nJSON: {show}"
         );
 
-        // ---- Stop worker ----
+        // ---- Verify worker was killed by flow cancel ----
+        // cancel_active_workflow kills the associated worker, so stop should fail.
         let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
         assert!(
-            stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            !stop_output.status.success(),
+            "worker should already be stopped after flow cancel.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
