@@ -1374,7 +1374,9 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Start => start_server(&config, &compose, output)?,
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
-        Commands::Ticket { command } => ticket::handle(port, command, output).await?,
+        Commands::Ticket { command } => {
+            ticket::handle(port, command, output, &config.projects).await?
+        }
         Commands::Tui { command } => tui::handle(*command, &config, output)?,
         Commands::Flow { command } => flow::handle(port, command, output).await?,
         Commands::Worker { command } => {

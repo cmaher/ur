@@ -6,9 +6,12 @@ pub use args::TicketArgs;
 pub use execute::execute;
 pub use format::{format_ticket_detail, format_ticket_list};
 
-use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
+
+use anyhow::{Context, Result};
 use serde::Serialize;
 use tonic::transport::Channel;
+use ur_config::ProjectConfig;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
@@ -149,31 +152,23 @@ fn project_from_ticket_id(ticket_id: &str) -> Option<String> {
 
 /// Resolve the project key for commands that require it.
 ///
-/// Resolution order: explicit `--project/-p` flag → `UR_PROJECT` env → current directory name.
-/// Returns an error if none resolves.
-fn resolve_project(explicit: Option<String>) -> Result<String> {
-    if let Some(p) = explicit {
-        return Ok(p);
-    }
-    if let Ok(env_val) = std::env::var("UR_PROJECT")
-        && !env_val.is_empty()
-    {
-        return Ok(env_val);
-    }
-    let cwd = std::env::current_dir().context("failed to get current working directory")?;
-    let dir_name = cwd
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
-        .to_owned();
-    if dir_name.is_empty() {
-        bail!("could not resolve project: no --project flag, UR_PROJECT env, or directory name");
-    }
-    Ok(dir_name)
+/// Delegates to [`ur_config::resolve_project`] and converts `None` to an error.
+fn resolve_project(
+    explicit: Option<String>,
+    projects: &HashMap<String, ProjectConfig>,
+) -> Result<String> {
+    ur_config::resolve_project(explicit, projects).ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not resolve project: no --project flag, UR_PROJECT env, or directory name"
+        )
+    })
 }
 
 /// Inject resolved project into ticket args that require it.
-fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
+fn resolve_args_project(
+    args: TicketArgs,
+    projects: &HashMap<String, ProjectConfig>,
+) -> Result<TicketArgs> {
     match args {
         TicketArgs::Create {
             title,
@@ -184,7 +179,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             body,
             wip,
         } => {
-            let resolved = resolve_project(project)?;
+            let resolved = resolve_project(project, projects)?;
             Ok(TicketArgs::Create {
                 title,
                 project: Some(resolved),
@@ -207,7 +202,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             } else if project.is_none() && tree.is_some() {
                 tree.as_deref().and_then(project_from_ticket_id)
             } else {
-                Some(resolve_project(project)?)
+                Some(resolve_project(project, projects)?)
             };
             Ok(TicketArgs::List {
                 project: resolved,
@@ -223,7 +218,7 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
             } else if let Some(p) = project_from_ticket_id(&epic_id) {
                 p
             } else {
-                resolve_project(None)?
+                resolve_project(None, projects)?
             };
             Ok(TicketArgs::Dispatchable {
                 epic_id,
@@ -234,8 +229,13 @@ fn resolve_args_project(args: TicketArgs) -> Result<TicketArgs> {
     }
 }
 
-pub async fn handle(port: u16, args: TicketArgs, output: &OutputManager) -> Result<()> {
-    let args = resolve_args_project(args)?;
+pub async fn handle(
+    port: u16,
+    args: TicketArgs,
+    output: &OutputManager,
+    projects: &HashMap<String, ProjectConfig>,
+) -> Result<()> {
+    let args = resolve_args_project(args, projects)?;
     let mut client = connect_ticket(port).await?;
     let result = execute(args, &mut client).await?;
     if output.is_json() {
