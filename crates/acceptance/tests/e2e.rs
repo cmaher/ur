@@ -1590,14 +1590,9 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
             "cancelled workflow should have status 'cancelled'.\nJSON: {show}"
         );
 
-        // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
-        assert!(
-            stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stop_output.stdout),
-            String::from_utf8_lossy(&stop_output.stderr),
-        );
+        // Worker is already killed by flow_cancel (CancelWorkflow kills the
+        // associated worker container). Just force-remove to clean up.
+        force_remove_container(&env.runtime, &container_name);
     }));
 
     if let Err(e) = result {
