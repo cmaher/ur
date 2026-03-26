@@ -14,8 +14,9 @@ pub use database::DatabaseManager;
 pub use graph::GraphManager;
 pub use model::{
     Activity, AgentStatus, DispatchableTicket, Edge, EdgeKind, LifecycleStatus,
-    MetadataMatchTicket, NewTicket, Slot, Ticket, TicketFilter, TicketStatus, TicketUpdate,
-    UiEventRow, Worker, WorkerSlot, Workflow, WorkflowEvent, WorkflowEventRow, WorkflowIntent,
+    MetadataMatchTicket, NewTicket, Slot, Ticket, TicketComment, TicketFilter, TicketStatus,
+    TicketUpdate, UiEventRow, Worker, WorkerSlot, Workflow, WorkflowEvent, WorkflowEventRow,
+    WorkflowIntent,
 };
 pub use snapshot::SnapshotManager;
 pub use ticket_repo::TicketRepo;
