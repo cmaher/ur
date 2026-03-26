@@ -1412,10 +1412,10 @@ pub fn resolve_project(
     if let Some(p) = explicit {
         return Some(p);
     }
-    if let Ok(env_val) = std::env::var("UR_PROJECT") {
-        if !env_val.is_empty() {
-            return Some(env_val);
-        }
+    if let Ok(env_val) = std::env::var("UR_PROJECT")
+        && !env_val.is_empty()
+    {
+        return Some(env_val);
     }
     let cwd = std::env::current_dir().ok()?;
     let dir_name = cwd.file_name()?.to_str()?;
