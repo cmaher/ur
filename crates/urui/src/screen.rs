@@ -5,7 +5,7 @@ use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, FooterCommand, Page, PageResult, StatusMessage};
-use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersListScreen};
+use crate::pages::{FlowsListScreen, TicketDetailScreen, TicketsListScreen, WorkersListScreen};
 
 /// Result of a screen handling an action.
 pub enum ScreenResult {
@@ -19,6 +19,31 @@ pub enum ScreenResult {
     Push(Box<dyn Screen>),
     /// Pop the current screen, returning to the previous one.
     Pop,
+}
+
+impl std::fmt::Debug for ScreenResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScreenResult::Consumed => write!(f, "Consumed"),
+            ScreenResult::Ignored => write!(f, "Ignored"),
+            ScreenResult::Quit => write!(f, "Quit"),
+            ScreenResult::Push(_) => write!(f, "Push(...)"),
+            ScreenResult::Pop => write!(f, "Pop"),
+        }
+    }
+}
+
+impl PartialEq for ScreenResult {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (ScreenResult::Consumed, ScreenResult::Consumed)
+                | (ScreenResult::Ignored, ScreenResult::Ignored)
+                | (ScreenResult::Quit, ScreenResult::Quit)
+                | (ScreenResult::Push(_), ScreenResult::Push(_))
+                | (ScreenResult::Pop, ScreenResult::Pop)
+        )
+    }
 }
 
 /// Trait implemented by every screen in the TUI.
@@ -97,6 +122,16 @@ pub trait Screen: Send {
 
     /// Mutably downcast to `WorkersListScreen` if this screen is one.
     fn as_any_workers_mut(&mut self) -> Option<&mut WorkersListScreen> {
+        None
+    }
+
+    /// Downcast to `TicketDetailScreen` if this screen is one.
+    fn as_any_ticket_detail(&self) -> Option<&TicketDetailScreen> {
+        None
+    }
+
+    /// Mutably downcast to `TicketDetailScreen` if this screen is one.
+    fn as_any_ticket_detail_mut(&mut self) -> Option<&mut TicketDetailScreen> {
         None
     }
 }

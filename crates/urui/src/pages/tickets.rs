@@ -13,6 +13,7 @@ use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::pages::ticket_detail::TicketDetailScreen;
 use crate::screen::{Screen, ScreenResult};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::force_close_confirm::{ForceCloseConfirmResult, ForceCloseConfirmState};
@@ -525,7 +526,14 @@ impl Screen for TicketsListScreen {
                 // at render time via ctx, but state is initialized here.
                 ScreenResult::Consumed
             }
-            Action::Select => ScreenResult::Consumed,
+            Action::Select => {
+                if let Some(ticket) = self.selected_ticket() {
+                    let detail = TicketDetailScreen::new(ticket.id.clone(), ticket.project.clone());
+                    ScreenResult::Push(Box::new(detail))
+                } else {
+                    ScreenResult::Consumed
+                }
+            }
             Action::Quit => ScreenResult::Quit,
             _ => ScreenResult::Ignored,
         }

@@ -311,7 +311,12 @@ impl App {
         if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
             self.notification_manager.seed_flows(workflows);
         }
-        // Deliver data to the root screen of every tab (the list pages).
+        // TicketDetail payloads go to the active screen (the top of the active stack).
+        if matches!(payload, crate::data::DataPayload::TicketDetail(_)) {
+            self.active_screen_mut().on_data(&payload);
+            return;
+        }
+        // All other payloads go to the root screen of every tab (the list pages).
         for stack in self.stacks.values_mut() {
             if let Some(root) = stack.first_mut() {
                 root.on_data(&payload);
@@ -704,7 +709,19 @@ impl App {
     }
 
     /// Fetch data for the currently active tab.
+    ///
+    /// If the active screen is a `TicketDetailScreen`, fetches ticket detail
+    /// data; otherwise fetches the appropriate list data for the tab.
     fn fetch_active_tab_data(&self) {
+        // If the top of the active stack is a detail screen, fetch its data.
+        if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+            let ticket_id = detail.ticket_id().to_owned();
+            let page_size = detail.child_page_size();
+            let offset = detail.child_offset();
+            self.data_manager
+                .fetch_ticket_detail(ticket_id, Some(page_size), Some(offset));
+            return;
+        }
         match self.active_tab {
             TabId::Tickets => {
                 let page = self.tickets_page();
