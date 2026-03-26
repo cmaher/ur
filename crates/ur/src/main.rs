@@ -1130,35 +1130,35 @@ fn resolve_project_key(
     if let Some(p) = project {
         return Ok(p);
     }
-    if workspace.is_none() {
-        let id_prefix = ticket_id
-            .split(&['-', '.'][..])
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
-            debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
-            return Ok(id_prefix);
-        }
-        let cwd = std::env::current_dir().context("failed to get current working directory")?;
-        let dir_name = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
-            .to_owned();
-        if project_keys.contains(&dir_name) {
-            debug!(project_key = %dir_name, "derived project from cwd");
-            return Ok(dir_name);
-        }
-        bail!(
-            "could not derive project from ticket ID prefix '{}' or \
-             cwd directory name '{}' \
-             (neither is a configured project key). Use -p <project> or -w <path>.",
-            id_prefix,
-            dir_name
-        );
+    let id_prefix = ticket_id
+        .split(&['-', '.'][..])
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+        debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+        return Ok(id_prefix);
     }
-    Ok(String::new())
+    let cwd = std::env::current_dir().context("failed to get current working directory")?;
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+        .to_owned();
+    if project_keys.contains(&dir_name) {
+        debug!(project_key = %dir_name, "derived project from cwd");
+        return Ok(dir_name);
+    }
+    if workspace.is_some() {
+        return Ok(String::new());
+    }
+    bail!(
+        "could not derive project from ticket ID prefix '{}' or \
+         cwd directory name '{}' \
+         (neither is a configured project key). Use -p <project> or -w <path>.",
+        id_prefix,
+        dir_name
+    )
 }
 
 /// Fetch the host workspace directory for a running process via gRPC.
