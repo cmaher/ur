@@ -5,8 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tonic::transport::Endpoint;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
+use ur_rpc::proto::core::WorkerStopRequest;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::hostexec::HostExecCommandEntry;
 use ur_rpc::proto::hostexec::ListHostExecCommandsRequest;
 use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
@@ -23,6 +25,7 @@ const MAX_RETRIES: u32 = 30;
 const INITIAL_BACKOFF_MS: u64 = 500;
 const MAX_BACKOFF_MS: u64 = 5000;
 const WORKERD_GRPC_PORT: u16 = 9120;
+const EXIT_WATCHER_POLL_SECS: u64 = 5;
 
 #[derive(Parser)]
 #[command(name = "workerd", about = "Ur worker daemon")]
@@ -127,6 +130,17 @@ async fn run_daemon_only() -> Result<()> {
     session.send_keys("claude").await?;
     info!("claude launched in tmux session");
 
+    // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when Claude exits
+    {
+        let server_addr = std::env::var(ur_config::UR_SERVER_ADDR_ENV)
+            .unwrap_or_else(|_| "localhost:50051".into());
+        let worker_id =
+            std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
+        let worker_secret =
+            std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_else(|_| String::new());
+        tokio::spawn(run_exit_watcher(server_addr, worker_id, worker_secret));
+    }
+
     // 4. Spawn healthz HTTP server (port 9119) in background
     tokio::spawn(serve_healthz());
 
@@ -157,6 +171,73 @@ async fn run_daemon_only() -> Result<()> {
         .await
         .context("gRPC server exited")?;
 
+    Ok(())
+}
+
+/// Poll the tmux agent session and initiate container shutdown when Claude Code exits.
+async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
+    let session = tmux::Session::agent();
+    let interval = Duration::from_secs(EXIT_WATCHER_POLL_SECS);
+
+    info!("exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s");
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        match session.is_pane_alive().await {
+            Ok(true) => {
+                debug!("agent pane is alive");
+                continue;
+            }
+            Ok(false) => {
+                info!("agent pane is dead, initiating shutdown");
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to check pane status, treating as dead");
+            }
+        }
+
+        // Pane is dead (or check failed) — send WorkerStop RPC
+        info!(worker_id = %worker_id, server_addr = %server_addr, "sending WorkerStop RPC");
+        match self_stop_rpc(&server_addr, &worker_id, &worker_secret).await {
+            Ok(()) => {
+                info!("WorkerStop RPC succeeded, waiting for server to stop container");
+                // Wait indefinitely for the server's docker stop to kill us
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "WorkerStop RPC failed, falling back to process::exit(0)");
+                std::process::exit(0);
+            }
+        }
+    }
+}
+
+/// Send a one-shot WorkerStop RPC to the ur-server to request container shutdown.
+async fn self_stop_rpc(server_addr: &str, worker_id: &str, worker_secret: &str) -> Result<()> {
+    let addr = format!("http://{server_addr}");
+    let channel = Endpoint::try_from(addr)?.connect().await?;
+    let mut client = CoreServiceClient::new(channel);
+
+    let mut request = tonic::Request::new(WorkerStopRequest {
+        worker_id: worker_id.to_owned(),
+    });
+
+    if let Ok(val) = worker_id.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
+        request
+            .metadata_mut()
+            .insert(ur_config::WORKER_ID_HEADER, val);
+    }
+    if let Ok(val) = worker_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+    {
+        request
+            .metadata_mut()
+            .insert(ur_config::WORKER_SECRET_HEADER, val);
+    }
+
+    client.worker_stop(request).await?;
     Ok(())
 }
 
