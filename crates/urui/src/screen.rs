@@ -5,7 +5,7 @@ use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, FooterCommand, Page, PageResult, StatusMessage};
-use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersPage};
+use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersListScreen};
 
 /// Result of a screen handling an action.
 pub enum ScreenResult {
@@ -90,86 +90,23 @@ pub trait Screen: Send {
         None
     }
 
-    /// Downcast to `WorkersPage` if this screen wraps one.
-    fn as_any_workers(&self) -> Option<&WorkersPage> {
+    /// Downcast to `WorkersListScreen` if this screen is one.
+    fn as_any_workers(&self) -> Option<&WorkersListScreen> {
         None
     }
 
-    /// Mutably downcast to `WorkersPage` if this screen wraps one.
-    fn as_any_workers_mut(&mut self) -> Option<&mut WorkersPage> {
+    /// Mutably downcast to `WorkersListScreen` if this screen is one.
+    fn as_any_workers_mut(&mut self) -> Option<&mut WorkersListScreen> {
         None
-    }
-}
-
-/// Root screen adapter for the Workers tab.
-///
-/// Wraps `WorkersPage` and implements `Screen`, forwarding all calls to the
-/// inner page. Provides typed downcast via `as_any_workers[_mut]`.
-pub struct WorkersScreenAdapter {
-    page: WorkersPage,
-}
-
-impl WorkersScreenAdapter {
-    pub fn new(page: WorkersPage) -> Self {
-        Self { page }
-    }
-}
-
-impl Screen for WorkersScreenAdapter {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match self.page.handle_action(action) {
-            PageResult::Consumed => ScreenResult::Consumed,
-            PageResult::Ignored => ScreenResult::Ignored,
-            PageResult::Quit => ScreenResult::Quit,
-        }
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        self.page.render(area, buf, ctx);
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        self.page.footer_commands(keymap)
-    }
-
-    fn on_data(&mut self, payload: &DataPayload) {
-        self.page.on_data(payload);
-    }
-
-    fn needs_data(&self) -> bool {
-        self.page.needs_data()
-    }
-
-    fn mark_stale(&mut self) {
-        self.page.mark_stale();
-    }
-
-    fn banner(&self) -> Option<&Banner> {
-        self.page.banner()
-    }
-
-    fn dismiss_banner(&mut self) {
-        self.page.dismiss_banner();
-    }
-
-    fn tick_banner(&mut self) {
-        self.page.tick_banner();
-    }
-
-    fn as_any_workers(&self) -> Option<&WorkersPage> {
-        Some(&self.page)
-    }
-
-    fn as_any_workers_mut(&mut self) -> Option<&mut WorkersPage> {
-        Some(&mut self.page)
     }
 }
 
 /// A generic adapter wrapping any `Page + Send` implementor as a `Screen`.
 ///
 /// Useful for pushing ad-hoc screens onto the stack in tests or future detail
-/// screens. Does not provide typed downcast methods — use the concrete adapters
-/// (`TicketsScreenAdapter`, `WorkersScreenAdapter`) for the root list screens.
+/// screens. Does not provide typed downcast methods — use the concrete screen
+/// types (`TicketsListScreen`, `FlowsListScreen`, `WorkersListScreen`) for the
+/// root list screens.
 pub struct PageScreenAdapter<P: Page + Send> {
     page: P,
 }

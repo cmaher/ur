@@ -12,13 +12,14 @@ use ur_rpc::proto::core::WorkerSummary;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand};
+use crate::screen::{Screen, ScreenResult};
 use crate::widgets::ThemedTable;
 
 const PAGE_SIZE: usize = 20;
 
 /// State for the Workers tab, showing active workers in a paginated table.
-pub struct WorkersPage {
+pub struct WorkersListScreen {
     /// Map of worker_id -> WorkerSummary for efficient lookups.
     entry_map: HashMap<String, WorkerSummary>,
     /// Sorted display list of worker IDs, rebuilt on data changes.
@@ -33,7 +34,7 @@ pub struct WorkersPage {
     active_banner: Option<Banner>,
 }
 
-impl WorkersPage {
+impl WorkersListScreen {
     pub fn new() -> Self {
         Self {
             entry_map: HashMap::new(),
@@ -45,6 +46,14 @@ impl WorkersPage {
             error: None,
             active_banner: None,
         }
+    }
+
+    pub fn title(&self) -> &str {
+        "Workers"
+    }
+
+    pub fn shortcut_char(&self) -> char {
+        'w'
     }
 
     fn total_pages(&self) -> usize {
@@ -167,54 +176,42 @@ fn entry_to_row(worker: &WorkerSummary) -> Vec<String> {
     ]
 }
 
-impl Page for WorkersPage {
-    fn tab_id(&self) -> TabId {
-        TabId::Workers
-    }
-
-    fn title(&self) -> &str {
-        "Workers"
-    }
-
-    fn shortcut_char(&self) -> char {
-        'w'
-    }
-
-    fn handle_action(&mut self, action: Action) -> PageResult {
+impl Screen for WorkersListScreen {
+    fn handle_action(&mut self, action: Action) -> ScreenResult {
         match action {
             Action::NavigateUp => {
                 if self.selected > 0 {
                     self.selected -= 1;
                 }
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::NavigateDown => {
                 let count = self.page_row_count();
                 if count > 0 && self.selected < count - 1 {
                     self.selected += 1;
                 }
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::PageLeft => {
                 if self.page > 0 {
                     self.page -= 1;
                     self.selected = 0;
                 }
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::PageRight => {
                 if self.page + 1 < self.total_pages() {
                     self.page += 1;
                     self.selected = 0;
                 }
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::Refresh => {
                 self.loaded = false;
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
-            Action::Quit => PageResult::Quit,
-            _ => PageResult::Ignored,
+            Action::Quit => ScreenResult::Quit,
+            _ => ScreenResult::Ignored,
         }
     }
 
@@ -303,20 +300,6 @@ impl Page for WorkersPage {
         ]
     }
 
-    fn banner(&self) -> Option<&Banner> {
-        self.active_banner.as_ref()
-    }
-
-    fn dismiss_banner(&mut self) {
-        self.active_banner = None;
-    }
-
-    fn tick_banner(&mut self) {
-        if self.active_banner.as_ref().is_some_and(|b| b.is_expired()) {
-            self.active_banner = None;
-        }
-    }
-
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
             DataPayload::Workers(Ok(workers)) => {
@@ -345,6 +328,28 @@ impl Page for WorkersPage {
 
     fn mark_stale(&mut self) {
         self.loaded = false;
+    }
+
+    fn banner(&self) -> Option<&Banner> {
+        self.active_banner.as_ref()
+    }
+
+    fn dismiss_banner(&mut self) {
+        self.active_banner = None;
+    }
+
+    fn tick_banner(&mut self) {
+        if self.active_banner.as_ref().is_some_and(|b| b.is_expired()) {
+            self.active_banner = None;
+        }
+    }
+
+    fn as_any_workers(&self) -> Option<&WorkersListScreen> {
+        Some(self)
+    }
+
+    fn as_any_workers_mut(&mut self) -> Option<&mut WorkersListScreen> {
+        Some(self)
     }
 }
 
@@ -375,22 +380,21 @@ mod tests {
 
     #[test]
     fn new_page_needs_data() {
-        let page = WorkersPage::new();
+        let page = WorkersListScreen::new();
         assert!(page.needs_data());
         assert!(!page.loaded);
     }
 
     #[test]
     fn tab_id_and_metadata() {
-        let page = WorkersPage::new();
-        assert_eq!(page.tab_id(), TabId::Workers);
+        let page = WorkersListScreen::new();
         assert_eq!(page.title(), "Workers");
         assert_eq!(page.shortcut_char(), 'w');
     }
 
     #[test]
     fn on_data_loads_workers() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
         assert!(page.loaded);
@@ -401,7 +405,7 @@ mod tests {
 
     #[test]
     fn on_data_handles_error() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         page.on_data(&DataPayload::Workers(Err("connection refused".into())));
         assert!(page.loaded);
         assert!(page.error.is_some());
@@ -410,47 +414,56 @@ mod tests {
 
     #[test]
     fn on_data_ignores_tickets_payload() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         page.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
         assert!(!page.loaded);
     }
 
     #[test]
     fn navigate_up_down() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers: Vec<WorkerSummary> = (0..3).map(|i| make_worker(&format!("ur-{i}"))).collect();
         page.on_data(&DataPayload::Workers(Ok(workers)));
 
         assert_eq!(page.selected, 0);
         assert_eq!(
             page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
+            ScreenResult::Consumed
         );
         assert_eq!(page.selected, 1);
         assert_eq!(
             page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
+            ScreenResult::Consumed
         );
         assert_eq!(page.selected, 2);
         // At bottom, stays at 2
         assert_eq!(
             page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
+            ScreenResult::Consumed
         );
         assert_eq!(page.selected, 2);
 
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.selected, 1);
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.selected, 0);
         // At top, stays at 0
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.selected, 0);
     }
 
     #[test]
     fn pagination() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers: Vec<WorkerSummary> = (0..45)
             .map(|i| make_worker(&format!("ur-{i:02}")))
             .collect();
@@ -460,39 +473,48 @@ mod tests {
         assert_eq!(page.page, 0);
         assert_eq!(page.page_row_count(), 20);
 
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::PageRight),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.page, 1);
         assert_eq!(page.selected, 0);
         assert_eq!(page.page_row_count(), 20);
 
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::PageRight),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.page, 2);
         assert_eq!(page.page_row_count(), 5);
 
         // Can't go past last page
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
+        assert_eq!(
+            page.handle_action(Action::PageRight),
+            ScreenResult::Consumed
+        );
         assert_eq!(page.page, 2);
 
-        assert_eq!(page.handle_action(Action::PageLeft), PageResult::Consumed);
+        assert_eq!(page.handle_action(Action::PageLeft), ScreenResult::Consumed);
         assert_eq!(page.page, 1);
     }
 
     #[test]
     fn quit_action() {
-        let mut page = WorkersPage::new();
-        assert_eq!(page.handle_action(Action::Quit), PageResult::Quit);
+        let mut page = WorkersListScreen::new();
+        assert_eq!(page.handle_action(Action::Quit), ScreenResult::Quit);
     }
 
     #[test]
     fn unhandled_action_ignored() {
-        let mut page = WorkersPage::new();
-        assert_eq!(page.handle_action(Action::Select), PageResult::Ignored);
-        assert_eq!(page.handle_action(Action::Back), PageResult::Ignored);
+        let mut page = WorkersListScreen::new();
+        assert_eq!(page.handle_action(Action::Select), ScreenResult::Ignored);
+        assert_eq!(page.handle_action(Action::Back), ScreenResult::Ignored);
     }
 
     #[test]
     fn full_list_load_clears_and_rebuilds() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let batch1 = vec![make_worker("ur-abc"), make_worker("ur-def")];
         page.on_data(&DataPayload::Workers(Ok(batch1)));
         assert_eq!(page.entry_map.len(), 2);
@@ -507,7 +529,7 @@ mod tests {
 
     #[test]
     fn selection_preserved_across_rebuild() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![
             make_worker("ur-abc"),
             make_worker("ur-def"),
@@ -531,7 +553,7 @@ mod tests {
 
     #[test]
     fn selection_clamped_when_id_disappears() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![
             make_worker("ur-abc"),
             make_worker("ur-def"),
@@ -552,20 +574,20 @@ mod tests {
 
     #[test]
     fn refresh_resets_to_loading() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
         assert!(!page.needs_data());
 
         let result = page.handle_action(Action::Refresh);
-        assert_eq!(result, PageResult::Consumed);
+        assert_eq!(result, ScreenResult::Consumed);
         assert!(page.needs_data());
         assert!(!page.loaded);
     }
 
     #[test]
     fn footer_commands_not_empty() {
-        let page = WorkersPage::new();
+        let page = WorkersListScreen::new();
         let keymap = Keymap::default();
         let cmds = page.footer_commands(&keymap);
         assert!(!cmds.is_empty());
@@ -573,7 +595,7 @@ mod tests {
 
     #[test]
     fn selected_worker_id_none_when_empty() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         page.on_data(&DataPayload::Workers(Ok(vec![])));
         assert!(page.selected_worker_id().is_none());
     }
@@ -592,7 +614,7 @@ mod tests {
 
     #[test]
     fn mark_stale_triggers_refetch() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
         assert!(!page.needs_data());
@@ -603,7 +625,7 @@ mod tests {
 
     #[test]
     fn optimistic_remove_hides_worker_immediately() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![
             make_worker("ur-abc"),
             make_worker("ur-def"),
@@ -621,7 +643,7 @@ mod tests {
 
     #[test]
     fn optimistic_remove_restores_on_error() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
 
@@ -642,7 +664,7 @@ mod tests {
 
     #[test]
     fn optimistic_remove_cleared_on_fresh_data() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
 
@@ -658,7 +680,7 @@ mod tests {
 
     #[test]
     fn optimistic_remove_noop_for_unknown_worker() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
 
@@ -669,7 +691,7 @@ mod tests {
 
     #[test]
     fn optimistic_remove_clamps_selection() {
-        let mut page = WorkersPage::new();
+        let mut page = WorkersListScreen::new();
         let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
         page.on_data(&DataPayload::Workers(Ok(workers)));
 

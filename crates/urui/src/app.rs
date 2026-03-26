@@ -19,12 +19,12 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventManager, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::notifications::NotificationManager;
-use crate::page::{Page, TabId};
+use crate::page::TabId;
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
 };
-use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersPage};
-use crate::screen::{Screen, ScreenResult, WorkersScreenAdapter};
+use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersListScreen};
+use crate::screen::{Screen, ScreenResult};
 use crate::terminal;
 use crate::throttle::PageThrottle;
 use crate::widgets::create_action_menu::{
@@ -88,7 +88,7 @@ impl App {
 
         let tickets_root: Box<dyn Screen> = Box::new(TicketsListScreen::new(ticket_filter_cfg));
         let flows_root: Box<dyn Screen> = Box::new(FlowsListScreen::new());
-        let workers_root: Box<dyn Screen> = Box::new(WorkersScreenAdapter::new(WorkersPage::new()));
+        let workers_root: Box<dyn Screen> = Box::new(WorkersListScreen::new());
 
         let mut stacks: HashMap<TabId, Vec<Box<dyn Screen>>> = HashMap::new();
         stacks.insert(TabId::Tickets, vec![tickets_root]);
@@ -800,8 +800,8 @@ impl App {
             .expect("root of Flows stack must be FlowsListScreen")
     }
 
-    /// Get a reference to the `WorkersPage` at the root of the Workers tab stack.
-    fn workers_page(&self) -> &WorkersPage {
+    /// Get a reference to the `WorkersListScreen` at the root of the Workers tab stack.
+    fn workers_page(&self) -> &WorkersListScreen {
         let stack = self
             .stacks
             .get(&TabId::Workers)
@@ -810,11 +810,11 @@ impl App {
             .first()
             .expect("stack must not be empty")
             .as_any_workers()
-            .expect("root of Workers stack must be WorkersPage")
+            .expect("root of Workers stack must be WorkersListScreen")
     }
 
-    /// Get a mutable reference to the `WorkersPage` at the root of the Workers tab stack.
-    fn workers_page_mut(&mut self) -> &mut WorkersPage {
+    /// Get a mutable reference to the `WorkersListScreen` at the root of the Workers tab stack.
+    fn workers_page_mut(&mut self) -> &mut WorkersListScreen {
         let stack = self
             .stacks
             .get_mut(&TabId::Workers)
@@ -823,7 +823,7 @@ impl App {
             .first_mut()
             .expect("stack must not be empty")
             .as_any_workers_mut()
-            .expect("root of Workers stack must be WorkersPage")
+            .expect("root of Workers stack must be WorkersListScreen")
     }
 
     /// Draw the full UI: header, content, footer.

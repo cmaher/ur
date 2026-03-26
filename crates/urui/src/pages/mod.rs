@@ -5,4 +5,4 @@ mod workers;
 
 pub use flows::FlowsListScreen;
 pub use tickets::TicketsListScreen;
-pub use workers::WorkersPage;
+pub use workers::WorkersListScreen;
