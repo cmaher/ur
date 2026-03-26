@@ -207,31 +207,8 @@ impl App {
         }
 
         // If the tickets page has an active overlay, route raw keys to it.
-        // Tab-switch keys close the overlay and switch tabs.
         if self.active_tab == TabId::Tickets && self.tickets_page().has_overlay() {
-            if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
-                self.tickets_page_mut().close_overlay();
-                self.switch_tab(tab);
-                return;
-            }
-            let filters_before = self.tickets_page().filters().to_config();
-            match self.tickets_page_mut().handle_overlay_key(key) {
-                OverlayAction::SetPriority {
-                    ticket_id,
-                    priority,
-                } => {
-                    self.data_manager
-                        .update_ticket_priority(ticket_id, priority);
-                }
-                OverlayAction::ForceClose { ticket_id } => {
-                    self.data_manager.force_close_ticket(ticket_id);
-                }
-                OverlayAction::None => {}
-            }
-            let filters_after = self.tickets_page().filters().to_config();
-            if filters_before != filters_after {
-                save_ticket_filters(&self.ctx.config_dir, &filters_after);
-            }
+            self.handle_ticket_overlay_key(key);
             return;
         }
 
@@ -298,6 +275,33 @@ impl App {
                 self.cancel_selected_flow();
             }
             other => self.dispatch_to_screen(other),
+        }
+    }
+
+    /// Route a key event to the tickets page overlay, handling tab-switch, priority, and filter.
+    fn handle_ticket_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
+            self.tickets_page_mut().close_overlay();
+            self.switch_tab(tab);
+            return;
+        }
+        let filters_before = self.tickets_page().filters().to_config();
+        match self.tickets_page_mut().handle_overlay_key(key) {
+            OverlayAction::SetPriority {
+                ticket_id,
+                priority,
+            } => {
+                self.data_manager
+                    .update_ticket_priority(ticket_id, priority);
+            }
+            OverlayAction::ForceClose { ticket_id } => {
+                self.data_manager.force_close_ticket(ticket_id);
+            }
+            OverlayAction::None => {}
+        }
+        let filters_after = self.tickets_page().filters().to_config();
+        if filters_before != filters_after {
+            save_ticket_filters(&self.ctx.config_dir, &filters_after);
         }
     }
 
@@ -1371,14 +1375,11 @@ mod tests {
         // Dispatch a Pop result — the stack should remain at 1.
         let result = ScreenResult::Pop;
         app.active_tab = TabId::Tickets;
-        match result {
-            ScreenResult::Pop => {
-                let stack = app.stacks.entry(app.active_tab).or_default();
-                if stack.len() > 1 {
-                    stack.pop();
-                }
+        if let ScreenResult::Pop = result {
+            let stack = app.stacks.entry(app.active_tab).or_default();
+            if stack.len() > 1 {
+                stack.pop();
             }
-            _ => {}
         }
         assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
     }

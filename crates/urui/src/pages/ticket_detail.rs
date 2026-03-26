@@ -642,8 +642,11 @@ impl Screen for TicketDetailScreen {
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
-        match payload {
-            DataPayload::TicketDetail(Ok((detail, children, total))) => {
+        let DataPayload::TicketDetail(boxed) = payload else {
+            return;
+        };
+        match boxed.as_ref() {
+            Ok((detail, children, total)) => {
                 self.active_status = None;
                 self.data_state = DataState::Loaded {
                     detail: Box::new(detail.clone()),
@@ -652,11 +655,10 @@ impl Screen for TicketDetailScreen {
                 };
                 self.clamp_selection();
             }
-            DataPayload::TicketDetail(Err(msg)) => {
+            Err(msg) => {
                 self.active_status = None;
                 self.data_state = DataState::Error(msg.clone());
             }
-            _ => {}
         }
     }
 
@@ -759,7 +761,9 @@ mod tests {
         let ticket = make_ticket("ur-abc", "ur", "open");
         let detail = make_detail_response(ticket.clone());
         let children = vec![make_ticket("ur-child1", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 1))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 1,
+        )))));
         assert!(!screen.needs_data());
         assert_eq!(screen.visible_children().len(), 1);
     }
@@ -767,7 +771,9 @@ mod tests {
     #[test]
     fn on_data_ticket_detail_error() {
         let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        screen.on_data(&DataPayload::TicketDetail(Err("rpc failed".into())));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Err(
+            "rpc failed".into()
+        ))));
         assert!(!screen.needs_data());
         assert!(matches!(screen.data_state, DataState::Error(_)));
     }
@@ -805,7 +811,9 @@ mod tests {
         let children: Vec<Ticket> = (0..3)
             .map(|i| make_ticket(&format!("ur-c{i}"), "ur", "open"))
             .collect();
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 3))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 3,
+        )))));
 
         assert_eq!(screen.selected_row, 0);
         screen.handle_action(Action::NavigateDown);
@@ -825,7 +833,9 @@ mod tests {
             make_ticket("ur-c0", "ur", "open"),
             make_ticket("ur-c1", "ur", "open"),
         ];
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 2))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 2,
+        )))));
 
         screen.handle_action(Action::NavigateDown);
         screen.handle_action(Action::NavigateDown);
@@ -839,7 +849,9 @@ mod tests {
         let ticket = make_ticket("ur-abc", "ur", "open");
         let detail = make_detail_response(ticket);
         let children = vec![make_ticket("ur-child1", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 1))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 1,
+        )))));
 
         let result = screen.handle_action(Action::Select);
         assert!(matches!(result, ScreenResult::Push(_)));
@@ -850,7 +862,11 @@ mod tests {
         let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
         let ticket = make_ticket("ur-abc", "ur", "open");
         let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, vec![], 0))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![],
+            0,
+        )))));
 
         let result = screen.handle_action(Action::Select);
         assert!(matches!(result, ScreenResult::Consumed));
@@ -861,7 +877,11 @@ mod tests {
         let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
         let ticket = make_ticket("ur-abc", "ur", "open");
         let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, vec![], 0))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![],
+            0,
+        )))));
         assert!(!screen.needs_data());
 
         screen.handle_action(Action::Refresh);
@@ -887,7 +907,9 @@ mod tests {
             make_ticket("ur-c0", "ur", "open"),
             make_ticket("ur-c1", "ur", "open"),
         ];
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 2))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 2,
+        )))));
 
         assert_eq!(screen.selected_child_id(), Some("ur-c0".to_string()));
         screen.handle_action(Action::NavigateDown);
@@ -904,7 +926,9 @@ mod tests {
             make_ticket("ur-c0", "ur", "open"),
             make_ticket("ur-c1", "ur", "open"),
         ];
-        screen.on_data(&DataPayload::TicketDetail(Ok((detail, children, 5))));
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 5,
+        )))));
 
         assert_eq!(screen.current_page, 0);
         screen.handle_action(Action::PageRight);

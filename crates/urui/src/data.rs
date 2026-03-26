@@ -21,6 +21,9 @@ use ur_rpc::proto::ticket::{
 use crate::create_ticket::{PendingTicket, is_title_placeholder};
 use crate::event::{AppEvent, UiEventItem};
 
+/// Combined result for a ticket detail fetch: (response, child tickets, total children).
+pub type TicketDetailResult = Result<(GetTicketResponse, Vec<Ticket>, i32), String>;
+
 /// Payload delivered by gRPC data-fetch tasks.
 #[derive(Debug, Clone)]
 pub enum DataPayload {
@@ -31,7 +34,7 @@ pub enum DataPayload {
     /// Worker list fetched from the server.
     Workers(Result<Vec<WorkerSummary>, String>),
     /// Full ticket detail: the ticket with metadata/activities, child tickets, and total child count.
-    TicketDetail(Result<(GetTicketResponse, Vec<Ticket>, i32), String>),
+    TicketDetail(Box<TicketDetailResult>),
     /// Activities for a single ticket, optionally filtered by author.
     TicketActivities(Result<Vec<ActivityEntry>, String>),
 }
@@ -351,11 +354,11 @@ impl DataManager {
             .await
             {
                 Ok((detail, children, total)) => {
-                    DataPayload::TicketDetail(Ok((detail, children, total)))
+                    DataPayload::TicketDetail(Box::new(Ok((detail, children, total))))
                 }
                 Err(e) => {
                     error!(port, %ticket_id, error = %e, "ticket detail fetch failed");
-                    DataPayload::TicketDetail(Err(e.to_string()))
+                    DataPayload::TicketDetail(Box::new(Err(e.to_string())))
                 }
             };
             let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
@@ -1032,10 +1035,11 @@ mod tests {
         let children: Vec<Ticket> = vec![];
         let total = 0i32;
 
-        let payload = DataPayload::TicketDetail(Ok((detail, children, total)));
-        assert!(matches!(payload, DataPayload::TicketDetail(Ok(_))));
+        let payload = DataPayload::TicketDetail(Box::new(Ok((detail, children, total))));
+        assert!(matches!(payload, DataPayload::TicketDetail(_)));
 
-        if let DataPayload::TicketDetail(Ok((resp, ch, tc))) = payload {
+        if let DataPayload::TicketDetail(boxed) = payload {
+            let (resp, ch, tc) = boxed.unwrap();
             assert_eq!(resp.ticket.unwrap().id, "ur-abc");
             assert!(ch.is_empty());
             assert_eq!(tc, 0);
@@ -1046,10 +1050,11 @@ mod tests {
 
     #[test]
     fn ticket_detail_variant_err() {
-        let payload = DataPayload::TicketDetail(Err("rpc failed".into()));
-        assert!(matches!(payload, DataPayload::TicketDetail(Err(_))));
+        let payload = DataPayload::TicketDetail(Box::new(Err("rpc failed".into())));
+        assert!(matches!(payload, DataPayload::TicketDetail(_)));
 
-        if let DataPayload::TicketDetail(Err(msg)) = payload {
+        if let DataPayload::TicketDetail(boxed) = payload {
+            let msg = boxed.unwrap_err();
             assert_eq!(msg, "rpc failed");
         } else {
             panic!("expected TicketDetail(Err(...))");
@@ -1080,9 +1085,10 @@ mod tests {
         };
         let total = 2i32;
 
-        let payload = DataPayload::TicketDetail(Ok((detail, children, total)));
+        let payload = DataPayload::TicketDetail(Box::new(Ok((detail, children, total))));
 
-        if let DataPayload::TicketDetail(Ok((resp, ch, tc))) = payload {
+        if let DataPayload::TicketDetail(boxed) = payload {
+            let (resp, ch, tc) = boxed.unwrap();
             assert_eq!(resp.ticket.unwrap().id, "ur-parent");
             assert_eq!(ch.len(), 2);
             assert_eq!(tc, 2);

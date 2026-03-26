@@ -311,6 +311,28 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     );
 }
 
+/// Insert ticket action bindings that are NOT overridable via `KeymapOverrides`.
+/// Select, Back, and Quit are handled via overrides; the rest are always present.
+fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+    for (ch, mods, action) in [
+        ('P', KeyModifiers::SHIFT, Action::SetPriority),
+        ('D', KeyModifiers::SHIFT, Action::Dispatch),
+        ('X', KeyModifiers::SHIFT, Action::CloseTicket),
+        ('O', KeyModifiers::SHIFT, Action::OpenTicket),
+        ('C', KeyModifiers::SHIFT, Action::CreateTicket),
+        ('S', KeyModifiers::SHIFT, Action::LaunchDesign),
+        ('A', KeyModifiers::SHIFT, Action::OpenActivities),
+    ] {
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char(ch),
+                modifiers: mods,
+            },
+            action,
+        );
+    }
+}
+
 impl Keymap {
     /// Build a keymap from user-supplied config overrides.
     ///
@@ -327,105 +349,11 @@ impl Keymap {
         insert_bindings(&mut bindings, overrides.cancel, Action::Back);
         insert_bindings(&mut bindings, overrides.quit, Action::Quit);
 
-        // Ctrl-F / Ctrl-B page scrolling is not part of KeymapOverrides; always present.
         insert_ctrl_page_bindings(&mut bindings);
-
-        // Tab switching is not part of KeymapOverrides; preserve defaults
-        // for SwitchTab actions when building from config.
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('t'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::SwitchTab(TabId::Tickets),
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('f'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::SwitchTab(TabId::Flows),
-        );
-
-        // Refresh, Filter, SetPriority, Dispatch are not part of
-        // KeymapOverrides; preserve defaults when building from config.
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('r'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::Refresh,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('*'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::Filter,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('P'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::SetPriority,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('D'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::Dispatch,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('X'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::CloseTicket,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('O'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::OpenTicket,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('w'),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::SwitchTab(TabId::Workers),
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('C'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::CreateTicket,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('S'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::LaunchDesign,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char(','),
-                modifiers: KeyModifiers::NONE,
-            },
-            Action::OpenSettings,
-        );
-        bindings.insert(
-            KeyBinding {
-                code: KeyCode::Char('A'),
-                modifiers: KeyModifiers::SHIFT,
-            },
-            Action::OpenActivities,
-        );
+        // Tab switching and UI bindings are not overridable.
+        insert_tab_and_ui_bindings(&mut bindings);
+        // Ticket action bindings that are not part of KeymapOverrides.
+        insert_non_overridable_ticket_bindings(&mut bindings);
 
         Self { bindings }
     }

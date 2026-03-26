@@ -441,21 +441,22 @@ impl Screen for TicketActivitiesScreen {
     }
 
     fn on_data(&mut self, payload: &DataPayload) {
-        if let DataPayload::TicketActivities(result) = payload {
-            match result {
-                Ok(activities) => {
-                    // Rebuild unique authors from the full (unfiltered) list only
-                    // when we switch to "all" (author_index == 0), so that cycling
-                    // is consistent across filtered fetches.
-                    if self.author_index == 0 {
-                        self.authors = Self::rebuild_authors(activities);
-                    }
-                    self.data_state = DataState::Loaded(activities.clone());
-                    self.clamp_selection();
+        let DataPayload::TicketActivities(result) = payload else {
+            return;
+        };
+        match result {
+            Ok(activities) => {
+                // Rebuild unique authors from the full (unfiltered) list only
+                // when we switch to "all" (author_index == 0), so that cycling
+                // is consistent across filtered fetches.
+                if self.author_index == 0 {
+                    self.authors = Self::rebuild_authors(activities);
                 }
-                Err(msg) => {
-                    self.data_state = DataState::Error(msg.clone());
-                }
+                self.data_state = DataState::Loaded(activities.clone());
+                self.clamp_selection();
+            }
+            Err(msg) => {
+                self.data_state = DataState::Error(msg.clone());
             }
         }
     }
@@ -700,7 +701,7 @@ mod tests {
 
     #[test]
     fn author_filter_returns_none_for_all() {
-        let mut screen = make_screen();
+        let screen = make_screen();
         assert_eq!(screen.author_filter(), None);
     }
 
