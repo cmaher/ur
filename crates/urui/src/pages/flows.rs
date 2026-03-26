@@ -14,8 +14,9 @@ use ur_rpc::proto::ticket::WorkflowInfo;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
-use crate::pages::flow_detail::{detail_footer_commands, render_flow_detail};
+use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::pages::flow_detail::FlowDetailScreen;
+use crate::screen::{Screen, ScreenResult};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
 const PAGE_SIZE: usize = 20;
@@ -38,7 +39,7 @@ struct FlowEntry {
 ///
 /// Only one page of data is held at a time. Page navigation triggers a new
 /// gRPC fetch with the appropriate offset.
-pub struct FlowsPage {
+pub struct FlowsListScreen {
     /// Map of ticket_id -> FlowEntry for the current page only.
     entry_map: HashMap<String, FlowEntry>,
     /// Sorted display list of ticket IDs for the current page.
@@ -53,13 +54,11 @@ pub struct FlowsPage {
     active_status: Option<StatusMessage>,
     /// Active notification banner (success/error from async actions).
     active_banner: Option<Banner>,
-    /// When Some, the detail sub-page is shown for this workflow.
-    detail_workflow: Option<WorkflowInfo>,
     /// When true, a page navigation is pending and needs a server fetch.
     pending_fetch: bool,
 }
 
-impl FlowsPage {
+impl FlowsListScreen {
     pub fn new() -> Self {
         Self {
             entry_map: HashMap::new(),
@@ -71,9 +70,16 @@ impl FlowsPage {
             error: None,
             active_status: None,
             active_banner: None,
-            detail_workflow: None,
             pending_fetch: false,
         }
+    }
+
+    pub fn title(&self) -> &str {
+        "Flows"
+    }
+
+    pub fn shortcut_char(&self) -> char {
+        'f'
     }
 
     /// Total number of pages based on server-reported total_count.
@@ -184,75 +190,6 @@ impl FlowsPage {
             self.pending_fetch = true;
         }
     }
-
-    /// Handle actions when in detail view mode.
-    fn handle_detail_action(&mut self, action: Action) -> PageResult {
-        match action {
-            Action::Back => {
-                self.detail_workflow = None;
-                PageResult::Consumed
-            }
-            Action::Quit => PageResult::Quit,
-            _ => PageResult::Consumed,
-        }
-    }
-
-    /// Handle actions when in list view mode.
-    fn handle_list_action(&mut self, action: Action) -> PageResult {
-        match action {
-            Action::NavigateUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                }
-                PageResult::Consumed
-            }
-            Action::NavigateDown => {
-                let count = self.page_row_count();
-                if count > 0 && self.selected < count - 1 {
-                    self.selected += 1;
-                }
-                PageResult::Consumed
-            }
-            Action::PageLeft => {
-                if self.page > 0 {
-                    self.page -= 1;
-                    self.selected = 0;
-                    self.pending_fetch = true;
-                }
-                PageResult::Consumed
-            }
-            Action::PageRight => {
-                if self.page + 1 < self.total_pages() {
-                    self.page += 1;
-                    self.selected = 0;
-                    self.pending_fetch = true;
-                }
-                PageResult::Consumed
-            }
-            Action::Select => {
-                if let Some(ticket_id) = self.selected_ticket_id()
-                    && let Some(entry) = self.entry_map.get(&ticket_id)
-                {
-                    self.detail_workflow = Some(entry.workflow.clone());
-                }
-                PageResult::Consumed
-            }
-            Action::Refresh => {
-                self.loaded = false;
-                self.active_status = Some(StatusMessage {
-                    text: "Refreshing flows...".to_string(),
-                    dismissable: true,
-                });
-                PageResult::Consumed
-            }
-            Action::CancelFlow | Action::CloseTicket => {
-                // Handled at the app level in cancel_selected_flow().
-                PageResult::Ignored
-            }
-            Action::Quit => PageResult::Quit,
-            _ => PageResult::Ignored,
-        }
-    }
 }
 
 /// Parse history timestamps from a WorkflowInfo, extracting first and last.
@@ -350,7 +287,7 @@ const PROGRESS_BAR_COL: usize = 3;
 
 /// Render mini progress bars and count labels over the placeholder columns.
 fn render_progress_bars(
-    page: &FlowsPage,
+    screen: &FlowsListScreen,
     area: Rect,
     buf: &mut Buffer,
     ctx: &TuiContext,
@@ -374,7 +311,7 @@ fn render_progress_bars(
     }
 
     let data_start_y = inner.y + 1;
-    let entries = page.page_entries();
+    let entries = screen.page_entries();
 
     for (i, entry) in entries.into_iter().enumerate() {
         let row_y = data_start_y + i as u16;
@@ -383,7 +320,7 @@ fn render_progress_bars(
         }
 
         let (completed, total) = workflow_progress(&entry.workflow);
-        let is_selected = i == page.selected;
+        let is_selected = i == screen.selected;
         let row_bg = if is_selected {
             ctx.theme.primary
         } else if i % 2 == 0 {
@@ -421,24 +358,62 @@ fn render_progress_bars(
     }
 }
 
-impl Page for FlowsPage {
-    fn tab_id(&self) -> TabId {
-        TabId::Flows
-    }
-
-    fn title(&self) -> &str {
-        "Flows"
-    }
-
-    fn shortcut_char(&self) -> char {
-        'f'
-    }
-
-    fn handle_action(&mut self, action: Action) -> PageResult {
-        if self.detail_workflow.is_some() {
-            return self.handle_detail_action(action);
+impl Screen for FlowsListScreen {
+    fn handle_action(&mut self, action: Action) -> ScreenResult {
+        match action {
+            Action::NavigateUp => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                }
+                ScreenResult::Consumed
+            }
+            Action::NavigateDown => {
+                let count = self.page_row_count();
+                if count > 0 && self.selected < count - 1 {
+                    self.selected += 1;
+                }
+                ScreenResult::Consumed
+            }
+            Action::PageLeft => {
+                if self.page > 0 {
+                    self.page -= 1;
+                    self.selected = 0;
+                    self.pending_fetch = true;
+                }
+                ScreenResult::Consumed
+            }
+            Action::PageRight => {
+                if self.page + 1 < self.total_pages() {
+                    self.page += 1;
+                    self.selected = 0;
+                    self.pending_fetch = true;
+                }
+                ScreenResult::Consumed
+            }
+            Action::Select => {
+                if let Some(ticket_id) = self.selected_ticket_id()
+                    && let Some(entry) = self.entry_map.get(&ticket_id)
+                {
+                    let detail = FlowDetailScreen::new(entry.workflow.clone());
+                    return ScreenResult::Push(Box::new(detail));
+                }
+                ScreenResult::Consumed
+            }
+            Action::Refresh => {
+                self.loaded = false;
+                self.active_status = Some(StatusMessage {
+                    text: "Refreshing flows...".to_string(),
+                    dismissable: true,
+                });
+                ScreenResult::Consumed
+            }
+            Action::CancelFlow | Action::CloseTicket => {
+                // Handled at the app level in cancel_selected_flow().
+                ScreenResult::Ignored
+            }
+            Action::Quit => ScreenResult::Quit,
+            _ => ScreenResult::Ignored,
         }
-        self.handle_list_action(action)
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
@@ -453,11 +428,6 @@ impl Page for FlowsPage {
             let msg = Line::raw(format!("Error: {err}"));
             let paragraph = Paragraph::new(msg).style(Style::default().fg(ctx.theme.error));
             paragraph.render(area, buf);
-            return;
-        }
-
-        if let Some(ref wf) = self.detail_workflow {
-            render_flow_detail(wf, area, buf, ctx);
             return;
         }
 
@@ -510,9 +480,6 @@ impl Page for FlowsPage {
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        if self.detail_workflow.is_some() {
-            return detail_footer_commands(keymap);
-        }
         vec![
             FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
@@ -587,6 +554,10 @@ impl Page for FlowsPage {
         !self.loaded || self.pending_fetch
     }
 
+    fn mark_stale(&mut self) {
+        self.loaded = false;
+    }
+
     fn banner(&self) -> Option<&Banner> {
         self.active_banner.as_ref()
     }
@@ -622,8 +593,12 @@ impl Page for FlowsPage {
         self.active_status = None;
     }
 
-    fn mark_stale(&mut self) {
-        self.loaded = false;
+    fn as_any_flows(&self) -> Option<&FlowsListScreen> {
+        Some(self)
+    }
+
+    fn as_any_flows_mut(&mut self) -> Option<&mut FlowsListScreen> {
+        Some(self)
     }
 }
 
@@ -759,221 +734,247 @@ mod tests {
     }
 
     #[test]
-    fn new_page_needs_data() {
-        let page = FlowsPage::new();
-        assert!(page.needs_data());
-        assert!(!page.loaded);
+    fn new_screen_needs_data() {
+        let screen = FlowsListScreen::new();
+        assert!(screen.needs_data());
+        assert!(!screen.loaded);
     }
 
     #[test]
     fn on_data_loads_workflows() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs.clone(), 1))));
-        assert!(page.loaded);
-        assert!(!page.needs_data());
-        assert_eq!(page.entry_map.len(), 1);
-        assert!(page.error.is_none());
-        assert_eq!(page.total_count, 1);
+        screen.on_data(&DataPayload::Flows(Ok((wfs.clone(), 1))));
+        assert!(screen.loaded);
+        assert!(!screen.needs_data());
+        assert_eq!(screen.entry_map.len(), 1);
+        assert!(screen.error.is_none());
+        assert_eq!(screen.total_count, 1);
     }
 
     #[test]
     fn on_data_handles_error() {
-        let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Err("connection refused".into())));
-        assert!(page.loaded);
-        assert!(page.error.is_some());
-        assert!(page.entry_map.is_empty());
+        let mut screen = FlowsListScreen::new();
+        screen.on_data(&DataPayload::Flows(Err("connection refused".into())));
+        assert!(screen.loaded);
+        assert!(screen.error.is_some());
+        assert!(screen.entry_map.is_empty());
     }
 
     #[test]
     fn on_data_ignores_tickets_payload() {
-        let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
-        assert!(!page.loaded);
+        let mut screen = FlowsListScreen::new();
+        screen.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
+        assert!(!screen.loaded);
     }
 
     #[test]
     fn navigate_up_down() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..3)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 3))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 3))));
 
-        assert_eq!(page.selected, 0);
-        assert_eq!(
-            page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
-        );
-        assert_eq!(page.selected, 1);
-        assert_eq!(
-            page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
-        );
-        assert_eq!(page.selected, 2);
+        assert_eq!(screen.selected, 0);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateDown),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 1);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateDown),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 2);
         // At bottom, stays at 2
-        assert_eq!(
-            page.handle_action(Action::NavigateDown),
-            PageResult::Consumed
-        );
-        assert_eq!(page.selected, 2);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateDown),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 2);
 
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
-        assert_eq!(page.selected, 1);
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
-        assert_eq!(page.selected, 0);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 1);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 0);
         // At top, stays at 0
-        assert_eq!(page.handle_action(Action::NavigateUp), PageResult::Consumed);
-        assert_eq!(page.selected, 0);
+        assert!(matches!(
+            screen.handle_action(Action::NavigateUp),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.selected, 0);
     }
 
     #[test]
     fn page_right_triggers_fetch() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         // Simulate server returning first page of 20 items, total 45
         let wfs: Vec<WorkflowInfo> = (0..20)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 45))));
 
-        assert_eq!(page.total_pages(), 3);
-        assert_eq!(page.page, 0);
-        assert!(!page.needs_data());
+        assert_eq!(screen.total_pages(), 3);
+        assert_eq!(screen.page, 0);
+        assert!(!screen.needs_data());
 
         // PageRight should trigger a pending fetch
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
-        assert_eq!(page.page, 1);
-        assert_eq!(page.selected, 0);
-        assert!(page.pending_fetch);
-        assert!(page.needs_data());
-        assert_eq!(page.page_offset(), 20);
+        assert!(matches!(
+            screen.handle_action(Action::PageRight),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.page, 1);
+        assert_eq!(screen.selected, 0);
+        assert!(screen.pending_fetch);
+        assert!(screen.needs_data());
+        assert_eq!(screen.page_offset(), 20);
     }
 
     #[test]
     fn page_left_triggers_fetch() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..20)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 45))));
 
         // Move to page 1
-        page.handle_action(Action::PageRight);
+        screen.handle_action(Action::PageRight);
         // Simulate server response for page 1
         let wfs2: Vec<WorkflowInfo> = (20..40)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
-        assert!(!page.needs_data());
+        screen.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+        assert!(!screen.needs_data());
 
         // PageLeft should trigger a pending fetch
-        assert_eq!(page.handle_action(Action::PageLeft), PageResult::Consumed);
-        assert_eq!(page.page, 0);
-        assert!(page.pending_fetch);
-        assert!(page.needs_data());
-        assert_eq!(page.page_offset(), 0);
+        assert!(matches!(
+            screen.handle_action(Action::PageLeft),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.page, 0);
+        assert!(screen.pending_fetch);
+        assert!(screen.needs_data());
+        assert_eq!(screen.page_offset(), 0);
     }
 
     #[test]
     fn cannot_page_past_last() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..5)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 5))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 5))));
 
         // Only 1 page total, PageRight should not change anything
-        assert_eq!(page.total_pages(), 1);
-        assert_eq!(page.handle_action(Action::PageRight), PageResult::Consumed);
-        assert_eq!(page.page, 0);
-        assert!(!page.pending_fetch);
+        assert_eq!(screen.total_pages(), 1);
+        assert!(matches!(
+            screen.handle_action(Action::PageRight),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.page, 0);
+        assert!(!screen.pending_fetch);
     }
 
     #[test]
     fn cannot_page_before_first() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..5)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 25))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 25))));
 
         // Already on page 0, PageLeft should not change anything
-        assert_eq!(page.handle_action(Action::PageLeft), PageResult::Consumed);
-        assert_eq!(page.page, 0);
-        assert!(!page.pending_fetch);
+        assert!(matches!(
+            screen.handle_action(Action::PageLeft),
+            ScreenResult::Consumed
+        ));
+        assert_eq!(screen.page, 0);
+        assert!(!screen.pending_fetch);
     }
 
     #[test]
     fn total_pages_uses_server_total_count() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..10)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
         // Server says 45 total, even though we only got 10 on this page
-        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
-        assert_eq!(page.total_pages(), 3);
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        assert_eq!(screen.total_pages(), 3);
     }
 
     #[test]
     fn page_offset_and_size() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..20)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 60))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 60))));
 
-        assert_eq!(page.page_size(), 20);
-        assert_eq!(page.page_offset(), 0);
+        assert_eq!(screen.page_size(), 20);
+        assert_eq!(screen.page_offset(), 0);
 
-        page.handle_action(Action::PageRight);
-        assert_eq!(page.page_offset(), 20);
+        screen.handle_action(Action::PageRight);
+        assert_eq!(screen.page_offset(), 20);
 
         // Simulate receiving page 1
         let wfs2: Vec<WorkflowInfo> = (20..40)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs2, 60))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs2, 60))));
 
-        page.handle_action(Action::PageRight);
-        assert_eq!(page.page_offset(), 40);
+        screen.handle_action(Action::PageRight);
+        assert_eq!(screen.page_offset(), 40);
     }
 
     #[test]
     fn clamp_page_when_offset_past_end() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         // Start on page 2 (offset 40)
-        page.page = 2;
+        screen.page = 2;
         // Server now says total is only 25 (pages 0 and 1 only)
         let wfs: Vec<WorkflowInfo> = (0..5)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 25))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 25))));
 
         // Page should be clamped to last valid page (1)
-        assert_eq!(page.page, 1);
+        assert_eq!(screen.page, 1);
         // A re-fetch should be pending to get the correct page data
-        assert!(page.pending_fetch);
+        assert!(screen.pending_fetch);
     }
 
     #[test]
     fn quit_action() {
-        let mut page = FlowsPage::new();
-        assert_eq!(page.handle_action(Action::Quit), PageResult::Quit);
+        let mut screen = FlowsListScreen::new();
+        assert!(matches!(
+            screen.handle_action(Action::Quit),
+            ScreenResult::Quit
+        ));
     }
 
     #[test]
     fn unhandled_action_ignored() {
-        let mut page = FlowsPage::new();
-        assert_eq!(page.handle_action(Action::Back), PageResult::Ignored);
+        let mut screen = FlowsListScreen::new();
+        assert!(matches!(
+            screen.handle_action(Action::Back),
+            ScreenResult::Ignored
+        ));
     }
 
     #[test]
-    fn tab_id_and_metadata() {
-        let page = FlowsPage::new();
-        assert_eq!(page.tab_id(), TabId::Flows);
-        assert_eq!(page.title(), "Flows");
-        assert_eq!(page.shortcut_char(), 'f');
+    fn title_and_shortcut() {
+        let screen = FlowsListScreen::new();
+        assert_eq!(screen.title(), "Flows");
+        assert_eq!(screen.shortcut_char(), 'f');
     }
 
     #[test]
@@ -1002,61 +1003,67 @@ mod tests {
 
     #[test]
     fn refresh_resets_to_loading() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
-        assert!(!page.needs_data());
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 1))));
+        assert!(!screen.needs_data());
 
-        let result = page.handle_action(Action::Refresh);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.needs_data());
-        assert!(!page.loaded);
+        let result = screen.handle_action(Action::Refresh);
+        assert!(matches!(result, ScreenResult::Consumed));
+        assert!(screen.needs_data());
+        assert!(!screen.loaded);
     }
 
     #[test]
     fn footer_commands_not_empty() {
-        let page = FlowsPage::new();
+        let screen = FlowsListScreen::new();
         let keymap = Keymap::default();
-        let cmds = page.footer_commands(&keymap);
+        let cmds = screen.footer_commands(&keymap);
         assert!(!cmds.is_empty());
     }
 
     #[test]
     fn cancel_flow_returns_ignored_for_app_handling() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
-        // Cancel actions are handled at the app level, so the page returns Ignored.
-        assert_eq!(page.handle_action(Action::CloseTicket), PageResult::Ignored);
-        assert_eq!(page.handle_action(Action::CancelFlow), PageResult::Ignored);
+        // Cancel actions are handled at the app level, so the screen returns Ignored.
+        assert!(matches!(
+            screen.handle_action(Action::CloseTicket),
+            ScreenResult::Ignored
+        ));
+        assert!(matches!(
+            screen.handle_action(Action::CancelFlow),
+            ScreenResult::Ignored
+        ));
     }
 
     #[test]
     fn selected_ticket_id_returns_correct_id() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs = vec![
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 2))));
 
-        assert_eq!(page.selected_ticket_id(), Some("ur-abc".to_string()));
-        page.handle_action(Action::NavigateDown);
-        assert_eq!(page.selected_ticket_id(), Some("ur-def".to_string()));
+        assert_eq!(screen.selected_ticket_id(), Some("ur-abc".to_string()));
+        screen.handle_action(Action::NavigateDown);
+        assert_eq!(screen.selected_ticket_id(), Some("ur-def".to_string()));
     }
 
     #[test]
     fn selected_ticket_id_none_when_empty() {
-        let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
-        assert!(page.selected_ticket_id().is_none());
+        let mut screen = FlowsListScreen::new();
+        screen.on_data(&DataPayload::Flows(Ok((vec![], 0))));
+        assert!(screen.selected_ticket_id().is_none());
     }
 
     #[test]
     fn on_action_result_success_shows_banner() {
-        let mut page = FlowsPage::new();
-        page.active_status = Some(StatusMessage {
+        let mut screen = FlowsListScreen::new();
+        screen.active_status = Some(StatusMessage {
             text: "Cancelling...".to_string(),
             dismissable: false,
         });
@@ -1065,78 +1072,78 @@ mod tests {
             result: Ok("Cancelled workflow for ur-abc".to_string()),
             silent_on_success: false,
         };
-        page.on_action_result(&result);
+        screen.on_action_result(&result);
 
-        assert!(page.active_status.is_none());
-        assert!(page.active_banner.is_some());
-        let banner = page.active_banner.as_ref().unwrap();
+        assert!(screen.active_status.is_none());
+        assert!(screen.active_banner.is_some());
+        let banner = screen.active_banner.as_ref().unwrap();
         assert_eq!(banner.variant, BannerVariant::Success);
         assert_eq!(banner.message, "Cancelled workflow for ur-abc");
     }
 
     #[test]
     fn on_action_result_error_shows_banner() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let result = ActionResult {
             result: Err("server error".to_string()),
             silent_on_success: false,
         };
-        page.on_action_result(&result);
+        screen.on_action_result(&result);
 
-        assert!(page.active_banner.is_some());
-        let banner = page.active_banner.as_ref().unwrap();
+        assert!(screen.active_banner.is_some());
+        let banner = screen.active_banner.as_ref().unwrap();
         assert_eq!(banner.variant, BannerVariant::Error);
         assert_eq!(banner.message, "server error");
     }
 
     #[test]
     fn on_action_result_silent_success_no_banner() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let result = ActionResult {
             result: Ok("done".to_string()),
             silent_on_success: true,
         };
-        page.on_action_result(&result);
-        assert!(page.active_banner.is_none());
+        screen.on_action_result(&result);
+        assert!(screen.active_banner.is_none());
     }
 
     #[test]
     fn banner_dismiss() {
-        let mut page = FlowsPage::new();
-        page.active_banner = Some(Banner {
+        let mut screen = FlowsListScreen::new();
+        screen.active_banner = Some(Banner {
             message: "test".to_string(),
             variant: BannerVariant::Success,
             created_at: Instant::now(),
         });
-        assert!(page.banner().is_some());
-        page.dismiss_banner();
-        assert!(page.banner().is_none());
+        assert!(screen.banner().is_some());
+        screen.dismiss_banner();
+        assert!(screen.banner().is_none());
     }
 
     #[test]
     fn footer_includes_cancel() {
-        let page = FlowsPage::new();
+        let screen = FlowsListScreen::new();
         let keymap = Keymap::default();
-        let cmds = page.footer_commands(&keymap);
+        let cmds = screen.footer_commands(&keymap);
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
     }
 
     #[test]
     fn full_list_load_clears_and_rebuilds() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let batch1 = vec![
             make_workflow("wf-1", "ur-abc", false),
             make_workflow("wf-2", "ur-def", false),
         ];
-        page.on_data(&DataPayload::Flows(Ok((batch1, 2))));
-        assert_eq!(page.entry_map.len(), 2);
+        screen.on_data(&DataPayload::Flows(Ok((batch1, 2))));
+        assert_eq!(screen.entry_map.len(), 2);
 
         // Full list load with different workflows replaces all
         let batch2 = vec![make_workflow("wf-3", "ur-ghi", false)];
-        page.on_data(&DataPayload::Flows(Ok((batch2, 1))));
-        assert_eq!(page.entry_map.len(), 1);
-        assert!(page.entry_map.contains_key("ur-ghi"));
-        assert!(!page.entry_map.contains_key("ur-abc"));
+        screen.on_data(&DataPayload::Flows(Ok((batch2, 1))));
+        assert_eq!(screen.entry_map.len(), 1);
+        assert!(screen.entry_map.contains_key("ur-ghi"));
+        assert!(!screen.entry_map.contains_key("ur-abc"));
     }
 
     #[test]
@@ -1167,131 +1174,71 @@ mod tests {
     }
 
     #[test]
-    fn select_enters_detail_mode() {
-        let mut page = FlowsPage::new();
+    fn select_pushes_detail_screen() {
+        let mut screen = FlowsListScreen::new();
         let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 1))));
 
-        assert!(page.detail_workflow.is_none());
-        let result = page.handle_action(Action::Select);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.detail_workflow.is_some());
-        assert_eq!(page.detail_workflow.as_ref().unwrap().ticket_id, "ur-abc");
-    }
-
-    #[test]
-    fn back_exits_detail_mode() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
-
-        page.handle_action(Action::Select);
-        assert!(page.detail_workflow.is_some());
-
-        let result = page.handle_action(Action::Back);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.detail_workflow.is_none());
-    }
-
-    #[test]
-    fn detail_mode_ignores_navigation() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![
-            make_workflow("wf-1", "ur-abc", false),
-            make_workflow("wf-2", "ur-def", false),
-        ];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 2))));
-
-        page.handle_action(Action::Select);
-        assert!(page.detail_workflow.is_some());
-
-        // Navigation actions are consumed but do nothing meaningful
-        let result = page.handle_action(Action::NavigateDown);
-        assert_eq!(result, PageResult::Consumed);
-    }
-
-    #[test]
-    fn detail_mode_quit_works() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
-
-        page.handle_action(Action::Select);
-        let result = page.handle_action(Action::Quit);
-        assert_eq!(result, PageResult::Quit);
+        let result = screen.handle_action(Action::Select);
+        assert!(matches!(result, ScreenResult::Push(_)));
     }
 
     #[test]
     fn select_noop_when_empty() {
-        let mut page = FlowsPage::new();
-        page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
+        let mut screen = FlowsListScreen::new();
+        screen.on_data(&DataPayload::Flows(Ok((vec![], 0))));
 
-        let result = page.handle_action(Action::Select);
-        assert_eq!(result, PageResult::Consumed);
-        assert!(page.detail_workflow.is_none());
+        let result = screen.handle_action(Action::Select);
+        assert!(matches!(result, ScreenResult::Consumed));
     }
 
     #[test]
     fn footer_includes_select_in_list_mode() {
-        let page = FlowsPage::new();
+        let screen = FlowsListScreen::new();
         let keymap = Keymap::default();
-        let cmds = page.footer_commands(&keymap);
+        let cmds = screen.footer_commands(&keymap);
         assert!(cmds.iter().any(|c| c.description == "Select"));
     }
 
     #[test]
-    fn footer_in_detail_mode_has_back_and_quit() {
-        let mut page = FlowsPage::new();
-        let wfs = vec![make_workflow("wf-1", "ur-abc", false)];
-        page.on_data(&DataPayload::Flows(Ok((wfs, 1))));
-        page.handle_action(Action::Select);
-
-        let keymap = Keymap::default();
-        let cmds = page.footer_commands(&keymap);
-        assert_eq!(cmds.len(), 2);
-        assert!(cmds.iter().any(|c| c.description == "Back"));
-        assert!(cmds.iter().any(|c| c.description == "Quit"));
-    }
-
-    #[test]
     fn pending_fetch_cleared_on_data_receipt() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..20)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 45))));
 
-        page.handle_action(Action::PageRight);
-        assert!(page.pending_fetch);
+        screen.handle_action(Action::PageRight);
+        assert!(screen.pending_fetch);
 
         // Receiving data clears pending_fetch
         let wfs2: Vec<WorkflowInfo> = (20..40)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
-        assert!(!page.pending_fetch);
-        assert!(!page.needs_data());
+        screen.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+        assert!(!screen.pending_fetch);
+        assert!(!screen.needs_data());
     }
 
     #[test]
     fn only_holds_one_page_of_data() {
-        let mut page = FlowsPage::new();
+        let mut screen = FlowsListScreen::new();
         let wfs: Vec<WorkflowInfo> = (0..20)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs, 45))));
-        assert_eq!(page.entry_map.len(), 20);
+        screen.on_data(&DataPayload::Flows(Ok((wfs, 45))));
+        assert_eq!(screen.entry_map.len(), 20);
 
         // Navigate to page 1 and load new data
-        page.handle_action(Action::PageRight);
+        screen.handle_action(Action::PageRight);
         let wfs2: Vec<WorkflowInfo> = (20..40)
             .map(|i| make_workflow(&format!("wf-{i}"), &format!("ur-{i:02}"), false))
             .collect();
-        page.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
+        screen.on_data(&DataPayload::Flows(Ok((wfs2, 45))));
 
         // Should only hold page 1 data, not both pages
-        assert_eq!(page.entry_map.len(), 20);
-        assert!(!page.entry_map.contains_key("ur-00"));
-        assert!(page.entry_map.contains_key("ur-20"));
+        assert_eq!(screen.entry_map.len(), 20);
+        assert!(!screen.entry_map.contains_key("ur-00"));
+        assert!(screen.entry_map.contains_key("ur-20"));
     }
 }

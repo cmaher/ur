@@ -3,6 +3,6 @@ mod flows;
 pub mod tickets;
 mod workers;
 
-pub use flows::FlowsPage;
+pub use flows::FlowsListScreen;
 pub use tickets::TicketsListScreen;
 pub use workers::WorkersPage;

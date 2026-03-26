@@ -23,8 +23,8 @@ use crate::page::{Page, TabId};
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
 };
-use crate::pages::{FlowsPage, TicketsListScreen, WorkersPage};
-use crate::screen::{FlowsScreenAdapter, Screen, ScreenResult, WorkersScreenAdapter};
+use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersPage};
+use crate::screen::{Screen, ScreenResult, WorkersScreenAdapter};
 use crate::terminal;
 use crate::throttle::PageThrottle;
 use crate::widgets::create_action_menu::{
@@ -87,7 +87,7 @@ impl App {
         }
 
         let tickets_root: Box<dyn Screen> = Box::new(TicketsListScreen::new(ticket_filter_cfg));
-        let flows_root: Box<dyn Screen> = Box::new(FlowsScreenAdapter::new(FlowsPage::new()));
+        let flows_root: Box<dyn Screen> = Box::new(FlowsListScreen::new());
         let workers_root: Box<dyn Screen> = Box::new(WorkersScreenAdapter::new(WorkersPage::new()));
 
         let mut stacks: HashMap<TabId, Vec<Box<dyn Screen>>> = HashMap::new();
@@ -774,8 +774,8 @@ impl App {
             .expect("root of Tickets stack must be TicketsListScreen")
     }
 
-    /// Get a reference to the `FlowsPage` at the root of the Flows tab stack.
-    fn flows_page(&self) -> &FlowsPage {
+    /// Get a reference to the `FlowsListScreen` at the root of the Flows tab stack.
+    fn flows_page(&self) -> &FlowsListScreen {
         let stack = self
             .stacks
             .get(&TabId::Flows)
@@ -784,11 +784,11 @@ impl App {
             .first()
             .expect("stack must not be empty")
             .as_any_flows()
-            .expect("root of Flows stack must be FlowsPage")
+            .expect("root of Flows stack must be FlowsListScreen")
     }
 
-    /// Get a mutable reference to the `FlowsPage` at the root of the Flows tab stack.
-    fn flows_page_mut(&mut self) -> &mut FlowsPage {
+    /// Get a mutable reference to the `FlowsListScreen` at the root of the Flows tab stack.
+    fn flows_page_mut(&mut self) -> &mut FlowsListScreen {
         let stack = self
             .stacks
             .get_mut(&TabId::Flows)
@@ -797,7 +797,7 @@ impl App {
             .first_mut()
             .expect("stack must not be empty")
             .as_any_flows_mut()
-            .expect("root of Flows stack must be FlowsPage")
+            .expect("root of Flows stack must be FlowsListScreen")
     }
 
     /// Get a reference to the `WorkersPage` at the root of the Workers tab stack.
