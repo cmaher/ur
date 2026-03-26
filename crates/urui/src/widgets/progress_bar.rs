@@ -6,8 +6,8 @@ use crate::theme::Theme;
 
 /// A mini progress bar widget showing completed/total with a visual bar.
 ///
-/// Renders a filled/unfilled bar followed by a "N/M" count label. The filled
-/// portion uses `theme.secondary` and the unfilled portion uses `theme.accent`.
+/// Renders a filled/unfilled bar followed by a "N/M" count label. Both the
+/// filled and unfilled portions use `theme.secondary`.
 /// The count text uses the default foreground color.
 pub struct MiniProgressBar {
     pub completed: u32,
@@ -18,8 +18,7 @@ impl MiniProgressBar {
     /// Render just the progress bar (no label) into the given area.
     ///
     /// The bar fills the entire area width using filled '█' and unfilled '░'
-    /// characters. The filled portion uses `theme.secondary` and the unfilled
-    /// portion uses `theme.accent`.
+    /// characters. Both the filled and unfilled portions use `theme.secondary`.
     pub fn render_bar(
         &self,
         area: Rect,
@@ -41,7 +40,7 @@ impl MiniProgressBar {
         let unfilled = bar_width - filled;
 
         let filled_style = Style::default().fg(theme.secondary).bg(bg);
-        let unfilled_style = Style::default().fg(theme.accent).bg(bg);
+        let unfilled_style = Style::default().fg(theme.secondary).bg(bg);
 
         let y = area.y;
         let mut x = area.x;
