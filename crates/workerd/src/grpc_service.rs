@@ -193,8 +193,10 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             return Ok(Response::new(NotifyIdleResponse {}));
         }
 
-        // Case 3: Buffer empty + !step_complete + lifecycle_step set — nudge the agent
-        if !buf.lifecycle_step.is_empty() {
+        // Case 3: Buffer empty + !step_complete + lifecycle_step set — nudge the agent.
+        // Design nodes are excluded: the design skill manages its own step-complete
+        // signaling, and nudging mid-design just confuses the agent.
+        if !buf.lifecycle_step.is_empty() && buf.lifecycle_step != "designing" {
             let step = buf.lifecycle_step.clone();
             info!(
                 lifecycle_step = step.as_str(),
