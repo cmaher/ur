@@ -150,37 +150,40 @@ impl GithubPollerManager {
                 }
             };
 
-            match backend
+            if let Err(e) = backend
                 .reply_bot_comment(*pr_number, comment_id_i64, &body)
                 .await
             {
-                Ok(_) => {
-                    for ticket_id in ticket_ids {
-                        if let Err(e) = self
-                            .workflow_repo
-                            .mark_reply_posted(comment_id, ticket_id)
-                            .await
-                        {
-                            error!(
-                                comment_id = %comment_id,
-                                ticket_id = %ticket_id,
-                                error = %e,
-                                "failed to mark reply as posted"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        comment_id = %comment_id,
-                        pr_number = %pr_number,
-                        error = %e,
-                        "failed to post comment reply — will retry next cycle"
-                    );
-                }
+                warn!(
+                    comment_id = %comment_id,
+                    pr_number = %pr_number,
+                    error = %e,
+                    "failed to post comment reply — will retry next cycle"
+                );
+                tokio::time::sleep(API_CALL_DELAY).await;
+                continue;
             }
 
+            self.mark_replies_posted(comment_id, ticket_ids).await;
+
             tokio::time::sleep(API_CALL_DELAY).await;
+        }
+    }
+
+    async fn mark_replies_posted(&self, comment_id: &str, ticket_ids: &[String]) {
+        for ticket_id in ticket_ids {
+            if let Err(e) = self
+                .workflow_repo
+                .mark_reply_posted(comment_id, ticket_id)
+                .await
+            {
+                error!(
+                    comment_id = %comment_id,
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to mark reply as posted"
+                );
+            }
         }
     }
 
