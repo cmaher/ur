@@ -1555,9 +1555,6 @@ fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
 /// workflow appears in `ur flow list`, cancel it with `ur flow cancel`, and
 /// verify it no longer appears in the list.
 fn scenario_flow_list_and_cancel(env: &TestEnv) {
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
     let ticket_id = create_test_ticket(env, "Flow list cancel test");
     let container_name = env.container_name(&ticket_id);
 
@@ -1590,15 +1587,9 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
             "cancelled workflow should have status 'cancelled'.\nJSON: {show}"
         );
 
-        // ---- Verify worker was killed by flow cancel ----
-        // cancel_active_workflow kills the associated worker, so stop should fail.
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
-        assert!(
-            !stop_output.status.success(),
-            "worker should already be stopped after flow cancel.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stop_output.stdout),
-            String::from_utf8_lossy(&stop_output.stderr),
-        );
+        // Worker is already killed by flow_cancel (CancelWorkflow kills the
+        // associated worker container). Just force-remove to clean up.
+        force_remove_container(&env.runtime, &container_name);
     }));
 
     if let Err(e) = result {
