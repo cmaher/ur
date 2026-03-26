@@ -9,6 +9,7 @@ const CLAUDE_ENV: &str = "UR_WORKER_CLAUDE";
 const POTENTIAL_CLAUDES_DIR: &str = ".claude/potential-claudes";
 const SHARED_CLAUDES_DIR: &str = ".claude/shared-claudes";
 const CLAUDE_MD_DEST: &str = ".claude/CLAUDE.md";
+const PROJECT_CLAUDE_MD_DEST: &str = ".claude/PROJECT_CLAUDE.md";
 
 /// Manages skill directory initialization from potential-skills based on an env var.
 #[derive(Clone)]
@@ -125,10 +126,41 @@ impl InitSkillsManager {
             info!(path = %path.display(), "appended shared CLAUDE.md fragment");
         }
 
+        // If a project CLAUDE.md is provided, resolve %WORKSPACE% and append @ reference
+        if let Some(project_content) = self.resolve_project_claude().await? {
+            let project_dest = self.home.join(PROJECT_CLAUDE_MD_DEST);
+            tokio::fs::write(&project_dest, &project_content).await?;
+            info!(dst = %project_dest.display(), "wrote PROJECT_CLAUDE.md");
+
+            content.push_str("\n\n@");
+            content.push_str(&self.home.join(PROJECT_CLAUDE_MD_DEST).to_string_lossy());
+        }
+
         tokio::fs::write(&dst, &content).await?;
         info!(dst = %dst.display(), "wrote composed CLAUDE.md");
 
         Ok(())
+    }
+
+    /// Read the project CLAUDE.md (if UR_PROJECT_CLAUDE is set), resolve %WORKSPACE%
+    /// placeholders using UR_HOST_WORKSPACE, and return the resolved content.
+    async fn resolve_project_claude(&self) -> Result<Option<String>, std::io::Error> {
+        let project_path = match std::env::var(ur_config::UR_PROJECT_CLAUDE_ENV) {
+            Ok(val) if !val.trim().is_empty() => val,
+            _ => return Ok(None),
+        };
+
+        let raw_content = tokio::fs::read_to_string(&project_path).await?;
+        info!(path = %project_path, "read project CLAUDE.md");
+
+        let resolved = match std::env::var(ur_config::UR_HOST_WORKSPACE_ENV) {
+            Ok(workspace) if !workspace.trim().is_empty() => {
+                ur_config::resolve_workspace_content(&raw_content, &workspace)
+            }
+            _ => raw_content,
+        };
+
+        Ok(Some(resolved))
     }
 }
 
@@ -268,5 +300,121 @@ mod tests {
         assert!(result.is_ok(), "unset env should not cause an error");
         let dest = tmp.path().join(CLAUDE_MD_DEST);
         assert!(!dest.exists(), "CLAUDE.md should not be created");
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_with_project_claude() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_claude_dir(&tmp, "code", "# Code Worker");
+
+        // Write a project CLAUDE.md file
+        let project_dir = tmp.path().join("project-claude");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project_path = project_dir.join("CLAUDE.md");
+        std::fs::write(&project_path, "# Project\nWorkspace: %WORKSPACE%/src").unwrap();
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe {
+            std::env::set_var(CLAUDE_ENV, "code");
+            std::env::set_var(
+                ur_config::UR_PROJECT_CLAUDE_ENV,
+                project_path.to_str().unwrap(),
+            );
+            std::env::set_var(ur_config::UR_HOST_WORKSPACE_ENV, "/host/workspace");
+        };
+
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        mgr.init_claude_md().await.unwrap();
+
+        unsafe {
+            std::env::remove_var(CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
+        };
+
+        // PROJECT_CLAUDE.md should exist with resolved content
+        let project_dest = tmp.path().join(PROJECT_CLAUDE_MD_DEST);
+        assert!(project_dest.exists(), "PROJECT_CLAUDE.md should be created");
+        let project_content = std::fs::read_to_string(&project_dest).unwrap();
+        assert_eq!(project_content, "# Project\nWorkspace: /host/workspace/src");
+
+        // CLAUDE.md should contain @ reference
+        let claude_content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
+        let expected_ref = format!("\n\n@{}", project_dest.display());
+        assert!(
+            claude_content.ends_with(&expected_ref),
+            "CLAUDE.md should end with @ reference, got: {claude_content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_without_project_claude() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_claude_dir(&tmp, "code", "# Code Worker");
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe {
+            std::env::set_var(CLAUDE_ENV, "code");
+            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
+        };
+
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        mgr.init_claude_md().await.unwrap();
+
+        unsafe { std::env::remove_var(CLAUDE_ENV) };
+
+        // PROJECT_CLAUDE.md should not exist
+        let project_dest = tmp.path().join(PROJECT_CLAUDE_MD_DEST);
+        assert!(
+            !project_dest.exists(),
+            "PROJECT_CLAUDE.md should not be created"
+        );
+
+        // CLAUDE.md should not contain @ reference
+        let claude_content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
+        assert_eq!(claude_content, "# Code Worker");
+    }
+
+    #[tokio::test]
+    async fn init_claude_md_project_claude_without_host_workspace() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+        setup_claude_dir(&tmp, "code", "# Code Worker");
+
+        // Write a project CLAUDE.md with %WORKSPACE% but don't set UR_HOST_WORKSPACE
+        let project_dir = tmp.path().join("project-claude");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let project_path = project_dir.join("CLAUDE.md");
+        std::fs::write(&project_path, "# Project\nPath: %WORKSPACE%/foo").unwrap();
+
+        // SAFETY: tests are serialized via ENV_LOCK
+        unsafe {
+            std::env::set_var(CLAUDE_ENV, "code");
+            std::env::set_var(
+                ur_config::UR_PROJECT_CLAUDE_ENV,
+                project_path.to_str().unwrap(),
+            );
+            std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
+        };
+
+        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        mgr.init_claude_md().await.unwrap();
+
+        unsafe {
+            std::env::remove_var(CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+        };
+
+        // PROJECT_CLAUDE.md should exist with unresolved %WORKSPACE%
+        let project_dest = tmp.path().join(PROJECT_CLAUDE_MD_DEST);
+        assert!(project_dest.exists(), "PROJECT_CLAUDE.md should be created");
+        let project_content = std::fs::read_to_string(&project_dest).unwrap();
+        assert_eq!(
+            project_content, "# Project\nPath: %WORKSPACE%/foo",
+            "content should pass through unchanged without UR_HOST_WORKSPACE"
+        );
     }
 }
