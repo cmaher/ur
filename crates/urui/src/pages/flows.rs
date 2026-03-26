@@ -990,7 +990,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[7], "X");
+        assert_eq!(row[2], "X");
     }
 
     #[test]
@@ -1002,7 +1002,7 @@ mod tests {
         };
         let now = Utc::now();
         let row = entry_to_row(&entry, now);
-        assert_eq!(row[7], "");
+        assert_eq!(row[2], "");
     }
 
     #[test]
