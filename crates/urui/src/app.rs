@@ -311,8 +311,13 @@ impl App {
         if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
             self.notification_manager.seed_flows(workflows);
         }
-        // TicketDetail payloads go to the active screen (the top of the active stack).
-        if matches!(payload, crate::data::DataPayload::TicketDetail(_)) {
+        // TicketDetail and TicketActivities payloads go to the active screen (the top of the
+        // active stack).
+        if matches!(
+            payload,
+            crate::data::DataPayload::TicketDetail(_)
+                | crate::data::DataPayload::TicketActivities(_)
+        ) {
             self.active_screen_mut().on_data(&payload);
             return;
         }
@@ -711,7 +716,8 @@ impl App {
     /// Fetch data for the currently active tab.
     ///
     /// If the active screen is a `TicketDetailScreen`, fetches ticket detail
-    /// data; otherwise fetches the appropriate list data for the tab.
+    /// data; if it is a `TicketActivitiesScreen`, fetches activities data;
+    /// otherwise fetches the appropriate list data for the tab.
     fn fetch_active_tab_data(&self) {
         // If the top of the active stack is a detail screen, fetch its data.
         if let Some(detail) = self.active_screen().as_any_ticket_detail() {
@@ -720,6 +726,14 @@ impl App {
             let offset = detail.child_offset();
             self.data_manager
                 .fetch_ticket_detail(ticket_id, Some(page_size), Some(offset));
+            return;
+        }
+        // If the top of the active stack is an activities screen, fetch its data.
+        if let Some(activities) = self.active_screen().as_any_ticket_activities() {
+            let ticket_id = activities.ticket_id().to_owned();
+            let author_filter = activities.author_filter().map(str::to_owned);
+            self.data_manager
+                .fetch_ticket_activities(ticket_id, author_filter);
             return;
         }
         match self.active_tab {

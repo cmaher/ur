@@ -9,7 +9,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
 
-use crate::pages::TicketBodyScreen;
+use crate::pages::{TicketActivitiesScreen, TicketBodyScreen};
 
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
@@ -225,6 +225,19 @@ impl TicketDetailScreen {
         let body_screen =
             TicketBodyScreen::new(ticket.id.clone(), ticket.title.clone(), ticket.body.clone());
         ScreenResult::Push(Box::new(body_screen))
+    }
+
+    /// Push a `TicketActivitiesScreen` if the ticket data is loaded, otherwise consume.
+    fn push_activities_screen(&self) -> ScreenResult {
+        let DataState::Loaded { detail, .. } = &self.data_state else {
+            return ScreenResult::Consumed;
+        };
+        let Some(ticket) = &detail.ticket else {
+            return ScreenResult::Consumed;
+        };
+        let activities_screen =
+            TicketActivitiesScreen::new(ticket.id.clone(), ticket.title.clone());
+        ScreenResult::Push(Box::new(activities_screen))
     }
 
     fn build_child_rows(&self) -> Vec<Vec<String>> {
@@ -506,8 +519,8 @@ impl Screen for TicketDetailScreen {
             }
             // b → push TicketBodyScreen with the loaded ticket's body.
             Action::OpenTicket => self.push_body_screen(),
-            // A → push TicketActivitiesScreen (stub: return Consumed until implemented).
-            Action::OpenActivities => ScreenResult::Consumed,
+            // A → push TicketActivitiesScreen.
+            Action::OpenActivities => self.push_activities_screen(),
             // Space → drill down into selected child
             Action::Select => {
                 if let Some(child) = self.selected_child() {

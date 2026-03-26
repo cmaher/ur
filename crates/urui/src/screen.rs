@@ -5,7 +5,10 @@ use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, FooterCommand, StatusMessage};
-use crate::pages::{FlowsListScreen, TicketDetailScreen, TicketsListScreen, WorkersListScreen};
+use crate::pages::{
+    FlowsListScreen, TicketActivitiesScreen, TicketDetailScreen, TicketsListScreen,
+    WorkersListScreen,
+};
 
 /// Result of a screen handling an action.
 pub enum ScreenResult {
@@ -132,6 +135,16 @@ pub trait Screen: Send {
 
     /// Mutably downcast to `TicketDetailScreen` if this screen is one.
     fn as_any_ticket_detail_mut(&mut self) -> Option<&mut TicketDetailScreen> {
+        None
+    }
+
+    /// Downcast to `TicketActivitiesScreen` if this screen is one.
+    fn as_any_ticket_activities(&self) -> Option<&TicketActivitiesScreen> {
+        None
+    }
+
+    /// Mutably downcast to `TicketActivitiesScreen` if this screen is one.
+    fn as_any_ticket_activities_mut(&mut self) -> Option<&mut TicketActivitiesScreen> {
         None
     }
 }
