@@ -26,6 +26,7 @@ pub enum Action {
     OpenSettings,
     CreateTicket,
     LaunchDesign,
+    OpenActivities,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -299,6 +300,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::LaunchDesign,
     );
+
+    // open_activities = [A]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('A'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::OpenActivities,
+    );
 }
 
 impl Keymap {
@@ -408,6 +418,13 @@ impl Keymap {
                 modifiers: KeyModifiers::NONE,
             },
             Action::OpenSettings,
+        );
+        bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('A'),
+                modifiers: KeyModifiers::SHIFT,
+            },
+            Action::OpenActivities,
         );
 
         Self { bindings }

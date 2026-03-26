@@ -506,6 +506,8 @@ impl Screen for TicketDetailScreen {
             }
             // b → push TicketBodyScreen with the loaded ticket's body.
             Action::OpenTicket => self.push_body_screen(),
+            // A → push TicketActivitiesScreen (stub: return Consumed until implemented).
+            Action::OpenActivities => ScreenResult::Consumed,
             // Space → drill down into selected child
             Action::Select => {
                 if let Some(child) = self.selected_child() {
@@ -581,6 +583,11 @@ impl Screen for TicketDetailScreen {
             FooterCommand {
                 key_label: keymap.label_for(&Action::OpenTicket),
                 description: "Body".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::OpenActivities),
+                description: "Activities".to_string(),
                 common: false,
             },
             FooterCommand {
