@@ -1007,28 +1007,11 @@ impl TicketService for TicketServiceHandler {
             .parse()
             .map_err(|_| Status::invalid_argument(format!("invalid status: {}", req.to_status)))?;
 
-        // 1. Clear workflow stall (stalled flag + stall_reason on workflow table).
+        // 1. Clear workflow stall (stalled flag + stall_reason on workflow table) and reset cycles.
         let _ = self.workflow_repo.clear_workflow_stall(&req.id).await;
+        let _ = self.workflow_repo.reset_implement_cycles(&req.id).await;
 
-        // 2. Set lifecycle to the target status.
-        let update = TicketUpdate {
-            lifecycle_status: Some(to_status),
-            status: None,
-            lifecycle_managed: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        self.ticket_repo
-            .update_ticket(&req.id, &update)
-            .await
-            .map_err(|e| TicketError::Db(e.to_string()))?;
-
-        // 4. Delete any stale workflow events for this ticket (from the trigger).
+        // 2. Delete any stale workflow events for this ticket.
         self.workflow_repo
             .delete_workflow_events_for_ticket(&req.id)
             .await
