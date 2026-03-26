@@ -259,6 +259,9 @@ impl App {
             Action::Dispatch if self.active_tab == TabId::Tickets => {
                 self.dispatch_selected_ticket();
             }
+            Action::DispatchAll if self.active_tab == TabId::Tickets => {
+                self.dispatch_all_from_detail();
+            }
             Action::LaunchDesign if self.active_tab == TabId::Tickets => {
                 self.launch_design_for_selected_ticket();
             }
@@ -410,10 +413,33 @@ impl App {
     }
 
     /// Dispatch the currently selected ticket on the tickets page.
+    ///
+    /// When a `TicketDetailScreen` is active, dispatches the highlighted child
+    /// ticket rather than the parent.
     fn dispatch_selected_ticket(&mut self) {
-        if let Some(ticket_id) = self.tickets_page().selected_ticket_id() {
-            self.tickets_page_mut()
+        let ticket_id = if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+            detail.selected_child_id()
+        } else {
+            self.tickets_page().selected_ticket_id()
+        };
+        if let Some(ticket_id) = ticket_id {
+            self.active_screen_mut()
                 .set_status(format!("Dispatching ticket {ticket_id}..."));
+            self.data_manager
+                .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
+    /// Dispatch the parent ticket from a ticket detail screen.
+    ///
+    /// Uses the detail screen's `ticket_id()` (the parent being viewed) rather
+    /// than `selected_child_id()`.
+    fn dispatch_all_from_detail(&mut self) {
+        if let Some(screen) = self.active_screen().as_any_ticket_detail() {
+            let ticket_id = screen.ticket_id().to_owned();
+            if let Some(detail_mut) = self.active_screen_mut().as_any_ticket_detail_mut() {
+                detail_mut.set_status(format!("Dispatching ticket {ticket_id}..."));
+            }
             self.data_manager
                 .dispatch_ticket(ticket_id, &self.ctx.project_configs);
         }

@@ -517,8 +517,8 @@ impl Screen for TicketDetailScreen {
                 });
                 ScreenResult::Consumed
             }
-            // b → push TicketBodyScreen with the loaded ticket's body.
-            Action::OpenTicket => self.push_body_screen(),
+            // d → push TicketBodyScreen with the loaded ticket's body.
+            Action::OpenDescription => self.push_body_screen(),
             // a → push TicketActivitiesScreen.
             Action::OpenActivities => self.push_activities_screen(),
             // Space → drill down into selected child
@@ -534,6 +534,7 @@ impl Screen for TicketDetailScreen {
             }
             // Ticket commands on selected child (handled by app via dispatch; we just consume)
             Action::Dispatch
+            | Action::DispatchAll
             | Action::LaunchDesign
             | Action::CloseTicket
             | Action::CancelFlow
@@ -594,8 +595,13 @@ impl Screen for TicketDetailScreen {
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::OpenTicket),
-                description: "Body".to_string(),
+                key_label: keymap.label_for(&Action::OpenDescription),
+                description: "Description".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::DispatchAll),
+                description: "Dispatch all".to_string(),
                 common: false,
             },
             FooterCommand {

@@ -27,6 +27,8 @@ pub enum Action {
     CreateTicket,
     LaunchDesign,
     OpenActivities,
+    DispatchAll,
+    OpenDescription,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -309,6 +311,24 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::OpenActivities,
     );
+
+    // dispatch_all = [A]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('A'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::DispatchAll,
+    );
+
+    // open_description = [d]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::OpenDescription,
+    );
 }
 
 /// Insert ticket action bindings that are NOT overridable via `KeymapOverrides`.
@@ -322,6 +342,8 @@ fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Act
         ('C', KeyModifiers::SHIFT, Action::CreateTicket),
         ('S', KeyModifiers::SHIFT, Action::LaunchDesign),
         ('a', KeyModifiers::NONE, Action::OpenActivities),
+        ('A', KeyModifiers::SHIFT, Action::DispatchAll),
+        ('d', KeyModifiers::NONE, Action::OpenDescription),
     ] {
         bindings.insert(
             KeyBinding {
