@@ -26,6 +26,17 @@ impl MiniProgressBar {
         theme: &Theme,
         bg: ratatui::style::Color,
     ) {
+        self.render_bar_colored(area, buf, theme.secondary, bg);
+    }
+
+    /// Render the progress bar with an explicit bar color (instead of theme.secondary).
+    pub fn render_bar_colored(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        bar_color: ratatui::style::Color,
+        bg: ratatui::style::Color,
+    ) {
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -39,8 +50,8 @@ impl MiniProgressBar {
         let filled = ((fraction * bar_width as f64).round() as u16).min(bar_width);
         let unfilled = bar_width - filled;
 
-        let filled_style = Style::default().fg(theme.secondary).bg(bg);
-        let unfilled_style = Style::default().fg(theme.secondary).bg(bg);
+        let filled_style = Style::default().fg(bar_color).bg(bg);
+        let unfilled_style = Style::default().fg(bar_color).bg(bg);
 
         let y = area.y;
         let mut x = area.x;
