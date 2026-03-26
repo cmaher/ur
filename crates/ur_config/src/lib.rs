@@ -1,6 +1,8 @@
 mod template_path;
 
-pub use template_path::{ResolvedTemplatePath, resolve_template_path};
+pub use template_path::{
+    ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
+};
 
 /// A parsed mount configuration entry: host source -> container destination.
 ///
@@ -167,6 +169,12 @@ pub const WORKSPACE_MOUNT: &str = "/workspace";
 /// Like `UR_HOST_CONFIG`, the server container needs the original host path when
 /// constructing paths for builderd (which runs on the host).
 pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
+
+/// Environment variable: project-level CLAUDE.md content injected into the worker.
+///
+/// Set by the server when launching a worker so it can write the project's
+/// CLAUDE.md into the container without needing host filesystem access.
+pub const UR_PROJECT_CLAUDE_ENV: &str = "UR_PROJECT_CLAUDE";
 
 /// Container-side mount point for the backup directory.
 pub const BACKUP_CONTAINER_PATH: &str = "/backup";
@@ -380,6 +388,7 @@ struct RawProjectConfig {
     hostexec: Vec<String>,
     git_hooks_dir: Option<String>,
     skill_hooks_dir: Option<String>,
+    claude_md: Option<String>,
     container: Option<RawContainerConfig>,
     /// Reject mounts at the project root level with a helpful error.
     #[serde(default)]
@@ -904,6 +913,11 @@ pub struct ProjectConfig {
     /// Resolve with [`resolve_template_path`] at use time.
     /// Contents are copied to `~/.claude/skill-hooks/` at container startup.
     pub skill_hooks_dir: Option<String>,
+    /// Optional template path to a project-level CLAUDE.md file.
+    /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
+    /// Resolve with [`resolve_template_path`] at use time.
+    /// When None, the server falls back to `<config_dir>/projects/<key>/CLAUDE.md`.
+    pub claude_md: Option<String>,
     /// Container configuration (image, mounts).
     pub container: ContainerConfig,
     /// Optional template path to a directory of workflow hook scripts.
@@ -1139,6 +1153,7 @@ fn resolve_project_config(
         hostexec: raw_proj.hostexec,
         git_hooks_dir: raw_proj.git_hooks_dir,
         skill_hooks_dir: raw_proj.skill_hooks_dir,
+        claude_md: raw_proj.claude_md,
         container,
         workflow_hooks_dir: raw_proj.workflow_hooks_dir,
         max_fix_attempts: raw_proj
@@ -1391,6 +1406,10 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
     if let Some(ref tpl) = raw_proj.workflow_hooks_dir {
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': workflow_hooks_dir: {}", key, e))?;
+    }
+    if let Some(ref tpl) = raw_proj.claude_md {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': claude_md: {}", key, e))?;
     }
     // Mount validation is handled by parse_mount_entry during config loading.
     Ok(())
@@ -1844,6 +1863,106 @@ image = "ur-worker"
         assert_eq!(
             cfg.projects["ur"].git_hooks_dir.as_deref(),
             Some("%URCONFIG%/hooks/ur")
+        );
+    }
+
+    #[test]
+    fn claude_md_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].claude_md, None);
+    }
+
+    #[test]
+    fn claude_md_stores_template_string() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+claude_md = "%PROJECT%/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].claude_md.as_deref(),
+            Some("%PROJECT%/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn claude_md_rejects_unrecognized_variable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+claude_md = "%BADVAR%/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unrecognized template variable"), "{msg}");
+        assert!(msg.contains("project 'ur'"), "{msg}");
+    }
+
+    #[test]
+    fn claude_md_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+claude_md = "/opt/claude/ur/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].claude_md.as_deref(),
+            Some("/opt/claude/ur/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn claude_md_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].claude_md.as_deref(),
+            Some("%URCONFIG%/projects/ur/CLAUDE.md")
         );
     }
 
@@ -2938,6 +3057,7 @@ quit = ["q"]
                     hostexec: vec![],
                     git_hooks_dir: None,
                     skill_hooks_dir: None,
+                    claude_md: None,
                     workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),
@@ -2958,6 +3078,7 @@ quit = ["q"]
                     hostexec: vec![],
                     git_hooks_dir: None,
                     skill_hooks_dir: None,
+                    claude_md: None,
                     workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),
@@ -3072,6 +3193,7 @@ quit = ["q"]
                     hostexec: vec![],
                     git_hooks_dir: None,
                     skill_hooks_dir: None,
+                    claude_md: None,
                     workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),

@@ -17,9 +17,9 @@ use ur_rpc::proto::builder::{BuilderExecMessage, BuilderExecRequest};
 use ur_rpc::proto::core::CommandOutput;
 use ur_rpc::proto::core::command_output::Payload;
 
-use crate::registry::{OutputSink, ProcessKey, ProcessRegistry, RegisteredProcess};
+use ur_config::{WORKSPACE_TEMPLATE, resolve_workspace_content};
 
-const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
+use crate::registry::{OutputSink, ProcessKey, ProcessRegistry, RegisteredProcess};
 
 type CommandOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<CommandOutput, Status>> + Send>>;
@@ -32,11 +32,11 @@ pub struct BuilderDaemonHandler {
 
 impl BuilderDaemonHandler {
     fn resolve_working_dir(&self, working_dir: &str) -> String {
-        if working_dir.starts_with(WORKSPACE_TEMPLATE)
+        if working_dir.contains(WORKSPACE_TEMPLATE)
             && let Some(workspace) = &self.workspace
         {
             let workspace_str = workspace.to_string_lossy();
-            return working_dir.replacen(WORKSPACE_TEMPLATE, &workspace_str, 1);
+            return resolve_workspace_content(working_dir, &workspace_str);
         }
         working_dir.to_string()
     }
