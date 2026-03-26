@@ -1555,9 +1555,6 @@ fn scenario_ticket_close_preserves_workflow(env: &TestEnv) {
 /// workflow appears in `ur flow list`, cancel it with `ur flow cancel`, and
 /// verify it no longer appears in the list.
 fn scenario_flow_list_and_cancel(env: &TestEnv) {
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
     let ticket_id = create_test_ticket(env, "Flow list cancel test");
     let container_name = env.container_name(&ticket_id);
 
