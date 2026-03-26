@@ -1,5 +1,16 @@
 use std::path::PathBuf;
 
+/// Template variable for workspace paths, used in builderd working_dir and
+/// project CLAUDE.md content. Replaced at runtime with the actual workspace path.
+pub const WORKSPACE_TEMPLATE: &str = "%WORKSPACE%";
+
+/// Replace all `%WORKSPACE%` occurrences in `content` with `workspace`.
+///
+/// Returns the content unchanged if it contains no `%WORKSPACE%` patterns.
+pub fn resolve_workspace_content(content: &str, workspace: &str) -> String {
+    content.replace(WORKSPACE_TEMPLATE, workspace)
+}
+
 /// A resolved template path, indicating whether the path is relative to the
 /// project root (inside the container) or an absolute host-side path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,5 +224,29 @@ mod tests {
         let err = resolve_template_path("relative/path", Path::new("/unused")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("must start with"), "{msg}");
+    }
+
+    #[test]
+    fn resolve_workspace_content_replaces_single() {
+        let result = resolve_workspace_content("%WORKSPACE%/pool/ur/0", "/home/builder/ws");
+        assert_eq!(result, "/home/builder/ws/pool/ur/0");
+    }
+
+    #[test]
+    fn resolve_workspace_content_no_match_passthrough() {
+        let result = resolve_workspace_content("/absolute/path", "/home/builder/ws");
+        assert_eq!(result, "/absolute/path");
+    }
+
+    #[test]
+    fn resolve_workspace_content_multiple_occurrences() {
+        let result = resolve_workspace_content("src=%WORKSPACE%/a dest=%WORKSPACE%/b", "/ws");
+        assert_eq!(result, "src=/ws/a dest=/ws/b");
+    }
+
+    #[test]
+    fn resolve_workspace_content_empty_input() {
+        let result = resolve_workspace_content("", "/ws");
+        assert_eq!(result, "");
     }
 }
