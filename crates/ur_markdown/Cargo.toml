@@ -1,0 +1,11 @@
+[package]
+name = "ur_markdown"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+pulldown-cmark = "0.12"
+ratatui = "0.29"
+
+[lints]
+workspace = true

@@ -12,7 +12,9 @@ use ur_rpc::proto::ticket::Ticket;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, Page, PageResult, StatusMessage, TabId};
+use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::pages::ticket_detail::TicketDetailScreen;
+use crate::screen::{Screen, ScreenResult};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::force_close_confirm::{ForceCloseConfirmResult, ForceCloseConfirmState};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
@@ -53,12 +55,12 @@ pub struct PaginationParams {
     pub include_children: bool,
 }
 
-/// The Tickets tab page.
+/// The Tickets tab list screen.
 ///
 /// Displays tickets in a themed table with columns: ID, Status, Priority,
 /// Progress, Title. Supports row selection (NavigateUp/Down) and server-side
 /// pagination (PageLeft/Right). Includes a filter overlay for narrowing results.
-pub struct TicketsPage {
+pub struct TicketsListScreen {
     data_state: DataState,
     selected_row: usize,
     current_page: usize,
@@ -73,7 +75,7 @@ pub struct TicketsPage {
     active_status: Option<StatusMessage>,
 }
 
-impl TicketsPage {
+impl TicketsListScreen {
     pub fn new(filter_config: &ur_config::TicketFilterConfig) -> Self {
         Self {
             data_state: DataState::Loading,
@@ -404,7 +406,7 @@ const PROGRESS_BAR_COL: usize = 4;
 /// Calculates each row's progress column rects by resolving the table layout
 /// constraints, then renders bar and count separately for consistent bar width.
 fn render_progress_bars(
-    page: &TicketsPage,
+    page: &TicketsListScreen,
     area: Rect,
     buf: &mut Buffer,
     ctx: &TuiContext,
@@ -439,7 +441,7 @@ fn render_progress_bars(
             break;
         }
 
-        let (completed, total) = TicketsPage::ticket_progress(ticket);
+        let (completed, total) = TicketsListScreen::ticket_progress(ticket);
         let is_selected = i == page.selected_row;
         let row_bg = if is_selected {
             ctx.theme.primary
@@ -480,36 +482,36 @@ fn render_progress_bars(
 
 use ratatui::widgets::Widget;
 
-impl Page for TicketsPage {
-    fn tab_id(&self) -> TabId {
-        TabId::Tickets
-    }
-
-    fn title(&self) -> &str {
+impl TicketsListScreen {
+    /// Display title shown in the header tab bar.
+    pub fn title(&self) -> &str {
         "Tickets"
     }
 
-    fn shortcut_char(&self) -> char {
+    /// The character used as a keyboard shortcut to switch to this tab.
+    pub fn shortcut_char(&self) -> char {
         't'
     }
+}
 
-    fn handle_action(&mut self, action: Action) -> PageResult {
+impl Screen for TicketsListScreen {
+    fn handle_action(&mut self, action: Action) -> ScreenResult {
         match action {
             Action::NavigateUp => {
                 self.navigate_up();
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::NavigateDown => {
                 self.navigate_down();
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::PageLeft => {
                 self.page_left();
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::PageRight => {
                 self.page_right();
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::Refresh => {
                 self.mark_stale();
@@ -517,15 +519,23 @@ impl Page for TicketsPage {
                     text: "Refreshing tickets...".to_string(),
                     dismissable: true,
                 });
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
             Action::Filter => {
                 // Open filter menu — pass empty projects, will be overridden
                 // at render time via ctx, but state is initialized here.
-                PageResult::Consumed
+                ScreenResult::Consumed
             }
-            Action::Quit => PageResult::Quit,
-            _ => PageResult::Ignored,
+            Action::Select => {
+                if let Some(ticket) = self.selected_ticket() {
+                    let detail = TicketDetailScreen::new(ticket.id.clone(), ticket.project.clone());
+                    ScreenResult::Push(Box::new(detail))
+                } else {
+                    ScreenResult::Consumed
+                }
+            }
+            Action::Quit => ScreenResult::Quit,
+            _ => ScreenResult::Ignored,
         }
     }
 
@@ -719,24 +729,36 @@ impl Page for TicketsPage {
     fn mark_stale(&mut self) {
         self.data_state = DataState::Loading;
     }
+
+    fn as_any_tickets(&self) -> Option<&crate::pages::TicketsListScreen> {
+        Some(self)
+    }
+
+    fn as_any_tickets_mut(&mut self) -> Option<&mut crate::pages::TicketsListScreen> {
+        Some(self)
+    }
 }
 
-/// Open the filter menu overlay on the tickets page.
-pub fn open_filter_menu(page: &mut TicketsPage, projects: &[String]) {
+/// Open the filter menu overlay on the tickets list screen.
+pub fn open_filter_menu(page: &mut TicketsListScreen, projects: &[String]) {
     page.overlay = Some(Overlay::FilterMenu(FilterMenuState::new(projects.to_vec())));
 }
 
-/// Open the force-close confirmation overlay on the tickets page.
-pub fn open_force_close_confirm(page: &mut TicketsPage, ticket_id: String, open_children: i32) {
+/// Open the force-close confirmation overlay on the tickets list screen.
+pub fn open_force_close_confirm(
+    page: &mut TicketsListScreen,
+    ticket_id: String,
+    open_children: i32,
+) {
     page.overlay = Some(Overlay::ForceCloseConfirm(ForceCloseConfirmState {
         ticket_id,
         open_children,
     }));
 }
 
-/// Open the priority picker overlay on the tickets page, initialized to the
+/// Open the priority picker overlay on the tickets list screen, initialized to the
 /// selected ticket's current priority.
-pub fn open_priority_picker(page: &mut TicketsPage) {
+pub fn open_priority_picker(page: &mut TicketsListScreen) {
     let current_priority = page
         .visible_tickets()
         .get(page.selected_row)
@@ -800,13 +822,13 @@ mod tests {
 
     #[test]
     fn new_page_needs_data() {
-        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         assert!(page.needs_data());
     }
 
     #[test]
     fn on_data_tickets_ok() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First"), make_ticket("t-2", "Second")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 2))));
         assert!(!page.needs_data());
@@ -815,7 +837,7 @@ mod tests {
 
     #[test]
     fn on_data_tickets_error() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.on_data(&DataPayload::Tickets(Err("connection refused".into())));
         assert!(!page.needs_data());
         assert!(matches!(page.data_state, DataState::Error(_)));
@@ -823,14 +845,14 @@ mod tests {
 
     #[test]
     fn on_data_ignores_flows() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.on_data(&DataPayload::Flows(Ok((vec![], 0))));
         assert!(page.needs_data()); // still loading
     }
 
     #[test]
     fn navigate_down_and_up() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = (0..5)
             .map(|i| make_ticket(&format!("t-{i}"), "T"))
             .collect();
@@ -847,7 +869,7 @@ mod tests {
 
     #[test]
     fn navigate_up_does_not_underflow() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 1))));
 
@@ -857,7 +879,7 @@ mod tests {
 
     #[test]
     fn navigate_down_does_not_overflow() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "One"), make_ticket("t-2", "Two")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 2))));
 
@@ -869,7 +891,7 @@ mod tests {
 
     #[test]
     fn server_side_pagination() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 2;
         // Server returns page 0 with 2 tickets, total_count=5
         let tickets = vec![make_ticket("t-0", "T"), make_ticket("t-1", "T")];
@@ -919,7 +941,7 @@ mod tests {
 
     #[test]
     fn update_page_size_resets_and_refetches() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "A")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 10))));
         page.current_page = 2;
@@ -933,7 +955,7 @@ mod tests {
 
     #[test]
     fn update_page_size_no_change_no_refetch() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         // Default page_size is 20, so area_height=23 gives 20
         page.update_page_size(23);
         assert_eq!(page.page_size, 20);
@@ -948,26 +970,34 @@ mod tests {
 
     #[test]
     fn quit_action_returns_quit() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        assert_eq!(page.handle_action(Action::Quit), PageResult::Quit);
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
+        assert!(matches!(
+            page.handle_action(Action::Quit),
+            ScreenResult::Quit
+        ));
+    }
+
+    #[test]
+    fn select_action_returns_consumed() {
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
+        assert!(matches!(
+            page.handle_action(Action::Select),
+            ScreenResult::Consumed
+        ));
     }
 
     #[test]
     fn unhandled_action_returns_ignored() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        assert_eq!(page.handle_action(Action::Select), PageResult::Ignored);
-        assert_eq!(page.handle_action(Action::Back), PageResult::Ignored);
-    }
-
-    #[test]
-    fn tab_id_is_tickets() {
-        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
-        assert_eq!(page.tab_id(), TabId::Tickets);
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
+        assert!(matches!(
+            page.handle_action(Action::Back),
+            ScreenResult::Ignored
+        ));
     }
 
     #[test]
     fn footer_commands_not_empty() {
-        let page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let keymap = Keymap::default();
         let cmds = page.footer_commands(&keymap);
         assert!(!cmds.is_empty());
@@ -975,19 +1005,19 @@ mod tests {
 
     #[test]
     fn refresh_marks_stale_for_refetch() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-1", "First")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 1))));
         assert!(!page.needs_data());
 
         let result = page.handle_action(Action::Refresh);
-        assert_eq!(result, PageResult::Consumed);
+        assert!(matches!(result, ScreenResult::Consumed));
         assert!(page.needs_data());
     }
 
     #[test]
     fn visible_tickets_returns_current_page() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![make_ticket("t-0", "A"), make_ticket("t-1", "B")];
         page.on_data(&DataPayload::Tickets(Ok((tickets, 5))));
 
@@ -998,7 +1028,7 @@ mod tests {
 
     #[test]
     fn page_indicator_uses_total_count() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 2;
         let tickets = vec![make_ticket("t-0", "A"), make_ticket("t-1", "B")];
         // Server says total_count=7, so 4 pages
@@ -1009,7 +1039,7 @@ mod tests {
 
     #[test]
     fn offset_past_end_clamps_to_last_page() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 2;
         page.current_page = 5; // Way past end
         // Server says total_count=4 (2 pages)
@@ -1022,7 +1052,7 @@ mod tests {
 
     #[test]
     fn include_children_in_pagination_params() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         // Default: show_children=false
         let params = page.pagination_params();
         assert!(!params.include_children);
@@ -1034,7 +1064,7 @@ mod tests {
 
     #[test]
     fn pagination_params_reflect_current_state() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.page_size = 10;
         page.current_page = 3;
         let params = page.pagination_params();
@@ -1044,7 +1074,7 @@ mod tests {
 
     #[test]
     fn open_filter_menu_creates_overlay() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         assert!(!page.has_overlay());
 
         open_filter_menu(&mut page, &["proj1".to_string()]);
@@ -1053,7 +1083,7 @@ mod tests {
 
     #[test]
     fn overlay_footer_differs() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let keymap = Keymap::default();
         let normal_cmds = page.footer_commands(&keymap);
 
@@ -1066,7 +1096,7 @@ mod tests {
 
     #[test]
     fn full_list_load_replaces_page() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let batch1 = vec![make_ticket("t-1", "A"), make_ticket("t-2", "B")];
         page.on_data(&DataPayload::Tickets(Ok((batch1, 2))));
         assert_eq!(page.visible_tickets().len(), 2);
@@ -1080,7 +1110,7 @@ mod tests {
 
     #[test]
     fn filters_persist_across_refresh() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         page.filters.show_children = true;
 
         let tickets = vec![make_ticket("t-1", "First")];
@@ -1098,7 +1128,7 @@ mod tests {
 
     #[test]
     fn selection_clamped_when_page_shrinks() {
-        let mut page = TicketsPage::new(&ur_config::TicketFilterConfig::default());
+        let mut page = TicketsListScreen::new(&ur_config::TicketFilterConfig::default());
         let tickets = vec![
             make_ticket("t-1", "A"),
             make_ticket("t-2", "B"),

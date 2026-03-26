@@ -1,12 +1,5 @@
 use std::time::Instant;
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-
-use crate::context::TuiContext;
-use crate::data::DataPayload;
-use crate::keymap::{Action, Keymap};
-
 /// Duration after which success banners auto-dismiss.
 const BANNER_AUTO_DISMISS_SECS: u64 = 5;
 
@@ -53,17 +46,6 @@ pub enum TabId {
     Workers,
 }
 
-/// Result of a page handling an action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageResult {
-    /// The page consumed the action; no further handling needed.
-    Consumed,
-    /// The page did not handle the action; propagate to the app.
-    Ignored,
-    /// The user requested to quit.
-    Quit,
-}
-
 /// A command displayed in the footer bar for the active page.
 pub struct FooterCommand {
     /// Short label shown next to the key (e.g. "q").
@@ -72,59 +54,4 @@ pub struct FooterCommand {
     pub description: String,
     /// Whether this is a common command (rendered on the right side).
     pub common: bool,
-}
-
-/// Trait implemented by every tab page in the TUI.
-pub trait Page {
-    /// The unique tab identifier for this page.
-    fn tab_id(&self) -> TabId;
-
-    /// Display title shown in the header tab bar.
-    fn title(&self) -> &str;
-
-    /// The character used as a keyboard shortcut to switch to this tab.
-    fn shortcut_char(&self) -> char;
-
-    /// Handle a resolved action. Returns how the action was handled.
-    fn handle_action(&mut self, action: Action) -> PageResult;
-
-    /// Render the page content into the given area.
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext);
-
-    /// Footer commands available while this page is active.
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand>;
-
-    /// Receive fetched data from the data layer.
-    fn on_data(&mut self, payload: &DataPayload);
-
-    /// Whether this page currently needs a data fetch.
-    fn needs_data(&self) -> bool;
-
-    /// Returns the active banner for this page, if any.
-    fn banner(&self) -> Option<&Banner> {
-        None
-    }
-
-    /// Dismiss any active banner on this page.
-    fn dismiss_banner(&mut self) {}
-
-    /// Tick the banner timer, auto-dismissing expired banners.
-    fn tick_banner(&mut self) {}
-
-    /// Returns the active status message for this page, if any.
-    fn status(&self) -> Option<&StatusMessage> {
-        None
-    }
-
-    /// Dismiss the active status message on this page.
-    fn dismiss_status(&mut self) {}
-
-    /// Set the status message to the given text (for intermediate progress updates).
-    fn set_status(&mut self, _text: String) {}
-
-    /// Clear the status message (called when the async action completes).
-    fn clear_status(&mut self) {}
-
-    /// Mark this page's data as stale so the next tick triggers a re-fetch.
-    fn mark_stale(&mut self);
 }

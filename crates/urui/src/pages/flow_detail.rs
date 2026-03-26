@@ -9,9 +9,51 @@ use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::context::TuiContext;
+use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
 use crate::page::FooterCommand;
+use crate::screen::{Screen, ScreenResult};
 use crate::widgets::ThemedTable;
+
+/// Screen showing the full detail view for a single workflow.
+///
+/// Pushed onto the Flows tab stack when the user selects a workflow in
+/// `FlowsListScreen`. Pressing Back/Escape pops back to the list.
+pub struct FlowDetailScreen {
+    workflow: WorkflowInfo,
+}
+
+impl FlowDetailScreen {
+    pub fn new(workflow: WorkflowInfo) -> Self {
+        Self { workflow }
+    }
+}
+
+impl Screen for FlowDetailScreen {
+    fn handle_action(&mut self, action: Action) -> ScreenResult {
+        match action {
+            Action::Back => ScreenResult::Pop,
+            Action::Quit => ScreenResult::Quit,
+            _ => ScreenResult::Consumed,
+        }
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+        render_flow_detail(&self.workflow, area, buf, ctx);
+    }
+
+    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        detail_footer_commands(keymap)
+    }
+
+    fn on_data(&mut self, _payload: &DataPayload) {}
+
+    fn needs_data(&self) -> bool {
+        false
+    }
+
+    fn mark_stale(&mut self) {}
+}
 
 /// Render the full detail view for a single workflow.
 pub fn render_flow_detail(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {

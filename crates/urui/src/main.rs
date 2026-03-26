@@ -11,6 +11,7 @@ mod keymap;
 mod notifications;
 mod page;
 mod pages;
+mod screen;
 mod terminal;
 mod theme;
 mod throttle;

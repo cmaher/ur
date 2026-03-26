@@ -10,7 +10,8 @@ Standalone TUI binary for the Ur coordination framework. Connects to `ur-server`
 - `event.rs` — `EventManager` and `AppEvent` enum (key, tick, data-ready, resize)
 - `theme.rs` — `Theme` struct with ratatui `Color` fields, built-in theme loading from build.rs
 - `keymap.rs` — `Action` enum and key-to-action resolution from config
-- `page.rs` — `Page` trait, `TabId`, `PageResult`, `FooterCommand`
+- `page.rs` — `TabId`, `FooterCommand`, `Banner`, `BannerVariant`, `StatusMessage`
+- `screen.rs` — `Screen` trait, `ScreenResult` enum
 - `data.rs` — `DataPayload` and async gRPC data-fetching helpers
 - `pages/` — Individual page implementations (tickets, flows, etc.)
 - `widgets/` — Reusable ratatui widget components

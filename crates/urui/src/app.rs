@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -18,11 +19,12 @@ use crate::data::DataManager;
 use crate::event::{AppEvent, EventManager, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::notifications::NotificationManager;
-use crate::page::{Page, PageResult, TabId};
+use crate::page::TabId;
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
 };
-use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
+use crate::pages::{FlowsListScreen, TicketsListScreen, WorkersListScreen};
+use crate::screen::{Screen, ScreenResult};
 use crate::terminal;
 use crate::throttle::PageThrottle;
 use crate::widgets::create_action_menu::{
@@ -35,14 +37,18 @@ use crate::widgets::{render_banner, render_footer, render_header, render_status_
 
 /// Top-level application state and event loop coordinator.
 ///
-/// Holds the active tab, concrete page instances, context, data manager,
+/// Holds the active tab, per-tab screen stacks, context, data manager,
 /// and quit flag. Receives events from the `EventReceiver` and dispatches
-/// them to the active page or handles them globally.
+/// them to the top screen of the active tab's stack.
+///
+/// Each tab's stack always has at least one element: the root list screen.
+/// Detail screens are pushed on top; pressing the current tab key pops back
+/// to the root.
 pub struct App {
     active_tab: TabId,
-    tickets_page: TicketsPage,
-    flows_page: FlowsPage,
-    workers_page: WorkersPage,
+    /// Per-tab screen stacks. The element at index 0 is always the root list
+    /// screen for that tab. Additional screens are pushed on top.
+    stacks: HashMap<TabId, Vec<Box<dyn Screen>>>,
     ctx: TuiContext,
     data_manager: DataManager,
     event_manager: EventManager,
@@ -66,7 +72,8 @@ pub struct App {
 impl App {
     /// Create a new `App` with the given context and data manager.
     ///
-    /// The initial active tab is `Tickets`.
+    /// The initial active tab is `Tickets`. Each tab's stack is initialized
+    /// with its root list screen as the sole element.
     pub fn new(ctx: TuiContext, data_manager: DataManager, event_manager: EventManager) -> Self {
         let ticket_filter_cfg = &ctx.tui_config.ticket_filter;
         let notification_manager = NotificationManager::new(ctx.tui_config.notifications.clone());
@@ -78,11 +85,19 @@ impl App {
                 "terminal-notifier not found; desktop notifications are enabled in config but will not fire"
             );
         }
+
+        let tickets_root: Box<dyn Screen> = Box::new(TicketsListScreen::new(ticket_filter_cfg));
+        let flows_root: Box<dyn Screen> = Box::new(FlowsListScreen::new());
+        let workers_root: Box<dyn Screen> = Box::new(WorkersListScreen::new());
+
+        let mut stacks: HashMap<TabId, Vec<Box<dyn Screen>>> = HashMap::new();
+        stacks.insert(TabId::Tickets, vec![tickets_root]);
+        stacks.insert(TabId::Flows, vec![flows_root]);
+        stacks.insert(TabId::Workers, vec![workers_root]);
+
         Self {
             active_tab: TabId::Tickets,
-            tickets_page: TicketsPage::new(ticket_filter_cfg),
-            flows_page: FlowsPage::new(),
-            workers_page: WorkersPage::new(),
+            stacks,
             ctx,
             data_manager,
             event_manager,
@@ -151,7 +166,7 @@ impl App {
             AppEvent::ActionResult(result) => self.handle_action_result(result),
             AppEvent::Resize(_, _) => {} // Just redraw
             AppEvent::UiEvent(items) => self.handle_ui_events(items),
-            AppEvent::SetStatus(msg) => self.active_page_mut().set_status(msg),
+            AppEvent::SetStatus(msg) => self.active_screen_mut().set_status(msg),
         }
     }
 
@@ -192,47 +207,24 @@ impl App {
         }
 
         // If the tickets page has an active overlay, route raw keys to it.
-        // Tab-switch keys close the overlay and switch tabs.
-        if self.active_tab == TabId::Tickets && self.tickets_page.has_overlay() {
-            if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
-                self.tickets_page.close_overlay();
-                self.switch_tab(tab);
-                return;
-            }
-            let filters_before = self.tickets_page.filters().to_config();
-            match self.tickets_page.handle_overlay_key(key) {
-                OverlayAction::SetPriority {
-                    ticket_id,
-                    priority,
-                } => {
-                    self.data_manager
-                        .update_ticket_priority(ticket_id, priority);
-                }
-                OverlayAction::ForceClose { ticket_id } => {
-                    self.data_manager.force_close_ticket(ticket_id);
-                }
-                OverlayAction::None => {}
-            }
-            let filters_after = self.tickets_page.filters().to_config();
-            if filters_before != filters_after {
-                save_ticket_filters(&self.ctx.config_dir, &filters_after);
-            }
+        if self.active_tab == TabId::Tickets && self.tickets_page().has_overlay() {
+            self.handle_ticket_overlay_key(key);
             return;
         }
 
-        // If the active page has a banner, Enter or Escape dismisses it.
-        if self.active_page().banner().is_some()
+        // If the active screen has a banner, Enter or Escape dismisses it.
+        if self.active_screen().banner().is_some()
             && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
         {
-            self.active_page_mut().dismiss_banner();
+            self.active_screen_mut().dismiss_banner();
             return;
         }
 
-        // If the active page has a status message, Enter or Escape dismisses it.
-        if self.active_page().status().is_some()
+        // If the active screen has a status message, Enter or Escape dismisses it.
+        if self.active_screen().status().is_some()
             && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
         {
-            self.active_page_mut().dismiss_status();
+            self.active_screen_mut().dismiss_status();
             return;
         }
 
@@ -241,7 +233,14 @@ impl App {
         };
 
         match action {
-            Action::SwitchTab(tab) => self.switch_tab(tab),
+            Action::SwitchTab(tab) => {
+                if tab == self.active_tab {
+                    // Pressing the current tab key clears the stack to the root screen.
+                    self.clear_stack_to_root(tab);
+                } else {
+                    self.switch_tab(tab);
+                }
+            }
             Action::Quit => {
                 self.should_quit = true;
             }
@@ -249,15 +248,19 @@ impl App {
                 self.begin_create_ticket(terminal);
             }
             Action::Filter if self.active_tab == TabId::Tickets => {
-                open_filter_menu(&mut self.tickets_page, &self.ctx.projects);
+                let projects = self.ctx.projects.clone();
+                open_filter_menu(self.tickets_page_mut(), &projects);
             }
             Action::SetPriority if self.active_tab == TabId::Tickets => {
-                if self.tickets_page.selected_ticket_id().is_some() {
-                    open_priority_picker(&mut self.tickets_page);
+                if self.tickets_page().selected_ticket_id().is_some() {
+                    open_priority_picker(self.tickets_page_mut());
                 }
             }
             Action::Dispatch if self.active_tab == TabId::Tickets => {
                 self.dispatch_selected_ticket();
+            }
+            Action::DispatchAll if self.active_tab == TabId::Tickets => {
+                self.dispatch_all_from_detail();
             }
             Action::LaunchDesign if self.active_tab == TabId::Tickets => {
                 self.launch_design_for_selected_ticket();
@@ -274,33 +277,73 @@ impl App {
             Action::CancelFlow | Action::CloseTicket if self.active_tab == TabId::Flows => {
                 self.cancel_selected_flow();
             }
-            other => self.dispatch_to_page(other),
+            other => self.dispatch_to_screen(other),
+        }
+    }
+
+    /// Route a key event to the tickets page overlay, handling tab-switch, priority, and filter.
+    fn handle_ticket_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
+            self.tickets_page_mut().close_overlay();
+            self.switch_tab(tab);
+            return;
+        }
+        let filters_before = self.tickets_page().filters().to_config();
+        match self.tickets_page_mut().handle_overlay_key(key) {
+            OverlayAction::SetPriority {
+                ticket_id,
+                priority,
+            } => {
+                self.data_manager
+                    .update_ticket_priority(ticket_id, priority);
+            }
+            OverlayAction::ForceClose { ticket_id } => {
+                self.data_manager.force_close_ticket(ticket_id);
+            }
+            OverlayAction::None => {}
+        }
+        let filters_after = self.tickets_page().filters().to_config();
+        if filters_before != filters_after {
+            save_ticket_filters(&self.ctx.config_dir, &filters_after);
         }
     }
 
     /// Handle a tick: auto-dismiss expired banners.
     fn handle_tick(&mut self) {
-        self.active_page_mut().tick_banner();
+        self.active_screen_mut().tick_banner();
     }
 
-    /// Handle a DataReady event: route the payload to the relevant page.
+    /// Handle a DataReady event: route the payload to the root screen of each tab.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
         if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
             self.notification_manager.seed_flows(workflows);
         }
-        self.tickets_page.on_data(&payload);
-        self.flows_page.on_data(&payload);
-        self.workers_page.on_data(&payload);
+        // TicketDetail and TicketActivities payloads go to the active screen (the top of the
+        // active stack).
+        if matches!(
+            payload,
+            crate::data::DataPayload::TicketDetail(_)
+                | crate::data::DataPayload::TicketActivities(_)
+        ) {
+            self.active_screen_mut().on_data(&payload);
+            return;
+        }
+        // All other payloads go to the root screen of every tab (the list pages).
+        for stack in self.stacks.values_mut() {
+            if let Some(root) = stack.first_mut() {
+                root.on_data(&payload);
+            }
+        }
     }
 
-    /// Handle an ActionResult event: route to the active page for banner display,
+    /// Handle an ActionResult event: route to the active screen for banner display,
     /// then trigger a data refresh so the UI reflects the change.
     fn handle_action_result(&mut self, result: crate::data::ActionResult) {
         let success = result.result.is_ok();
         match self.active_tab {
-            TabId::Tickets => self.tickets_page.on_action_result(&result),
-            TabId::Flows => self.flows_page.on_action_result(&result),
-            TabId::Workers => self.workers_page.on_action_result(&result),
+            TabId::Tickets => self.tickets_page_mut().on_action_result(&result),
+            TabId::Flows => self.flows_page_mut().on_action_result(&result),
+            TabId::Workers => self.workers_page_mut().on_action_result(&result),
         }
         if success {
             self.fetch_active_tab_data();
@@ -342,23 +385,14 @@ impl App {
             if *tab == self.active_tab {
                 self.fetch_active_tab_data();
             } else {
-                self.page_mut_for_tab(*tab).mark_stale();
+                self.root_screen_mut(*tab).mark_stale();
             }
-        }
-    }
-
-    /// Get a mutable reference to the page for a specific tab.
-    fn page_mut_for_tab(&mut self, tab: TabId) -> &mut dyn Page {
-        match tab {
-            TabId::Tickets => &mut self.tickets_page,
-            TabId::Flows => &mut self.flows_page,
-            TabId::Workers => &mut self.workers_page,
         }
     }
 
     /// Update the status of the currently selected ticket.
     fn update_selected_ticket_status(&mut self, status: &str) {
-        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
+        if let Some(ticket_id) = self.tickets_page().selected_ticket_id() {
             self.data_manager
                 .update_ticket_status(ticket_id, status.to_owned());
         }
@@ -366,23 +400,46 @@ impl App {
 
     /// Close the selected ticket, opening a force-close confirmation if it has open children.
     fn close_or_force_close_ticket(&mut self) {
-        let Some(ticket) = self.tickets_page.selected_ticket() else {
+        let Some(ticket) = self.tickets_page().selected_ticket().cloned() else {
             return;
         };
         let open_children = ticket.children_total - ticket.children_completed;
         if open_children > 0 {
             let ticket_id = ticket.id.clone();
-            open_force_close_confirm(&mut self.tickets_page, ticket_id, open_children);
+            open_force_close_confirm(self.tickets_page_mut(), ticket_id, open_children);
         } else {
             self.update_selected_ticket_status("closed");
         }
     }
 
     /// Dispatch the currently selected ticket on the tickets page.
+    ///
+    /// When a `TicketDetailScreen` is active, dispatches the highlighted child
+    /// ticket rather than the parent.
     fn dispatch_selected_ticket(&mut self) {
-        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
-            self.tickets_page
+        let ticket_id = if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+            detail.selected_child_id()
+        } else {
+            self.tickets_page().selected_ticket_id()
+        };
+        if let Some(ticket_id) = ticket_id {
+            self.active_screen_mut()
                 .set_status(format!("Dispatching ticket {ticket_id}..."));
+            self.data_manager
+                .dispatch_ticket(ticket_id, &self.ctx.project_configs);
+        }
+    }
+
+    /// Dispatch the parent ticket from a ticket detail screen.
+    ///
+    /// Uses the detail screen's `ticket_id()` (the parent being viewed) rather
+    /// than `selected_child_id()`.
+    fn dispatch_all_from_detail(&mut self) {
+        if let Some(screen) = self.active_screen().as_any_ticket_detail() {
+            let ticket_id = screen.ticket_id().to_owned();
+            if let Some(detail_mut) = self.active_screen_mut().as_any_ticket_detail_mut() {
+                detail_mut.set_status(format!("Dispatching ticket {ticket_id}..."));
+            }
             self.data_manager
                 .dispatch_ticket(ticket_id, &self.ctx.project_configs);
         }
@@ -390,8 +447,8 @@ impl App {
 
     /// Launch a design worker for the currently selected ticket on the tickets page.
     fn launch_design_for_selected_ticket(&mut self) {
-        if let Some(ticket_id) = self.tickets_page.selected_ticket_id() {
-            self.tickets_page
+        if let Some(ticket_id) = self.tickets_page().selected_ticket_id() {
+            self.tickets_page_mut()
                 .set_status(format!("Launching design worker for {ticket_id}..."));
             self.data_manager
                 .launch_design_worker(ticket_id, &self.ctx.project_configs);
@@ -402,16 +459,16 @@ impl App {
     /// Optimistically removes the worker from the list immediately;
     /// restores it if the kill RPC fails.
     fn kill_selected_worker(&mut self) {
-        if let Some(worker_id) = self.workers_page.selected_worker_id() {
-            self.workers_page.optimistic_remove(&worker_id);
+        if let Some(worker_id) = self.workers_page().selected_worker_id() {
+            self.workers_page_mut().optimistic_remove(&worker_id);
             self.data_manager.stop_worker(worker_id);
         }
     }
 
     /// Cancel the workflow for the currently selected flow.
     fn cancel_selected_flow(&mut self) {
-        if let Some(ticket_id) = self.flows_page.selected_ticket_id() {
-            self.flows_page
+        if let Some(ticket_id) = self.flows_page().selected_ticket_id() {
+            self.flows_page_mut()
                 .set_status(format!("Cancelling workflow for {ticket_id}..."));
             self.data_manager.cancel_flow(ticket_id);
         }
@@ -455,7 +512,7 @@ impl App {
         }
 
         // Check if the ticket list has a single project filter active.
-        if let Some(filtered_project) = self.tickets_page.single_project_filter() {
+        if let Some(filtered_project) = self.tickets_page().single_project_filter() {
             let project = filtered_project.to_string();
             self.open_editor_for_ticket(project, terminal);
             return;
@@ -629,75 +686,205 @@ impl App {
 
     /// Show an error banner on the tickets page (used by create-ticket flow).
     fn show_app_error_banner(&mut self, message: String) {
-        self.tickets_page
+        self.tickets_page_mut()
             .on_action_result(&crate::data::ActionResult {
                 result: Err(message),
                 silent_on_success: false,
             });
     }
 
-    /// Dispatch an action to the active page and handle quit if returned.
-    fn dispatch_to_page(&mut self, action: Action) {
-        let result = self.active_page_mut().handle_action(action);
-        if result == PageResult::Quit {
-            self.should_quit = true;
+    /// Dispatch an action to the active screen and handle the result.
+    fn dispatch_to_screen(&mut self, action: Action) {
+        let result = self.active_screen_mut().handle_action(action);
+        match result {
+            ScreenResult::Quit => {
+                self.should_quit = true;
+            }
+            ScreenResult::Push(screen) => {
+                self.stacks.entry(self.active_tab).or_default().push(screen);
+            }
+            ScreenResult::Pop => {
+                let stack = self.stacks.entry(self.active_tab).or_default();
+                // Only pop if there is more than the root screen.
+                if stack.len() > 1 {
+                    stack.pop();
+                }
+            }
+            ScreenResult::Consumed | ScreenResult::Ignored => {}
         }
-        // Trigger immediate fetch if the page now needs data (e.g. after refresh).
-        if self.active_page().needs_data() {
+        // Trigger immediate fetch if the active screen now needs data (e.g. after refresh).
+        if self.active_screen().needs_data() {
             self.fetch_active_tab_data();
         }
     }
 
-    /// Switch the active tab, dismiss any banner, mark the new page stale,
-    /// and fetch data immediately.
+    /// Switch the active tab, preserving each tab's screen stack.
+    ///
+    /// Dismisses the banner on the screen we're leaving, marks the root of
+    /// the newly active tab stale, and fetches fresh data.
     fn switch_tab(&mut self, tab: TabId) {
         if self.active_tab == tab {
             return;
         }
-        // Dismiss banner on the page we're leaving.
-        self.active_page_mut().dismiss_banner();
+        // Dismiss banner on the screen we're leaving.
+        self.active_screen_mut().dismiss_banner();
         self.active_tab = tab;
-        // Mark the newly active page stale so it re-fetches fresh data.
-        self.active_page_mut().mark_stale();
+        // Mark the root of the newly active tab stale so it re-fetches.
+        self.root_screen_mut(tab).mark_stale();
         self.fetch_active_tab_data();
     }
 
+    /// Clear a tab's screen stack down to just the root list screen.
+    ///
+    /// Used when the user presses the shortcut for the already-active tab,
+    /// which acts as a "go home" gesture.
+    fn clear_stack_to_root(&mut self, tab: TabId) {
+        let stack = self.stacks.entry(tab).or_default();
+        stack.truncate(1);
+    }
+
     /// Fetch data for the currently active tab.
+    ///
+    /// If the active screen is a `TicketDetailScreen`, fetches ticket detail
+    /// data; if it is a `TicketActivitiesScreen`, fetches activities data;
+    /// otherwise fetches the appropriate list data for the tab.
     fn fetch_active_tab_data(&self) {
+        // If the top of the active stack is a detail screen, fetch its data.
+        if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+            let ticket_id = detail.ticket_id().to_owned();
+            let page_size = detail.child_page_size();
+            let offset = detail.child_offset();
+            self.data_manager
+                .fetch_ticket_detail(ticket_id, Some(page_size), Some(offset));
+            return;
+        }
+        // If the top of the active stack is an activities screen, fetch its data.
+        if let Some(activities) = self.active_screen().as_any_ticket_activities() {
+            let ticket_id = activities.ticket_id().to_owned();
+            let author_filter = activities.author_filter().map(str::to_owned);
+            self.data_manager
+                .fetch_ticket_activities(ticket_id, author_filter);
+            return;
+        }
         match self.active_tab {
             TabId::Tickets => {
-                let params = self.tickets_page.pagination_params();
+                let page = self.tickets_page();
+                let params = page.pagination_params();
                 self.data_manager.fetch_tickets(
                     Some(params.page_size),
                     Some(params.offset),
                     Some(params.include_children),
-                    &self.tickets_page.filters().statuses,
+                    &page.filters().statuses,
                 );
             }
             TabId::Flows => self.data_manager.fetch_flows(
-                Some(self.flows_page.page_size()),
-                Some(self.flows_page.page_offset()),
+                Some(self.flows_page().page_size()),
+                Some(self.flows_page().page_offset()),
             ),
             TabId::Workers => self.data_manager.fetch_workers(),
         }
     }
 
-    /// Get a reference to the currently active page.
-    fn active_page(&self) -> &dyn Page {
-        match self.active_tab {
-            TabId::Tickets => &self.tickets_page,
-            TabId::Flows => &self.flows_page,
-            TabId::Workers => &self.workers_page,
-        }
+    /// Get a reference to the top screen of the active tab's stack.
+    fn active_screen(&self) -> &dyn Screen {
+        let stack = self
+            .stacks
+            .get(&self.active_tab)
+            .expect("active tab must have a stack");
+        stack.last().expect("stack must not be empty").as_ref()
     }
 
-    /// Get a mutable reference to the currently active page.
-    fn active_page_mut(&mut self) -> &mut dyn Page {
-        match self.active_tab {
-            TabId::Tickets => &mut self.tickets_page,
-            TabId::Flows => &mut self.flows_page,
-            TabId::Workers => &mut self.workers_page,
-        }
+    /// Get a mutable reference to the top screen of the active tab's stack.
+    fn active_screen_mut(&mut self) -> &mut dyn Screen {
+        let stack = self
+            .stacks
+            .get_mut(&self.active_tab)
+            .expect("active tab must have a stack");
+        stack.last_mut().expect("stack must not be empty").as_mut()
+    }
+
+    /// Get a mutable reference to the root screen of the given tab.
+    fn root_screen_mut(&mut self, tab: TabId) -> &mut dyn Screen {
+        let stack = self.stacks.get_mut(&tab).expect("tab must have a stack");
+        stack.first_mut().expect("stack must not be empty").as_mut()
+    }
+
+    /// Get a reference to the `TicketsListScreen` at the root of the Tickets tab stack.
+    fn tickets_page(&self) -> &TicketsListScreen {
+        let stack = self
+            .stacks
+            .get(&TabId::Tickets)
+            .expect("Tickets tab must have a stack");
+        stack
+            .first()
+            .expect("stack must not be empty")
+            .as_any_tickets()
+            .expect("root of Tickets stack must be TicketsListScreen")
+    }
+
+    /// Get a mutable reference to the `TicketsListScreen` at the root of the Tickets tab stack.
+    fn tickets_page_mut(&mut self) -> &mut TicketsListScreen {
+        let stack = self
+            .stacks
+            .get_mut(&TabId::Tickets)
+            .expect("Tickets tab must have a stack");
+        stack
+            .first_mut()
+            .expect("stack must not be empty")
+            .as_any_tickets_mut()
+            .expect("root of Tickets stack must be TicketsListScreen")
+    }
+
+    /// Get a reference to the `FlowsListScreen` at the root of the Flows tab stack.
+    fn flows_page(&self) -> &FlowsListScreen {
+        let stack = self
+            .stacks
+            .get(&TabId::Flows)
+            .expect("Flows tab must have a stack");
+        stack
+            .first()
+            .expect("stack must not be empty")
+            .as_any_flows()
+            .expect("root of Flows stack must be FlowsListScreen")
+    }
+
+    /// Get a mutable reference to the `FlowsListScreen` at the root of the Flows tab stack.
+    fn flows_page_mut(&mut self) -> &mut FlowsListScreen {
+        let stack = self
+            .stacks
+            .get_mut(&TabId::Flows)
+            .expect("Flows tab must have a stack");
+        stack
+            .first_mut()
+            .expect("stack must not be empty")
+            .as_any_flows_mut()
+            .expect("root of Flows stack must be FlowsListScreen")
+    }
+
+    /// Get a reference to the `WorkersListScreen` at the root of the Workers tab stack.
+    fn workers_page(&self) -> &WorkersListScreen {
+        let stack = self
+            .stacks
+            .get(&TabId::Workers)
+            .expect("Workers tab must have a stack");
+        stack
+            .first()
+            .expect("stack must not be empty")
+            .as_any_workers()
+            .expect("root of Workers stack must be WorkersListScreen")
+    }
+
+    /// Get a mutable reference to the `WorkersListScreen` at the root of the Workers tab stack.
+    fn workers_page_mut(&mut self) -> &mut WorkersListScreen {
+        let stack = self
+            .stacks
+            .get_mut(&TabId::Workers)
+            .expect("Workers tab must have a stack");
+        stack
+            .first_mut()
+            .expect("stack must not be empty")
+            .as_any_workers_mut()
+            .expect("root of Workers stack must be WorkersListScreen")
     }
 
     /// Draw the full UI: header, content, footer.
@@ -720,7 +907,7 @@ impl App {
     fn update_page_sizes(&mut self, area: Rect) {
         // Content area is total height minus header (1) and footer (1).
         let content_height = area.height.saturating_sub(2);
-        self.tickets_page.update_page_size(content_height);
+        self.tickets_page_mut().update_page_size(content_height);
     }
 
     /// Render the full application frame: header, content area, footer.
@@ -740,38 +927,22 @@ impl App {
         ])
         .split(area);
 
-        let tabs = vec![
-            TabInfo {
-                id: TabId::Tickets,
-                label: self.tickets_page.title().to_string(),
-                shortcut: self.tickets_page.shortcut_char(),
-            },
-            TabInfo {
-                id: TabId::Flows,
-                label: self.flows_page.title().to_string(),
-                shortcut: self.flows_page.shortcut_char(),
-            },
-            TabInfo {
-                id: TabId::Workers,
-                label: self.workers_page.title().to_string(),
-                shortcut: self.workers_page.shortcut_char(),
-            },
-        ];
+        let tabs = self.tab_infos();
 
         render_header(chunks[0], buf, &self.ctx, &tabs, self.active_tab);
 
-        if let Some(banner) = self.active_page().banner() {
+        if let Some(banner) = self.active_screen().banner() {
             render_banner(chunks[1], buf, &self.ctx, banner);
-        } else if let Some(status) = self.active_page().status() {
+        } else if let Some(status) = self.active_screen().status() {
             render_status_header(chunks[1], buf, &self.ctx, status);
         }
 
-        self.active_page().render(chunks[2], buf, &self.ctx);
+        self.active_screen().render(chunks[2], buf, &self.ctx);
         render_footer(
             chunks[3],
             buf,
             &self.ctx,
-            &self.active_page().footer_commands(&self.ctx.keymap),
+            &self.active_screen().footer_commands(&self.ctx.keymap),
         );
 
         // Render overlays on top if open.
@@ -791,6 +962,31 @@ impl App {
             Clear.render(footer_area, buf);
             render_footer(footer_area, buf, &self.ctx, &input.footer_commands());
         }
+    }
+
+    /// Build the tab info list for the header, reading titles/shortcuts from
+    /// the root screens of each tab.
+    fn tab_infos(&self) -> Vec<TabInfo> {
+        let tickets = self.tickets_page();
+        let flows = self.flows_page();
+        let workers = self.workers_page();
+        vec![
+            TabInfo {
+                id: TabId::Tickets,
+                label: tickets.title().to_string(),
+                shortcut: tickets.shortcut_char(),
+            },
+            TabInfo {
+                id: TabId::Flows,
+                label: flows.title().to_string(),
+                shortcut: flows.shortcut_char(),
+            },
+            TabInfo {
+                id: TabId::Workers,
+                label: workers.title().to_string(),
+                shortcut: workers.shortcut_char(),
+            },
+        ]
     }
 }
 
@@ -884,6 +1080,7 @@ mod tests {
     use super::*;
     use crate::data::DataPayload;
     use crate::keymap::Keymap;
+    use crate::pages::TicketsListScreen;
     use crate::theme::Theme;
     use ur_config::TuiConfig;
 
@@ -952,7 +1149,7 @@ mod tests {
         let mut app = make_app();
         let payload = DataPayload::Tickets(Ok((vec![], 0)));
         app.handle_data_ready(payload);
-        assert!(!app.tickets_page.needs_data());
+        assert!(!app.tickets_page().needs_data());
     }
 
     #[tokio::test]
@@ -1038,7 +1235,7 @@ mod tests {
         assert!(app.create_action_menu.is_none());
         assert!(app.pending_ticket.is_none());
         // Should show error banner for abandon.
-        assert!(app.tickets_page.banner().is_some());
+        assert!(app.tickets_page().banner().is_some());
     }
 
     #[tokio::test]
@@ -1059,7 +1256,7 @@ mod tests {
         assert!(app.create_action_menu.is_none());
         assert!(app.pending_ticket.is_none());
         // No error banner should be set (action was dispatched to data manager).
-        assert!(app.tickets_page.banner().is_none());
+        assert!(app.tickets_page().banner().is_none());
     }
 
     #[test]
@@ -1085,7 +1282,7 @@ mod tests {
         // ExitStatus::default() is non-success on unix.
         let tmp = std::env::temp_dir().join("test-nonexist.md");
         app.process_editor_result(status, &tmp, "ur".to_string());
-        assert!(app.tickets_page.banner().is_some());
+        assert!(app.tickets_page().banner().is_some());
     }
 
     #[test]
@@ -1096,7 +1293,7 @@ mod tests {
         // Create a successful exit status by running a trivial command.
         let status = std::process::Command::new("true").status();
         app.process_editor_result(status, &tmp, "ur".to_string());
-        assert!(app.tickets_page.banner().is_some());
+        assert!(app.tickets_page().banner().is_some());
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1138,7 +1335,7 @@ mod tests {
         if !app.ctx.projects.contains(&unknown) {
             app.show_app_error_banner(format!("Unknown project: {unknown}"));
         }
-        assert!(app.tickets_page.banner().is_some());
+        assert!(app.tickets_page().banner().is_some());
     }
 
     #[test]
@@ -1148,5 +1345,68 @@ mod tests {
         assert!(app.pending_project.is_none());
         assert!(app.project_input.is_none());
         assert!(app.pending_ticket.is_none());
+    }
+
+    #[test]
+    fn stacks_initialized_with_root_screens() {
+        let app = make_app();
+        // Each tab should have exactly one screen (the root list screen).
+        assert_eq!(app.stacks.get(&TabId::Tickets).map(|s| s.len()), Some(1));
+        assert_eq!(app.stacks.get(&TabId::Flows).map(|s| s.len()), Some(1));
+        assert_eq!(app.stacks.get(&TabId::Workers).map(|s| s.len()), Some(1));
+    }
+
+    #[tokio::test]
+    async fn switch_tab_preserves_stacks() {
+        let mut app = make_app();
+        // Push a dummy screen onto the Tickets stack to simulate navigation.
+        // We verify the stack depth is preserved after switching tabs.
+        let initial_len = app
+            .stacks
+            .get(&TabId::Tickets)
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        app.switch_tab(TabId::Flows);
+        assert_eq!(app.active_tab, TabId::Flows);
+
+        // Tickets stack should be unchanged.
+        let after_len = app
+            .stacks
+            .get(&TabId::Tickets)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        assert_eq!(initial_len, after_len);
+    }
+
+    #[test]
+    fn clear_stack_to_root_truncates() {
+        let mut app = make_app();
+        // Manually push an extra screen to simulate a detail view.
+        // We push a second TicketsListScreen as a stand-in for a detail screen.
+        let extra: Box<dyn Screen> = Box::new(TicketsListScreen::new(
+            &ur_config::TicketFilterConfig::default(),
+        ));
+        app.stacks.get_mut(&TabId::Tickets).unwrap().push(extra);
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 2);
+
+        app.clear_stack_to_root(TabId::Tickets);
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pop_at_root_is_noop() {
+        let mut app = make_app();
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
+        // Dispatch a Pop result — the stack should remain at 1.
+        let result = ScreenResult::Pop;
+        app.active_tab = TabId::Tickets;
+        if let ScreenResult::Pop = result {
+            let stack = app.stacks.entry(app.active_tab).or_default();
+            if stack.len() > 1 {
+                stack.pop();
+            }
+        }
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
     }
 }

@@ -18,6 +18,7 @@ toml_edit = "0.22"
 tonic = { workspace = true }
 tracing = { workspace = true }
 ur_config = { path = "../ur_config" }
+ur_markdown = { path = "../ur_markdown" }
 ur_rpc = { path = "../ur_rpc", features = ["retry"] }
 
 [lints]
