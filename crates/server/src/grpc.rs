@@ -1048,7 +1048,7 @@ async fn send_transition(
 /// Wait for a design worker to become idle, then send `/design {ticket_id}`.
 ///
 /// Polls the worker's agent status at short intervals. Once idle, derives the
-/// workerd gRPC address and sends the design command via `SendWorkerMessage`.
+/// workerd gRPC address and sends the design command via the `Design` RPC.
 /// Times out after 60 seconds if the worker never becomes idle.
 async fn dispatch_design_on_ready(
     worker_repo: &WorkerRepo,
@@ -1094,9 +1094,9 @@ async fn dispatch_design_on_ready(
         worker_id.to_owned(),
     );
     workerd_client
-        .send_message(&format!("/design {process_id}"), true)
+        .design(process_id)
         .await
-        .map_err(|e| anyhow::anyhow!("workerd SendMessage failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("workerd Design RPC failed: {e}"))?;
 
     info!(process_id = %process_id, "/design command dispatched successfully");
     Ok(())

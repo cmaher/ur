@@ -2,7 +2,9 @@ use tracing::warn;
 use ur_db::WorkerRepo;
 use ur_db::model::AgentStatus;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
-use ur_rpc::proto::workerd::{AddressFeedbackRequest, ImplementRequest, SendMessageRequest};
+use ur_rpc::proto::workerd::{
+    AddressFeedbackRequest, DesignRequest, ImplementRequest, SendMessageRequest,
+};
 use ur_rpc::retry::{RetryChannel, RetryConfig};
 
 /// Thin client for sending messages to a workerd instance inside a worker container.
@@ -106,6 +108,23 @@ impl WorkerdClient {
             .implement(req)
             .await
             .map_err(|e| format!("workerd Implement failed: {e}"))?;
+
+        self.mark_working().await;
+        Ok(())
+    }
+
+    /// Fire-and-forget: send a /design skill invocation to the worker.
+    pub async fn design(&self, ticket_id: &str) -> Result<(), String> {
+        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+
+        let req = DesignRequest {
+            ticket_id: ticket_id.to_string(),
+        };
+
+        client
+            .design(req)
+            .await
+            .map_err(|e| format!("workerd Design failed: {e}"))?;
 
         self.mark_working().await;
         Ok(())
