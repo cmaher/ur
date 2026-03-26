@@ -9,9 +9,9 @@ use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    AddressFeedbackRequest, AddressFeedbackResponse, ImplementRequest, ImplementResponse,
-    NotifyIdleRequest, NotifyIdleResponse, SendMessageRequest, SendMessageResponse,
-    StepCompleteRequest, StepCompleteResponse,
+    AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
+    ImplementRequest, ImplementResponse, NotifyIdleRequest, NotifyIdleResponse, SendMessageRequest,
+    SendMessageResponse, StepCompleteRequest, StepCompleteResponse,
 };
 
 /// Buffer for dispatched commands that workerd drains on idle signals.
@@ -253,6 +253,31 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         }
 
         Ok(Response::new(ImplementResponse {}))
+    }
+
+    async fn design(
+        &self,
+        request: Request<DesignRequest>,
+    ) -> Result<Response<DesignResponse>, Status> {
+        let ticket_id = &request.into_inner().ticket_id;
+        let skill_command = format!("/design {ticket_id}");
+        info!(ticket_id, "Design received, loading dispatch buffer");
+
+        let mut buf = self.dispatch_buffer.lock().await;
+        buf.lifecycle_step = "designing".to_string();
+        buf.step_complete = false;
+        buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
+
+        // Pop the first command and send it immediately
+        let first_command = buf.commands.pop_front().expect("commands is non-empty");
+        drop(buf);
+
+        let session = tmux::Session::agent();
+        if let Err(e) = session.send_keys(&first_command).await {
+            error!(error = %e, "tmux send-keys failed for first buffered command");
+        }
+
+        Ok(Response::new(DesignResponse {}))
     }
 
     async fn address_feedback_tickets(
