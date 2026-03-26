@@ -301,11 +301,11 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::LaunchDesign,
     );
 
-    // open_activities = [A]
+    // open_activities = [a]
     bindings.insert(
         KeyBinding {
-            code: KeyCode::Char('A'),
-            modifiers: KeyModifiers::SHIFT,
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::NONE,
         },
         Action::OpenActivities,
     );
@@ -321,7 +321,7 @@ fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Act
         ('O', KeyModifiers::SHIFT, Action::OpenTicket),
         ('C', KeyModifiers::SHIFT, Action::CreateTicket),
         ('S', KeyModifiers::SHIFT, Action::LaunchDesign),
-        ('A', KeyModifiers::SHIFT, Action::OpenActivities),
+        ('a', KeyModifiers::NONE, Action::OpenActivities),
     ] {
         bindings.insert(
             KeyBinding {

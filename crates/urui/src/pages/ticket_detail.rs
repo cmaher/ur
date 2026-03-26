@@ -519,7 +519,7 @@ impl Screen for TicketDetailScreen {
             }
             // b → push TicketBodyScreen with the loaded ticket's body.
             Action::OpenTicket => self.push_body_screen(),
-            // A → push TicketActivitiesScreen.
+            // a → push TicketActivitiesScreen.
             Action::OpenActivities => self.push_activities_screen(),
             // Space → drill down into selected child
             Action::Select => {
