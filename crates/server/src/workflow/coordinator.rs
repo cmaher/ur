@@ -282,6 +282,25 @@ async fn run_handler(
         }
     }
 
+    // Sync ticket lifecycle to match workflow status. This fires a SQLite trigger
+    // that creates a workflow_event, so we immediately delete it to prevent the
+    // engine from re-dispatching a transition we're already handling.
+    let update = ur_db::model::TicketUpdate {
+        lifecycle_status: Some(target_status),
+        ..Default::default()
+    };
+    if let Err(e) = ctx.ticket_repo.update_ticket(ticket_id, &update).await {
+        warn!(
+            error = %e,
+            ticket_id = %ticket_id,
+            "failed to sync ticket lifecycle to workflow status"
+        );
+    }
+    let _ = ctx
+        .workflow_repo
+        .delete_workflow_events_for_ticket(ticket_id)
+        .await;
+
     // Emit a workflow event for this status transition.
     emit_workflow_event(&ctx, ticket_id, target_status).await;
 
