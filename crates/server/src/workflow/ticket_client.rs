@@ -185,6 +185,7 @@ mod tests {
             transition_tx: None,
             cancel_tx: None,
             ui_event_poller: None,
+            worker_manager: None,
         };
 
         let client = TicketClient::new(handler);

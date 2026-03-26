@@ -13,6 +13,9 @@ use ur_rpc::stream::CompletedExec;
 use ur_rpc::workflow_condition;
 use ur_rpc::workflow_event::WorkflowEvent;
 
+use crate::WorkerManager;
+use crate::worker::WorkerId;
+
 use super::TransitionRequest;
 use super::ticket_client::{self, TicketClient};
 
@@ -49,6 +52,7 @@ pub struct GithubPollerManager {
     scan_interval: Duration,
     transition_tx: mpsc::Sender<TransitionRequest>,
     ticket_client: TicketClient,
+    worker_manager: WorkerManager,
 }
 
 impl GithubPollerManager {
@@ -59,6 +63,7 @@ impl GithubPollerManager {
         scan_interval: Duration,
         transition_tx: mpsc::Sender<TransitionRequest>,
         ticket_client: TicketClient,
+        worker_manager: WorkerManager,
     ) -> Self {
         Self {
             ticket_repo,
@@ -67,6 +72,7 @@ impl GithubPollerManager {
             scan_interval,
             transition_tx,
             ticket_client,
+            worker_manager,
         }
     }
 
@@ -789,9 +795,23 @@ impl GithubPollerManager {
         }
     }
 
-    /// Cancel the workflow for a ticket and revert the ticket status to open.
-    /// Used when a PR is closed without merge.
+    /// Cancel the workflow for a ticket, kill the associated worker, and revert
+    /// the ticket status to open. Used when a PR is closed without merge.
     async fn cancel_workflow_and_revert(&self, ticket_id: &str) {
+        // Look up the workflow to get the worker_id before cancelling.
+        let worker_id = match self.workflow_repo.get_workflow_by_ticket(ticket_id).await {
+            Ok(Some(wf)) => wf.worker_id,
+            Ok(None) => String::new(),
+            Err(e) => {
+                error!(
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to look up workflow for worker kill"
+                );
+                String::new()
+            }
+        };
+
         if let Err(e) = self
             .workflow_repo
             .update_workflow_status(ticket_id, LifecycleStatus::Cancelled)
@@ -804,6 +824,28 @@ impl GithubPollerManager {
             );
             return;
         }
+
+        // Kill the worker associated with this workflow.
+        if !worker_id.is_empty() {
+            info!(
+                ticket_id = %ticket_id,
+                worker_id = %worker_id,
+                "killing worker for cancelled workflow (PR closed)"
+            );
+            if let Err(e) = self
+                .worker_manager
+                .stop_by_worker_id(&WorkerId(worker_id.clone()))
+                .await
+            {
+                warn!(
+                    ticket_id = %ticket_id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "failed to stop worker during workflow cancellation"
+                );
+            }
+        }
+
         let update = ur_db::model::TicketUpdate {
             status: Some("open".to_string()),
             ..Default::default()

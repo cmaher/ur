@@ -26,6 +26,8 @@ use ur_rpc::proto::ticket::{
 };
 
 use crate::UiEventPoller;
+use crate::WorkerManager;
+use crate::worker::WorkerId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
@@ -118,6 +120,9 @@ pub struct TicketServiceHandler {
     /// Optional UI event poller for streaming UI events to subscribers.
     /// None on the worker server.
     pub ui_event_poller: Option<UiEventPoller>,
+    /// Optional worker manager for killing workers when workflows are cancelled.
+    /// None on the worker server.
+    pub worker_manager: Option<WorkerManager>,
 }
 
 impl TicketServiceHandler {
@@ -198,8 +203,8 @@ impl TicketServiceHandler {
     }
 
     /// If the ticket has an active (non-terminal) workflow, cancel it: signal
-    /// the coordinator to abort the in-flight handler, delete intent rows, and
-    /// set the workflow status to `Cancelled`.
+    /// the coordinator to abort the in-flight handler, kill the associated
+    /// worker, delete intent rows, and set the workflow status to `Cancelled`.
     async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
         let workflow = self
             .workflow_repo
@@ -207,9 +212,10 @@ impl TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        if workflow.is_none() {
-            return Ok(());
-        }
+        let workflow = match workflow {
+            Some(wf) => wf,
+            None => return Ok(()),
+        };
 
         info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
 
@@ -224,6 +230,10 @@ impl TicketServiceHandler {
             );
         }
 
+        // Kill the worker associated with this workflow.
+        self.kill_workflow_worker(ticket_id, &workflow.worker_id)
+            .await;
+
         // Delete intents and mark workflow as cancelled.
         self.workflow_repo
             .delete_intents_for_ticket(ticket_id)
@@ -236,6 +246,28 @@ impl TicketServiceHandler {
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Kill the worker associated with a workflow, if one is assigned.
+    async fn kill_workflow_worker(&self, ticket_id: &str, worker_id: &str) {
+        if worker_id.is_empty() {
+            return;
+        }
+        let Some(ref worker_manager) = self.worker_manager else {
+            return;
+        };
+        info!(ticket_id = %ticket_id, worker_id = %worker_id, "killing worker for cancelled workflow");
+        if let Err(e) = worker_manager
+            .stop_by_worker_id(&WorkerId(worker_id.to_owned()))
+            .await
+        {
+            tracing::warn!(
+                ticket_id = %ticket_id,
+                worker_id = %worker_id,
+                error = %e,
+                "failed to stop worker during workflow cancellation"
+            );
+        }
     }
 
     /// Convert metadata query results to minimal proto tickets.
@@ -1209,6 +1241,7 @@ mod tests {
             transition_tx: None,
             cancel_tx: None,
             ui_event_poller: None,
+            worker_manager: None,
         };
         (tmp, handler)
     }
