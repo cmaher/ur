@@ -4,5 +4,5 @@ pub mod tickets;
 mod workers;
 
 pub use flows::FlowsPage;
-pub use tickets::TicketsPage;
+pub use tickets::TicketsListScreen;
 pub use workers::WorkersPage;

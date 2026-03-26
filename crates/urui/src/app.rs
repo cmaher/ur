@@ -23,10 +23,8 @@ use crate::page::{Page, TabId};
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
 };
-use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
-use crate::screen::{
-    FlowsScreenAdapter, Screen, ScreenResult, TicketsScreenAdapter, WorkersScreenAdapter,
-};
+use crate::pages::{FlowsPage, TicketsListScreen, WorkersPage};
+use crate::screen::{FlowsScreenAdapter, Screen, ScreenResult, WorkersScreenAdapter};
 use crate::terminal;
 use crate::throttle::PageThrottle;
 use crate::widgets::create_action_menu::{
@@ -88,9 +86,7 @@ impl App {
             );
         }
 
-        let tickets_root: Box<dyn Screen> = Box::new(TicketsScreenAdapter::new(TicketsPage::new(
-            ticket_filter_cfg,
-        )));
+        let tickets_root: Box<dyn Screen> = Box::new(TicketsListScreen::new(ticket_filter_cfg));
         let flows_root: Box<dyn Screen> = Box::new(FlowsScreenAdapter::new(FlowsPage::new()));
         let workers_root: Box<dyn Screen> = Box::new(WorkersScreenAdapter::new(WorkersPage::new()));
 
@@ -752,8 +748,8 @@ impl App {
         stack.first_mut().expect("stack must not be empty").as_mut()
     }
 
-    /// Get a reference to the `TicketsPage` at the root of the Tickets tab stack.
-    fn tickets_page(&self) -> &TicketsPage {
+    /// Get a reference to the `TicketsListScreen` at the root of the Tickets tab stack.
+    fn tickets_page(&self) -> &TicketsListScreen {
         let stack = self
             .stacks
             .get(&TabId::Tickets)
@@ -762,11 +758,11 @@ impl App {
             .first()
             .expect("stack must not be empty")
             .as_any_tickets()
-            .expect("root of Tickets stack must be TicketsPage")
+            .expect("root of Tickets stack must be TicketsListScreen")
     }
 
-    /// Get a mutable reference to the `TicketsPage` at the root of the Tickets tab stack.
-    fn tickets_page_mut(&mut self) -> &mut TicketsPage {
+    /// Get a mutable reference to the `TicketsListScreen` at the root of the Tickets tab stack.
+    fn tickets_page_mut(&mut self) -> &mut TicketsListScreen {
         let stack = self
             .stacks
             .get_mut(&TabId::Tickets)
@@ -775,7 +771,7 @@ impl App {
             .first_mut()
             .expect("stack must not be empty")
             .as_any_tickets_mut()
-            .expect("root of Tickets stack must be TicketsPage")
+            .expect("root of Tickets stack must be TicketsListScreen")
     }
 
     /// Get a reference to the `FlowsPage` at the root of the Flows tab stack.
@@ -1023,7 +1019,7 @@ mod tests {
     use super::*;
     use crate::data::DataPayload;
     use crate::keymap::Keymap;
-    use crate::screen::PageScreenAdapter;
+    use crate::pages::TicketsListScreen;
     use crate::theme::Theme;
     use ur_config::TuiConfig;
 
@@ -1326,11 +1322,10 @@ mod tests {
     fn clear_stack_to_root_truncates() {
         let mut app = make_app();
         // Manually push an extra screen to simulate a detail view.
-        // We can't easily construct a real detail screen here, so we push a
-        // PageScreenAdapter wrapping a TicketsPage as a stand-in.
-        let extra: Box<dyn Screen> = Box::new(PageScreenAdapter::new(TicketsPage::new(
+        // We push a second TicketsListScreen as a stand-in for a detail screen.
+        let extra: Box<dyn Screen> = Box::new(TicketsListScreen::new(
             &ur_config::TicketFilterConfig::default(),
-        )));
+        ));
         app.stacks.get_mut(&TabId::Tickets).unwrap().push(extra);
         assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 2);
 

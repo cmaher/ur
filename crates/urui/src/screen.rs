@@ -5,7 +5,7 @@ use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, FooterCommand, Page, PageResult, StatusMessage};
-use crate::pages::{FlowsPage, TicketsPage, WorkersPage};
+use crate::pages::{FlowsPage, TicketsListScreen, WorkersPage};
 
 /// Result of a screen handling an action.
 pub enum ScreenResult {
@@ -70,13 +70,13 @@ pub trait Screen: Send {
     /// Clear the status message (called when the async action completes).
     fn clear_status(&mut self) {}
 
-    /// Downcast to `TicketsPage` if this screen wraps one.
-    fn as_any_tickets(&self) -> Option<&TicketsPage> {
+    /// Downcast to `TicketsListScreen` if this is one.
+    fn as_any_tickets(&self) -> Option<&TicketsListScreen> {
         None
     }
 
-    /// Mutably downcast to `TicketsPage` if this screen wraps one.
-    fn as_any_tickets_mut(&mut self) -> Option<&mut TicketsPage> {
+    /// Mutably downcast to `TicketsListScreen` if this is one.
+    fn as_any_tickets_mut(&mut self) -> Option<&mut TicketsListScreen> {
         None
     }
 
@@ -98,86 +98,6 @@ pub trait Screen: Send {
     /// Mutably downcast to `WorkersPage` if this screen wraps one.
     fn as_any_workers_mut(&mut self) -> Option<&mut WorkersPage> {
         None
-    }
-}
-
-/// Root screen adapter for the Tickets tab.
-///
-/// Wraps `TicketsPage` and implements `Screen`, forwarding all calls to the
-/// inner page. Provides typed downcast via `as_any_tickets[_mut]`.
-pub struct TicketsScreenAdapter {
-    page: TicketsPage,
-}
-
-impl TicketsScreenAdapter {
-    pub fn new(page: TicketsPage) -> Self {
-        Self { page }
-    }
-}
-
-impl Screen for TicketsScreenAdapter {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match self.page.handle_action(action) {
-            PageResult::Consumed => ScreenResult::Consumed,
-            PageResult::Ignored => ScreenResult::Ignored,
-            PageResult::Quit => ScreenResult::Quit,
-        }
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        self.page.render(area, buf, ctx);
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        self.page.footer_commands(keymap)
-    }
-
-    fn on_data(&mut self, payload: &DataPayload) {
-        self.page.on_data(payload);
-    }
-
-    fn needs_data(&self) -> bool {
-        self.page.needs_data()
-    }
-
-    fn mark_stale(&mut self) {
-        self.page.mark_stale();
-    }
-
-    fn banner(&self) -> Option<&Banner> {
-        self.page.banner()
-    }
-
-    fn dismiss_banner(&mut self) {
-        self.page.dismiss_banner();
-    }
-
-    fn tick_banner(&mut self) {
-        self.page.tick_banner();
-    }
-
-    fn status(&self) -> Option<&StatusMessage> {
-        self.page.status()
-    }
-
-    fn dismiss_status(&mut self) {
-        self.page.dismiss_status();
-    }
-
-    fn set_status(&mut self, text: String) {
-        self.page.set_status(text);
-    }
-
-    fn clear_status(&mut self) {
-        self.page.clear_status();
-    }
-
-    fn as_any_tickets(&self) -> Option<&TicketsPage> {
-        Some(&self.page)
-    }
-
-    fn as_any_tickets_mut(&mut self) -> Option<&mut TicketsPage> {
-        Some(&mut self.page)
     }
 }
 
