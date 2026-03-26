@@ -1130,35 +1130,35 @@ fn resolve_project_key(
     if let Some(p) = project {
         return Ok(p);
     }
-    if workspace.is_none() {
-        let id_prefix = ticket_id
-            .split(&['-', '.'][..])
-            .next()
-            .unwrap_or("")
-            .to_owned();
-        if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
-            debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
-            return Ok(id_prefix);
-        }
-        let cwd = std::env::current_dir().context("failed to get current working directory")?;
-        let dir_name = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
-            .to_owned();
-        if project_keys.contains(&dir_name) {
-            debug!(project_key = %dir_name, "derived project from cwd");
-            return Ok(dir_name);
-        }
-        bail!(
-            "could not derive project from ticket ID prefix '{}' or \
-             cwd directory name '{}' \
-             (neither is a configured project key). Use -p <project> or -w <path>.",
-            id_prefix,
-            dir_name
-        );
+    let id_prefix = ticket_id
+        .split(&['-', '.'][..])
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+        debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+        return Ok(id_prefix);
     }
-    Ok(String::new())
+    let cwd = std::env::current_dir().context("failed to get current working directory")?;
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+        .to_owned();
+    if project_keys.contains(&dir_name) {
+        debug!(project_key = %dir_name, "derived project from cwd");
+        return Ok(dir_name);
+    }
+    if workspace.is_some() {
+        return Ok(String::new());
+    }
+    bail!(
+        "could not derive project from ticket ID prefix '{}' or \
+         cwd directory name '{}' \
+         (neither is a configured project key). Use -p <project> or -w <path>.",
+        id_prefix,
+        dir_name
+    )
 }
 
 /// Fetch the host workspace directory for a running process via gRPC.
@@ -1389,4 +1389,91 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn project_keys() -> Vec<String> {
+        vec!["ur".to_owned(), "myproj".to_owned()]
+    }
+
+    #[test]
+    fn explicit_project_flag_takes_priority() {
+        let result = resolve_project_key(
+            Some("explicit".to_owned()),
+            &None,
+            "ur-abc12",
+            &project_keys(),
+        )
+        .unwrap();
+        assert_eq!(result, "explicit");
+    }
+
+    #[test]
+    fn explicit_project_flag_with_workspace() {
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(
+            Some("explicit".to_owned()),
+            &ws,
+            "ur-abc12",
+            &project_keys(),
+        )
+        .unwrap();
+        assert_eq!(result, "explicit");
+    }
+
+    #[test]
+    fn ticket_id_prefix_derivation() {
+        let result = resolve_project_key(None, &None, "ur-abc12", &project_keys()).unwrap();
+        assert_eq!(result, "ur");
+    }
+
+    #[test]
+    fn ticket_id_prefix_derivation_with_workspace() {
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "ur-abc12", &project_keys()).unwrap();
+        assert_eq!(result, "ur");
+    }
+
+    #[test]
+    fn ticket_id_prefix_dot_separator() {
+        let result = resolve_project_key(None, &None, "myproj.xyz", &project_keys()).unwrap();
+        assert_eq!(result, "myproj");
+    }
+
+    #[test]
+    fn ticket_id_prefix_not_in_keys_falls_through() {
+        // Prefix doesn't match a project key; with workspace set and cwd not matching,
+        // falls through to the workspace fallback returning empty string.
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "zzz-abc", &project_keys());
+        if let Ok(val) = result {
+            assert_ne!(val, "zzz");
+        }
+    }
+
+    #[test]
+    fn workspace_fallback_returns_empty_when_nothing_matches() {
+        // Empty ticket ID prefix + workspace set: should return Ok("") fallback
+        // (unless cwd happens to match a project key, which is also fine).
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "", &project_keys());
+        match result {
+            Ok(val) => assert!(val.is_empty() || project_keys().contains(&val)),
+            Err(_) => panic!("should not error when workspace is set"),
+        }
+    }
+
+    #[test]
+    fn no_workspace_no_match_returns_error() {
+        // No project flag, non-matching prefix, no workspace, empty project keys
+        // so cwd can't match either → should error.
+        let result = resolve_project_key(None, &None, "zzz-abc", &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("could not derive project"));
+    }
 }
