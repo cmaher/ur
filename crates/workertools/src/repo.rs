@@ -1,6 +1,8 @@
 use clap::Subcommand;
 use tonic::transport::Channel;
 
+use ur_rpc::proto::core::LinkCommentTicketRequest;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::remote_repo::remote_repo_service_client::RemoteRepoServiceClient;
 use ur_rpc::proto::remote_repo::{
     CreatePrRequest, GetCheckRunsRequest, GetConversationCommentsRequest, GetFailedRunLogsRequest,
@@ -82,6 +84,18 @@ pub enum CommentsCommands {
         /// Reply message
         message: String,
     },
+    /// Link a PR comment to a feedback ticket
+    Link {
+        /// PR number the comment belongs to
+        #[arg(long)]
+        pr: i64,
+        /// Comment ID to link
+        #[arg(long)]
+        comment: i64,
+        /// Ticket ID to link to
+        #[arg(long)]
+        ticket: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -96,6 +110,26 @@ pub enum RunCommands {
 fn get_gh_repo() -> Result<String, String> {
     std::env::var("UR_GH_REPO")
         .map_err(|_| "UR_GH_REPO environment variable is not set. Workers must have project context to use repo commands.".to_owned())
+}
+
+async fn connect_core() -> Result<CoreServiceClient<Channel>, i32> {
+    let server_addr =
+        std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
+    let addr = format!("http://{server_addr}");
+
+    let channel = match tonic::transport::Endpoint::try_from(addr)
+        .unwrap()
+        .connect()
+        .await
+    {
+        Ok(ch) => ch,
+        Err(e) => {
+            eprintln!("repo: failed to connect to ur server: {e}");
+            return Err(1);
+        }
+    };
+
+    Ok(CoreServiceClient::new(channel))
 }
 
 async fn connect() -> Result<RemoteRepoServiceClient<Channel>, i32> {
@@ -284,6 +318,34 @@ async fn run_comments(
                     1
                 }
             }
+        }
+        CommentsCommands::Link {
+            pr,
+            comment,
+            ticket,
+        } => run_link_comment_ticket(pr, comment, &ticket).await,
+    }
+}
+
+async fn run_link_comment_ticket(pr_number: i64, comment_id: i64, ticket_id: &str) -> i32 {
+    let mut core_client = match connect_core().await {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    let mut request = tonic::Request::new(LinkCommentTicketRequest {
+        worker_id: String::new(),
+        pr_number,
+        comment_id,
+        ticket_id: ticket_id.to_owned(),
+    });
+    inject_auth(&mut request);
+
+    match core_client.link_comment_ticket(request).await {
+        Ok(_) => 0,
+        Err(status) => {
+            eprintln!("repo comments link: {}", status.message());
+            1
         }
     }
 }
