@@ -334,19 +334,19 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
     vec![
         wf.ticket_id.clone(),
         wf.status.clone(),
+        stalled_text,
         String::new(), // placeholder for progress count
         String::new(), // placeholder for progress bar
         compute_stage_time(entry, now),
         compute_total_time(entry, now),
         wf.pr_url.clone(),
-        stalled_text,
     ]
 }
 
 /// The column index of the progress count label in the table.
-const PROGRESS_COUNT_COL: usize = 2;
+const PROGRESS_COUNT_COL: usize = 3;
 /// The column index of the progress bar in the table.
-const PROGRESS_BAR_COL: usize = 3;
+const PROGRESS_BAR_COL: usize = 4;
 
 /// Render mini progress bars and count labels over the placeholder columns.
 fn render_progress_bars(
@@ -398,6 +398,7 @@ fn render_progress_bars(
         };
 
         let bar = MiniProgressBar { completed, total };
+        let is_stalled = entry.workflow.stalled;
 
         if let Some(ba) = bar_area {
             let cell = Rect {
@@ -406,7 +407,11 @@ fn render_progress_bars(
                 width: ba.width,
                 height: 1,
             };
-            bar.render_bar(cell, buf, &ctx.theme, row_bg);
+            if is_stalled {
+                bar.render_bar_colored(cell, buf, ctx.theme.error, row_bg);
+            } else {
+                bar.render_bar(cell, buf, &ctx.theme, row_bg);
+            }
         }
 
         if let Some(ca) = count_area {
@@ -479,24 +484,24 @@ impl Page for FlowsPage {
         let widths = vec![
             Constraint::Length(12), // Ticket ID
             Constraint::Length(14), // Status
+            Constraint::Length(8),  // Stalled
             Constraint::Length(8),  // Progress count
             Constraint::Length(10), // Progress bar
             Constraint::Length(12), // Stage Time
             Constraint::Length(12), // Total Time
             Constraint::Length(45), // PR URL
-            Constraint::Length(8),  // Stalled
         ];
 
         let table = ThemedTable {
             headers: vec![
                 "Ticket ID",
                 "Status",
+                "Stalled",
                 "Progress",
                 "",
                 "Stage Time",
                 "Total Time",
                 "PR URL",
-                "Stalled",
             ],
             rows,
             selected,
