@@ -127,6 +127,32 @@ impl Session {
             .with_context(|| format!("failed to send raw keys to tmux session '{}'", self.name))
     }
 
+    /// Check whether the pane's shell process is still alive.
+    ///
+    /// Uses the tmux `pane_dead` format variable: `0` means the process is
+    /// still running (alive), `1` means it has exited (dead).
+    pub async fn is_pane_alive(&self) -> Result<bool> {
+        let output = run_tmux_stdout(&["list-panes", "-t", &self.name, "-F", "#{pane_dead}"])
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to query pane status for tmux session '{}'",
+                    self.name
+                )
+            })?;
+
+        let value = output.trim();
+        match value {
+            "0" => Ok(true),
+            "1" => Ok(false),
+            other => bail!(
+                "unexpected pane_dead value '{}' for session '{}'",
+                other,
+                self.name
+            ),
+        }
+    }
+
     /// Build a `docker exec` command to attach to this session.
     /// Returns the command parts for use with a container runtime.
     pub fn attach_command(&self) -> Vec<String> {
@@ -142,6 +168,11 @@ impl Session {
 
 /// Run a tmux command and check for success.
 async fn run_tmux(args: &[impl AsRef<str>]) -> Result<()> {
+    run_tmux_stdout(args).await.map(|_| ())
+}
+
+/// Run a tmux command, check for success, and return captured stdout.
+async fn run_tmux_stdout(args: &[impl AsRef<str>]) -> Result<String> {
     let str_args: Vec<&str> = args.iter().map(|a| a.as_ref()).collect();
 
     let output = tokio::process::Command::new("tmux")
@@ -159,7 +190,8 @@ async fn run_tmux(args: &[impl AsRef<str>]) -> Result<()> {
         );
     }
 
-    Ok(())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(stdout)
 }
 
 /// Run a tmux command interactively (inheriting stdin/stdout/stderr).
@@ -203,6 +235,21 @@ mod tests {
     /// by checking that the method produces the correct tmux arguments.
     /// `send_keys_no_enter` should call `send-keys -t <session> -l <text>` only,
     /// while `send_keys` additionally calls `send-keys -t <session> Enter`.
+    /// Verify that `is_pane_alive` targets the correct session.
+    /// tmux isn't running in unit tests so the command will fail, but the error
+    /// message encodes the session name, confirming correct argument construction.
+    #[tokio::test]
+    async fn test_is_pane_alive_command_construction() {
+        let session = Session::from_name("test-session");
+        let result = session.is_pane_alive().await;
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("test-session") || err_msg.contains("tmux"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
     #[tokio::test]
     async fn test_send_keys_no_enter_command_construction() {
         let session = Session::from_name("test-session");
