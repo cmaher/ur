@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, FooterCommand, Page, PageResult, StatusMessage};
+use crate::page::{Banner, FooterCommand, StatusMessage};
 use crate::pages::{FlowsListScreen, TicketDetailScreen, TicketsListScreen, WorkersListScreen};
 
 /// Result of a screen handling an action.
@@ -133,89 +133,5 @@ pub trait Screen: Send {
     /// Mutably downcast to `TicketDetailScreen` if this screen is one.
     fn as_any_ticket_detail_mut(&mut self) -> Option<&mut TicketDetailScreen> {
         None
-    }
-}
-
-/// A generic adapter wrapping any `Page + Send` implementor as a `Screen`.
-///
-/// Useful for pushing ad-hoc screens onto the stack in tests or future detail
-/// screens. Does not provide typed downcast methods — use the concrete screen
-/// types (`TicketsListScreen`, `FlowsListScreen`, `WorkersListScreen`) for the
-/// root list screens.
-pub struct PageScreenAdapter<P: Page + Send> {
-    page: P,
-}
-
-impl<P: Page + Send> PageScreenAdapter<P> {
-    pub fn new(page: P) -> Self {
-        Self { page }
-    }
-
-    /// Access the inner page directly.
-    pub fn inner(&self) -> &P {
-        &self.page
-    }
-
-    /// Mutably access the inner page directly.
-    pub fn inner_mut(&mut self) -> &mut P {
-        &mut self.page
-    }
-}
-
-impl<P: Page + Send> Screen for PageScreenAdapter<P> {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match self.page.handle_action(action) {
-            PageResult::Consumed => ScreenResult::Consumed,
-            PageResult::Ignored => ScreenResult::Ignored,
-            PageResult::Quit => ScreenResult::Quit,
-        }
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        self.page.render(area, buf, ctx);
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        self.page.footer_commands(keymap)
-    }
-
-    fn on_data(&mut self, payload: &DataPayload) {
-        self.page.on_data(payload);
-    }
-
-    fn needs_data(&self) -> bool {
-        self.page.needs_data()
-    }
-
-    fn mark_stale(&mut self) {
-        self.page.mark_stale();
-    }
-
-    fn banner(&self) -> Option<&Banner> {
-        self.page.banner()
-    }
-
-    fn dismiss_banner(&mut self) {
-        self.page.dismiss_banner();
-    }
-
-    fn tick_banner(&mut self) {
-        self.page.tick_banner();
-    }
-
-    fn status(&self) -> Option<&StatusMessage> {
-        self.page.status()
-    }
-
-    fn dismiss_status(&mut self) {
-        self.page.dismiss_status();
-    }
-
-    fn set_status(&mut self, text: String) {
-        self.page.set_status(text);
-    }
-
-    fn clear_status(&mut self) {
-        self.page.clear_status();
     }
 }
