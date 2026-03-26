@@ -11,11 +11,11 @@ use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    PingRequest, PingResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
-    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
-    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
-    WorkflowStepCompleteResponse,
+    LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
+    SendWorkerMessageRequest, SendWorkerMessageResponse, UpdateAgentStatusRequest,
+    UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
+    WorkerLaunchResponse, WorkerListRequest, WorkerListResponse, WorkerStopRequest,
+    WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
 
 use ur_db::WorkerRepo;
@@ -562,6 +562,13 @@ impl CoreService for CoreServiceHandler {
         // Server-side handler will be implemented in a separate ticket (ur-a9b62).
         Err(CoreError::Unimplemented.into())
     }
+
+    async fn link_comment_ticket(
+        &self,
+        _req: Request<LinkCommentTicketRequest>,
+    ) -> Result<Response<LinkCommentTicketResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -588,6 +595,47 @@ impl CoreService for WorkerCoreServiceHandler {
         Ok(Response::new(PingResponse {
             message: "pong".into(),
         }))
+    }
+
+    async fn link_comment_ticket(
+        &self,
+        req: Request<LinkCommentTicketRequest>,
+    ) -> Result<Response<LinkCommentTicketResponse>, Status> {
+        let metadata = req.metadata();
+        let worker_id = metadata
+            .get(ur_config::WORKER_ID_HEADER)
+            .ok_or_else(|| Status::unauthenticated("missing ur-worker-id header"))?
+            .to_str()
+            .map_err(|_| Status::invalid_argument("invalid ur-worker-id header encoding"))?
+            .to_owned();
+
+        let inner = req.into_inner();
+        info!(
+            worker_id = %worker_id,
+            ticket_id = %inner.ticket_id,
+            pr_number = inner.pr_number,
+            comment_id = inner.comment_id,
+            "link_comment_ticket request received"
+        );
+
+        let gh_repo =
+            resolve_gh_repo_for_worker(&worker_id, &self.ticket_repo, &self.workflow_repo).await?;
+
+        let comment_id_str = inner.comment_id.to_string();
+        self.workflow_repo
+            .insert_ticket_comment(&comment_id_str, &inner.ticket_id, inner.pr_number, &gh_repo)
+            .await
+            .map_err(|e| Status::internal(format!("failed to insert ticket comment: {e}")))?;
+
+        info!(
+            worker_id = %worker_id,
+            ticket_id = %inner.ticket_id,
+            comment_id = inner.comment_id,
+            gh_repo = %gh_repo,
+            "linked comment to ticket"
+        );
+
+        Ok(Response::new(LinkCommentTicketResponse {}))
     }
 
     async fn worker_launch(
@@ -1082,4 +1130,46 @@ async fn handle_request_human_activity(
     );
 
     Ok(())
+}
+
+/// Resolve `gh_repo` from the worker's assigned ticket metadata.
+///
+/// Looks up the ticket assigned to the worker via the workflow table, then
+/// reads `gh_repo` from the ticket's metadata. Returns a gRPC NOT_FOUND
+/// error if the worker has no assigned ticket or the metadata is missing.
+async fn resolve_gh_repo_for_worker(
+    worker_id: &str,
+    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
+) -> Result<String, Status> {
+    let matched = workflow_repo
+        .tickets_by_workflow_worker_id(worker_id)
+        .await
+        .map_err(|e| Status::internal(format!("failed to look up worker ticket: {e}")))?;
+
+    if matched.is_empty() {
+        return Err(error::status_with_info(
+            Code::NotFound,
+            format!("no ticket assigned to worker {worker_id}"),
+            DOMAIN_CORE,
+            NOT_FOUND,
+            HashMap::new(),
+        ));
+    }
+
+    let ticket_id = &matched[0].id;
+    let meta = ticket_repo
+        .get_meta(ticket_id, "ticket")
+        .await
+        .map_err(|e| Status::internal(format!("failed to read ticket metadata: {e}")))?;
+
+    meta.get("gh_repo").cloned().ok_or_else(|| {
+        error::status_with_info(
+            Code::NotFound,
+            format!("gh_repo metadata not found on ticket {ticket_id}"),
+            DOMAIN_CORE,
+            NOT_FOUND,
+            HashMap::new(),
+        )
+    })
 }

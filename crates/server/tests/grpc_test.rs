@@ -154,3 +154,182 @@ async fn grpc_ping_over_tcp() {
     let resp = client.ping(PingRequest {}).await.unwrap();
     assert_eq!(resp.into_inner().message, "pong");
 }
+
+/// Spawn a worker gRPC server (no auth interceptor) and return a connected channel.
+async fn spawn_worker_grpc_server(
+    handler: ur_server::grpc::WorkerCoreServiceHandler,
+) -> (tonic::transport::Channel, SocketAddr) {
+    use ur_rpc::proto::core::core_service_server::CoreServiceServer;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(CoreServiceServer::new(handler))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+
+    let channel = Endpoint::try_from(format!("http://{addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    (channel, addr)
+}
+
+async fn make_worker_handler() -> (
+    ur_server::grpc::WorkerCoreServiceHandler,
+    ur_db::TicketRepo,
+    ur_db::WorkflowRepo,
+) {
+    let db = ur_db::DatabaseManager::open(":memory:")
+        .await
+        .expect("failed to open in-memory db");
+    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
+    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
+    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
+    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone());
+    let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
+
+    let handler = ur_server::grpc::WorkerCoreServiceHandler {
+        worker_repo,
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        worker_prefix: "ur-worker-".to_string(),
+        transition_tx,
+    };
+    (handler, ticket_repo, workflow_repo)
+}
+
+#[tokio::test]
+async fn link_comment_ticket_writes_row() {
+    use ur_db::model::{LifecycleStatus, NewTicket};
+    use ur_rpc::proto::core::LinkCommentTicketRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+
+    let (handler, ticket_repo, workflow_repo) = make_worker_handler().await;
+    let (channel, _addr) = spawn_worker_grpc_server(handler).await;
+    let mut client = CoreServiceClient::new(channel);
+
+    // Seed a ticket, workflow, and gh_repo metadata.
+    let ticket_id = "ur-test1";
+    let worker_id = "w-link1";
+    ticket_repo
+        .create_ticket(&NewTicket {
+            id: Some(ticket_id.to_string()),
+            project: "ur".to_string(),
+            type_: "task".to_string(),
+            priority: 0,
+            parent_id: None,
+            title: "test ticket".to_string(),
+            body: String::new(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    workflow_repo
+        .create_workflow(ticket_id, LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+    workflow_repo
+        .set_workflow_worker_id(ticket_id, worker_id)
+        .await
+        .unwrap();
+    ticket_repo
+        .set_meta(ticket_id, "ticket", "gh_repo", "owner/repo")
+        .await
+        .unwrap();
+
+    // Create the feedback ticket (FK target for ticket_comments).
+    ticket_repo
+        .create_ticket(&NewTicket {
+            id: Some("ur-feedback1".to_string()),
+            project: "ur".to_string(),
+            type_: "task".to_string(),
+            priority: 0,
+            parent_id: Some(ticket_id.to_string()),
+            title: "feedback ticket".to_string(),
+            body: String::new(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    // Make the RPC call with worker-id header.
+    let mut request = tonic::Request::new(LinkCommentTicketRequest {
+        worker_id: worker_id.to_string(),
+        pr_number: 42,
+        comment_id: 12345,
+        ticket_id: "ur-feedback1".to_string(),
+    });
+    request
+        .metadata_mut()
+        .insert(ur_config::WORKER_ID_HEADER, worker_id.parse().unwrap());
+
+    client.link_comment_ticket(request).await.unwrap();
+
+    // Verify the row was written.
+    let pending = workflow_repo.get_pending_replies().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].comment_id, "12345");
+    assert_eq!(pending[0].ticket_id, "ur-feedback1");
+    assert_eq!(pending[0].pr_number, 42);
+    assert_eq!(pending[0].gh_repo, "owner/repo");
+    assert!(!pending[0].reply_posted);
+}
+
+#[tokio::test]
+async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
+    use ur_db::model::{LifecycleStatus, NewTicket};
+    use ur_rpc::proto::core::LinkCommentTicketRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+
+    let (handler, ticket_repo, workflow_repo) = make_worker_handler().await;
+    let (channel, _addr) = spawn_worker_grpc_server(handler).await;
+    let mut client = CoreServiceClient::new(channel);
+
+    // Seed a ticket and workflow, but do NOT set gh_repo metadata.
+    let ticket_id = "ur-test2";
+    let worker_id = "w-link2";
+    ticket_repo
+        .create_ticket(&NewTicket {
+            id: Some(ticket_id.to_string()),
+            project: "ur".to_string(),
+            type_: "task".to_string(),
+            priority: 0,
+            parent_id: None,
+            title: "test ticket no repo".to_string(),
+            body: String::new(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    workflow_repo
+        .create_workflow(ticket_id, LifecycleStatus::Implementing)
+        .await
+        .unwrap();
+    workflow_repo
+        .set_workflow_worker_id(ticket_id, worker_id)
+        .await
+        .unwrap();
+
+    // Make the RPC call — should fail because gh_repo is missing.
+    let mut request = tonic::Request::new(LinkCommentTicketRequest {
+        worker_id: worker_id.to_string(),
+        pr_number: 10,
+        comment_id: 99,
+        ticket_id: "ur-feedback2".to_string(),
+    });
+    request
+        .metadata_mut()
+        .insert(ur_config::WORKER_ID_HEADER, worker_id.parse().unwrap());
+
+    let err = client.link_comment_ticket(request).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+    assert!(err.message().contains("gh_repo"));
+}

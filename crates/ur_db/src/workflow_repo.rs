@@ -7,8 +7,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::model::{
-    LifecycleStatus, MetadataMatchTicket, Ticket, Workflow, WorkflowEvent, WorkflowEventRow,
-    WorkflowIntent,
+    LifecycleStatus, MetadataMatchTicket, Ticket, TicketComment, Workflow, WorkflowEvent,
+    WorkflowEventRow, WorkflowIntent,
 };
 
 /// A workflow with pre-joined ticket children counts, returned by paginated queries.
@@ -801,6 +801,77 @@ impl WorkflowRepo {
         .await?;
 
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    // ============================================================
+    // TicketComments CRUD
+    // ============================================================
+
+    /// Insert a ticket comment linking a PR comment to a ticket for reply tracking.
+    pub async fn insert_ticket_comment(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+        pr_number: i64,
+        gh_repo: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO ticket_comments (comment_id, ticket_id, pr_number, gh_repo) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .bind(pr_number)
+        .bind(gh_repo)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Return all ticket comments where `reply_posted = 0`.
+    pub async fn get_pending_replies(&self) -> Result<Vec<TicketComment>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
+            "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
+             FROM ticket_comments WHERE reply_posted = 0 \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at)| {
+                    TicketComment {
+                        comment_id,
+                        ticket_id,
+                        pr_number,
+                        gh_repo,
+                        reply_posted,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Mark a ticket comment as having had its reply posted.
+    pub async fn mark_reply_posted(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE ticket_comments SET reply_posted = 1 \
+             WHERE comment_id = ? AND ticket_id = ?",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }
 

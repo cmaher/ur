@@ -365,6 +365,15 @@ pub struct WorkerSlot {
     pub created_at: String,
 }
 
+pub struct TicketComment {
+    pub comment_id: String,
+    pub ticket_id: String,
+    pub pr_number: i64,
+    pub gh_repo: String,
+    pub reply_posted: bool,
+    pub created_at: String,
+}
+
 pub struct UiEventRow {
     pub id: i64,
     pub entity_type: String,

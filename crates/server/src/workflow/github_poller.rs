@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use remote_repo::{CheckRun, GhBackend, RemoteRepo};
@@ -91,7 +92,7 @@ impl GithubPollerManager {
         }
     }
 
-    /// Run one full scan: check all in_review tickets.
+    /// Run one full scan: check all in_review tickets, then post pending comment replies.
     async fn poll_once(&self) {
         match self
             .workflow_repo
@@ -106,6 +107,82 @@ impl GithubPollerManager {
             }
             Err(e) => {
                 error!(error = %e, "failed to query in_review workflows");
+            }
+        }
+
+        self.scan_pending_replies().await;
+    }
+
+    /// Post auto-replies for comments linked to tickets via the `ticket_comments` table.
+    async fn scan_pending_replies(&self) {
+        let pending = match self.workflow_repo.get_pending_replies().await {
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(error = %e, "failed to query pending comment replies");
+                return;
+            }
+        };
+
+        if pending.is_empty() {
+            return;
+        }
+
+        // Group by (gh_repo, pr_number, comment_id) — one reply per comment.
+        let grouped = group_pending_replies(&pending);
+
+        for ((gh_repo, pr_number, comment_id), ticket_ids) in &grouped {
+            let body = build_reply_body(ticket_ids);
+
+            let backend = GhBackend {
+                client: self.builderd_client.clone(),
+                gh_repo: gh_repo.clone(),
+            };
+
+            let comment_id_i64: i64 = match comment_id.parse() {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(
+                        comment_id = %comment_id,
+                        error = %e,
+                        "invalid comment_id — cannot parse as integer, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(e) = backend
+                .reply_bot_comment(*pr_number, comment_id_i64, &body)
+                .await
+            {
+                warn!(
+                    comment_id = %comment_id,
+                    pr_number = %pr_number,
+                    error = %e,
+                    "failed to post comment reply — will retry next cycle"
+                );
+                tokio::time::sleep(API_CALL_DELAY).await;
+                continue;
+            }
+
+            self.mark_replies_posted(comment_id, ticket_ids).await;
+
+            tokio::time::sleep(API_CALL_DELAY).await;
+        }
+    }
+
+    async fn mark_replies_posted(&self, comment_id: &str, ticket_ids: &[String]) {
+        for ticket_id in ticket_ids {
+            if let Err(e) = self
+                .workflow_repo
+                .mark_reply_posted(comment_id, ticket_id)
+                .await
+            {
+                error!(
+                    comment_id = %comment_id,
+                    ticket_id = %ticket_id,
+                    error = %e,
+                    "failed to mark reply as posted"
+                );
             }
         }
     }
@@ -1106,6 +1183,30 @@ fn parse_review_command(text: &str) -> Option<ReviewSignal> {
     }
 }
 
+/// Group pending replies by (gh_repo, pr_number, comment_id), collecting ticket IDs.
+fn group_pending_replies(
+    pending: &[ur_db::model::TicketComment],
+) -> HashMap<(String, i64, String), Vec<String>> {
+    let mut grouped: HashMap<(String, i64, String), Vec<String>> = HashMap::new();
+    for row in pending {
+        grouped
+            .entry((row.gh_repo.clone(), row.pr_number, row.comment_id.clone()))
+            .or_default()
+            .push(row.ticket_id.clone());
+    }
+    grouped
+}
+
+/// Build the reply body for a set of ticket IDs linked to a single comment.
+fn build_reply_body(ticket_ids: &[String]) -> String {
+    if ticket_ids.len() == 1 {
+        format!("Tracking in `{}`", ticket_ids[0])
+    } else {
+        let ids: Vec<String> = ticket_ids.iter().map(|id| format!("`{id}`")).collect();
+        format!("Tracking in {}", ids.join(", "))
+    }
+}
+
 /// Execute a `gh` command via a pre-connected builderd client.
 async fn exec_gh_via_builderd(
     client: &BuilderdClient,
@@ -1238,6 +1339,58 @@ mod tests {
         assert!(!is_check_completed("pending", ""));
         assert!(!is_check_completed("in_progress", ""));
         assert!(!is_check_completed("queued", ""));
+    }
+
+    #[test]
+    fn build_reply_body_single_ticket() {
+        let ids = vec!["ur-abc12".to_string()];
+        assert_eq!(build_reply_body(&ids), "Tracking in `ur-abc12`");
+    }
+
+    #[test]
+    fn build_reply_body_multiple_tickets() {
+        let ids = vec!["ur-abc12".to_string(), "ur-def34".to_string()];
+        assert_eq!(build_reply_body(&ids), "Tracking in `ur-abc12`, `ur-def34`");
+    }
+
+    #[test]
+    fn group_pending_replies_groups_by_comment() {
+        let pending = vec![
+            ur_db::model::TicketComment {
+                comment_id: "111".to_string(),
+                ticket_id: "ur-t1".to_string(),
+                pr_number: 42,
+                gh_repo: "owner/repo".to_string(),
+                reply_posted: false,
+                created_at: String::new(),
+            },
+            ur_db::model::TicketComment {
+                comment_id: "111".to_string(),
+                ticket_id: "ur-t2".to_string(),
+                pr_number: 42,
+                gh_repo: "owner/repo".to_string(),
+                reply_posted: false,
+                created_at: String::new(),
+            },
+            ur_db::model::TicketComment {
+                comment_id: "222".to_string(),
+                ticket_id: "ur-t3".to_string(),
+                pr_number: 42,
+                gh_repo: "owner/repo".to_string(),
+                reply_posted: false,
+                created_at: String::new(),
+            },
+        ];
+
+        let grouped = group_pending_replies(&pending);
+        assert_eq!(grouped.len(), 2);
+
+        let key1 = ("owner/repo".to_string(), 42, "111".to_string());
+        let key2 = ("owner/repo".to_string(), 42, "222".to_string());
+        assert_eq!(grouped[&key1].len(), 2);
+        assert!(grouped[&key1].contains(&"ur-t1".to_string()));
+        assert!(grouped[&key1].contains(&"ur-t2".to_string()));
+        assert_eq!(grouped[&key2], vec!["ur-t3".to_string()]);
     }
 
     #[test]

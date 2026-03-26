@@ -687,3 +687,160 @@ async fn get_ticket_children_counts_returns_correct_counts() {
 
     db.cleanup().await;
 }
+
+// ============================================================
+// TicketComments CRUD tests
+// ============================================================
+
+#[tokio::test]
+async fn insert_ticket_comment_writes_row() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: Some("tc-t1".into()),
+        type_: "task".into(),
+        priority: 1,
+        title: "Ticket comment test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    wf.insert_ticket_comment("comment-1", "tc-t1", 42, "owner/repo")
+        .await
+        .unwrap();
+
+    let pending = wf.get_pending_replies().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].comment_id, "comment-1");
+    assert_eq!(pending[0].ticket_id, "tc-t1");
+    assert_eq!(pending[0].pr_number, 42);
+    assert_eq!(pending[0].gh_repo, "owner/repo");
+    assert!(!pending[0].reply_posted);
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_pending_replies_excludes_posted() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: Some("tc-t2".into()),
+        type_: "task".into(),
+        priority: 1,
+        title: "Pending replies test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    wf.insert_ticket_comment("comment-a", "tc-t2", 10, "owner/repo")
+        .await
+        .unwrap();
+    wf.insert_ticket_comment("comment-b", "tc-t2", 10, "owner/repo")
+        .await
+        .unwrap();
+
+    // Mark one as posted.
+    wf.mark_reply_posted("comment-a", "tc-t2").await.unwrap();
+
+    let pending = wf.get_pending_replies().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].comment_id, "comment-b");
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn mark_reply_posted_flips_flag() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: Some("tc-t3".into()),
+        type_: "task".into(),
+        priority: 1,
+        title: "Mark posted test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    wf.insert_ticket_comment("comment-x", "tc-t3", 7, "owner/repo")
+        .await
+        .unwrap();
+
+    // Before marking: pending.
+    let before = wf.get_pending_replies().await.unwrap();
+    assert_eq!(before.len(), 1);
+
+    wf.mark_reply_posted("comment-x", "tc-t3").await.unwrap();
+
+    // After marking: no pending.
+    let after = wf.get_pending_replies().await.unwrap();
+    assert!(after.is_empty());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn get_pending_replies_empty_when_none() {
+    let db = TestDb::new().await;
+    let wf = wf_repo(&db);
+
+    let pending = wf.get_pending_replies().await.unwrap();
+    assert!(pending.is_empty());
+
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn insert_ticket_comment_composite_pk() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+
+    repo.create_ticket(&NewTicket {
+        id: Some("tc-t4".into()),
+        type_: "task".into(),
+        priority: 1,
+        title: "Composite PK test".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    repo.create_ticket(&NewTicket {
+        id: Some("tc-t5".into()),
+        type_: "task".into(),
+        priority: 1,
+        title: "Composite PK test 2".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Same comment_id can link to different tickets.
+    wf.insert_ticket_comment("comment-shared", "tc-t4", 1, "owner/repo")
+        .await
+        .unwrap();
+    wf.insert_ticket_comment("comment-shared", "tc-t5", 1, "owner/repo")
+        .await
+        .unwrap();
+
+    let pending = wf.get_pending_replies().await.unwrap();
+    assert_eq!(pending.len(), 2);
+
+    db.cleanup().await;
+}

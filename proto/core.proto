@@ -25,6 +25,8 @@ service CoreService {
   rpc UpdateAgentStatus(UpdateAgentStatusRequest) returns (UpdateAgentStatusResponse);
   // Signal that a workflow step has completed for the given worker.
   rpc WorkflowStepComplete(WorkflowStepCompleteRequest) returns (WorkflowStepCompleteResponse);
+  // Link a PR comment to a feedback ticket for reply tracking.
+  rpc LinkCommentTicket(LinkCommentTicketRequest) returns (LinkCommentTicketResponse);
 }
 
 message PingRequest {}
@@ -120,3 +122,12 @@ message WorkflowStepCompleteRequest {
 }
 
 message WorkflowStepCompleteResponse {}
+
+message LinkCommentTicketRequest {
+  string worker_id = 1;
+  int64 pr_number = 2;
+  int64 comment_id = 3;
+  string ticket_id = 4;
+}
+
+message LinkCommentTicketResponse {}
