@@ -18,6 +18,7 @@ Run `gh api repos/{owner}/{repo}/pulls/<pr_number>/comments --paginate` to fetch
 - Parse the JSON array of review comment objects.
 - Extract the `body`, `path`, `line`, `html_url`, `id`, and `user.login` fields from each comment.
 - Do NOT skip bot comments — bot feedback (CI failures, linters) is actionable.
+- DO skip any comment whose body starts with 🤖 (robot emoji) — these are auto-replies posted by the poller system, not real feedback.
 
 Also fetch top-level PR comments (conversation comments, not inline reviews):
 
