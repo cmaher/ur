@@ -9,6 +9,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
 
+use crate::pages::TicketBodyScreen;
+
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
@@ -210,6 +212,19 @@ impl TicketDetailScreen {
         } else {
             (0, 1)
         }
+    }
+
+    /// Push a `TicketBodyScreen` if the ticket data is loaded, otherwise consume.
+    fn push_body_screen(&self) -> ScreenResult {
+        let DataState::Loaded { detail, .. } = &self.data_state else {
+            return ScreenResult::Consumed;
+        };
+        let Some(ticket) = &detail.ticket else {
+            return ScreenResult::Consumed;
+        };
+        let body_screen =
+            TicketBodyScreen::new(ticket.id.clone(), ticket.title.clone(), ticket.body.clone());
+        ScreenResult::Push(Box::new(body_screen))
     }
 
     fn build_child_rows(&self) -> Vec<Vec<String>> {
@@ -489,8 +504,8 @@ impl Screen for TicketDetailScreen {
                 });
                 ScreenResult::Consumed
             }
-            // b → push TicketBodyScreen (not yet implemented; consume the action)
-            Action::OpenTicket => ScreenResult::Consumed,
+            // b → push TicketBodyScreen with the loaded ticket's body.
+            Action::OpenTicket => self.push_body_screen(),
             // Space → drill down into selected child
             Action::Select => {
                 if let Some(child) = self.selected_child() {
@@ -565,7 +580,7 @@ impl Screen for TicketDetailScreen {
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::OpenTicket),
-                description: "Open".to_string(),
+                description: "Body".to_string(),
                 common: false,
             },
             FooterCommand {

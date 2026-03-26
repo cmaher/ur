@@ -119,6 +119,28 @@ fn insert_navigation_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::PageRight,
     );
+
+    insert_ctrl_page_bindings(bindings);
+}
+
+/// Insert Ctrl-F (page forward) and Ctrl-B (page backward) bindings.
+///
+/// These are always present regardless of user `KeymapOverrides`.
+fn insert_ctrl_page_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+        },
+        Action::PageRight,
+    );
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::CONTROL,
+        },
+        Action::PageLeft,
+    );
 }
 
 /// Insert fixed action bindings: tabs, refresh, filter, settings.
@@ -294,6 +316,9 @@ impl Keymap {
         insert_bindings(&mut bindings, overrides.select, Action::Select);
         insert_bindings(&mut bindings, overrides.cancel, Action::Back);
         insert_bindings(&mut bindings, overrides.quit, Action::Quit);
+
+        // Ctrl-F / Ctrl-B page scrolling is not part of KeymapOverrides; always present.
+        insert_ctrl_page_bindings(&mut bindings);
 
         // Tab switching is not part of KeymapOverrides; preserve defaults
         // for SwitchTab actions when building from config.
