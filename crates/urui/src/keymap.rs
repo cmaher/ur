@@ -240,6 +240,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::Back,
     );
 
+    // back (also) = [q]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Back,
+    );
+
     // quit = [Q]
     bindings.insert(
         KeyBinding {
