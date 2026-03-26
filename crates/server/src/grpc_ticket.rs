@@ -26,6 +26,8 @@ use ur_rpc::proto::ticket::{
 };
 
 use crate::UiEventPoller;
+use crate::WorkerManager;
+use crate::worker::WorkerId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
@@ -118,6 +120,9 @@ pub struct TicketServiceHandler {
     /// Optional UI event poller for streaming UI events to subscribers.
     /// None on the worker server.
     pub ui_event_poller: Option<UiEventPoller>,
+    /// Optional worker manager for killing workers when workflows are cancelled.
+    /// None on the worker server.
+    pub worker_manager: Option<WorkerManager>,
 }
 
 impl TicketServiceHandler {
@@ -198,8 +203,8 @@ impl TicketServiceHandler {
     }
 
     /// If the ticket has an active (non-terminal) workflow, cancel it: signal
-    /// the coordinator to abort the in-flight handler, delete intent rows, and
-    /// set the workflow status to `Cancelled`.
+    /// the coordinator to abort the in-flight handler, kill the associated
+    /// worker, delete intent rows, and set the workflow status to `Cancelled`.
     async fn cancel_active_workflow(&self, ticket_id: &str) -> Result<(), Status> {
         let workflow = self
             .workflow_repo
@@ -207,9 +212,10 @@ impl TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        if workflow.is_none() {
-            return Ok(());
-        }
+        let workflow = match workflow {
+            Some(wf) => wf,
+            None => return Ok(()),
+        };
 
         info!(ticket_id = %ticket_id, "cancelling active workflow for ticket close");
 
@@ -224,6 +230,10 @@ impl TicketServiceHandler {
             );
         }
 
+        // Kill the worker associated with this workflow.
+        self.kill_workflow_worker(ticket_id, &workflow.worker_id)
+            .await;
+
         // Delete intents and mark workflow as cancelled.
         self.workflow_repo
             .delete_intents_for_ticket(ticket_id)
@@ -236,6 +246,28 @@ impl TicketServiceHandler {
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Kill the worker associated with a workflow, if one is assigned.
+    async fn kill_workflow_worker(&self, ticket_id: &str, worker_id: &str) {
+        if worker_id.is_empty() {
+            return;
+        }
+        let Some(ref worker_manager) = self.worker_manager else {
+            return;
+        };
+        info!(ticket_id = %ticket_id, worker_id = %worker_id, "killing worker for cancelled workflow");
+        if let Err(e) = worker_manager
+            .stop_by_worker_id(&WorkerId(worker_id.to_owned()))
+            .await
+        {
+            tracing::warn!(
+                ticket_id = %ticket_id,
+                worker_id = %worker_id,
+                error = %e,
+                "failed to stop worker during workflow cancellation"
+            );
+        }
     }
 
     /// Convert metadata query results to minimal proto tickets.
@@ -1209,6 +1241,7 @@ mod tests {
             transition_tx: None,
             cancel_tx: None,
             ui_event_poller: None,
+            worker_manager: None,
         };
         (tmp, handler)
     }
@@ -1370,5 +1403,189 @@ mod tests {
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0].history.len(), 1);
         assert_eq!(workflows[0].history[0].event, "implementing");
+    }
+
+    // ── cancel_workflow / cancel_active_workflow tests ──────────────
+
+    #[tokio::test]
+    async fn cancel_workflow_no_workflow_is_noop() {
+        let (_tmp, handler) = setup_handler().await;
+
+        // No workflow exists for this ticket — should succeed silently.
+        let resp = TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "nonexistent".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancel_active_workflow_marks_cancelled_and_deletes_intents() {
+        let (_tmp, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-cancel".into()),
+                type_: "task".into(),
+                priority: 1,
+                title: "Cancel me".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .create_workflow("t-cancel", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        // Create an intent that should be deleted on cancel.
+        handler
+            .workflow_repo
+            .create_intent("t-cancel", LifecycleStatus::Pushing)
+            .await
+            .unwrap();
+
+        let resp = TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "t-cancel".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+
+        // Workflow status should now be cancelled.
+        // Use get_latest (not get_workflow_by_ticket which filters terminal states).
+        let wf = handler
+            .workflow_repo
+            .get_latest_workflow_by_ticket("t-cancel")
+            .await
+            .unwrap()
+            .expect("workflow should still exist");
+        assert_eq!(wf.status, LifecycleStatus::Cancelled);
+
+        // Intents should have been deleted.
+        let intent = handler.workflow_repo.poll_intent().await.unwrap();
+        assert!(
+            intent.is_none(),
+            "intents should be deleted after cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_active_workflow_sends_cancel_signal() {
+        let (_tmp, mut handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-sig".into()),
+                type_: "task".into(),
+                priority: 1,
+                title: "Signal cancel".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .create_workflow("t-sig", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        // Wire up a cancel channel and capture what gets sent.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
+        handler.cancel_tx = Some(tx);
+
+        let resp = TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "t-sig".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+
+        // The ticket_id should have been sent on the cancel channel.
+        let received = rx.try_recv().expect("should have received cancel signal");
+        assert_eq!(received, "t-sig");
+    }
+
+    #[tokio::test]
+    async fn cancel_active_workflow_with_worker_id_but_no_manager() {
+        let (_tmp, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-noworkmgr".into()),
+                type_: "task".into(),
+                priority: 1,
+                title: "No worker manager".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .create_workflow("t-noworkmgr", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        // Assign a worker_id to the workflow.
+        handler
+            .workflow_repo
+            .set_workflow_worker_id("t-noworkmgr", "worker-123")
+            .await
+            .unwrap();
+
+        // handler.worker_manager is None — kill_workflow_worker should
+        // gracefully skip. The cancel should still succeed.
+        let resp = TicketService::cancel_workflow(
+            &handler,
+            Request::new(CancelWorkflowRequest {
+                ticket_id: "t-noworkmgr".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+
+        let wf = handler
+            .workflow_repo
+            .get_latest_workflow_by_ticket("t-noworkmgr")
+            .await
+            .unwrap()
+            .expect("workflow should exist");
+        assert_eq!(wf.status, LifecycleStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn kill_workflow_worker_skips_empty_worker_id() {
+        let (_tmp, handler) = setup_handler().await;
+        // Should return immediately without error.
+        handler.kill_workflow_worker("t-any", "").await;
+    }
+
+    #[tokio::test]
+    async fn kill_workflow_worker_skips_when_no_worker_manager() {
+        let (_tmp, handler) = setup_handler().await;
+        assert!(handler.worker_manager.is_none());
+        // Should return immediately without error even with a worker_id.
+        handler.kill_workflow_worker("t-any", "worker-456").await;
     }
 }

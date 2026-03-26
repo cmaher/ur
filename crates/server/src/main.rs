@@ -218,6 +218,7 @@ async fn init_and_serve(
         transition_tx: None, // set in serve_grpc_servers after builderd connects
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
         ui_event_poller: Some(ui_event_poller.clone()),
+        worker_manager: Some(worker_manager.clone()),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
@@ -332,6 +333,7 @@ fn spawn_workflow_services(
         scan_interval,
         transition_tx.clone(),
         poller_ticket_client,
+        worker_manager.clone(),
     );
     let poller_handle = poller.spawn(shutdown_rx.clone());
 
