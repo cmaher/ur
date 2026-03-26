@@ -714,8 +714,14 @@ async fn fetch_ticket_detail_rpc(
         anyhow::Ok((inner.tickets, inner.total_count))
     };
 
-    let (detail, (children, total)) = tokio::try_join!(get_ticket_fut, list_children_fut)?;
-    Ok((detail, children, total))
+    let (detail, (mut children, total)) = tokio::try_join!(get_ticket_fut, list_children_fut)?;
+    // The tree query includes the root ticket at depth 0 — filter it out so only
+    // actual children appear in the detail screen's child table.
+    let root_id = ticket_id;
+    let before = children.len();
+    children.retain(|t| t.id != root_id);
+    let removed = (before - children.len()) as i32;
+    Ok((detail, children, total - removed))
 }
 
 /// Perform the `GetTicket` RPC with an optional author filter and return only
