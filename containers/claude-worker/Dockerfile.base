@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less \
     locales \
     make \
+    perl \
     python3 \
     ripgrep \
     && sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
