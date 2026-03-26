@@ -1,5 +1,5 @@
 ---
-name: create-feedback
+name: address-feedback
 description: Use when creating follow-up tickets from PR review comments
 ---
 

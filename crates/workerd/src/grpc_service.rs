@@ -9,7 +9,7 @@ use ur_rpc::proto::core::UpdateAgentStatusRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
-    CreateFeedbackRequest, CreateFeedbackResponse, ImplementRequest, ImplementResponse,
+    AddressFeedbackRequest, AddressFeedbackResponse, ImplementRequest, ImplementResponse,
     NotifyIdleRequest, NotifyIdleResponse, SendMessageRequest, SendMessageResponse,
     StepCompleteRequest, StepCompleteResponse,
 };
@@ -24,7 +24,7 @@ pub struct DispatchBuffer {
     pub commands: VecDeque<String>,
     /// Whether the agent has signalled that the current step is complete.
     pub step_complete: bool,
-    /// The current lifecycle step name (e.g. "implementing", "feedback_creating").
+    /// The current lifecycle step name (e.g. "implementing", "addressing_feedback").
     /// Empty string means no active dispatch.
     pub lifecycle_step: String,
 }
@@ -255,20 +255,20 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         Ok(Response::new(ImplementResponse {}))
     }
 
-    async fn create_feedback_tickets(
+    async fn address_feedback_tickets(
         &self,
-        request: Request<CreateFeedbackRequest>,
-    ) -> Result<Response<CreateFeedbackResponse>, Status> {
+        request: Request<AddressFeedbackRequest>,
+    ) -> Result<Response<AddressFeedbackResponse>, Status> {
         let inner = request.into_inner();
-        let skill_command = format!("/create-feedback {} {}", inner.ticket_id, inner.pr_number);
+        let skill_command = format!("/address-feedback {} {}", inner.ticket_id, inner.pr_number);
         info!(
             ticket_id = inner.ticket_id,
             pr_number = inner.pr_number,
-            "CreateFeedbackTickets received, loading dispatch buffer"
+            "AddressFeedbackTickets received, loading dispatch buffer"
         );
 
         let mut buf = self.dispatch_buffer.lock().await;
-        buf.lifecycle_step = "feedback_creating".to_string();
+        buf.lifecycle_step = "addressing_feedback".to_string();
         buf.step_complete = false;
         buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
 
@@ -281,6 +281,6 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             error!(error = %e, "tmux send-keys failed for first buffered command");
         }
 
-        Ok(Response::new(CreateFeedbackResponse {}))
+        Ok(Response::new(AddressFeedbackResponse {}))
     }
 }

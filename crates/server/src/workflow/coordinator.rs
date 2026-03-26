@@ -366,7 +366,7 @@ fn lifecycle_status_to_event(status: LifecycleStatus) -> ur_rpc::workflow_event:
         LifecycleStatus::Verifying => WorkflowEvent::Verifying,
         LifecycleStatus::Pushing => WorkflowEvent::Pushing,
         LifecycleStatus::InReview => WorkflowEvent::InReview,
-        LifecycleStatus::FeedbackCreating => WorkflowEvent::FeedbackCreating,
+        LifecycleStatus::AddressingFeedback => WorkflowEvent::AddressingFeedback,
         LifecycleStatus::Merging => WorkflowEvent::Merging,
         LifecycleStatus::Done => WorkflowEvent::Done,
         LifecycleStatus::Cancelled => WorkflowEvent::Cancelled,

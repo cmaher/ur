@@ -393,7 +393,7 @@ struct LifecycleCounters {
     verifying: Arc<AtomicU32>,
     pushing: Arc<AtomicU32>,
     in_review: Arc<AtomicU32>,
-    feedback_creating: Arc<AtomicU32>,
+    addressing_feedback: Arc<AtomicU32>,
     merging: Arc<AtomicU32>,
 }
 
@@ -408,8 +408,8 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
     let (push_h, push_count, _) = MockHandler::new("pushing");
     let push_h = push_h.with_auto_advance(LifecycleStatus::InReview);
     let (review_h, review_count, _) = MockHandler::new("in_review");
-    let review_h = review_h.with_auto_advance(LifecycleStatus::FeedbackCreating);
-    let (feedback_h, feedback_count, _) = MockHandler::new("feedback_creating");
+    let review_h = review_h.with_auto_advance(LifecycleStatus::AddressingFeedback);
+    let (feedback_h, feedback_count, _) = MockHandler::new("addressing_feedback");
     let (merge_h, merge_count, _) = MockHandler::new("merging");
 
     LifecycleCounters {
@@ -419,7 +419,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
             (LifecycleStatus::Verifying, Arc::new(verify_h)),
             (LifecycleStatus::Pushing, Arc::new(push_h)),
             (LifecycleStatus::InReview, Arc::new(review_h)),
-            (LifecycleStatus::FeedbackCreating, Arc::new(feedback_h)),
+            (LifecycleStatus::AddressingFeedback, Arc::new(feedback_h)),
             (LifecycleStatus::Merging, Arc::new(merge_h)),
         ],
         awaiting_dispatch: await_count,
@@ -427,7 +427,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
         verifying: verify_count,
         pushing: push_count,
         in_review: review_count,
-        feedback_creating: feedback_count,
+        addressing_feedback: feedback_count,
         merging: merge_count,
     }
 }
@@ -445,7 +445,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
 /// Flow:
 ///   AwaitingDispatch → (idle signal) → Implementing → (step complete) →
 ///   Verifying → (auto) → Pushing → (auto) → InReview → (auto) →
-///   FeedbackCreating → (step complete + feedback_mode=later) → Merging
+///   AddressingFeedback → (step complete + feedback_mode=later) → Merging
 #[tokio::test]
 async fn full_lifecycle_awaiting_dispatch_through_merging() {
     let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
@@ -478,18 +478,18 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
     assert_eq!(status, LifecycleStatus::Implementing);
     assert_eq!(lc.implementing.load(Ordering::SeqCst), 1);
 
-    // Phase 2: Step complete cascades: Implementing → Verifying → Pushing → InReview → FeedbackCreating
+    // Phase 2: Step complete cascades: Implementing → Verifying → Pushing → InReview → AddressingFeedback
     h.send_step_complete(worker_id).await;
     let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::FeedbackCreating, 3000)
+        .wait_for_status(ticket_id, LifecycleStatus::AddressingFeedback, 3000)
         .await;
-    assert_eq!(status, LifecycleStatus::FeedbackCreating);
+    assert_eq!(status, LifecycleStatus::AddressingFeedback);
     assert_eq!(lc.verifying.load(Ordering::SeqCst), 1);
     assert_eq!(lc.pushing.load(Ordering::SeqCst), 1);
     assert_eq!(lc.in_review.load(Ordering::SeqCst), 1);
-    assert_eq!(lc.feedback_creating.load(Ordering::SeqCst), 1);
+    assert_eq!(lc.addressing_feedback.load(Ordering::SeqCst), 1);
 
-    // Phase 3: Step complete → FeedbackCreating (feedback_mode=later) → Merging
+    // Phase 3: Step complete → AddressingFeedback (feedback_mode=later) → Merging
     h.send_step_complete(worker_id).await;
     let status = h
         .wait_for_status(ticket_id, LifecycleStatus::Merging, 2000)
@@ -501,7 +501,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
     h.shutdown().await;
 }
 
-/// Test the FeedbackCreating → Implementing path (feedback_mode=now).
+/// Test the AddressingFeedback → Implementing path (feedback_mode=now).
 #[tokio::test]
 async fn feedback_mode_now_routes_back_to_implementing() {
     let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
@@ -518,7 +518,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
     )
     .await;
     workflow_repo
-        .update_workflow_status(ticket_id, LifecycleStatus::FeedbackCreating)
+        .update_workflow_status(ticket_id, LifecycleStatus::AddressingFeedback)
         .await
         .unwrap();
     workflow_repo
@@ -527,10 +527,10 @@ async fn feedback_mode_now_routes_back_to_implementing() {
         .unwrap();
 
     let (impl_h, impl_count, _) = MockHandler::new("implementing");
-    let (feedback_h, _feedback_count, _) = MockHandler::new("feedback_creating");
+    let (feedback_h, _feedback_count, _) = MockHandler::new("addressing_feedback");
     let handlers: Vec<HandlerEntry> = vec![
         (LifecycleStatus::Implementing, Arc::new(impl_h)),
-        (LifecycleStatus::FeedbackCreating, Arc::new(feedback_h)),
+        (LifecycleStatus::AddressingFeedback, Arc::new(feedback_h)),
     ];
 
     let mut h = TestHarness::new(ticket_repo, workflow_repo, worker_repo, handlers).await;

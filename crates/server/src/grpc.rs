@@ -905,7 +905,7 @@ async fn handle_workflow_step_complete(
         NextStepResult::AdvanceByFeedbackMode => {
             // Mark pending comments as feedback_created before advancing.
             // If this fails, we log and continue — the comments will be
-            // re-processed on the next FeedbackCreating cycle (safe retry).
+            // re-processed on the next AddressingFeedback cycle (safe retry).
             mark_pending_feedback_comments(workflow_repo, ticket_id).await;
 
             let feedback_mode = &workflow.feedback_mode;
@@ -937,10 +937,10 @@ async fn handle_workflow_step_complete(
 
 /// Mark all pending feedback comments as created for the given ticket.
 ///
-/// Called on successful FeedbackCreating step completion. Queries pending
+/// Called on successful AddressingFeedback step completion. Queries pending
 /// comment IDs (`feedback_created = 0`) and marks them as created. If the
 /// worker dies before step completion, comments remain unmarked and will be
-/// re-processed on the next FeedbackCreating cycle.
+/// re-processed on the next AddressingFeedback cycle.
 async fn mark_pending_feedback_comments(workflow_repo: &WorkflowRepo, ticket_id: &str) {
     match workflow_repo.get_pending_feedback_comments(ticket_id).await {
         Ok(pending) if pending.is_empty() => {

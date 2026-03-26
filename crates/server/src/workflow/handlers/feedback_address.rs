@@ -3,14 +3,14 @@ use tracing::info;
 
 use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 
-/// Handler for the InReview → FeedbackCreating transition.
+/// Handler for the InReview → AddressingFeedback transition.
 ///
 /// Queries `workflow_comments` for comment IDs that have been seen but not
 /// yet processed into feedback tickets, then sends the
-/// `CreateFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC
+/// `AddressFeedbackTickets(ticket_id, pr_number, handled_comment_ids)` RPC
 /// to the assigned worker. The worker creates child tickets from new PR
 /// comments (skipping already-handled ones) and goes idle. The step router
-/// detects Idle + FeedbackCreating and routes by `feedback_mode` metadata:
+/// detects Idle + AddressingFeedback and routes by `feedback_mode` metadata:
 /// - `now` → Implementing
 /// - `later` → Merging
 ///
@@ -20,9 +20,9 @@ use crate::workflow::{HandlerFuture, WorkflowContext, WorkflowHandler};
 /// re-processed on recovery.
 ///
 /// `pr_number` is expected as metadata on the ticket (set by the push workflow handler).
-pub struct FeedbackCreateHandler;
+pub struct FeedbackAddressHandler;
 
-impl WorkflowHandler for FeedbackCreateHandler {
+impl WorkflowHandler for FeedbackAddressHandler {
     fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
         let ctx = ctx.clone();
         let ticket_id = ticket_id.to_owned();
@@ -42,7 +42,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
             if workflow.worker_id.is_empty() {
                 anyhow::bail!(
-                    "no worker_id on workflow for ticket {ticket_id} — cannot dispatch feedback create"
+                    "no worker_id on workflow for ticket {ticket_id} — cannot dispatch address feedback"
                 );
             }
             let worker_id = &workflow.worker_id;
@@ -51,7 +51,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
 
             let pr_number_str = meta.get("pr_number").ok_or_else(|| {
                 anyhow::anyhow!(
-                    "no pr_number metadata on ticket {ticket_id} — cannot create feedback tickets"
+                    "no pr_number metadata on ticket {ticket_id} — cannot address feedback tickets"
                 )
             })?;
 
@@ -87,7 +87,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 ticket_id = %ticket_id,
                 pending_count = pending_comments.len(),
                 handled_count = handled_comment_ids.len(),
-                "queried workflow_comments for feedback create"
+                "queried workflow_comments for address feedback"
             );
 
             // 4. Look up the worker record and verify it is running.
@@ -99,14 +99,14 @@ impl WorkflowHandler for FeedbackCreateHandler {
 
             if worker.container_status != "running" {
                 bail!(
-                    "worker {} is not running (status: {}) — cannot dispatch feedback create for ticket {}",
+                    "worker {} is not running (status: {}) — cannot dispatch address feedback for ticket {}",
                     worker_id,
                     worker.container_status,
                     ticket_id
                 );
             }
 
-            // 5. Derive workerd gRPC address and send CreateFeedbackTickets RPC.
+            // 5. Derive workerd gRPC address and send AddressFeedbackTickets RPC.
             let container_name = format!("{}{}", ctx.worker_prefix, worker.process_id);
             let workerd_addr =
                 format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
@@ -116,7 +116,7 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 worker_id = %worker_id,
                 pr_number = %pr_number,
                 workerd_addr = %workerd_addr,
-                "dispatching create_feedback_tickets RPC to workerd"
+                "dispatching address_feedback_tickets RPC to workerd"
             );
 
             let workerd_client = crate::WorkerdClient::with_status_tracking(
@@ -125,15 +125,15 @@ impl WorkflowHandler for FeedbackCreateHandler {
                 worker_id.clone(),
             );
             workerd_client
-                .create_feedback_tickets(&ticket_id, pr_number, handled_comment_ids)
+                .address_feedback_tickets(&ticket_id, pr_number, handled_comment_ids)
                 .await
-                .map_err(|e| anyhow::anyhow!("workerd create_feedback_tickets RPC failed: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("workerd address_feedback_tickets RPC failed: {e}"))?;
 
             info!(
                 ticket_id = %ticket_id,
                 worker_id = %worker_id,
                 pr_number = %pr_number,
-                "create_feedback_tickets dispatched successfully"
+                "address_feedback_tickets dispatched successfully"
             );
 
             Ok(())

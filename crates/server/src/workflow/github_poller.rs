@@ -256,12 +256,12 @@ impl GithubPollerManager {
             info!(
                 ticket_id = %ticket.id,
                 pr_number = pr_number,
-                "autoapprove set — transitioning to feedback_creating with feedback_mode=later"
+                "autoapprove set — transitioning to addressing_feedback with feedback_mode=later"
             );
             self.set_feedback_mode_and_transition(
                 &ticket.id,
                 ur_rpc::feedback_mode::LATER,
-                LifecycleStatus::FeedbackCreating,
+                LifecycleStatus::AddressingFeedback,
             )
             .await;
             return;
@@ -567,7 +567,7 @@ impl GithubPollerManager {
             _ => {}
         }
 
-        // Changes requested takes priority — create failure tickets first, then go to FeedbackCreating.
+        // Changes requested takes priority — create failure tickets first, then go to AddressingFeedback.
         if review_result.status == workflow_condition::review_status::CHANGES_REQUESTED {
             if let Err(e) = self.workflow_repo.reset_implement_cycles(ticket_id).await {
                 warn!(ticket_id = %ticket_id, error = %e, "failed to reset implement_cycles");
@@ -577,8 +577,8 @@ impl GithubPollerManager {
                 backend,
                 pr_number,
                 ur_rpc::feedback_mode::NOW,
-                LifecycleStatus::FeedbackCreating,
-                "changes requested — transitioning to feedback_creating (mode=now)",
+                LifecycleStatus::AddressingFeedback,
+                "changes requested — transitioning to addressing_feedback (mode=now)",
             )
             .await;
             return;
@@ -596,7 +596,7 @@ impl GithubPollerManager {
             return;
         }
 
-        // All green: approved + CI succeeded + mergeable → FeedbackCreating (mode=later).
+        // All green: approved + CI succeeded + mergeable → AddressingFeedback (mode=later).
         let is_approved = review_result.status == workflow_condition::review_status::APPROVED;
         let ci_succeeded = ci_status == workflow_condition::ci_status::SUCCEEDED;
         let is_mergeable = mergeable == workflow_condition::mergeable::MERGEABLE;
@@ -619,8 +619,8 @@ impl GithubPollerManager {
                     backend,
                     pr_number,
                     ur_rpc::feedback_mode::LATER,
-                    LifecycleStatus::FeedbackCreating,
-                    "approval + all green — transitioning to feedback_creating (mode=later)",
+                    LifecycleStatus::AddressingFeedback,
+                    "approval + all green — transitioning to addressing_feedback (mode=later)",
                 )
                 .await;
             }
@@ -695,8 +695,8 @@ impl GithubPollerManager {
                 backend,
                 pr_number,
                 ur_rpc::feedback_mode::LATER,
-                LifecycleStatus::FeedbackCreating,
-                "manual merge with unseen comments — transitioning to feedback_creating (mode=later)",
+                LifecycleStatus::AddressingFeedback,
+                "manual merge with unseen comments — transitioning to addressing_feedback (mode=later)",
             )
             .await;
         }
