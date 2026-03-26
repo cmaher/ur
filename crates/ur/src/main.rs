@@ -1450,9 +1450,8 @@ mod tests {
         // falls through to the workspace fallback returning empty string.
         let ws = Some(PathBuf::from("/tmp/ws"));
         let result = resolve_project_key(None, &ws, "zzz-abc", &project_keys());
-        match result {
-            Ok(val) => assert_ne!(val, "zzz"),
-            Err(_) => {} // acceptable if cwd happens to not match either
+        if let Ok(val) = result {
+            assert_ne!(val, "zzz");
         }
     }
 
