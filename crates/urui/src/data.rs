@@ -12,9 +12,10 @@ use ur_rpc::proto::core::{
 };
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
-    CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest, GetTicketRequest,
-    GetTicketResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
-    ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType, UpdateTicketRequest,
+    ActivityEntry, CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest,
+    GetTicketRequest, GetTicketResponse, ListTicketsRequest, ListTicketsResponse,
+    ListWorkflowsRequest, ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType,
+    UpdateTicketRequest,
 };
 
 use crate::create_ticket::{PendingTicket, is_title_placeholder};
@@ -31,6 +32,8 @@ pub enum DataPayload {
     Workers(Result<Vec<WorkerSummary>, String>),
     /// Full ticket detail: the ticket with metadata/activities, child tickets, and total child count.
     TicketDetail(Result<(GetTicketResponse, Vec<Ticket>, i32), String>),
+    /// Activities for a single ticket, optionally filtered by author.
+    TicketActivities(Result<Vec<ActivityEntry>, String>),
 }
 
 /// Result of an async action (dispatch, etc.) sent back via `AppEvent::ActionResult`.
@@ -353,6 +356,26 @@ impl DataManager {
                 Err(e) => {
                     error!(port, %ticket_id, error = %e, "ticket detail fetch failed");
                     DataPayload::TicketDetail(Err(e.to_string()))
+                }
+            };
+            let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
+        });
+    }
+
+    /// Spawn a background task that fetches activities for a single ticket via
+    /// `GetTicket` (with optional `activity_author_filter`) and sends the result
+    /// as `DataPayload::TicketActivities`.
+    pub fn fetch_ticket_activities(&self, ticket_id: String, author_filter: Option<String>) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, ?author_filter, "fetching ticket activities");
+            let payload = match fetch_ticket_activities_rpc(port, &ticket_id, author_filter).await {
+                Ok(activities) => DataPayload::TicketActivities(Ok(activities)),
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "ticket activities fetch failed");
+                    DataPayload::TicketActivities(Err(e.to_string()))
                 }
             };
             let _ = tx.send(AppEvent::DataReady(Box::new(payload)));
@@ -690,6 +713,24 @@ async fn fetch_ticket_detail_rpc(
 
     let (detail, (children, total)) = tokio::try_join!(get_ticket_fut, list_children_fut)?;
     Ok((detail, children, total))
+}
+
+/// Perform the `GetTicket` RPC with an optional author filter and return only
+/// the activities list from the response.
+async fn fetch_ticket_activities_rpc(
+    port: u16,
+    ticket_id: &str,
+    author_filter: Option<String>,
+) -> Result<Vec<ActivityEntry>> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .get_ticket(GetTicketRequest {
+            id: ticket_id.to_owned(),
+            activity_author_filter: author_filter,
+        })
+        .await?;
+    Ok(resp.into_inner().activities)
 }
 
 /// Filter workers by project key. Returns all workers when no project filter
@@ -1048,6 +1089,55 @@ mod tests {
         } else {
             panic!("expected TicketDetail(Ok(...))");
         }
+    }
+
+    #[test]
+    fn ticket_activities_variant_ok() {
+        use ur_rpc::proto::ticket::ActivityEntry;
+
+        let activities = vec![
+            ActivityEntry {
+                id: "act-1".into(),
+                timestamp: "2026-03-25 14:32:10".into(),
+                author: "alice".into(),
+                message: "Fixed linter errors".into(),
+            },
+            ActivityEntry {
+                id: "act-2".into(),
+                timestamp: "2026-03-25 14:10:05".into(),
+                author: "claude".into(),
+                message: "Starting implementation".into(),
+            },
+        ];
+
+        let payload = DataPayload::TicketActivities(Ok(activities));
+        assert!(matches!(payload, DataPayload::TicketActivities(Ok(_))));
+
+        if let DataPayload::TicketActivities(Ok(entries)) = payload {
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].author, "alice");
+            assert_eq!(entries[1].author, "claude");
+        } else {
+            panic!("expected TicketActivities(Ok(...))");
+        }
+    }
+
+    #[test]
+    fn ticket_activities_variant_err() {
+        let payload = DataPayload::TicketActivities(Err("rpc failed".into()));
+        assert!(matches!(payload, DataPayload::TicketActivities(Err(_))));
+
+        if let DataPayload::TicketActivities(Err(msg)) = payload {
+            assert_eq!(msg, "rpc failed");
+        } else {
+            panic!("expected TicketActivities(Err(...))");
+        }
+    }
+
+    #[test]
+    fn ticket_activities_variant_empty() {
+        let payload = DataPayload::TicketActivities(Ok(vec![]));
+        assert!(matches!(payload, DataPayload::TicketActivities(Ok(ref a)) if a.is_empty()));
     }
 
     #[test]
