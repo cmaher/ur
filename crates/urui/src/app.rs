@@ -9,7 +9,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::{Clear, Widget};
 
-use tracing::warn;
+use tracing::{debug, trace, warn};
 
 use crate::context::TuiContext;
 use crate::create_ticket::{
@@ -121,6 +121,7 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         mut receiver: EventReceiver,
     ) -> anyhow::Result<()> {
+        debug!(active_tab = ?self.active_tab, "app run loop starting");
         self.fetch_active_tab_data();
         self.draw(terminal)?;
 
@@ -161,10 +162,15 @@ impl App {
     ) {
         match event {
             AppEvent::Key(key) => self.handle_key(key, terminal),
-            AppEvent::Tick => self.handle_tick(),
+            AppEvent::Tick => {
+                trace!("tick");
+                self.handle_tick();
+            }
             AppEvent::DataReady(payload) => self.handle_data_ready(*payload),
             AppEvent::ActionResult(result) => self.handle_action_result(result),
-            AppEvent::Resize(_, _) => {} // Just redraw
+            AppEvent::Resize(w, h) => {
+                trace!(width = w, height = h, "resize");
+            }
             AppEvent::UiEvent(items) => self.handle_ui_events(items),
             AppEvent::SetStatus(msg) => self.active_screen_mut().set_status(msg),
         }
@@ -229,8 +235,10 @@ impl App {
         }
 
         let Some(action) = self.ctx.keymap.resolve(key) else {
+            trace!(key_code = ?key.code, "unresolved key");
             return;
         };
+        debug!(?action, "resolved key action");
 
         match action {
             Action::SwitchTab(tab) => {
@@ -318,6 +326,14 @@ impl App {
 
     /// Handle a DataReady event: route the payload to the root screen of each tab.
     fn handle_data_ready(&mut self, payload: crate::data::DataPayload) {
+        let (variant, is_ok) = match &payload {
+            crate::data::DataPayload::Tickets(r) => ("Tickets", r.is_ok()),
+            crate::data::DataPayload::Flows(r) => ("Flows", r.is_ok()),
+            crate::data::DataPayload::Workers(r) => ("Workers", r.is_ok()),
+            crate::data::DataPayload::TicketDetail(_) => ("TicketDetail", true),
+            crate::data::DataPayload::TicketActivities(r) => ("TicketActivities", r.is_ok()),
+        };
+        debug!(variant, ok = is_ok, "data ready");
         if let crate::data::DataPayload::Flows(Ok((workflows, _total_count))) = &payload {
             self.notification_manager.seed_flows(workflows);
         }
@@ -342,6 +358,10 @@ impl App {
     /// Handle an ActionResult event: route to the active screen for banner display,
     /// then trigger a data refresh so the UI reflects the change.
     fn handle_action_result(&mut self, result: crate::data::ActionResult) {
+        match &result.result {
+            Ok(msg) => debug!(message = %msg, "action result success"),
+            Err(err) => warn!(error = %err, "action result error"),
+        }
         let success = result.result.is_ok();
         match self.active_tab {
             TabId::Tickets => self.tickets_page_mut().on_action_result(&result),
@@ -357,6 +377,12 @@ impl App {
     /// accumulate them in the throttle. If no cooldown is active the
     /// throttle will flush immediately on the next `should_flush` check.
     fn handle_ui_events(&mut self, items: Vec<UiEventItem>) {
+        let entity_types: Vec<&str> = items.iter().map(|i| i.entity_type.as_str()).collect();
+        debug!(
+            batch_size = items.len(),
+            ?entity_types,
+            "ui events received"
+        );
         let dirty_tabs = items.iter().flat_map(|item| {
             match item.entity_type.as_str() {
                 "ticket" => &[TabId::Tickets, TabId::Flows] as &[TabId],
@@ -383,6 +409,7 @@ impl App {
         if dirty.is_empty() {
             return;
         }
+        debug!(tabs = ?dirty, "flushing throttle");
 
         for tab in &dirty {
             if *tab == self.active_tab {
@@ -707,7 +734,8 @@ impl App {
 
     /// Dispatch an action to the active screen and handle the result.
     fn dispatch_to_screen(&mut self, action: Action) {
-        let result = self.active_screen_mut().handle_action(action);
+        let result = self.active_screen_mut().handle_action(action.clone());
+        debug!(?action, ?result, "dispatch to screen");
         match result {
             ScreenResult::Quit => {
                 self.should_quit = true;
@@ -738,6 +766,7 @@ impl App {
         if self.active_tab == tab {
             return;
         }
+        debug!(from = ?self.active_tab, to = ?tab, "switch tab");
         // Dismiss banner on the screen we're leaving.
         self.active_screen_mut().dismiss_banner();
         self.active_tab = tab;
@@ -751,6 +780,7 @@ impl App {
     /// Used when the user presses the shortcut for the already-active tab,
     /// which acts as a "go home" gesture.
     fn clear_stack_to_root(&mut self, tab: TabId) {
+        debug!(?tab, "clear stack to root");
         let stack = self.stacks.entry(tab).or_default();
         stack.truncate(1);
     }
@@ -764,6 +794,7 @@ impl App {
         // If the top of the active stack is a detail screen, fetch its data.
         if let Some(detail) = self.active_screen().as_any_ticket_detail() {
             let ticket_id = detail.ticket_id().to_owned();
+            debug!(tab = ?self.active_tab, fetch = "detail", %ticket_id, "fetch active tab data");
             let page_size = detail.child_page_size();
             let offset = detail.child_offset();
             self.data_manager
@@ -773,11 +804,13 @@ impl App {
         // If the top of the active stack is an activities screen, fetch its data.
         if let Some(activities) = self.active_screen().as_any_ticket_activities() {
             let ticket_id = activities.ticket_id().to_owned();
+            debug!(tab = ?self.active_tab, fetch = "activities", %ticket_id, "fetch active tab data");
             let author_filter = activities.author_filter().map(str::to_owned);
             self.data_manager
                 .fetch_ticket_activities(ticket_id, author_filter);
             return;
         }
+        debug!(tab = ?self.active_tab, fetch = "list", "fetch active tab data");
         match self.active_tab {
             TabId::Tickets => {
                 let page = self.tickets_page();
