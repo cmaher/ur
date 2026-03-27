@@ -524,40 +524,7 @@ impl RepoPoolManager {
     ///
     /// Creates intermediate directories as needed and overwrites existing files.
     fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-        let entries = std::fs::read_dir(src)
-            .map_err(|e| format!("failed to read directory {}: {e}", src.display()))?;
-
-        for entry in entries {
-            let entry =
-                entry.map_err(|e| format!("failed to read entry in {}: {e}", src.display()))?;
-            let src_path = entry.path();
-            let dst_path = dst.join(entry.file_name());
-
-            if src_path.is_dir() {
-                std::fs::create_dir_all(&dst_path).map_err(|e| {
-                    format!("failed to create directory {}: {e}", dst_path.display())
-                })?;
-                Self::copy_dir_recursive(&src_path, &dst_path)?;
-            } else {
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| {
-                        format!(
-                            "failed to create parent directory {}: {e}",
-                            parent.display()
-                        )
-                    })?;
-                }
-                std::fs::copy(&src_path, &dst_path).map_err(|e| {
-                    format!(
-                        "failed to copy {} to {}: {e}",
-                        src_path.display(),
-                        dst_path.display()
-                    )
-                })?;
-            }
-        }
-
-        Ok(())
+        copy_dir_recursive(src, dst)
     }
 
     /// Trust mise configuration in a newly cloned slot if `mise.toml` exists.
@@ -586,6 +553,45 @@ impl RepoPoolManager {
             );
         }
     }
+}
+
+/// Recursively copy all files and directories from `src` into `dst`.
+///
+/// Creates intermediate directories as needed and overwrites existing files.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(src)
+        .map_err(|e| format!("failed to read directory {}: {e}", src.display()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("failed to read entry in {}: {e}", src.display()))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            std::fs::create_dir_all(&dst_path)
+                .map_err(|e| format!("failed to create directory {}: {e}", dst_path.display()))?;
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            copy_file(&src_path, &dst_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Copy a single file, creating parent directories as needed.
+fn copy_file(src: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "failed to create parent directory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    std::fs::copy(src, dst)
+        .map_err(|e| format!("failed to copy {} to {}: {e}", src.display(), dst.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
