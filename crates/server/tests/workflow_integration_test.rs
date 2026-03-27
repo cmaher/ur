@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use tempfile::TempDir;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 use tonic::transport::{Endpoint, Server};
 
 use ur_db::model::{LifecycleStatus, NewTicket, Worker};
@@ -24,24 +24,61 @@ use ur_server::workflow::{
 // Mock handler: records calls, optionally auto-advances to a next state
 // ---------------------------------------------------------------------------
 
+/// Condition-based signal for waiting on handler invocations.
+///
+/// Uses `Notify` so waiters wake immediately when the handler is called,
+/// instead of polling with sleeps.
+struct HandlerSignal {
+    count: AtomicU32,
+    notify: Notify,
+}
+
+impl HandlerSignal {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            count: AtomicU32::new(0),
+            notify: Notify::new(),
+        })
+    }
+
+    fn increment(&self) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn load(&self) -> u32 {
+        self.count.load(Ordering::SeqCst)
+    }
+
+    /// Wait until the call count reaches `expected`.
+    async fn wait_for(&self, expected: u32) {
+        loop {
+            if self.count.load(Ordering::SeqCst) >= expected {
+                return;
+            }
+            self.notify.notified().await;
+        }
+    }
+}
+
 struct MockHandler {
     name: &'static str,
-    call_count: Arc<AtomicU32>,
+    signal: Arc<HandlerSignal>,
     ticket_ids: Arc<Mutex<Vec<String>>>,
     auto_advance_to: Option<LifecycleStatus>,
 }
 
 impl MockHandler {
-    fn new(name: &'static str) -> (Self, Arc<AtomicU32>, Arc<Mutex<Vec<String>>>) {
-        let call_count = Arc::new(AtomicU32::new(0));
+    fn new(name: &'static str) -> (Self, Arc<HandlerSignal>, Arc<Mutex<Vec<String>>>) {
+        let signal = HandlerSignal::new();
         let ticket_ids = Arc::new(Mutex::new(Vec::new()));
         let handler = Self {
             name,
-            call_count: call_count.clone(),
+            signal: signal.clone(),
             ticket_ids: ticket_ids.clone(),
             auto_advance_to: None,
         };
-        (handler, call_count, ticket_ids)
+        (handler, signal, ticket_ids)
     }
 
     fn with_auto_advance(mut self, to: LifecycleStatus) -> Self {
@@ -52,7 +89,7 @@ impl MockHandler {
 
 impl WorkflowHandler for MockHandler {
     fn handle(&self, ctx: &WorkflowContext, ticket_id: &str) -> HandlerFuture<'_> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.signal.increment();
         let ticket_ids = self.ticket_ids.clone();
         let tid = ticket_id.to_owned();
         let name = self.name;
@@ -166,32 +203,6 @@ impl TestHarness {
             worker_id,
         );
         self.client.workflow_step_complete(req).await.unwrap();
-    }
-
-    /// Wait for a workflow to reach a specific status, with timeout.
-    async fn wait_for_status(
-        &self,
-        ticket_id: &str,
-        expected: LifecycleStatus,
-        timeout_ms: u64,
-    ) -> LifecycleStatus {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-        loop {
-            if let Ok(Some(wf)) = self.workflow_repo.get_workflow_by_ticket(ticket_id).await
-                && wf.status == expected
-            {
-                return wf.status;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                let wf = self
-                    .workflow_repo
-                    .get_workflow_by_ticket(ticket_id)
-                    .await
-                    .unwrap();
-                return wf.map(|w| w.status).unwrap_or(LifecycleStatus::Open);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
     }
 
     async fn shutdown(self) {
@@ -385,16 +396,16 @@ async fn seed_ticket_and_worker(
         .unwrap();
 }
 
-/// Mock handler counters for the full lifecycle.
+/// Mock handler signals for the full lifecycle.
 struct LifecycleCounters {
     handlers: Vec<HandlerEntry>,
-    awaiting_dispatch: Arc<AtomicU32>,
-    implementing: Arc<AtomicU32>,
-    verifying: Arc<AtomicU32>,
-    pushing: Arc<AtomicU32>,
-    in_review: Arc<AtomicU32>,
-    addressing_feedback: Arc<AtomicU32>,
-    merging: Arc<AtomicU32>,
+    awaiting_dispatch: Arc<HandlerSignal>,
+    implementing: Arc<HandlerSignal>,
+    verifying: Arc<HandlerSignal>,
+    pushing: Arc<HandlerSignal>,
+    in_review: Arc<HandlerSignal>,
+    addressing_feedback: Arc<HandlerSignal>,
+    merging: Arc<HandlerSignal>,
 }
 
 /// Build the full set of mock handlers for lifecycle testing.
@@ -472,31 +483,19 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 
     // Phase 1: Worker reports idle → AwaitingDispatch → Implementing
     h.send_idle(worker_id).await;
-    let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::Implementing, 2000)
-        .await;
-    assert_eq!(status, LifecycleStatus::Implementing);
-    assert_eq!(lc.implementing.load(Ordering::SeqCst), 1);
+    lc.implementing.wait_for(1).await;
 
     // Phase 2: Step complete cascades: Implementing → Verifying → Pushing → InReview → AddressingFeedback
     h.send_step_complete(worker_id).await;
-    let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::AddressingFeedback, 3000)
-        .await;
-    assert_eq!(status, LifecycleStatus::AddressingFeedback);
-    assert_eq!(lc.verifying.load(Ordering::SeqCst), 1);
-    assert_eq!(lc.pushing.load(Ordering::SeqCst), 1);
-    assert_eq!(lc.in_review.load(Ordering::SeqCst), 1);
-    assert_eq!(lc.addressing_feedback.load(Ordering::SeqCst), 1);
+    lc.addressing_feedback.wait_for(1).await;
+    assert_eq!(lc.verifying.load(), 1);
+    assert_eq!(lc.pushing.load(), 1);
+    assert_eq!(lc.in_review.load(), 1);
 
     // Phase 3: Step complete → AddressingFeedback (feedback_mode=later) → Merging
     h.send_step_complete(worker_id).await;
-    let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::Merging, 2000)
-        .await;
-    assert_eq!(status, LifecycleStatus::Merging);
-    assert_eq!(lc.merging.load(Ordering::SeqCst), 1);
-    assert_eq!(lc.awaiting_dispatch.load(Ordering::SeqCst), 0);
+    lc.merging.wait_for(1).await;
+    assert_eq!(lc.awaiting_dispatch.load(), 0);
 
     h.shutdown().await;
 }
@@ -536,11 +535,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
     let mut h = TestHarness::new(ticket_repo, workflow_repo, worker_repo, handlers).await;
 
     h.send_step_complete(worker_id).await;
-    let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::Implementing, 2000)
-        .await;
-    assert_eq!(status, LifecycleStatus::Implementing);
-    assert_eq!(impl_count.load(Ordering::SeqCst), 1);
+    impl_count.wait_for(1).await;
 
     h.shutdown().await;
 }
@@ -589,12 +584,8 @@ async fn coordinator_dequeues_pending_across_grpc_boundary() {
         .await
         .unwrap();
 
-    let status = h
-        .wait_for_status(ticket_id, LifecycleStatus::Implementing, 2000)
-        .await;
-    assert_eq!(status, LifecycleStatus::Implementing);
-    assert_eq!(await_count.load(Ordering::SeqCst), 1);
-    assert_eq!(impl_count.load(Ordering::SeqCst), 1);
+    impl_count.wait_for(1).await;
+    assert_eq!(await_count.load(), 1);
 
     h.shutdown().await;
 }
