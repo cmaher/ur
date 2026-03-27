@@ -178,39 +178,81 @@ async fn run_daemon_only() -> Result<()> {
 async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
     let session = tmux::Session::agent();
     let interval = Duration::from_secs(EXIT_WATCHER_POLL_SECS);
+    let is_design_worker = std::env::var("UR_WORKER_CLAUDE").unwrap_or_default() == "design";
 
-    info!("exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s");
+    info!(
+        is_design_worker,
+        "exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s"
+    );
 
     loop {
         tokio::time::sleep(interval).await;
 
-        match session.is_pane_alive().await {
+        let should_stop = match session.is_pane_alive().await {
             Ok(true) => {
                 debug!("agent pane is alive");
-                continue;
+                // Pane is alive — for design workers, also check if claude process exited
+                if is_design_worker && !is_claude_process_running().await {
+                    info!("claude process exited in design worker, initiating shutdown");
+                    true
+                } else {
+                    false
+                }
             }
             Ok(false) => {
                 info!("agent pane is dead, initiating shutdown");
+                true
             }
             Err(e) => {
                 warn!(error = %e, "failed to check pane status, treating as dead");
+                true
             }
+        };
+
+        if !should_stop {
+            continue;
         }
 
-        // Pane is dead (or check failed) — send WorkerStop RPC
-        info!(worker_id = %worker_id, server_addr = %server_addr, "sending WorkerStop RPC");
-        match self_stop_rpc(&server_addr, &worker_id, &worker_secret).await {
-            Ok(()) => {
-                info!("WorkerStop RPC succeeded, waiting for server to stop container");
-                // Wait indefinitely for the server's docker stop to kill us
-                loop {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                }
+        // Pane is dead, claude exited (design), or check failed — send WorkerStop RPC
+        send_stop_and_wait(&server_addr, &worker_id, &worker_secret).await;
+    }
+}
+
+/// Send WorkerStop RPC and wait for the server to kill the container.
+async fn send_stop_and_wait(server_addr: &str, worker_id: &str, worker_secret: &str) {
+    info!(worker_id, server_addr, "sending WorkerStop RPC");
+    match self_stop_rpc(server_addr, worker_id, worker_secret).await {
+        Ok(()) => {
+            info!("WorkerStop RPC succeeded, waiting for server to stop container");
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
             }
-            Err(e) => {
-                error!(error = %e, "WorkerStop RPC failed, falling back to process::exit(0)");
-                std::process::exit(0);
-            }
+        }
+        Err(e) => {
+            error!(error = %e, "WorkerStop RPC failed, falling back to process::exit(0)");
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Check if a `claude` process is currently running using `pgrep`.
+/// Returns `true` if at least one claude process is found, `false` otherwise.
+async fn is_claude_process_running() -> bool {
+    match tokio::process::Command::new("pgrep")
+        .args(["-x", "claude"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+    {
+        Ok(status) => {
+            let running = status.success();
+            debug!(running, "claude process check");
+            running
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to run pgrep, assuming claude is running");
+            true
         }
     }
 }
