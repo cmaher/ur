@@ -85,6 +85,7 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
             "--logs-dir",
             &config.logs_dir.display().to_string(),
         ])
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr_file))
         // Put builderd in its own process group so signals sent to the ur CLI
