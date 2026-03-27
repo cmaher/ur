@@ -7,6 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
+use tracing::{debug, warn};
 use ur_rpc::proto::ticket::Ticket;
 
 use crate::context::TuiContext;
@@ -243,15 +244,26 @@ impl TicketsListScreen {
                 // Clamp to last valid page if offset is past end.
                 let max_page = self.total_pages().saturating_sub(1);
                 if self.total_count > 0 && self.current_page > max_page {
+                    warn!(
+                        current_page = self.current_page,
+                        max_page = max_page,
+                        "tickets: stale-reclamp, current_page > max_page; marking stale for re-fetch"
+                    );
                     self.current_page = max_page;
                     // Need another fetch at the clamped offset.
                     self.mark_stale();
                     return;
                 }
+                debug!(
+                    count = tickets.len(),
+                    total_count = total_count,
+                    "tickets: Loading -> Loaded"
+                );
                 self.data_state = DataState::Loaded(tickets.clone());
                 self.clamp_selection();
             }
             Err(msg) => {
+                debug!(error = %msg, "tickets: Loading -> Error");
                 self.data_state = DataState::Error(msg.clone());
                 self.total_count = 0;
             }
@@ -732,6 +744,7 @@ impl Screen for TicketsListScreen {
     }
 
     fn mark_stale(&mut self) {
+        debug!("tickets: mark_stale");
         self.data_state = DataState::Loading;
     }
 

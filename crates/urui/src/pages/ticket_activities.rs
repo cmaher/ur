@@ -4,6 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+use tracing::debug;
 use ur_rpc::proto::ticket::ActivityEntry;
 
 use crate::context::TuiContext;
@@ -446,6 +447,11 @@ impl Screen for TicketActivitiesScreen {
         };
         match result {
             Ok(activities) => {
+                debug!(
+                    ticket_id = %self.ticket_id,
+                    count = activities.len(),
+                    "ticket_activities: Loading -> Loaded"
+                );
                 // Rebuild unique authors from the full (unfiltered) list only
                 // when we switch to "all" (author_index == 0), so that cycling
                 // is consistent across filtered fetches.
@@ -456,6 +462,11 @@ impl Screen for TicketActivitiesScreen {
                 self.clamp_selection();
             }
             Err(msg) => {
+                debug!(
+                    ticket_id = %self.ticket_id,
+                    error = %msg,
+                    "ticket_activities: Loading -> Error"
+                );
                 self.data_state = DataState::Error(msg.clone());
             }
         }
@@ -466,6 +477,7 @@ impl Screen for TicketActivitiesScreen {
     }
 
     fn mark_stale(&mut self) {
+        debug!(ticket_id = %self.ticket_id, "ticket_activities: mark_stale");
         self.data_state = DataState::Loading;
     }
 
