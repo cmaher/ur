@@ -23,6 +23,16 @@ Standalone TUI binary for the Ur coordination framework. Connects to `ur-server`
 - Theme colors are generated at compile time from `themes/themes.css` via `build.rs` (oklch to sRGB conversion).
 - Config is loaded from `ur_config::Config` which reads `~/.ur/ur.toml`.
 
+## Footer Command Ordering
+
+Footer commands returned by `footer_commands()` must follow a consistent ordering for the left side (`common: false`):
+
+1. **Capital-letter shortcuts** (Shift+key) in alphabetical order (A, C, D, O, P, S, V, X, …)
+2. **Lowercase-letter shortcuts** in alphabetical order (a, d, f, …)
+3. **Non-letter keys** (Space, Enter, `*`, etc.)
+
+The right side (`common: true`) contains navigation/system commands and is not subject to this ordering.
+
 ## Dependencies
 
 - `ratatui` + `crossterm` for terminal rendering

@@ -601,18 +601,23 @@ impl Screen for TicketsListScreen {
         }
         vec![
             FooterCommand {
-                key_label: keymap.label_for(&Action::Filter),
-                description: "Filter".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::SetPriority),
-                description: "Priority".to_string(),
+                key_label: keymap.label_for(&Action::CreateTicket),
+                description: "Create".to_string(),
                 common: false,
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::Dispatch),
                 description: "Dispatch".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::OpenTicket),
+                description: "Open".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::SetPriority),
+                description: "Priority".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -626,13 +631,13 @@ impl Screen for TicketsListScreen {
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::OpenTicket),
-                description: "Open".to_string(),
+                key_label: keymap.label_for(&Action::Filter),
+                description: "Filter".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::CreateTicket),
-                description: "Create".to_string(),
+                key_label: keymap.label_for(&Action::Select),
+                description: "Select".to_string(),
                 common: false,
             },
             FooterCommand {

@@ -575,8 +575,13 @@ impl Screen for TicketDetailScreen {
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: keymap.label_for(&Action::Select),
-                description: "Open child".to_string(),
+                key_label: keymap.label_for(&Action::DispatchAll),
+                description: "Dispatch all".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::CreateTicket),
+                description: "Create child".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -595,23 +600,18 @@ impl Screen for TicketDetailScreen {
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::OpenDescription),
-                description: "Description".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::DispatchAll),
-                description: "Dispatch all".to_string(),
-                common: false,
-            },
-            FooterCommand {
                 key_label: keymap.label_for(&Action::OpenActivities),
                 description: "Activities".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::CreateTicket),
-                description: "Create child".to_string(),
+                key_label: keymap.label_for(&Action::OpenDescription),
+                description: "Description".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Select),
+                description: "Open child".to_string(),
                 common: false,
             },
             FooterCommand {
