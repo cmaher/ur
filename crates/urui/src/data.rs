@@ -14,8 +14,8 @@ use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::{
     ActivityEntry, CancelWorkflowRequest, CreateTicketRequest, CreateWorkflowRequest,
     GetTicketRequest, GetTicketResponse, ListTicketsRequest, ListTicketsResponse,
-    ListWorkflowsRequest, ListWorkflowsResponse, SubscribeUiEventsRequest, Ticket, UiEventType,
-    UpdateTicketRequest,
+    ListWorkflowsRequest, ListWorkflowsResponse, RedriveTicketRequest, SubscribeUiEventsRequest,
+    Ticket, UiEventType, UpdateTicketRequest,
 };
 
 use crate::create_ticket::{PendingTicket, is_title_placeholder};
@@ -272,6 +272,32 @@ impl DataManager {
                 },
                 Err(e) => {
                     error!(port, %ticket_id, error = %e, "workflow cancel failed");
+                    ActionResult {
+                        result: Err(e.to_string()),
+                        silent_on_success: false,
+                    }
+                }
+            };
+            let _ = tx.send(AppEvent::ActionResult(action_result));
+        });
+    }
+
+    /// Spawn a background task that redrives a ticket to `verifying` status
+    /// via `RedriveTicket` and sends the result as `AppEvent::ActionResult`.
+    pub fn redrive_flow(&self, ticket_id: String) {
+        let port = self.port;
+        let tx = self.sender.clone();
+
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "redriving ticket to verifying");
+            let result = redrive_ticket_rpc(port, &ticket_id).await;
+            let action_result = match result {
+                Ok(()) => ActionResult {
+                    result: Ok(format!("Redrove {ticket_id} to verifying")),
+                    silent_on_success: false,
+                },
+                Err(e) => {
+                    error!(port, %ticket_id, error = %e, "redrive failed");
                     ActionResult {
                         result: Err(e.to_string()),
                         silent_on_success: false,
@@ -783,6 +809,19 @@ async fn cancel_workflow_rpc(port: u16, ticket_id: &str) -> Result<()> {
     client
         .cancel_workflow(CancelWorkflowRequest {
             ticket_id: ticket_id.to_owned(),
+        })
+        .await?;
+    Ok(())
+}
+
+/// Perform the RedriveTicket RPC to redrive a ticket to verifying status.
+async fn redrive_ticket_rpc(port: u16, ticket_id: &str) -> Result<()> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .redrive_ticket(RedriveTicketRequest {
+            id: ticket_id.to_owned(),
+            to_status: "verifying".to_owned(),
         })
         .await?;
     Ok(())
