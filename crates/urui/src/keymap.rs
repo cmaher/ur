@@ -23,6 +23,7 @@ pub enum Action {
     CloseTicket,
     OpenTicket,
     CancelFlow,
+    Redrive,
     OpenSettings,
     CreateTicket,
     LaunchDesign,
@@ -338,6 +339,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::OpenDescription,
     );
+
+    // redrive = [V]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('V'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::Redrive,
+    );
 }
 
 /// Insert ticket action bindings that are NOT overridable via `KeymapOverrides`.
@@ -353,6 +363,7 @@ fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Act
         ('a', KeyModifiers::NONE, Action::OpenActivities),
         ('A', KeyModifiers::SHIFT, Action::DispatchAll),
         ('d', KeyModifiers::NONE, Action::OpenDescription),
+        ('V', KeyModifiers::SHIFT, Action::Redrive),
     ] {
         bindings.insert(
             KeyBinding {
@@ -836,6 +847,15 @@ mod tests {
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)),
             Some(Action::CreateTicket),
+        );
+    }
+
+    #[test]
+    fn default_keymap_redrive() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT)),
+            Some(Action::Redrive),
         );
     }
 
