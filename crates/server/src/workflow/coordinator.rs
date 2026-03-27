@@ -312,7 +312,7 @@ async fn run_handler(
                 target = %target_status,
                 "no handler registered for target status — cleaning up intent"
             );
-            cleanup_intent(&ctx.workflow_repo, ticket_id).await;
+            cleanup_intent(&ctx.workflow_repo, ticket_id, target_status).await;
             return;
         }
     };
@@ -324,7 +324,7 @@ async fn run_handler(
                 target = %target_status,
                 "workflow handler completed successfully"
             );
-            cleanup_intent(&ctx.workflow_repo, ticket_id).await;
+            cleanup_intent(&ctx.workflow_repo, ticket_id, target_status).await;
         }
         Err(handler_err) => {
             handle_failure(&ctx.workflow_repo, ticket_id, target_status, handler_err).await;
@@ -394,8 +394,16 @@ fn lifecycle_status_to_event(status: LifecycleStatus) -> ur_rpc::workflow_event:
     }
 }
 
-/// Delete all intents for a ticket after successful processing.
-async fn cleanup_intent(workflow_repo: &WorkflowRepo, ticket_id: &str) {
+/// Delete the intent for a specific ticket and target status after processing.
+///
+/// Only deletes the intent matching both `ticket_id` and `target_status`,
+/// preserving intents for subsequent transitions that may have been queued
+/// while this handler was running (crash recovery depends on these).
+async fn cleanup_intent(
+    workflow_repo: &WorkflowRepo,
+    ticket_id: &str,
+    target_status: LifecycleStatus,
+) {
     let intents = match workflow_repo.list_intents().await {
         Ok(i) => i,
         Err(e) => {
@@ -406,6 +414,7 @@ async fn cleanup_intent(workflow_repo: &WorkflowRepo, ticket_id: &str) {
 
     for intent in intents {
         if intent.ticket_id == ticket_id
+            && intent.target_status == target_status
             && let Err(e) = workflow_repo.delete_intent(&intent.id).await
         {
             error!(error = %e, intent_id = %intent.id, "failed to delete intent");
@@ -434,7 +443,7 @@ async fn handle_failure(
         error!(error = %e, "failed to set workflow stalled");
     }
 
-    cleanup_intent(workflow_repo, ticket_id).await;
+    cleanup_intent(workflow_repo, ticket_id, target_status).await;
 }
 
 /// Create a clonable sender for submitting transition requests.
@@ -889,5 +898,30 @@ mod tests {
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_intent_preserves_intents_for_other_statuses() {
+        let (_tmp, repo, workflow_repo, _worker_repo) = setup_test_db().await;
+        create_test_ticket(&repo, "ur-race1").await;
+
+        // Simulate the race: two intents exist for the same ticket but different statuses.
+        // This happens when a handler (e.g., verifying) sends a follow-up transition
+        // (e.g., pushing) before its own cleanup runs.
+        workflow_repo
+            .create_intent("ur-race1", LifecycleStatus::Verifying)
+            .await
+            .unwrap();
+        workflow_repo
+            .create_intent("ur-race1", LifecycleStatus::Pushing)
+            .await
+            .unwrap();
+
+        // Cleaning up the verifying intent should NOT delete the pushing intent.
+        cleanup_intent(&workflow_repo, "ur-race1", LifecycleStatus::Verifying).await;
+
+        let remaining = workflow_repo.list_intents().await.unwrap();
+        assert_eq!(remaining.len(), 1, "pushing intent should survive cleanup");
+        assert_eq!(remaining[0].target_status, LifecycleStatus::Pushing);
     }
 }
