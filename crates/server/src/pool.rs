@@ -126,6 +126,9 @@ impl RepoPoolManager {
                 self.reclone_slot(&project.repo, project_key, &slot_name)
                     .await?;
             }
+            let local_slot_path = self.host_to_local_path(&host_path);
+            self.apply_local_files(project_key, &local_slot_path)?;
+            info!(project_key, path = %local_slot_path.display(), "applied local files to pool slot");
             return Ok((host_path, slot_id));
         }
 
@@ -155,6 +158,10 @@ impl RepoPoolManager {
 
         self.clone_slot(&project.repo, project_key, &slot_name)
             .await?;
+
+        let local_slot_path = self.host_to_local_path(&host_path);
+        self.apply_local_files(project_key, &local_slot_path)?;
+        info!(project_key, path = %local_slot_path.display(), "applied local files to pool slot");
 
         // Insert new slot row in DB
         let now = Utc::now().to_rfc3339();
