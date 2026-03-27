@@ -7,6 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
+use tracing::debug;
 use ur_rpc::proto::core::WorkerSummary;
 
 use crate::context::TuiContext;
@@ -303,6 +304,7 @@ impl Screen for WorkersListScreen {
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
             DataPayload::Workers(Ok(workers)) => {
+                debug!(count = workers.len(), "workers: Loading -> Loaded");
                 self.loaded = true;
                 self.pending_kills.clear();
                 self.entry_map.clear();
@@ -313,6 +315,7 @@ impl Screen for WorkersListScreen {
                 self.preserve_selection_and_rebuild();
             }
             DataPayload::Workers(Err(msg)) => {
+                debug!(error = %msg, "workers: Loading -> Error");
                 self.loaded = true;
                 self.error = Some(msg.clone());
                 self.entry_map.clear();
@@ -327,6 +330,7 @@ impl Screen for WorkersListScreen {
     }
 
     fn mark_stale(&mut self) {
+        debug!("workers: mark_stale");
         self.loaded = false;
     }
 

@@ -6,6 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+use tracing::debug;
 use ur_markdown::{MarkdownColors, render_markdown};
 use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
 
@@ -653,6 +654,12 @@ impl Screen for TicketDetailScreen {
         };
         match boxed.as_ref() {
             Ok((detail, children, total)) => {
+                debug!(
+                    ticket_id = %self.ticket_id,
+                    children_count = children.len(),
+                    total_children = total,
+                    "ticket_detail: Loading -> Loaded"
+                );
                 self.active_status = None;
                 self.data_state = DataState::Loaded {
                     detail: Box::new(detail.clone()),
@@ -662,6 +669,11 @@ impl Screen for TicketDetailScreen {
                 self.clamp_selection();
             }
             Err(msg) => {
+                debug!(
+                    ticket_id = %self.ticket_id,
+                    error = %msg,
+                    "ticket_detail: Loading -> Error"
+                );
                 self.active_status = None;
                 self.data_state = DataState::Error(msg.clone());
             }
@@ -673,6 +685,7 @@ impl Screen for TicketDetailScreen {
     }
 
     fn mark_stale(&mut self) {
+        debug!(ticket_id = %self.ticket_id, "ticket_detail: mark_stale");
         self.data_state = DataState::Loading;
     }
 

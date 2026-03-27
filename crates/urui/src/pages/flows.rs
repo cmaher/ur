@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
+use tracing::debug;
 use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
@@ -537,6 +538,11 @@ impl Screen for FlowsListScreen {
     fn on_data(&mut self, payload: &DataPayload) {
         match payload {
             DataPayload::Flows(Ok((workflows, total_count))) => {
+                debug!(
+                    count = workflows.len(),
+                    total_count = total_count,
+                    "flows: Loading -> Loaded"
+                );
                 self.loaded = true;
                 self.pending_fetch = false;
                 self.active_status = None;
@@ -544,6 +550,7 @@ impl Screen for FlowsListScreen {
                 self.load_page(workflows, *total_count);
             }
             DataPayload::Flows(Err(msg)) => {
+                debug!(error = %msg, "flows: Loading -> Error");
                 self.loaded = true;
                 self.pending_fetch = false;
                 self.active_status = None;
@@ -560,6 +567,7 @@ impl Screen for FlowsListScreen {
     }
 
     fn mark_stale(&mut self) {
+        debug!("flows: mark_stale");
         self.loaded = false;
     }
 

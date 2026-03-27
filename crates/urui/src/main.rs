@@ -8,6 +8,7 @@ mod create_ticket;
 mod data;
 mod event;
 mod keymap;
+mod logging;
 mod notifications;
 mod page;
 mod pages;
@@ -41,6 +42,7 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = ur_config::Config::load()?;
+    let _guard = logging::init(&config.logs_dir);
 
     // Verify server connectivity early so the user gets a clear error message.
     let _channel = ur_rpc::connection::connect(config.server_port).await?;
