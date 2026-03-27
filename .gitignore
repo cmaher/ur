@@ -12,6 +12,9 @@ containers/server/libonnxruntime.so
 # Claude Code local skills
 .claude/skills/
 
+# Local cargo config (sccache, etc.)
+.cargo/config.toml
+
 # Bacon
 .bacon-locations
 .source_*
