@@ -319,6 +319,7 @@ mod tests {
             builderd_client,
             local_repo,
             worker_repo.clone(),
+            std::path::PathBuf::from("/tmp/test/config"),
         );
         let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
         crate::WorkerManager::new(

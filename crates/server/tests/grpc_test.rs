@@ -107,6 +107,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         builderd_client,
         local_repo,
         worker_repo.clone(),
+        workspace.join("config"),
     );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),

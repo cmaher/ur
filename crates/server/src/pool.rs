@@ -40,7 +40,6 @@ pub struct RepoPoolManager {
     /// Database-backed slot repository for tracking slot availability.
     worker_repo: WorkerRepo,
     /// Host-side config directory for convention-based local project files.
-    #[allow(dead_code)]
     host_config_dir: PathBuf,
 }
 
@@ -488,6 +487,72 @@ impl RepoPoolManager {
         })
     }
 
+    /// Recursively copy local project files into a pool slot.
+    ///
+    /// Copies files from `<host_config_dir>/projects/<key>/local/` into the
+    /// container-local slot directory, preserving directory structure. This is used
+    /// to overlay project-specific config files (e.g., `.cargo/config.toml`) into
+    /// each worker's checkout.
+    ///
+    /// No-op if the source directory doesn't exist.
+    pub fn apply_local_files(
+        &self,
+        project_key: &str,
+        local_slot_path: &Path,
+    ) -> Result<(), String> {
+        let source = self
+            .host_config_dir
+            .join("projects")
+            .join(project_key)
+            .join("local");
+
+        if !source.is_dir() {
+            return Ok(());
+        }
+
+        Self::copy_dir_recursive(&source, local_slot_path)
+    }
+
+    /// Recursively copy all files and directories from `src` into `dst`.
+    ///
+    /// Creates intermediate directories as needed and overwrites existing files.
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+        let entries = std::fs::read_dir(src)
+            .map_err(|e| format!("failed to read directory {}: {e}", src.display()))?;
+
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("failed to read entry in {}: {e}", src.display()))?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+
+            if src_path.is_dir() {
+                std::fs::create_dir_all(&dst_path).map_err(|e| {
+                    format!("failed to create directory {}: {e}", dst_path.display())
+                })?;
+                Self::copy_dir_recursive(&src_path, &dst_path)?;
+            } else {
+                if let Some(parent) = dst_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!(
+                            "failed to create parent directory {}: {e}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                std::fs::copy(&src_path, &dst_path).map_err(|e| {
+                    format!(
+                        "failed to copy {} to {}: {e}",
+                        src_path.display(),
+                        dst_path.display()
+                    )
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Trust mise configuration in a newly cloned slot if `mise.toml` exists.
     ///
     /// Runs `mise trust` on the host via builderd. If mise is not installed or the
@@ -560,6 +625,7 @@ mod tests {
         let local_repo = local_repo::GitBackend {
             client: BuilderdClient::new(channel),
         };
+        let host_config_dir = tmp.join("config");
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
@@ -568,6 +634,7 @@ mod tests {
             projects,
             git_branch_prefix: String::new(),
             worker_repo,
+            host_config_dir,
         };
         (mgr, workspace)
     }
@@ -829,6 +896,7 @@ mod tests {
             projects,
             git_branch_prefix: String::new(),
             worker_repo,
+            host_config_dir: PathBuf::from("/home/user/.ur"),
         };
 
         // Local paths for filesystem ops
@@ -1031,6 +1099,122 @@ mod tests {
             mgr.host_slot_path("testproj", "shared"),
             expected_path,
             "shared slot path should be pool/<project>/shared/"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_noop_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // No local dir exists — should be a no-op (no error)
+        let slot = workspace.join("pool").join("testproj").join("0");
+        std::fs::create_dir_all(&slot).unwrap();
+        let result = mgr.apply_local_files("testproj", &slot);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_copies_flat_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // Set up source: <config>/projects/testproj/local/
+        let local_dir = tmp
+            .path()
+            .join("config")
+            .join("projects")
+            .join("testproj")
+            .join("local");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::write(local_dir.join("file_a.txt"), "content a").unwrap();
+        std::fs::write(local_dir.join("file_b.txt"), "content b").unwrap();
+
+        // Set up slot directory
+        let slot = workspace.join("pool").join("testproj").join("0");
+        std::fs::create_dir_all(&slot).unwrap();
+
+        let result = mgr.apply_local_files("testproj", &slot);
+        assert!(result.is_ok());
+
+        assert_eq!(
+            std::fs::read_to_string(slot.join("file_a.txt")).unwrap(),
+            "content a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join("file_b.txt")).unwrap(),
+            "content b"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_copies_nested_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // Set up nested source: .cargo/config.toml
+        let local_dir = tmp
+            .path()
+            .join("config")
+            .join("projects")
+            .join("testproj")
+            .join("local");
+        let cargo_dir = local_dir.join(".cargo");
+        std::fs::create_dir_all(&cargo_dir).unwrap();
+        std::fs::write(
+            cargo_dir.join("config.toml"),
+            "[build]\ntarget = \"aarch64\"",
+        )
+        .unwrap();
+
+        // Also a deeply nested file
+        let deep_dir = local_dir.join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep_dir).unwrap();
+        std::fs::write(deep_dir.join("deep.txt"), "deep content").unwrap();
+
+        let slot = workspace.join("pool").join("testproj").join("0");
+        std::fs::create_dir_all(&slot).unwrap();
+
+        let result = mgr.apply_local_files("testproj", &slot);
+        assert!(result.is_ok());
+
+        assert_eq!(
+            std::fs::read_to_string(slot.join(".cargo").join("config.toml")).unwrap(),
+            "[build]\ntarget = \"aarch64\""
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join("a").join("b").join("c").join("deep.txt")).unwrap(),
+            "deep content"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_overwrites_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+
+        // Set up source with a file
+        let local_dir = tmp
+            .path()
+            .join("config")
+            .join("projects")
+            .join("testproj")
+            .join("local");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        std::fs::write(local_dir.join("existing.txt"), "new content").unwrap();
+
+        // Set up slot with a pre-existing file at the same path
+        let slot = workspace.join("pool").join("testproj").join("0");
+        std::fs::create_dir_all(&slot).unwrap();
+        std::fs::write(slot.join("existing.txt"), "old content").unwrap();
+
+        let result = mgr.apply_local_files("testproj", &slot);
+        assert!(result.is_ok());
+
+        // File should be overwritten
+        assert_eq!(
+            std::fs::read_to_string(slot.join("existing.txt")).unwrap(),
+            "new content"
         );
     }
 }

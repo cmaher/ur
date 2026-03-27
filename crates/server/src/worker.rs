@@ -858,6 +858,7 @@ mod tests {
             builderd_client,
             local_repo,
             worker_repo.clone(),
+            workspace.path().join("config"),
         );
         let network_manager = NetworkManager::new(
             "docker".into(),

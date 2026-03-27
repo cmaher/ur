@@ -241,6 +241,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         builderd_client,
         local_repo,
         worker_repo.clone(),
+        std::path::PathBuf::from("/tmp/test/config"),
     );
     let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
     ur_server::WorkerManager::new(
