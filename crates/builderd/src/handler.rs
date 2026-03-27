@@ -68,6 +68,7 @@ impl BuilderDaemonHandler {
         let mut cmd = tokio::process::Command::new(&req.command);
         cmd.args(&req.args)
             .current_dir(&resolved_dir)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (k, v) in &req.env {
