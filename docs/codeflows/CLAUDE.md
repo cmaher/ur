@@ -11,6 +11,7 @@ Detailed flow diagrams for cross-cutting concerns. Consult these before modifyin
 - `docs/codeflows/lifecycle-workflow.md` — Workflow coordinator (state machine, WorkflowCoordinator, WorkerdNextStepRouter, GithubPollerManager, workflow/intent tables, WorkflowStepComplete RPC)
 - `docs/codeflows/pool-git-builder-flow.md` — Pool git operations via builderd (clone, fetch, reset through builder daemon)
 - `docs/codeflows/process-launch-credentials.md` — Process launch and credential injection (how containers get Claude Code credentials)
+- `docs/codeflows/project-file-mounting.md` — Project file mounting (template path resolution, volume mounts for git hooks/skill hooks/CLAUDE.md/custom mounts, convention fallback)
 - `docs/codeflows/server-lifecycle.md` — Server lifecycle (`ur start`/`ur stop`, builderd spawn, compose generation, port allocation, network topology)
 - `docs/codeflows/skill-loading.md` — Skill loading (baking skills into images, selective runtime activation)
 - `docs/codeflows/ui-events.md` — UI events pipeline (SQLite triggers, UiEventPoller, gRPC streaming, TUI consumption)
