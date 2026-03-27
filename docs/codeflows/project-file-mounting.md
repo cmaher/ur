@@ -117,6 +117,89 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
 docker run with -v volumes + -e env vars
 ```
 
+## Local Project Files (Pool Mode Only)
+
+Convention-based file overlay that copies host-side files into pool slots at acquire time. This is **pool mode only** — workspace mode (`-w`) is unaffected.
+
+### Convention Path
+
+```
+<config_dir>/projects/<key>/local/
+```
+
+The directory tree mirrors the workspace root. Files are recursively copied into the slot's workspace directory, preserving structure:
+
+```
+~/.ur/projects/ur/local/
+  .cargo/
+    config.toml      → copied to <slot>/.cargo/config.toml
+  .env.local          → copied to <slot>/.env.local
+```
+
+### Example: sccache Configuration
+
+To enable sccache for all pool workers on a project, place a Cargo config at the convention path:
+
+```
+~/.ur/projects/ur/local/.cargo/config.toml
+```
+
+With contents:
+
+```toml
+[build]
+rustc-wrapper = "/usr/bin/sccache"
+```
+
+Every pool slot acquired for the `ur` project will have `.cargo/config.toml` copied into its workspace root, enabling sccache for all Cargo builds without any `ur.toml` configuration.
+
+### Copy Timing
+
+The copy runs **after** clone/reset and **before** container launch:
+
+1. `acquire_slot()` clones or resets the slot (via builderd)
+2. `apply_local_files()` copies from `<config_dir>/projects/<key>/local/` into the slot
+3. Worker branch checkout (`git checkout -b <worker_id>`)
+4. Container launched with the slot as `/workspace`
+
+On slot release, `git clean -fdx` (part of `reset_slot()`) removes the copied files, and they are re-copied on the next acquire.
+
+### Error Behavior
+
+- **Missing directory**: If `<config_dir>/projects/<key>/local/` does not exist or is empty, the copy step is a **no-op** (no error).
+- **Copy failure**: If the directory exists but a copy operation fails (e.g., permission error, disk full), the error **propagates from `acquire_slot()`** and surfaces to the CLI as an acquire error. The slot is not handed out.
+
+### Implementation
+
+Server-side copy using `std::fs`. The server container has bind-mount access to both the config directory (same access used by `resolve_claude_md()` convention fallback) and pool slot directories (via the workspace bind mount). No builderd involvement needed.
+
+Source: `apply_local_files()` in `crates/server/src/pool.rs`
+
+## Full Flow (Updated)
+
+The flow diagram in the [Full Flow](#full-flow) section above covers volume-mounted project files. The local project files step occurs in a different code path — inside `RepoPoolManager::acquire_slot()`:
+
+```
+RepoPoolManager::acquire_slot()                 [server/src/pool.rs]
+  │
+  ├─ clone_slot() or reset_slot()     ← git ops via builderd
+  │
+  ├─ apply_local_files()              ← NEW: convention-based copy
+  │   │
+  │   ├─ Reads <host_config_dir>/projects/<key>/local/
+  │   │   └─ If missing or empty → no-op, return Ok
+  │   │
+  │   ├─ Recursively copies files into slot workspace
+  │   │   └─ Overwrites existing files (local file wins)
+  │   │
+  │   └─ On failure → Err propagates, slot not acquired
+  │
+  ├─ checkout_branch()                ← worker-specific branch
+  │
+  ▼
+Slot returned → container launch with /workspace mount
+```
+
 ## Workflow Hooks (Server-Side, Not Container-Mounted)
 
 `workflow_hooks_dir` is the exception — it is **not mounted into worker containers**. Instead, the server resolves it when running workflow verification steps (e.g., pre-push hooks) and executes hooks via builderd on the host.
