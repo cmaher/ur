@@ -122,11 +122,17 @@ impl MarkdownRenderer {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 state.flush_line();
+                // Add blank line before heading for vertical spacing.
+                if !state.output.is_empty() {
+                    state.output.push(Line::from(""));
+                }
                 state.heading_level = level as u32;
             }
             Event::End(TagEnd::Heading(_)) => {
                 state.flush_line();
                 state.heading_level = 0;
+                // Add blank line after heading for vertical spacing.
+                state.output.push(Line::from(""));
             }
             Event::Start(Tag::Paragraph) => {}
             Event::End(TagEnd::Paragraph) => state.flush_line(),
@@ -225,7 +231,10 @@ impl MarkdownRenderer {
             usize::MAX
         };
         if state.heading_level > 0 {
-            state.current_spans.push(Span::styled(text_str, style));
+            let prefix = "#".repeat(state.heading_level as usize);
+            state
+                .current_spans
+                .push(Span::styled(format!("{prefix} {text_str}"), style));
         } else {
             push_wrapped_text(&text_str, style, wrap_width, state);
         }
@@ -393,14 +402,20 @@ mod tests {
     // ── Headings ─────────────────────────────────────────────────────────
 
     #[test]
-    fn h1_is_bold_and_heading_color() {
+    fn h1_is_bold_and_heading_color_with_hash_prefix() {
         let colors = default_colors();
         let lines = render_markdown("# Hello World", 80, &colors);
         assert!(!lines.is_empty());
-        let first = &lines[0];
-        let text = spans_text(first);
-        assert!(text.contains("Hello World"), "text: {text:?}");
-        let span = first
+        let heading_line = lines
+            .iter()
+            .find(|l| spans_text(l).contains("Hello World"))
+            .expect("heading line not found");
+        let text = spans_text(heading_line);
+        assert!(
+            text.contains("# Hello World"),
+            "hash prefix missing: {text:?}"
+        );
+        let span = heading_line
             .spans
             .iter()
             .find(|s| s.content.contains("Hello World"))
@@ -410,11 +425,16 @@ mod tests {
     }
 
     #[test]
-    fn h2_is_bold_and_heading_color() {
+    fn h2_is_bold_and_heading_color_with_hash_prefix() {
         let colors = default_colors();
         let lines = render_markdown("## Section", 80, &colors);
-        assert!(!lines.is_empty());
-        let span = lines[0]
+        let heading_line = lines
+            .iter()
+            .find(|l| spans_text(l).contains("Section"))
+            .expect("heading line not found");
+        let text = spans_text(heading_line);
+        assert!(text.contains("## Section"), "hash prefix missing: {text:?}");
+        let span = heading_line
             .spans
             .iter()
             .find(|s| s.content.contains("Section"))
@@ -424,17 +444,44 @@ mod tests {
     }
 
     #[test]
-    fn h3_is_bold_and_heading_color() {
+    fn h3_is_bold_and_heading_color_with_hash_prefix() {
         let colors = default_colors();
         let lines = render_markdown("### Deep", 80, &colors);
-        assert!(!lines.is_empty());
-        let span = lines[0]
+        let heading_line = lines
+            .iter()
+            .find(|l| spans_text(l).contains("Deep"))
+            .expect("heading line not found");
+        let text = spans_text(heading_line);
+        assert!(text.contains("### Deep"), "hash prefix missing: {text:?}");
+        let span = heading_line
             .spans
             .iter()
             .find(|s| s.content.contains("Deep"))
             .unwrap();
         assert_eq!(span.style.fg, Some(colors.heading));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn heading_has_blank_line_before_and_after() {
+        let colors = default_colors();
+        let lines = render_markdown("Hello\n\n## Section\n\nBody text", 80, &colors);
+        let heading_idx = lines
+            .iter()
+            .position(|l| spans_text(l).contains("Section"))
+            .expect("heading line not found");
+        assert!(heading_idx > 0, "heading should not be the first line");
+        assert_eq!(
+            spans_text(&lines[heading_idx - 1]),
+            "",
+            "expected blank line before heading"
+        );
+        assert!(heading_idx + 1 < lines.len(), "no line after heading");
+        assert_eq!(
+            spans_text(&lines[heading_idx + 1]),
+            "",
+            "expected blank line after heading"
+        );
     }
 
     // ── Fenced code blocks ───────────────────────────────────────────────
