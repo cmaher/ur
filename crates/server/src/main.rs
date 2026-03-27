@@ -502,6 +502,7 @@ async fn main() -> anyhow::Result<()> {
         builderd_client,
         local_repo,
         worker_repo.clone(),
+        host_config_dir.clone(),
     );
     let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
         .map(PathBuf::from)
