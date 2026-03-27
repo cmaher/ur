@@ -151,6 +151,7 @@ fn insert_ctrl_page_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
 /// These are not overridable via KeymapOverrides.
 fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     insert_tab_and_ui_bindings(bindings);
+    insert_ticket_navigation_bindings(bindings);
     insert_ticket_action_bindings(bindings);
 }
 
@@ -213,9 +214,8 @@ fn insert_tab_and_ui_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     );
 }
 
-/// Insert ticket and workflow action bindings: select, back, quit, priority,
-/// dispatch, close, open, create, launch design.
-fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+/// Insert ticket navigation bindings: select, back, quit.
+fn insert_ticket_navigation_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // select = [Enter, Space]
     bindings.insert(
         KeyBinding {
@@ -258,7 +258,11 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::Quit,
     );
+}
 
+/// Insert ticket and workflow action bindings: priority, dispatch, close, open,
+/// create, launch design, activities, description, redrive.
+fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // set_priority = [P]
     bindings.insert(
         KeyBinding {
