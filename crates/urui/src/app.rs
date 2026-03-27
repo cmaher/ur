@@ -164,7 +164,12 @@ impl App {
             AppEvent::Tick => self.handle_tick(),
             AppEvent::DataReady(payload) => self.handle_data_ready(*payload),
             AppEvent::ActionResult(result) => self.handle_action_result(result),
-            AppEvent::Resize(_, _) => {} // Just redraw
+            AppEvent::Resize(cols, rows) => {
+                self.update_page_sizes(Rect::new(0, 0, cols, rows));
+                if self.active_screen().needs_data() {
+                    self.fetch_active_tab_data();
+                }
+            }
             AppEvent::UiEvent(items) => self.handle_ui_events(items),
             AppEvent::SetStatus(msg) => self.active_screen_mut().set_status(msg),
         }
