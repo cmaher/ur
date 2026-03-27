@@ -277,6 +277,9 @@ impl App {
             Action::CancelFlow | Action::CloseTicket if self.active_tab == TabId::Flows => {
                 self.cancel_selected_flow();
             }
+            Action::Redrive if self.active_tab == TabId::Flows => {
+                self.redrive_selected_flow();
+            }
             other => self.dispatch_to_screen(other),
         }
     }
@@ -471,6 +474,15 @@ impl App {
             self.flows_page_mut()
                 .set_status(format!("Cancelling workflow for {ticket_id}..."));
             self.data_manager.cancel_flow(ticket_id);
+        }
+    }
+
+    /// Redrive the workflow for the currently selected flow.
+    fn redrive_selected_flow(&mut self) {
+        if let Some(ticket_id) = self.flows_page().selected_ticket_id() {
+            self.flows_page_mut()
+                .set_status(format!("Redriving workflow for {ticket_id}..."));
+            self.data_manager.redrive_flow(ticket_id);
         }
     }
 
