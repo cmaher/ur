@@ -22,7 +22,8 @@ pub struct UiEventItem {
 pub enum AppEvent {
     /// A keyboard event forwarded from the crossterm reader task.
     Key(KeyEvent),
-    /// Periodic tick for background data refresh.
+    /// Periodic tick for UI housekeeping (e.g. banner auto-dismiss).
+    /// Not used for data fetching or retry logic.
     Tick,
     /// A gRPC data-fetch task completed and delivered a payload.
     DataReady(Box<DataPayload>),
@@ -36,6 +37,8 @@ pub enum AppEvent {
     SetStatus(String),
 }
 
+/// Interval for the UI housekeeping tick (banner auto-dismiss). Not used for
+/// data fetching or retry logic — those are driven by the UI event stream.
 const TICK_INTERVAL: Duration = Duration::from_secs(5);
 const CROSSTERM_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 
@@ -169,7 +172,8 @@ fn forward_event(tx: &mpsc::UnboundedSender<AppEvent>) -> bool {
     }
 }
 
-/// Spawns an async task that sends `Tick` at a fixed interval.
+/// Spawns an async task that sends `Tick` at a fixed interval for UI
+/// housekeeping (banner auto-dismiss). Not used for data fetching or retry logic.
 fn spawn_tick_timer(tx: mpsc::UnboundedSender<AppEvent>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(TICK_INTERVAL);

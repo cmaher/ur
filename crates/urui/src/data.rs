@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info, trace};
 
 use ur_config::ProjectConfig;
 use ur_rpc::connection::connect;
@@ -1014,6 +1014,7 @@ async fn consume_ui_event_stream(port: u16, tx: &mpsc::UnboundedSender<AppEvent>
         .subscribe_ui_events(SubscribeUiEventsRequest {})
         .await?;
     let mut stream = response.into_inner();
+    info!(port, "UI event stream connected successfully");
 
     while let Some(batch) = stream.message().await? {
         let items: Vec<UiEventItem> = batch
@@ -1024,6 +1025,7 @@ async fn consume_ui_event_stream(port: u16, tx: &mpsc::UnboundedSender<AppEvent>
                 entity_id: ev.entity_id,
             })
             .collect();
+        trace!(batch_size = items.len(), "received UI event batch");
         if !items.is_empty() && tx.send(AppEvent::UiEvent(items)).is_err() {
             break;
         }
