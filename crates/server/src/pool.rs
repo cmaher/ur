@@ -39,6 +39,9 @@ pub struct RepoPoolManager {
     git_branch_prefix: String,
     /// Database-backed slot repository for tracking slot availability.
     worker_repo: WorkerRepo,
+    /// Host-side config directory for convention-based local project files.
+    #[allow(dead_code)]
+    host_config_dir: PathBuf,
 }
 
 impl RepoPoolManager {
@@ -49,6 +52,7 @@ impl RepoPoolManager {
         builderd_client: BuilderdClient,
         local_repo: local_repo::GitBackend,
         worker_repo: WorkerRepo,
+        host_config_dir: PathBuf,
     ) -> Self {
         Self {
             local_workspace,
@@ -58,6 +62,7 @@ impl RepoPoolManager {
             projects: config.projects.clone(),
             git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
+            host_config_dir,
         }
     }
 
