@@ -23,6 +23,7 @@ pub enum Action {
     CloseTicket,
     OpenTicket,
     CancelFlow,
+    Redrive,
     OpenSettings,
     CreateTicket,
     LaunchDesign,
@@ -150,6 +151,7 @@ fn insert_ctrl_page_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
 /// These are not overridable via KeymapOverrides.
 fn insert_fixed_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     insert_tab_and_ui_bindings(bindings);
+    insert_ticket_navigation_bindings(bindings);
     insert_ticket_action_bindings(bindings);
 }
 
@@ -212,9 +214,8 @@ fn insert_tab_and_ui_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     );
 }
 
-/// Insert ticket and workflow action bindings: select, back, quit, priority,
-/// dispatch, close, open, create, launch design.
-fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
+/// Insert ticket navigation bindings: select, back, quit.
+fn insert_ticket_navigation_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // select = [Enter, Space]
     bindings.insert(
         KeyBinding {
@@ -257,7 +258,11 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::Quit,
     );
+}
 
+/// Insert ticket and workflow action bindings: priority, dispatch, close, open,
+/// create, launch design, activities, description, redrive.
+fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     // set_priority = [P]
     bindings.insert(
         KeyBinding {
@@ -338,6 +343,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::OpenDescription,
     );
+
+    // redrive = [V]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('V'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::Redrive,
+    );
 }
 
 /// Insert ticket action bindings that are NOT overridable via `KeymapOverrides`.
@@ -353,6 +367,7 @@ fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Act
         ('a', KeyModifiers::NONE, Action::OpenActivities),
         ('A', KeyModifiers::SHIFT, Action::DispatchAll),
         ('d', KeyModifiers::NONE, Action::OpenDescription),
+        ('V', KeyModifiers::SHIFT, Action::Redrive),
     ] {
         bindings.insert(
             KeyBinding {
@@ -836,6 +851,15 @@ mod tests {
         assert_eq!(
             keymap.resolve(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT)),
             Some(Action::CreateTicket),
+        );
+    }
+
+    #[test]
+    fn default_keymap_redrive() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.resolve(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT)),
+            Some(Action::Redrive),
         );
     }
 

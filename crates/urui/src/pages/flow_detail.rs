@@ -252,6 +252,11 @@ fn format_timestamp(ts: &str) -> String {
 pub fn detail_footer_commands(keymap: &Keymap) -> Vec<FooterCommand> {
     vec![
         FooterCommand {
+            key_label: keymap.label_for(&Action::Redrive),
+            description: "Redrive".to_string(),
+            common: false,
+        },
+        FooterCommand {
             key_label: keymap.label_for(&Action::Back),
             description: "Back".to_string(),
             common: true,
@@ -384,9 +389,10 @@ mod tests {
     fn detail_footer_has_back_and_quit() {
         let keymap = Keymap::default();
         let cmds = detail_footer_commands(&keymap);
-        assert_eq!(cmds.len(), 2);
-        assert_eq!(cmds[0].description, "Back");
-        assert_eq!(cmds[1].description, "Quit");
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds[0].description, "Redrive");
+        assert_eq!(cmds[1].description, "Back");
+        assert_eq!(cmds[2].description, "Quit");
     }
 
     #[test]
