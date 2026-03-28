@@ -243,24 +243,28 @@ impl FlowsListScreen {
     /// For pending_highlight: finds the flow and selects it without pushing.
     fn handle_pending_navigation(&mut self) {
         if let Some(ticket_id) = self.pending_goto.take() {
-            if let Some(idx) = self.display_ids.iter().position(|id| id == &ticket_id) {
-                self.selected = idx;
-                if let Some(entry) = self.entry_map.get(&ticket_id) {
-                    let detail = FlowDetailScreen::new(entry.workflow.clone());
-                    self.pending_detail_push = Some(Box::new(detail));
-                }
-            } else {
-                self.active_banner = Some(Banner {
-                    message: format!("Flow for {ticket_id} not found on current page"),
-                    variant: BannerVariant::Error,
-                    created_at: Instant::now(),
-                });
-            }
+            self.resolve_pending_goto(&ticket_id);
         }
-        if let Some(ticket_id) = self.pending_highlight.take() {
-            if let Some(idx) = self.display_ids.iter().position(|id| id == &ticket_id) {
-                self.selected = idx;
-            }
+        if let Some(ticket_id) = self.pending_highlight.take()
+            && let Some(idx) = self.display_ids.iter().position(|id| id == &ticket_id)
+        {
+            self.selected = idx;
+        }
+    }
+
+    fn resolve_pending_goto(&mut self, ticket_id: &str) {
+        let Some(idx) = self.display_ids.iter().position(|id| id == ticket_id) else {
+            self.active_banner = Some(Banner {
+                message: format!("Flow for {ticket_id} not found on current page"),
+                variant: BannerVariant::Error,
+                created_at: Instant::now(),
+            });
+            return;
+        };
+        self.selected = idx;
+        if let Some(entry) = self.entry_map.get(ticket_id) {
+            let detail = FlowDetailScreen::new(entry.workflow.clone());
+            self.pending_detail_push = Some(Box::new(detail));
         }
     }
 

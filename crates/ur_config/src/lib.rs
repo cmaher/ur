@@ -3069,7 +3069,7 @@ quit = ["q"]
                 },
             );
             m.insert(
-                "ic".to_owned(),
+                "sa".to_owned(),
                 ProjectConfig {
                     key: "sa".to_owned(),
                     repo: String::new(),
