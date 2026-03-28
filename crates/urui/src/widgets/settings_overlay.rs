@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -87,16 +85,13 @@ pub struct SettingsOverlayState {
     dark_themes: Vec<String>,
     /// Custom theme names (sorted).
     custom_themes: Vec<String>,
-    /// Config directory for persisting theme selection.
-    config_dir: PathBuf,
 }
 
 impl SettingsOverlayState {
     /// Create a new settings overlay state.
     ///
     /// `custom_theme_names` are the keys from `[tui.themes.*]` in ur.toml.
-    /// `config_dir` is used for persisting the selected theme.
-    pub fn new(custom_theme_names: Vec<String>, config_dir: PathBuf) -> Self {
+    pub fn new(custom_theme_names: Vec<String>) -> Self {
         let mut light_themes = Vec::new();
         let mut dark_themes = Vec::new();
 
@@ -119,7 +114,6 @@ impl SettingsOverlayState {
             light_themes,
             dark_themes,
             custom_themes,
-            config_dir,
         }
     }
 
@@ -167,7 +161,6 @@ impl SettingsOverlayState {
             }
             KeyCode::Char(' ') => {
                 if let Some(name) = self.selected_theme_name() {
-                    self.persist_theme(&name);
                     SettingsResult::ThemeSelected(name)
                 } else {
                     SettingsResult::Consumed
@@ -230,12 +223,6 @@ impl SettingsOverlayState {
         let items = self.column_items(COLUMNS[self.active_column]);
         let cursor = self.column_cursors[self.active_column];
         items.get(cursor).cloned()
-    }
-
-    fn persist_theme(&self, theme_name: &str) {
-        if let Err(e) = ur_config::save_theme_name(&self.config_dir, theme_name) {
-            eprintln!("warning: failed to persist theme to ur.toml: {e}");
-        }
     }
 
     /// Render the settings overlay.
@@ -404,7 +391,7 @@ mod tests {
     use super::*;
 
     fn make_state() -> SettingsOverlayState {
-        SettingsOverlayState::new(vec!["mycustom".to_string()], PathBuf::from("/tmp/test"))
+        SettingsOverlayState::new(vec!["mycustom".to_string()])
     }
 
     #[test]

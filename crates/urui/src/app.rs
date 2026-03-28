@@ -533,10 +533,7 @@ impl App {
     /// Open the global settings overlay.
     fn open_settings_overlay(&mut self) {
         let custom_names: Vec<String> = self.ctx.tui_config.custom_themes.keys().cloned().collect();
-        self.settings_overlay = Some(SettingsOverlayState::new(
-            custom_names,
-            self.ctx.config_dir.clone(),
-        ));
+        self.settings_overlay = Some(SettingsOverlayState::new(custom_names));
     }
 
     /// Handle a key event while the settings overlay is open.
@@ -545,11 +542,27 @@ impl App {
         match overlay.handle_key(key) {
             SettingsResult::Consumed => {}
             SettingsResult::ThemeSelected(name) => {
+                self.persist_selected_theme(&name);
                 self.ctx.swap_theme(&name);
             }
             SettingsResult::Close => {
                 self.settings_overlay = None;
             }
+        }
+    }
+
+    /// Persist the selected theme name to ur.toml.
+    ///
+    /// If a single project filter is active, writes to `[projects.<key>.tui].theme`.
+    /// Otherwise writes to the global `[tui].theme`.
+    fn persist_selected_theme(&self, name: &str) {
+        let result = if let Some(ref key) = self.ctx.project_filter {
+            ur_config::save_project_theme_name(&self.ctx.config_dir, key, name)
+        } else {
+            ur_config::save_theme_name(&self.ctx.config_dir, name)
+        };
+        if let Err(e) = result {
+            eprintln!("warning: failed to persist theme to ur.toml: {e}");
         }
     }
 
