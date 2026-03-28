@@ -50,6 +50,8 @@ message WorkerLaunchRequest {
   string project_key = 9;
   // Project keys to mount as read-only context repositories.
   repeated string context_repos = 10;
+  // Whether the server should auto-dispatch commands to the worker after launch.
+  bool dispatch = 11;
 }
 
 message WorkerLaunchResponse {
