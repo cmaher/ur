@@ -174,6 +174,46 @@ async fn run_daemon_only() -> Result<()> {
     Ok(())
 }
 
+/// State machine for tracking whether Claude has started and then exited in a design worker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ClaudeWatchState {
+    /// Claude hasn't started yet — the foreground process is still a shell.
+    Waiting,
+    /// Claude is running — a non-shell process is in the foreground.
+    Running,
+}
+
+/// Returns `true` if `name` is a common shell process name.
+fn is_shell_process(name: &str) -> bool {
+    matches!(name, "bash" | "sh" | "zsh" | "dash" | "fish")
+}
+
+/// Advance the state machine given the current foreground process name.
+///
+/// Returns `(next_state, should_stop)`. `should_stop` is true when the state
+/// transitions from `Running` back to a shell, indicating Claude has exited.
+fn advance_claude_watch_state(
+    state: ClaudeWatchState,
+    foreground: &str,
+) -> (ClaudeWatchState, bool) {
+    match state {
+        ClaudeWatchState::Waiting => {
+            if is_shell_process(foreground) {
+                (ClaudeWatchState::Waiting, false)
+            } else {
+                (ClaudeWatchState::Running, false)
+            }
+        }
+        ClaudeWatchState::Running => {
+            if is_shell_process(foreground) {
+                (ClaudeWatchState::Running, true)
+            } else {
+                (ClaudeWatchState::Running, false)
+            }
+        }
+    }
+}
+
 /// Poll the tmux agent session and initiate container shutdown when Claude Code exits.
 async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
     let session = tmux::Session::agent();
@@ -185,16 +225,39 @@ async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret:
         "exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s"
     );
 
+    let mut claude_watch_state = ClaudeWatchState::Waiting;
+
     loop {
         tokio::time::sleep(interval).await;
 
         let should_stop = match session.is_pane_alive().await {
             Ok(true) => {
                 debug!("agent pane is alive");
-                // Pane is alive — for design workers, also check if claude process exited
-                if is_design_worker && !is_claude_process_running().await {
-                    info!("claude process exited in design worker, initiating shutdown");
-                    true
+                if is_design_worker {
+                    match session.pane_current_command().await {
+                        Ok(foreground) => {
+                            let (next_state, stop) =
+                                advance_claude_watch_state(claude_watch_state, &foreground);
+                            debug!(
+                                foreground = %foreground,
+                                state = ?claude_watch_state,
+                                next_state = ?next_state,
+                                "design worker foreground process check"
+                            );
+                            claude_watch_state = next_state;
+                            if stop {
+                                info!(
+                                    foreground = %foreground,
+                                    "claude process exited in design worker, initiating shutdown"
+                                );
+                            }
+                            stop
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "failed to query pane_current_command, treating as stopped");
+                            true
+                        }
+                    }
                 } else {
                     false
                 }
@@ -231,28 +294,6 @@ async fn send_stop_and_wait(server_addr: &str, worker_id: &str, worker_secret: &
         Err(e) => {
             error!(error = %e, "WorkerStop RPC failed, falling back to process::exit(0)");
             std::process::exit(0);
-        }
-    }
-}
-
-/// Check if a `claude` process is currently running using `pgrep`.
-/// Returns `true` if at least one claude process is found, `false` otherwise.
-async fn is_claude_process_running() -> bool {
-    match tokio::process::Command::new("pgrep")
-        .args(["-x", "claude"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-    {
-        Ok(status) => {
-            let running = status.success();
-            debug!(running, "claude process check");
-            running
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to run pgrep, assuming claude is running");
-            true
         }
     }
 }
@@ -403,4 +444,71 @@ async fn create_shim(shim_dir: &Path, entry: &HostExecCommandEntry) -> Result<()
 
     info!(command, path = %shim_path.display(), "shim created");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_waiting_stays_waiting_on_shell() {
+        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Waiting, "bash");
+        assert_eq!(state, ClaudeWatchState::Waiting);
+        assert!(!stop);
+    }
+
+    #[test]
+    fn test_waiting_transitions_to_running_on_non_shell() {
+        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Waiting, "claude");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(!stop);
+    }
+
+    #[test]
+    fn test_running_stays_running_on_non_shell() {
+        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, "claude");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(!stop);
+    }
+
+    #[test]
+    fn test_running_triggers_stop_on_shell() {
+        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, "bash");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(stop);
+    }
+
+    #[test]
+    fn test_full_waiting_running_stop_sequence() {
+        let state = ClaudeWatchState::Waiting;
+
+        // Shell processes keep us in Waiting
+        let (state, stop) = advance_claude_watch_state(state, "sh");
+        assert_eq!(state, ClaudeWatchState::Waiting);
+        assert!(!stop);
+
+        // Non-shell transitions to Running
+        let (state, stop) = advance_claude_watch_state(state, "claude");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(!stop);
+
+        // Still running
+        let (state, stop) = advance_claude_watch_state(state, "node");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(!stop);
+
+        // Claude exits, shell returns → stop
+        let (state, stop) = advance_claude_watch_state(state, "zsh");
+        assert_eq!(state, ClaudeWatchState::Running);
+        assert!(stop);
+    }
+
+    #[test]
+    fn test_all_shell_names_recognized() {
+        for shell in &["bash", "sh", "zsh", "dash", "fish"] {
+            let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, shell);
+            assert_eq!(state, ClaudeWatchState::Running);
+            assert!(stop, "shell '{shell}' should trigger stop");
+        }
+    }
 }

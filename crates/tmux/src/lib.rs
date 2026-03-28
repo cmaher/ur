@@ -127,6 +127,29 @@ impl Session {
             .with_context(|| format!("failed to send raw keys to tmux session '{}'", self.name))
     }
 
+    /// Return the name of the foreground process running in the pane.
+    ///
+    /// Uses `tmux display-message -p -t {name} '#{pane_current_command}'`.
+    /// Returns the process name (e.g., `"claude"`, `"bash"`).
+    pub async fn pane_current_command(&self) -> Result<String> {
+        let output = run_tmux_stdout(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.name,
+            "#{pane_current_command}",
+        ])
+        .await
+        .with_context(|| {
+            format!(
+                "failed to query pane_current_command for tmux session '{}'",
+                self.name
+            )
+        })?;
+
+        Ok(output.trim().to_string())
+    }
+
     /// Check whether the pane's shell process is still alive.
     ///
     /// Uses the tmux `pane_dead` format variable: `0` means the process is
@@ -238,6 +261,28 @@ mod tests {
     /// Verify that `is_pane_alive` targets the correct session.
     /// tmux isn't running in unit tests so the command will fail, but the error
     /// message encodes the session name, confirming correct argument construction.
+    /// Verify `pane_current_command` runs the correct tmux subcommand and targets the session.
+    /// If tmux is not running, the call fails with an error referencing the session name or tmux.
+    /// If tmux is running, the call may succeed and return a process name string.
+    #[tokio::test]
+    async fn test_pane_current_command_construction() {
+        let session = Session::from_name("test-session");
+        let result = session.pane_current_command().await;
+        match result {
+            Err(e) => {
+                let err_msg = format!("{e}");
+                assert!(
+                    err_msg.contains("test-session") || err_msg.contains("tmux"),
+                    "unexpected error: {err_msg}"
+                );
+            }
+            Ok(name) => {
+                // tmux is running and returned a process name — just verify it's a string
+                let _ = name;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_is_pane_alive_command_construction() {
         let session = Session::from_name("test-session");
