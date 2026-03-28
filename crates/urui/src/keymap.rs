@@ -30,6 +30,7 @@ pub enum Action {
     OpenActivities,
     DispatchAll,
     OpenDescription,
+    Goto,
 }
 
 /// A resolved key binding: modifier flags + key code.
@@ -352,6 +353,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         },
         Action::Redrive,
     );
+
+    // goto = [g]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('g'),
+            modifiers: KeyModifiers::NONE,
+        },
+        Action::Goto,
+    );
 }
 
 /// Insert ticket action bindings that are NOT overridable via `KeymapOverrides`.
@@ -368,6 +378,7 @@ fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Act
         ('A', KeyModifiers::SHIFT, Action::DispatchAll),
         ('d', KeyModifiers::NONE, Action::OpenDescription),
         ('V', KeyModifiers::SHIFT, Action::Redrive),
+        ('g', KeyModifiers::NONE, Action::Goto),
     ] {
         bindings.insert(
             KeyBinding {
