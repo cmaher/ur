@@ -58,6 +58,7 @@ pub struct GithubPollerManager {
 }
 
 impl GithubPollerManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ticket_repo: TicketRepo,
         workflow_repo: WorkflowRepo,
@@ -322,21 +323,47 @@ impl GithubPollerManager {
             .poll_review_condition(&ticket.id, &workflow, &backend, pr_number, &gh_repo)
             .await;
 
-        // Step 4: Create failure tickets for CI failure and merge conflicts.
+        // Steps 4+5: Create failure tickets and evaluate transition.
+        self.create_issue_tickets_and_evaluate(
+            &ticket.id,
+            &workflow.id,
+            &backend,
+            pr_number,
+            &ignored_checks,
+            ci_result,
+            mergeable_result,
+            &review_result,
+        )
+        .await;
+    }
+
+    /// Create CI failure and merge conflict issue tickets, then evaluate the transition.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_issue_tickets_and_evaluate(
+        &self,
+        ticket_id: &str,
+        workflow_id: &str,
+        backend: &GhBackend,
+        pr_number: i64,
+        ignored_checks: &[String],
+        ci_result: &'static str,
+        mergeable_result: &'static str,
+        review_result: &ReviewResult,
+    ) {
         let mut has_failures = false;
         if ci_result == workflow_condition::ci_status::FAILED {
-            let failing_checks = collect_failing_checks(&backend, pr_number, &ignored_checks).await;
+            let failing_checks = collect_failing_checks(backend, pr_number, ignored_checks).await;
             if let Err(e) = self
                 .ticket_client
                 .create_workflow_issue_ticket(
-                    &ticket.id,
+                    ticket_id,
                     ticket_client::issue_type::CI_FAILURE,
                     &format!("CI failure on PR #{pr_number}"),
                     &failing_checks,
                 )
                 .await
             {
-                error!(ticket_id = %ticket.id, error = %e, "failed to create CI failure ticket");
+                error!(ticket_id = %ticket_id, error = %e, "failed to create CI failure ticket");
             }
             has_failures = true;
         }
@@ -345,27 +372,26 @@ impl GithubPollerManager {
             if let Err(e) = self
                 .ticket_client
                 .create_workflow_issue_ticket(
-                    &ticket.id,
+                    ticket_id,
                     ticket_client::issue_type::MERGE_CONFLICT,
                     &format!("Merge conflict on PR #{pr_number}"),
                     "The PR has merge conflicts that must be resolved.",
                 )
                 .await
             {
-                error!(ticket_id = %ticket.id, error = %e, "failed to create merge conflict ticket");
+                error!(ticket_id = %ticket_id, error = %e, "failed to create merge conflict ticket");
             }
             has_failures = true;
         }
 
-        // Step 5: Evaluate transition.
         self.evaluate_transition(
-            &ticket.id,
-            &workflow.id,
-            &backend,
+            ticket_id,
+            workflow_id,
+            backend,
             pr_number,
             ci_result,
             mergeable_result,
-            &review_result,
+            review_result,
             has_failures,
         )
         .await;
@@ -1323,7 +1349,7 @@ mod tests {
 
     #[test]
     fn evaluate_ci_runs_all_green() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("test", "", "success", "2026-01-01T00:01:00Z"),
         ];
@@ -1336,7 +1362,7 @@ mod tests {
 
     #[test]
     fn evaluate_ci_runs_with_failure() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("test", "FAILURE", "failure", "2026-01-01T00:02:00Z"),
         ];
@@ -1349,7 +1375,7 @@ mod tests {
 
     #[test]
     fn evaluate_ci_runs_pending() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("test", "in_progress", "", ""),
         ];
@@ -1363,7 +1389,7 @@ mod tests {
     fn evaluate_ci_runs_empty_is_succeeded() {
         // No checks = succeeded (handled by check_ci_status, not evaluate_ci_runs).
         // But test with a skipped check.
-        let runs = vec![make_check_run(
+        let runs = [make_check_run(
             "lint",
             "completed",
             "skipped",
@@ -1377,7 +1403,7 @@ mod tests {
 
     #[test]
     fn filter_ignored_checks_empty_ignored_passes_all() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("test", "completed", "failure", "2026-01-01T00:01:00Z"),
         ];
@@ -1387,11 +1413,11 @@ mod tests {
 
     #[test]
     fn filter_ignored_checks_matched_name_removed() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("flaky-lint", "completed", "failure", "2026-01-01T00:01:00Z"),
         ];
-        let ignored = vec!["flaky-lint".to_string()];
+        let ignored = ["flaky-lint".to_string()];
         let filtered = filter_ignored_checks(&runs, &ignored);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "build");
@@ -1399,11 +1425,11 @@ mod tests {
 
     #[test]
     fn filter_ignored_checks_unmatched_name_kept() {
-        let runs = vec![
+        let runs = [
             make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
             make_check_run("test", "completed", "failure", "2026-01-01T00:01:00Z"),
         ];
-        let ignored = vec!["other-check".to_string()];
+        let ignored = ["other-check".to_string()];
         let filtered = filter_ignored_checks(&runs, &ignored);
         assert_eq!(filtered.len(), 2);
     }
