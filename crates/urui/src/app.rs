@@ -315,12 +315,25 @@ impl App {
             OverlayAction::ForceClose { ticket_id } => {
                 self.data_manager.force_close_ticket(ticket_id);
             }
+            OverlayAction::Goto(target) => {
+                self.handle_goto_target_from_tickets(target);
+            }
             OverlayAction::None => {}
         }
         let filters_after = self.tickets_page().filters().to_config();
         if filters_before != filters_after {
             save_ticket_filters(&self.ctx.config_dir, &filters_after);
         }
+    }
+
+    /// Convert a GotoTarget from the tickets overlay into a tab navigation.
+    fn handle_goto_target_from_tickets(&mut self, target: crate::widgets::goto_menu::GotoTarget) {
+        let (tab, push_detail) = match target.screen.as_str() {
+            "flow" => (TabId::Flows, true),
+            "worker" => (TabId::Workers, false),
+            _ => return,
+        };
+        self.handle_goto(tab, target.id, push_detail);
     }
 
     /// Handle a tick: auto-dismiss expired banners.
