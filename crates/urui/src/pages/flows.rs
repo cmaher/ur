@@ -624,7 +624,7 @@ impl Screen for FlowsListScreen {
             Constraint::Length(14), // Status
             Constraint::Length(8),  // Stalled
             Constraint::Length(8),  // Progress count
-            Constraint::Length(10), // Progress bar
+            Constraint::Length(11), // Progress bar
             Constraint::Length(12), // Stage Time
             Constraint::Length(12), // Total Time
             Constraint::Length(45), // PR URL
