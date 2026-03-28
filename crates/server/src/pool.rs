@@ -630,6 +630,7 @@ mod tests {
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
                 tui: None,
+                ignored_workflow_checks: Vec::new(),
             },
         );
         let worker_repo = test_worker_repo().await;
@@ -895,6 +896,7 @@ mod tests {
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
                 tui: None,
+                ignored_workflow_checks: Vec::new(),
             },
         );
         let channel =
