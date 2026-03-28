@@ -16,7 +16,9 @@ use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
 use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::pages::tickets::{build_ticket_goto_targets, goto_target_to_screen_result};
 use crate::screen::{Screen, ScreenResult};
+use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
 /// Internal data-lifecycle state for ticket detail.
@@ -54,6 +56,8 @@ pub struct TicketDetailScreen {
     page_size: usize,
     active_banner: Option<Banner>,
     active_status: Option<StatusMessage>,
+    /// Active goto menu overlay state.
+    goto_menu: Option<GotoMenuState>,
 }
 
 impl TicketDetailScreen {
@@ -68,6 +72,7 @@ impl TicketDetailScreen {
             page_size: 20,
             active_banner: None,
             active_status: None,
+            goto_menu: None,
         }
     }
 
@@ -212,6 +217,35 @@ impl TicketDetailScreen {
             (1, 1)
         } else {
             (0, 1)
+        }
+    }
+
+    /// Returns true if the goto menu overlay is currently active.
+    pub fn has_overlay(&self) -> bool {
+        self.goto_menu.is_some()
+    }
+
+    /// Close any active overlay.
+    pub fn close_overlay(&mut self) {
+        self.goto_menu = None;
+    }
+
+    /// Handle a raw key event when the goto menu overlay is active.
+    /// Returns a `ScreenResult` indicating how the event was handled.
+    pub fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> ScreenResult {
+        let Some(ref mut menu) = self.goto_menu else {
+            return ScreenResult::Consumed;
+        };
+        match menu.handle_key(key) {
+            GotoMenuResult::Selected(target) => {
+                self.goto_menu = None;
+                goto_target_to_screen_result(&target)
+            }
+            GotoMenuResult::Close => {
+                self.goto_menu = None;
+                ScreenResult::Consumed
+            }
+            GotoMenuResult::Consumed => ScreenResult::Consumed,
         }
     }
 
@@ -533,6 +567,12 @@ impl Screen for TicketDetailScreen {
                     ScreenResult::Consumed
                 }
             }
+            Action::Goto => {
+                if let Some(child_id) = self.selected_child_id() {
+                    self.goto_menu = Some(GotoMenuState::new(build_ticket_goto_targets(&child_id)));
+                }
+                ScreenResult::Consumed
+            }
             // Ticket commands on selected child (handled by app via dispatch; we just consume)
             Action::Dispatch
             | Action::DispatchAll
@@ -571,9 +611,17 @@ impl Screen for TicketDetailScreen {
                 render_child_table(self, chunks[2], buf, ctx);
             }
         }
+
+        // Render goto menu overlay on top if active.
+        if let Some(ref menu) = self.goto_menu {
+            menu.render(area, buf, ctx);
+        }
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        if let Some(ref menu) = self.goto_menu {
+            return menu.footer_commands();
+        }
         vec![
             FooterCommand {
                 key_label: keymap.label_for(&Action::DispatchAll),
@@ -609,6 +657,11 @@ impl Screen for TicketDetailScreen {
                 key_label: keymap.label_for(&Action::OpenDescription),
                 description: "Description".to_string(),
                 common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Goto),
+                description: "Goto".to_string(),
+                common: true,
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::Select),
