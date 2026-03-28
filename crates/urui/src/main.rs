@@ -99,17 +99,16 @@ fn resolve_project_tui(
     project_filter: &Option<String>,
     projects: &std::collections::HashMap<String, ur_config::ProjectConfig>,
 ) -> ur_config::TuiConfig {
-    if let Some(key) = project_filter {
-        if let Some(proj) = projects.get(key) {
-            if let Some(proj_tui) = &proj.tui {
-                if let Some(theme_name) = &proj_tui.theme_name {
-                    return ur_config::TuiConfig {
-                        theme_name: theme_name.clone(),
-                        ..global.clone()
-                    };
-                }
-            }
-        }
+    let theme_name = project_filter
+        .as_ref()
+        .and_then(|key| projects.get(key))
+        .and_then(|proj| proj.tui.as_ref())
+        .and_then(|tui| tui.theme_name.as_ref());
+    if let Some(name) = theme_name {
+        return ur_config::TuiConfig {
+            theme_name: name.clone(),
+            ..global.clone()
+        };
     }
     global.clone()
 }
