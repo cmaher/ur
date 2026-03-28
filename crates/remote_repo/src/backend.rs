@@ -349,6 +349,17 @@ impl RemoteRepo for GhBackend {
             .as_i64()
             .ok_or_else(|| anyhow!("reply response missing id"))
     }
+
+    async fn post_issue_comment(&self, pr_number: i64, body: &str) -> Result<i64> {
+        let endpoint = format!("repos/{}/issues/{}/comments", self.gh_repo, pr_number);
+        let value: serde_json::Value = self
+            .exec_gh_json(&["api", &endpoint, "-f", &format!("body={body}")])
+            .await?;
+
+        value["id"]
+            .as_i64()
+            .ok_or_else(|| anyhow!("issue comment response missing id"))
+    }
 }
 
 /// Parse the result of `gh pr checks --json` into a list of `CheckRun`.
