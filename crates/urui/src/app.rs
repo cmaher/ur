@@ -1002,6 +1002,9 @@ impl App {
         // Content area is total height minus header (1) and footer (1).
         let content_height = area.height.saturating_sub(2);
         self.tickets_page_mut().update_page_size(content_height);
+        if let Some(detail) = self.active_screen_mut().as_any_ticket_detail_mut() {
+            detail.update_child_page_size(content_height);
+        }
     }
 
     /// Render the full application frame: header, content area, footer.
@@ -1174,7 +1177,7 @@ mod tests {
     use super::*;
     use crate::data::DataPayload;
     use crate::keymap::Keymap;
-    use crate::pages::TicketsListScreen;
+    use crate::pages::{TicketDetailScreen, TicketsListScreen};
     use crate::theme::Theme;
     use ur_config::TuiConfig;
 
@@ -1548,5 +1551,50 @@ mod tests {
         assert_eq!(app.active_tab, TabId::Tickets);
         assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
         assert_eq!(app.tickets_page().pending_goto(), Some("ur-xyz99"));
+    }
+
+    #[test]
+    fn update_page_sizes_marks_detail_stale_when_height_changes() {
+        let mut app = make_app();
+        // Push a TicketDetailScreen onto the Tickets stack.
+        let detail: Box<dyn Screen> = Box::new(TicketDetailScreen::new(
+            "ur-test1".to_string(),
+            "ur".to_string(),
+        ));
+        app.stacks.get_mut(&TabId::Tickets).unwrap().push(detail);
+
+        // Call update_page_sizes with a height large enough to produce a
+        // different page size (> 20, the default).  content_height = 50 - 2 = 48.
+        app.update_page_sizes(Rect::new(0, 0, 80, 50));
+
+        // The detail screen should now need data (was marked stale).
+        assert!(app.active_screen().needs_data());
+    }
+
+    #[test]
+    fn update_page_sizes_does_not_mark_detail_stale_when_height_unchanged() {
+        let mut app = make_app();
+        // Push a TicketDetailScreen onto the Tickets stack.
+        let detail: Box<dyn Screen> = Box::new(TicketDetailScreen::new(
+            "ur-test2".to_string(),
+            "ur".to_string(),
+        ));
+        app.stacks.get_mut(&TabId::Tickets).unwrap().push(detail);
+
+        // First call sets the page size.
+        app.update_page_sizes(Rect::new(0, 0, 80, 50));
+
+        // Simulate data arriving so needs_data() returns false.
+        let detail = ur_rpc::proto::ticket::GetTicketResponse {
+            ticket: None,
+            metadata: vec![],
+            activities: vec![],
+        };
+        let payload = DataPayload::TicketDetail(Box::new(Ok((detail, vec![], 0i32))));
+        app.handle_data_ready(payload);
+
+        // Second call with the same dimensions — height unchanged, no stale.
+        app.update_page_sizes(Rect::new(0, 0, 80, 50));
+        assert!(!app.active_screen().needs_data());
     }
 }
