@@ -334,6 +334,7 @@ fn spawn_workflow_services(
         transition_tx.clone(),
         poller_ticket_client,
         worker_manager.clone(),
+        (**config).clone(),
     );
     let poller_handle = poller.spawn(shutdown_rx.clone());
 

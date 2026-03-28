@@ -5,6 +5,7 @@ use remote_repo::{CheckRun, GhBackend, RemoteRepo};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
+use ur_config::Config;
 use ur_db::TicketRepo;
 use ur_db::WorkflowRepo;
 use ur_db::model::{LifecycleStatus, Ticket, Workflow};
@@ -53,6 +54,7 @@ pub struct GithubPollerManager {
     transition_tx: mpsc::Sender<TransitionRequest>,
     ticket_client: TicketClient,
     worker_manager: WorkerManager,
+    config: Config,
 }
 
 impl GithubPollerManager {
@@ -64,6 +66,7 @@ impl GithubPollerManager {
         transition_tx: mpsc::Sender<TransitionRequest>,
         ticket_client: TicketClient,
         worker_manager: WorkerManager,
+        config: Config,
     ) -> Self {
         Self {
             ticket_repo,
@@ -73,6 +76,7 @@ impl GithubPollerManager {
             transition_tx,
             ticket_client,
             worker_manager,
+            config,
         }
     }
 
@@ -296,9 +300,16 @@ impl GithubPollerManager {
             "checking conditions for in_review ticket"
         );
 
+        let ignored_checks: Vec<String> = self
+            .config
+            .projects
+            .get(&ticket.project)
+            .map(|p| p.ignored_workflow_checks.clone())
+            .unwrap_or_default();
+
         // Step 1: Check CI status and update condition.
         let ci_result = self
-            .poll_ci_condition(&ticket.id, &workflow, &backend, pr_number)
+            .poll_ci_condition(&ticket.id, &workflow, &backend, pr_number, &ignored_checks)
             .await;
 
         // Step 2: Check mergeability and update condition.
@@ -314,7 +325,7 @@ impl GithubPollerManager {
         // Step 4: Create failure tickets for CI failure and merge conflicts.
         let mut has_failures = false;
         if ci_result == workflow_condition::ci_status::FAILED {
-            let failing_checks = collect_failing_checks(&backend, pr_number).await;
+            let failing_checks = collect_failing_checks(&backend, pr_number, &ignored_checks).await;
             if let Err(e) = self
                 .ticket_client
                 .create_workflow_issue_ticket(
@@ -368,8 +379,10 @@ impl GithubPollerManager {
         workflow: &Workflow,
         backend: &GhBackend,
         pr_number: i64,
+        ignored: &[String],
     ) -> &'static str {
-        let (new_status, ci_completed_at) = match check_ci_status(backend, pr_number).await {
+        let (new_status, ci_completed_at) = match check_ci_status(backend, pr_number, ignored).await
+        {
             Ok(result) => result,
             Err(e) => {
                 warn!(ticket_id = %ticket_id, error = %e, "failed to check CI status");
@@ -970,6 +983,7 @@ struct CiCheckResult {
 async fn check_ci_status(
     backend: &GhBackend,
     pr_number: i64,
+    ignored: &[String],
 ) -> Result<(&'static str, String), anyhow::Error> {
     let runs = backend.check_runs(pr_number).await?;
 
@@ -977,12 +991,17 @@ async fn check_ci_status(
         return Ok((workflow_condition::ci_status::SUCCEEDED, String::new()));
     }
 
-    let result = evaluate_ci_runs(&runs);
+    let filtered = filter_ignored_checks(&runs, ignored);
+    if filtered.is_empty() {
+        return Ok((workflow_condition::ci_status::SUCCEEDED, String::new()));
+    }
+
+    let result = evaluate_ci_runs(&filtered);
     Ok((result.status, result.completed_at))
 }
 
 /// Evaluate check runs and produce a CI condition result.
-fn evaluate_ci_runs(runs: &[CheckRun]) -> CiCheckResult {
+fn evaluate_ci_runs(runs: &[&CheckRun]) -> CiCheckResult {
     let mut all_completed = true;
     let mut any_failed = false;
     let mut latest_completed_at = String::new();
@@ -1038,15 +1057,22 @@ fn is_check_failed(conclusion: &str) -> bool {
         && !conclusion.eq_ignore_ascii_case(check_run::conclusion::NEUTRAL)
 }
 
+/// Return only the check runs whose names are NOT in the `ignored` list.
+/// Comparison is case-sensitive.
+pub fn filter_ignored_checks<'a>(runs: &'a [CheckRun], ignored: &[String]) -> Vec<&'a CheckRun> {
+    runs.iter().filter(|r| !ignored.contains(&r.name)).collect()
+}
+
 /// Collect a summary string of failing check runs for ticket body.
-async fn collect_failing_checks(backend: &GhBackend, pr_number: i64) -> String {
+async fn collect_failing_checks(backend: &GhBackend, pr_number: i64, ignored: &[String]) -> String {
     let runs = match backend.check_runs(pr_number).await {
         Ok(r) => r,
         Err(e) => return format!("(failed to fetch check runs: {e})"),
     };
 
+    let filtered = filter_ignored_checks(&runs, ignored);
     let mut failures: Vec<String> = Vec::new();
-    for run in &runs {
+    for run in &filtered {
         if is_check_failed(&run.conclusion) {
             failures.push(format!("{}: {}", run.name, run.conclusion));
         }
@@ -1285,26 +1311,25 @@ mod tests {
         assert_eq!(parse_review_command("ur"), None);
     }
 
+    fn make_check_run(name: &str, status: &str, conclusion: &str, completed_at: &str) -> CheckRun {
+        CheckRun {
+            name: name.to_string(),
+            status: status.to_string(),
+            conclusion: conclusion.to_string(),
+            details_url: String::new(),
+            completed_at: completed_at.to_string(),
+        }
+    }
+
     #[test]
     fn evaluate_ci_runs_all_green() {
         let runs = vec![
-            CheckRun {
-                name: "build".to_string(),
-                status: "completed".to_string(),
-                conclusion: "success".to_string(),
-                details_url: String::new(),
-                completed_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-            CheckRun {
-                name: "test".to_string(),
-                status: "".to_string(),
-                conclusion: "success".to_string(),
-                details_url: String::new(),
-                completed_at: "2026-01-01T00:01:00Z".to_string(),
-            },
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("test", "", "success", "2026-01-01T00:01:00Z"),
         ];
+        let refs: Vec<&CheckRun> = runs.iter().collect();
 
-        let result = evaluate_ci_runs(&runs);
+        let result = evaluate_ci_runs(&refs);
         assert_eq!(result.status, workflow_condition::ci_status::SUCCEEDED);
         assert_eq!(result.completed_at, "2026-01-01T00:01:00Z");
     }
@@ -1312,23 +1337,12 @@ mod tests {
     #[test]
     fn evaluate_ci_runs_with_failure() {
         let runs = vec![
-            CheckRun {
-                name: "build".to_string(),
-                status: "completed".to_string(),
-                conclusion: "success".to_string(),
-                details_url: String::new(),
-                completed_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-            CheckRun {
-                name: "test".to_string(),
-                status: "FAILURE".to_string(),
-                conclusion: "failure".to_string(),
-                details_url: String::new(),
-                completed_at: "2026-01-01T00:02:00Z".to_string(),
-            },
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("test", "FAILURE", "failure", "2026-01-01T00:02:00Z"),
         ];
+        let refs: Vec<&CheckRun> = runs.iter().collect();
 
-        let result = evaluate_ci_runs(&runs);
+        let result = evaluate_ci_runs(&refs);
         assert_eq!(result.status, workflow_condition::ci_status::FAILED);
         assert_eq!(result.completed_at, "2026-01-01T00:02:00Z");
     }
@@ -1336,23 +1350,12 @@ mod tests {
     #[test]
     fn evaluate_ci_runs_pending() {
         let runs = vec![
-            CheckRun {
-                name: "build".to_string(),
-                status: "completed".to_string(),
-                conclusion: "success".to_string(),
-                details_url: String::new(),
-                completed_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-            CheckRun {
-                name: "test".to_string(),
-                status: "in_progress".to_string(),
-                conclusion: "".to_string(),
-                details_url: String::new(),
-                completed_at: String::new(),
-            },
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("test", "in_progress", "", ""),
         ];
+        let refs: Vec<&CheckRun> = runs.iter().collect();
 
-        let result = evaluate_ci_runs(&runs);
+        let result = evaluate_ci_runs(&refs);
         assert_eq!(result.status, workflow_condition::ci_status::PENDING);
     }
 
@@ -1360,16 +1363,49 @@ mod tests {
     fn evaluate_ci_runs_empty_is_succeeded() {
         // No checks = succeeded (handled by check_ci_status, not evaluate_ci_runs).
         // But test with a skipped check.
-        let runs = vec![CheckRun {
-            name: "lint".to_string(),
-            status: "completed".to_string(),
-            conclusion: "skipped".to_string(),
-            details_url: String::new(),
-            completed_at: "2026-01-01T00:00:00Z".to_string(),
-        }];
+        let runs = vec![make_check_run(
+            "lint",
+            "completed",
+            "skipped",
+            "2026-01-01T00:00:00Z",
+        )];
+        let refs: Vec<&CheckRun> = runs.iter().collect();
 
-        let result = evaluate_ci_runs(&runs);
+        let result = evaluate_ci_runs(&refs);
         assert_eq!(result.status, workflow_condition::ci_status::SUCCEEDED);
+    }
+
+    #[test]
+    fn filter_ignored_checks_empty_ignored_passes_all() {
+        let runs = vec![
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("test", "completed", "failure", "2026-01-01T00:01:00Z"),
+        ];
+        let filtered = filter_ignored_checks(&runs, &[]);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn filter_ignored_checks_matched_name_removed() {
+        let runs = vec![
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("flaky-lint", "completed", "failure", "2026-01-01T00:01:00Z"),
+        ];
+        let ignored = vec!["flaky-lint".to_string()];
+        let filtered = filter_ignored_checks(&runs, &ignored);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "build");
+    }
+
+    #[test]
+    fn filter_ignored_checks_unmatched_name_kept() {
+        let runs = vec![
+            make_check_run("build", "completed", "success", "2026-01-01T00:00:00Z"),
+            make_check_run("test", "completed", "failure", "2026-01-01T00:01:00Z"),
+        ];
+        let ignored = vec!["other-check".to_string()];
+        let filtered = filter_ignored_checks(&runs, &ignored);
+        assert_eq!(filtered.len(), 2);
     }
 
     #[test]
