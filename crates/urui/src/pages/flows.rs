@@ -57,6 +57,10 @@ pub struct FlowsListScreen {
     active_banner: Option<Banner>,
     /// When true, a page navigation is pending and needs a server fetch.
     pending_fetch: bool,
+    /// Flow/ticket ID to navigate to (push detail) on the next data cycle.
+    pending_goto: Option<String>,
+    /// Flow/ticket ID to highlight (select without pushing) on the next data cycle.
+    pending_highlight: Option<String>,
 }
 
 impl FlowsListScreen {
@@ -72,6 +76,8 @@ impl FlowsListScreen {
             active_status: None,
             active_banner: None,
             pending_fetch: false,
+            pending_goto: None,
+            pending_highlight: None,
         }
     }
 
@@ -81,6 +87,16 @@ impl FlowsListScreen {
 
     pub fn shortcut_char(&self) -> char {
         'f'
+    }
+
+    /// Returns the pending goto ticket ID, if any.
+    pub fn pending_goto(&self) -> Option<&str> {
+        self.pending_goto.as_deref()
+    }
+
+    /// Returns the pending highlight ticket ID, if any.
+    pub fn pending_highlight(&self) -> Option<&str> {
+        self.pending_highlight.as_deref()
     }
 
     /// Total number of pages based on server-reported total_count.
@@ -612,6 +628,14 @@ impl Screen for FlowsListScreen {
 
     fn as_any_flows_mut(&mut self) -> Option<&mut FlowsListScreen> {
         Some(self)
+    }
+
+    fn set_pending_goto(&mut self, ticket_id: String) {
+        self.pending_goto = Some(ticket_id);
+    }
+
+    fn set_pending_highlight(&mut self, id: String) {
+        self.pending_highlight = Some(id);
     }
 }
 

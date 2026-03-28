@@ -74,6 +74,10 @@ pub struct TicketsListScreen {
     active_banner: Option<Banner>,
     /// In-progress status message shown below the tab header.
     active_status: Option<StatusMessage>,
+    /// Ticket ID to navigate to (push detail) on the next data cycle.
+    pending_goto: Option<String>,
+    /// Ticket ID to highlight (select without pushing) on the next data cycle.
+    pending_highlight: Option<String>,
 }
 
 impl TicketsListScreen {
@@ -88,12 +92,24 @@ impl TicketsListScreen {
             filters: TicketFilters::from_config(filter_config),
             active_banner: None,
             active_status: None,
+            pending_goto: None,
+            pending_highlight: None,
         }
     }
 
     /// Returns a reference to the current filters for persistence.
     pub fn filters(&self) -> &TicketFilters {
         &self.filters
+    }
+
+    /// Returns the pending goto ticket ID, if any.
+    pub fn pending_goto(&self) -> Option<&str> {
+        self.pending_goto.as_deref()
+    }
+
+    /// Returns the pending highlight ticket ID, if any.
+    pub fn pending_highlight(&self) -> Option<&str> {
+        self.pending_highlight.as_deref()
     }
 
     /// Returns the current pagination parameters for server-side fetching.
@@ -754,6 +770,14 @@ impl Screen for TicketsListScreen {
 
     fn as_any_tickets_mut(&mut self) -> Option<&mut crate::pages::TicketsListScreen> {
         Some(self)
+    }
+
+    fn set_pending_goto(&mut self, ticket_id: String) {
+        self.pending_goto = Some(ticket_id);
+    }
+
+    fn set_pending_highlight(&mut self, id: String) {
+        self.pending_highlight = Some(id);
     }
 }
 

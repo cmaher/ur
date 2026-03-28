@@ -754,6 +754,13 @@ impl App {
                     stack.pop();
                 }
             }
+            ScreenResult::Goto {
+                tab,
+                ticket_id,
+                push_detail,
+            } => {
+                self.handle_goto(tab, ticket_id, push_detail);
+            }
             ScreenResult::Consumed | ScreenResult::Ignored => {}
         }
         // Trigger immediate fetch if the active screen now needs data (e.g. after refresh).
@@ -787,6 +794,27 @@ impl App {
         debug!(?tab, "clear stack to root");
         let stack = self.stacks.entry(tab).or_default();
         stack.truncate(1);
+    }
+
+    /// Navigate to another tab and set a pending goto or highlight on the root screen.
+    ///
+    /// Switches to the target tab, clears its stack to root, marks it stale,
+    /// and sets `pending_goto` (when `push_detail` is true) or `pending_highlight`
+    /// (when false) on the root screen so it acts on the next data cycle.
+    fn handle_goto(&mut self, tab: TabId, ticket_id: String, push_detail: bool) {
+        debug!(?tab, %ticket_id, push_detail, "handle goto");
+        // Dismiss banner on the screen we're leaving.
+        self.active_screen_mut().dismiss_banner();
+        self.active_tab = tab;
+        self.clear_stack_to_root(tab);
+        let root = self.root_screen_mut(tab);
+        root.mark_stale();
+        if push_detail {
+            root.set_pending_goto(ticket_id);
+        } else {
+            root.set_pending_highlight(ticket_id);
+        }
+        self.fetch_active_tab_data();
     }
 
     /// Fetch data for the currently active tab.
@@ -1457,5 +1485,51 @@ mod tests {
             }
         }
         assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn goto_switches_tab_and_sets_pending_goto() {
+        let mut app = make_app();
+        // Start on Tickets tab.
+        assert_eq!(app.active_tab, TabId::Tickets);
+
+        // Goto Flows with push_detail=true.
+        app.handle_goto(TabId::Flows, "ur-abc12".to_string(), true);
+        assert_eq!(app.active_tab, TabId::Flows);
+        // Stack should be at root (length 1).
+        assert_eq!(app.stacks.get(&TabId::Flows).unwrap().len(), 1);
+        // Root screen should have pending_goto set.
+        assert_eq!(app.flows_page().pending_goto(), Some("ur-abc12"));
+        assert_eq!(app.flows_page().pending_highlight(), None);
+    }
+
+    #[tokio::test]
+    async fn goto_switches_tab_and_sets_pending_highlight() {
+        let mut app = make_app();
+        assert_eq!(app.active_tab, TabId::Tickets);
+
+        // Goto Workers with push_detail=false.
+        app.handle_goto(TabId::Workers, "worker-1".to_string(), false);
+        assert_eq!(app.active_tab, TabId::Workers);
+        assert_eq!(app.stacks.get(&TabId::Workers).unwrap().len(), 1);
+        assert_eq!(app.workers_page().pending_highlight(), Some("worker-1"));
+    }
+
+    #[tokio::test]
+    async fn goto_clears_stack_to_root() {
+        let mut app = make_app();
+        // Push a screen onto the Tickets stack so it has depth > 1.
+        let dummy: Box<dyn Screen> = Box::new(TicketsListScreen::new(
+            &ur_config::TicketFilterConfig::default(),
+        ));
+        app.stacks.get_mut(&TabId::Tickets).unwrap().push(dummy);
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 2);
+
+        // Goto Tickets from another tab.
+        app.active_tab = TabId::Flows;
+        app.handle_goto(TabId::Tickets, "ur-xyz99".to_string(), true);
+        assert_eq!(app.active_tab, TabId::Tickets);
+        assert_eq!(app.stacks.get(&TabId::Tickets).unwrap().len(), 1);
+        assert_eq!(app.tickets_page().pending_goto(), Some("ur-xyz99"));
     }
 }

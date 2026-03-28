@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, FooterCommand, StatusMessage};
+use crate::page::{Banner, FooterCommand, StatusMessage, TabId};
 use crate::pages::{
     FlowsListScreen, TicketActivitiesScreen, TicketDetailScreen, TicketsListScreen,
     WorkersListScreen,
@@ -22,6 +22,16 @@ pub enum ScreenResult {
     Push(Box<dyn Screen>),
     /// Pop the current screen, returning to the previous one.
     Pop,
+    /// Navigate to another tab, optionally pushing a detail screen for the given ID.
+    ///
+    /// When `push_detail` is true, the target root screen receives a pending goto
+    /// so it can push a detail screen on the next data cycle. When false, the root
+    /// screen highlights the item without pushing.
+    Goto {
+        tab: TabId,
+        ticket_id: String,
+        push_detail: bool,
+    },
 }
 
 impl std::fmt::Debug for ScreenResult {
@@ -32,6 +42,16 @@ impl std::fmt::Debug for ScreenResult {
             ScreenResult::Quit => write!(f, "Quit"),
             ScreenResult::Push(_) => write!(f, "Push(...)"),
             ScreenResult::Pop => write!(f, "Pop"),
+            ScreenResult::Goto {
+                tab,
+                ticket_id,
+                push_detail,
+            } => {
+                write!(
+                    f,
+                    "Goto {{ tab: {tab:?}, ticket_id: {ticket_id:?}, push_detail: {push_detail} }}"
+                )
+            }
         }
     }
 }
@@ -45,6 +65,7 @@ impl PartialEq for ScreenResult {
                 | (ScreenResult::Quit, ScreenResult::Quit)
                 | (ScreenResult::Push(_), ScreenResult::Push(_))
                 | (ScreenResult::Pop, ScreenResult::Pop)
+                | (ScreenResult::Goto { .. }, ScreenResult::Goto { .. })
         )
     }
 }
@@ -97,6 +118,12 @@ pub trait Screen: Send {
 
     /// Clear the status message (called when the async action completes).
     fn clear_status(&mut self) {}
+
+    /// Set a pending goto target so the screen pushes a detail view on the next data cycle.
+    fn set_pending_goto(&mut self, _ticket_id: String) {}
+
+    /// Set a pending highlight target so the screen selects the item without pushing detail.
+    fn set_pending_highlight(&mut self, _id: String) {}
 
     /// Downcast to `TicketsListScreen` if this is one.
     fn as_any_tickets(&self) -> Option<&TicketsListScreen> {

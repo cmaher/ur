@@ -33,6 +33,8 @@ pub struct WorkersListScreen {
     loaded: bool,
     error: Option<String>,
     active_banner: Option<Banner>,
+    /// Worker ID to highlight (select without pushing) on the next data cycle.
+    pending_highlight: Option<String>,
 }
 
 impl WorkersListScreen {
@@ -46,6 +48,7 @@ impl WorkersListScreen {
             loaded: false,
             error: None,
             active_banner: None,
+            pending_highlight: None,
         }
     }
 
@@ -55,6 +58,11 @@ impl WorkersListScreen {
 
     pub fn shortcut_char(&self) -> char {
         'w'
+    }
+
+    /// Returns the pending highlight worker ID, if any.
+    pub fn pending_highlight(&self) -> Option<&str> {
+        self.pending_highlight.as_deref()
     }
 
     fn total_pages(&self) -> usize {
@@ -354,6 +362,10 @@ impl Screen for WorkersListScreen {
 
     fn as_any_workers_mut(&mut self) -> Option<&mut WorkersListScreen> {
         Some(self)
+    }
+
+    fn set_pending_highlight(&mut self, id: String) {
+        self.pending_highlight = Some(id);
     }
 }
 
