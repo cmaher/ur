@@ -752,6 +752,7 @@ fn context_mount_configs(context_mounts: &[(String, PathBuf)]) -> Vec<ur_config:
         .map(|(project_key, host_path)| ur_config::MountConfig {
             source: host_path.display().to_string(),
             destination: format!("/context/{project_key}"),
+            readonly: false,
         })
         .collect()
 }
