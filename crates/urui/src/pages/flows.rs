@@ -43,9 +43,11 @@ pub enum OverlayAction {
 
 /// Parsed timestamps from workflow history, computed once on data receipt.
 struct ParsedTimestamps {
-    /// Timestamp of the first history event (workflow start).
+    /// Timestamp of workflow creation (`WorkflowInfo.created_at`), used as the
+    /// total-time anchor.  Anchoring on the DB creation time avoids any
+    /// contamination from history events that carry CI-sourced timestamps.
     first: Option<DateTime<Utc>>,
-    /// Timestamp of the last history event (most recent transition).
+    /// Timestamp of the last history event (most recent lifecycle transition).
     last: Option<DateTime<Utc>>,
 }
 
@@ -312,19 +314,26 @@ impl FlowsListScreen {
     }
 }
 
-/// Parse history timestamps from a WorkflowInfo, extracting first and last.
+/// Parse timestamps from a WorkflowInfo.
+///
+/// `first` is anchored to the workflow's own `created_at` field so that
+/// total-time always measures from workflow creation, regardless of what
+/// timestamps appear in history events (CI events, for example, carry
+/// GitHub-sourced timestamps that can predate the workflow itself).
+/// `last` is the most recent history event, used for stage-time.
 fn parse_timestamps(wf: &WorkflowInfo) -> ParsedTimestamps {
-    let parsed: Vec<DateTime<Utc>> = wf
+    let first = DateTime::parse_from_rfc3339(&wf.created_at)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc));
+
+    let last = wf
         .history
         .iter()
         .filter_map(|evt| DateTime::parse_from_rfc3339(&evt.created_at).ok())
         .map(|dt| dt.with_timezone(&Utc))
-        .collect();
+        .last();
 
-    ParsedTimestamps {
-        first: parsed.first().copied(),
-        last: parsed.last().copied(),
-    }
+    ParsedTimestamps { first, last }
 }
 
 /// Check if a workflow status is terminal (times should be frozen).
@@ -826,6 +835,7 @@ mod tests {
     fn make_workflow_with_history(
         ticket_id: &str,
         status: &str,
+        created_at: &str,
         history: Vec<WorkflowHistoryEvent>,
     ) -> WorkflowInfo {
         WorkflowInfo {
@@ -837,7 +847,7 @@ mod tests {
             implement_cycles: 1,
             worker_id: String::new(),
             feedback_mode: String::new(),
-            created_at: String::new(),
+            created_at: created_at.into(),
             pr_url: String::new(),
             history,
             ticket_children_open: 0,
@@ -886,8 +896,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_history_shows_dash() {
-        let wf = make_workflow_with_history("ur-abc", "implementing", vec![]);
+    fn empty_history_and_no_created_at_shows_dash() {
+        let wf = make_workflow_with_history("ur-abc", "implementing", "", vec![]);
         let entry = FlowEntry {
             timestamps: parse_timestamps(&wf),
             workflow: wf,
@@ -911,7 +921,8 @@ mod tests {
                 created_at: t2.into(),
             },
         ];
-        let wf = make_workflow_with_history("ur-abc", "done", history);
+        // created_at = t1: workflow was created when the first event fired
+        let wf = make_workflow_with_history("ur-abc", "done", t1, history);
         let entry = FlowEntry {
             timestamps: parse_timestamps(&wf),
             workflow: wf,
@@ -923,8 +934,41 @@ mod tests {
 
         // Stage time: last - last = 0 (frozen at last event)
         assert_eq!(compute_stage_time(&entry, future), "00:00:00");
-        // Total time: last - first = 1h30m
+        // Total time: last - created_at = 1h30m
         assert_eq!(compute_total_time(&entry, future), "01:30:00");
+    }
+
+    #[test]
+    fn total_time_uses_workflow_created_at_not_history_first_event() {
+        // Regression test: total_time must be anchored to wf.created_at, not the
+        // first history event. A CI-sourced history event can carry a timestamp
+        // predating the workflow itself, which previously produced multi-year totals.
+        let created_at = "2026-03-28T15:00:00+00:00"; // workflow created ~19s before "now"
+        let bogus_history_ts = "0001-01-01T00:00:00+00:00"; // bad CI event timestamp
+        let recent_ts = "2026-03-28T14:59:41+00:00"; // 19s before created_at
+        let history = vec![
+            WorkflowHistoryEvent {
+                event: "ci_check".into(),
+                created_at: bogus_history_ts.into(),
+            },
+            WorkflowHistoryEvent {
+                event: "implementing".into(),
+                created_at: recent_ts.into(),
+            },
+        ];
+        let wf = make_workflow_with_history("ur-abc", "implementing", created_at, history);
+        let entry = FlowEntry {
+            timestamps: parse_timestamps(&wf),
+            workflow: wf,
+        };
+        let now = DateTime::parse_from_rfc3339("2026-03-28T15:00:19+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // Total time = now - created_at = 19s (not millions of hours)
+        assert_eq!(compute_total_time(&entry, now), "00:00:19");
+        // Stage time = now - last_event = now - recent_ts = 38s
+        assert_eq!(compute_stage_time(&entry, now), "00:00:38");
     }
 
     #[test]
