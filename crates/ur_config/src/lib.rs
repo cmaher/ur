@@ -417,6 +417,12 @@ struct RawContainerConfig {
     ports: Vec<String>,
 }
 
+/// Raw TOML representation for a `[projects.<key>.tui]` section.
+#[derive(Debug, Deserialize)]
+struct RawProjectTuiConfig {
+    theme: Option<String>,
+}
+
 /// Raw TOML representation for a `[projects.<key>]` entry.
 #[derive(Debug, Deserialize)]
 struct RawProjectConfig {
@@ -438,6 +444,8 @@ struct RawProjectConfig {
     max_fix_attempts: Option<u32>,
     /// Branches that cannot be force-pushed. Supports glob patterns.
     protected_branches: Option<Vec<String>>,
+    /// Per-project TUI settings.
+    tui: Option<RawProjectTuiConfig>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -929,6 +937,13 @@ pub struct ContainerConfig {
     pub ports: Vec<PortMapping>,
 }
 
+/// Resolved per-project TUI settings from `[projects.<key>.tui]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTuiConfig {
+    /// Per-project theme override. `None` means use the global TUI theme.
+    pub theme_name: Option<String>,
+}
+
 /// Resolved project configuration for a single project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -968,6 +983,8 @@ pub struct ProjectConfig {
     /// Branch patterns that cannot be force-pushed (default: `["main", "master"]`).
     /// Supports glob patterns.
     pub protected_branches: Vec<String>,
+    /// Per-project TUI settings (theme override, etc.).
+    pub tui: Option<ProjectTuiConfig>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1136,6 +1153,55 @@ pub fn save_theme_name(config_dir: &Path, theme_name: &str) -> anyhow::Result<()
     Ok(())
 }
 
+/// Persist a per-project theme selection to `ur.toml`.
+///
+/// Reads the existing file (if any), sets `[projects.<key>.tui].theme`, and
+/// writes it back without disturbing other sections.
+pub fn save_project_theme_name(
+    config_dir: &Path,
+    project_key: &str,
+    theme_name: &str,
+) -> anyhow::Result<()> {
+    let path = config_dir.join("ur.toml");
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+    let mut doc: toml::Value = if content.is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        content.parse()?
+    };
+    let table = doc
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("ur.toml root is not a table"))?;
+    let projects = table
+        .entry("projects")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let projects_table = projects
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[projects] is not a table"))?;
+    let project = projects_table
+        .entry(project_key)
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let project_table = project
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[projects.{project_key}] is not a table"))?;
+    let tui = project_table
+        .entry("tui")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let tui_table = tui
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[projects.{project_key}.tui] is not a table"))?;
+    tui_table.insert(
+        "theme".to_string(),
+        toml::Value::String(theme_name.to_string()),
+    );
+    std::fs::write(&path, toml::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
 
@@ -1184,6 +1250,10 @@ fn resolve_project_config(
         ports,
     };
 
+    let tui = raw_proj.tui.map(|t| ProjectTuiConfig {
+        theme_name: t.theme,
+    });
+
     let resolved = ProjectConfig {
         name: raw_proj.name.unwrap_or_else(|| key.clone()),
         repo: raw_proj.repo,
@@ -1201,6 +1271,7 @@ fn resolve_project_config(
         protected_branches: raw_proj
             .protected_branches
             .unwrap_or_else(default_protected_branches),
+        tui,
     };
     Ok((key, resolved))
 }
@@ -3183,6 +3254,7 @@ quit = ["q"]
                     },
                     max_fix_attempts: 5,
                     protected_branches: vec![],
+                    tui: None,
                 },
             );
             m.insert(
@@ -3204,6 +3276,7 @@ quit = ["q"]
                     },
                     max_fix_attempts: 5,
                     protected_branches: vec![],
+                    tui: None,
                 },
             );
             m
@@ -3319,6 +3392,7 @@ quit = ["q"]
                     },
                     max_fix_attempts: 5,
                     protected_branches: vec![],
+                    tui: None,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
@@ -3326,5 +3400,143 @@ quit = ["q"]
             // but the logic in resolve_project checks key first, so this
             // is structurally guaranteed.
         }
+    }
+
+    #[test]
+    fn project_tui_none_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].tui, None);
+    }
+
+    #[test]
+    fn project_tui_parses_theme() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+[projects.ur.tui]
+theme = "dracula"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
+        assert_eq!(tui.theme_name.as_deref(), Some("dracula"));
+    }
+
+    #[test]
+    fn project_tui_theme_none_when_section_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+[projects.ur.tui]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
+        assert_eq!(tui.theme_name, None);
+    }
+
+    #[test]
+    fn save_project_theme_name_creates_file_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        save_project_theme_name(tmp.path(), "myproj", "dracula").unwrap();
+        let content = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
+        assert!(
+            content.contains("dracula"),
+            "expected theme in output: {content}"
+        );
+        assert!(
+            content.contains("myproj"),
+            "expected project key in output: {content}"
+        );
+    }
+
+    #[test]
+    fn save_project_theme_name_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        save_project_theme_name(tmp.path(), "ur", "nord").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
+        assert_eq!(tui.theme_name.as_deref(), Some("nord"));
+        // Original fields should be preserved
+        assert_eq!(cfg.projects["ur"].repo, "git@github.com:cmaher/ur.git");
+    }
+
+    #[test]
+    fn save_project_theme_name_overwrites_existing_theme() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.tui]
+theme = "dark"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        save_project_theme_name(tmp.path(), "ur", "light").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
+        assert_eq!(tui.theme_name.as_deref(), Some("light"));
+    }
+
+    #[test]
+    fn save_project_theme_name_does_not_disturb_global_tui() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[tui]
+theme = "synthwave"
+
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        save_project_theme_name(tmp.path(), "ur", "nord").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        // Global TUI theme must be untouched
+        assert_eq!(cfg.tui.theme_name, "synthwave");
+        // Per-project theme is set
+        let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
+        assert_eq!(tui.theme_name.as_deref(), Some("nord"));
     }
 }
