@@ -924,6 +924,7 @@ async fn dispatch_ticket_rpc(
             skills: Vec::new(),
             project_key: project_key.to_owned(),
             context_repos: vec![],
+            dispatch: false,
         })
         .await?;
     debug!(ticket_id, "worker launched via dispatch");
@@ -980,6 +981,7 @@ async fn launch_design_worker_rpc(
             skills: Vec::new(),
             project_key: project_key.to_owned(),
             context_repos: vec![],
+            dispatch: true,
         })
         .await?;
     debug!(ticket_id, "design worker launched");
