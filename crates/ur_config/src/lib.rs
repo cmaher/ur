@@ -446,6 +446,9 @@ struct RawProjectConfig {
     protected_branches: Option<Vec<String>>,
     /// Per-project TUI settings.
     tui: Option<RawProjectTuiConfig>,
+    /// CI check names to ignore when evaluating workflow status.
+    #[serde(default)]
+    ignored_workflow_checks: Vec<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -985,6 +988,8 @@ pub struct ProjectConfig {
     pub protected_branches: Vec<String>,
     /// Per-project TUI settings (theme override, etc.).
     pub tui: Option<ProjectTuiConfig>,
+    /// CI check names to ignore when evaluating workflow status.
+    pub ignored_workflow_checks: Vec<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1272,6 +1277,7 @@ fn resolve_project_config(
             .protected_branches
             .unwrap_or_else(default_protected_branches),
         tui,
+        ignored_workflow_checks: raw_proj.ignored_workflow_checks,
     };
     Ok((key, resolved))
 }
@@ -3255,6 +3261,7 @@ quit = ["q"]
                     max_fix_attempts: 5,
                     protected_branches: vec![],
                     tui: None,
+                    ignored_workflow_checks: vec![],
                 },
             );
             m.insert(
@@ -3277,6 +3284,7 @@ quit = ["q"]
                     max_fix_attempts: 5,
                     protected_branches: vec![],
                     tui: None,
+                    ignored_workflow_checks: vec![],
                 },
             );
             m
@@ -3393,6 +3401,7 @@ quit = ["q"]
                     max_fix_attempts: 5,
                     protected_branches: vec![],
                     tui: None,
+                    ignored_workflow_checks: vec![],
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
@@ -3437,6 +3446,41 @@ theme = "dracula"
         let cfg = Config::load_from(tmp.path()).unwrap();
         let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
         assert_eq!(tui.theme_name.as_deref(), Some("dracula"));
+    }
+
+    #[test]
+    fn ignored_workflow_checks_parses_list() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+ignored_workflow_checks = ["bench"]
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].ignored_workflow_checks, vec!["bench"]);
+    }
+
+    #[test]
+    fn ignored_workflow_checks_defaults_to_empty() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert!(cfg.projects["ur"].ignored_workflow_checks.is_empty());
     }
 
     #[test]
