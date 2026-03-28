@@ -80,6 +80,7 @@ impl<'a> ThemedTable<'a> {
         let table = Table::new(data_rows, &self.widths)
             .header(header_row)
             .block(block)
+            .column_spacing(0)
             .row_highlight_style(highlight_style);
 
         let mut state = TableState::default();
