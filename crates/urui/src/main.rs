@@ -47,14 +47,16 @@ async fn main() -> anyhow::Result<()> {
     // Verify server connectivity early so the user gets a clear error message.
     let _channel = ur_rpc::connection::connect(config.server_port).await?;
 
-    // Resolve theme and keymap from configuration.
-    let theme = Theme::resolve(&config.tui);
-    let keymap = resolve_keymap(&config.tui);
-    let mut projects: Vec<String> = config.projects.keys().cloned().collect();
-    projects.sort();
-
     // Resolve project filter: explicit flag, UR_PROJECT env, then cwd directory name.
     let project_filter = ur_config::resolve_project(cli.project, &config.projects);
+
+    // Resolve theme: if a single project is active and has a per-project theme
+    // override, use that theme name instead of the global one.
+    let effective_tui = resolve_project_tui(&config.tui, &project_filter, &config.projects);
+    let theme = Theme::resolve(&effective_tui);
+    let keymap = resolve_keymap(&effective_tui);
+    let mut projects: Vec<String> = config.projects.keys().cloned().collect();
+    projects.sort();
 
     let ctx = TuiContext {
         theme,
@@ -85,6 +87,31 @@ async fn main() -> anyhow::Result<()> {
     restore_terminal();
 
     result
+}
+
+/// Resolve the effective TUI config for startup.
+///
+/// When a single project is active and its `tui.theme_name` is set, that
+/// theme name overrides the global `tui.theme_name`. All other TUI settings
+/// (keymap, custom themes, etc.) remain global.
+fn resolve_project_tui(
+    global: &ur_config::TuiConfig,
+    project_filter: &Option<String>,
+    projects: &std::collections::HashMap<String, ur_config::ProjectConfig>,
+) -> ur_config::TuiConfig {
+    if let Some(key) = project_filter {
+        if let Some(proj) = projects.get(key) {
+            if let Some(proj_tui) = &proj.tui {
+                if let Some(theme_name) = &proj_tui.theme_name {
+                    return ur_config::TuiConfig {
+                        theme_name: theme_name.clone(),
+                        ..global.clone()
+                    };
+                }
+            }
+        }
+    }
+    global.clone()
 }
 
 /// Resolve the keymap from TUI configuration: use the named custom keymap if
