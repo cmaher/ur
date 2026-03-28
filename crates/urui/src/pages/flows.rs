@@ -331,7 +331,7 @@ fn parse_timestamps(wf: &WorkflowInfo) -> ParsedTimestamps {
         .iter()
         .filter_map(|evt| DateTime::parse_from_rfc3339(&evt.created_at).ok())
         .map(|dt| dt.with_timezone(&Utc))
-        .last();
+        .next_back();
 
     ParsedTimestamps { first, last }
 }
