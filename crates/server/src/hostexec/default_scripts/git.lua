@@ -67,5 +67,30 @@ function transform(command, args, working_dir, worker_context)
         end
     end
 
+    -- Prepend ticket ID to commit messages when worker_context has a process_id
+    if worker_context ~= nil and worker_context.process_id ~= "" then
+        local ticket_id = worker_context.process_id
+        local prefix = "[" .. ticket_id .. "] "
+        local i2 = 1
+        while i2 <= #args do
+            if args[i2] == "commit" then
+                -- Found a commit subcommand — look for -m flag
+                local j = i2 + 1
+                while j <= #args do
+                    if args[j] == "-m" and j + 1 <= #args then
+                        local msg = args[j + 1]
+                        if msg:sub(1, #prefix) ~= prefix then
+                            args[j + 1] = prefix .. msg
+                        end
+                        break
+                    end
+                    j = j + 1
+                end
+                break
+            end
+            i2 = i2 + 1
+        end
+    end
+
     return { command = command, args = args, working_dir = working_dir, env = { GIT_EDITOR = "true" } }
 end
