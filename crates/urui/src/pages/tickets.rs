@@ -13,11 +13,12 @@ use ur_rpc::proto::ticket::Ticket;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage, TabId};
 use crate::pages::ticket_detail::TicketDetailScreen;
 use crate::screen::{Screen, ScreenResult};
 use crate::widgets::filter_menu::{FilterMenuResult, FilterMenuState, TicketFilters};
 use crate::widgets::force_close_confirm::{ForceCloseConfirmResult, ForceCloseConfirmState};
+use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState, GotoTarget};
 use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
@@ -37,6 +38,7 @@ enum Overlay {
     FilterMenu(FilterMenuState),
     PriorityPicker(PriorityPickerState),
     ForceCloseConfirm(ForceCloseConfirmState),
+    GotoMenu(GotoMenuState),
 }
 
 /// Result from handling an overlay key event.
@@ -47,6 +49,8 @@ pub enum OverlayAction {
     SetPriority { ticket_id: String, priority: i64 },
     /// User confirmed force-closing the given ticket.
     ForceClose { ticket_id: String },
+    /// User selected a goto target from the goto menu.
+    Goto(GotoTarget),
 }
 
 /// Pagination parameters for server-side ticket fetching.
@@ -74,6 +78,12 @@ pub struct TicketsListScreen {
     active_banner: Option<Banner>,
     /// In-progress status message shown below the tab header.
     active_status: Option<StatusMessage>,
+    /// Ticket ID to navigate to (push detail) on the next data cycle.
+    pending_goto: Option<String>,
+    /// Ticket ID to highlight (select without pushing) on the next data cycle.
+    pending_highlight: Option<String>,
+    /// Detail screen to push after a pending goto resolved successfully.
+    pending_detail_push: Option<Box<dyn Screen>>,
 }
 
 impl TicketsListScreen {
@@ -88,12 +98,25 @@ impl TicketsListScreen {
             filters: TicketFilters::from_config(filter_config),
             active_banner: None,
             active_status: None,
+            pending_goto: None,
+            pending_highlight: None,
+            pending_detail_push: None,
         }
     }
 
     /// Returns a reference to the current filters for persistence.
     pub fn filters(&self) -> &TicketFilters {
         &self.filters
+    }
+
+    /// Returns the pending goto ticket ID, if any.
+    pub fn pending_goto(&self) -> Option<&str> {
+        self.pending_goto.as_deref()
+    }
+
+    /// Returns the pending highlight ticket ID, if any.
+    pub fn pending_highlight(&self) -> Option<&str> {
+        self.pending_highlight.as_deref()
     }
 
     /// Returns the current pagination parameters for server-side fetching.
@@ -340,6 +363,20 @@ impl TicketsListScreen {
                     }
                 }
             }
+            Some(Overlay::GotoMenu(ref mut menu)) => {
+                let result = menu.handle_key(key);
+                match result {
+                    GotoMenuResult::Consumed => OverlayAction::None,
+                    GotoMenuResult::Close => {
+                        self.overlay = None;
+                        OverlayAction::None
+                    }
+                    GotoMenuResult::Selected(target) => {
+                        self.overlay = None;
+                        OverlayAction::Goto(target)
+                    }
+                }
+            }
             None => OverlayAction::None,
         }
     }
@@ -546,6 +583,14 @@ impl Screen for TicketsListScreen {
                     ScreenResult::Consumed
                 }
             }
+            Action::Goto => {
+                if let Some(ticket_id) = self.selected_ticket_id() {
+                    self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(
+                        build_ticket_goto_targets(&ticket_id),
+                    )));
+                }
+                ScreenResult::Consumed
+            }
             Action::Quit => ScreenResult::Quit,
             _ => ScreenResult::Ignored,
         }
@@ -600,6 +645,9 @@ impl Screen for TicketsListScreen {
             Some(Overlay::ForceCloseConfirm(state)) => {
                 state.render(area, buf, ctx);
             }
+            Some(Overlay::GotoMenu(menu)) => {
+                menu.render(area, buf, ctx);
+            }
             None => {}
         }
     }
@@ -609,6 +657,7 @@ impl Screen for TicketsListScreen {
             Some(Overlay::FilterMenu(menu)) => return menu.footer_commands(),
             Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
             Some(Overlay::ForceCloseConfirm(state)) => return state.footer_commands(),
+            Some(Overlay::GotoMenu(menu)) => return menu.footer_commands(),
             None => {}
         }
         vec![
@@ -646,6 +695,11 @@ impl Screen for TicketsListScreen {
                 key_label: keymap.label_for(&Action::Filter),
                 description: "Filter".to_string(),
                 common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Goto),
+                description: "Goto".to_string(),
+                common: true,
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::Select),
@@ -695,6 +749,7 @@ impl Screen for TicketsListScreen {
             DataPayload::Tickets(Ok((tickets, total_count))) => {
                 self.active_status = None;
                 self.apply_page_result(&Ok((tickets.clone(), *total_count)));
+                self.handle_pending_goto_highlight();
             }
             DataPayload::Tickets(Err(msg)) => {
                 self.active_status = None;
@@ -754,6 +809,98 @@ impl Screen for TicketsListScreen {
 
     fn as_any_tickets_mut(&mut self) -> Option<&mut crate::pages::TicketsListScreen> {
         Some(self)
+    }
+
+    fn set_pending_goto(&mut self, ticket_id: String) {
+        self.pending_goto = Some(ticket_id);
+    }
+
+    fn set_pending_highlight(&mut self, id: String) {
+        self.pending_highlight = Some(id);
+    }
+}
+
+impl TicketsListScreen {
+    /// Process pending goto and highlight after data arrives.
+    ///
+    /// For pending_goto: finds the ticket, selects it, and queues a detail
+    /// screen push. If not found, shows a banner error.
+    /// For pending_highlight: finds the ticket and selects it without pushing.
+    fn handle_pending_goto_highlight(&mut self) {
+        if let Some(ticket_id) = self.pending_goto.take() {
+            // Find the ticket and clone data we need before mutating self.
+            let found = self
+                .visible_tickets()
+                .iter()
+                .find(|t| t.id == ticket_id)
+                .map(|t| (t.id.clone(), t.project.clone()));
+            if let Some((id, project)) = found {
+                let idx = self
+                    .visible_tickets()
+                    .iter()
+                    .position(|t| t.id == ticket_id)
+                    .unwrap_or(0);
+                self.selected_row = idx;
+                let detail = TicketDetailScreen::new(id, project);
+                self.pending_detail_push = Some(Box::new(detail));
+            } else {
+                self.active_banner = Some(Banner {
+                    message: format!("Ticket {ticket_id} not found on current page"),
+                    variant: BannerVariant::Error,
+                    created_at: Instant::now(),
+                });
+            }
+        }
+        if let Some(ticket_id) = self.pending_highlight.take() {
+            let found = self
+                .visible_tickets()
+                .iter()
+                .position(|t| t.id == ticket_id);
+            if let Some(idx) = found {
+                self.selected_row = idx;
+            }
+        }
+    }
+
+    /// Take a pending detail screen push, if one was queued by a goto navigation.
+    ///
+    /// The app layer calls this after `on_data` to determine whether to auto-push
+    /// a detail screen onto the tab stack.
+    pub fn take_pending_detail_push(&mut self) -> Option<Box<dyn Screen>> {
+        self.pending_detail_push.take()
+    }
+}
+
+/// Build goto menu targets for a ticket screen (list or detail).
+pub fn build_ticket_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
+    vec![
+        GotoTarget {
+            label: "Flow Details".to_string(),
+            screen: "flow".to_string(),
+            id: ticket_id.to_string(),
+        },
+        GotoTarget {
+            label: "Worker".to_string(),
+            screen: "worker".to_string(),
+            id: ticket_id.to_string(),
+        },
+    ]
+}
+
+/// Convert a `GotoTarget` into a `ScreenResult::Goto`.
+pub fn goto_target_to_screen_result(target: &GotoTarget) -> ScreenResult {
+    match target.screen.as_str() {
+        "flow" => ScreenResult::Goto {
+            tab: TabId::Flows,
+            ticket_id: target.id.clone(),
+            push_detail: true,
+        },
+        "worker" => ScreenResult::Goto {
+            tab: TabId::Workers,
+            ticket_id: target.id.clone(),
+            push_detail: false,
+        },
+        _ => ScreenResult::Consumed,
     }
 }
 

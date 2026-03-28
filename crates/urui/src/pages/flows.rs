@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
+use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
@@ -15,12 +16,30 @@ use ur_rpc::proto::ticket::WorkflowInfo;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
+use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage, TabId};
 use crate::pages::flow_detail::FlowDetailScreen;
 use crate::screen::{Screen, ScreenResult};
+use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState, GotoTarget};
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
 const PAGE_SIZE: usize = 20;
+
+/// Active overlay on this page.
+enum Overlay {
+    GotoMenu(GotoMenuState),
+}
+
+/// Result from handling an overlay key event.
+pub enum OverlayAction {
+    /// No action needed by the caller.
+    None,
+    /// Navigate to another tab for the given ticket.
+    Goto {
+        tab: TabId,
+        ticket_id: String,
+        push_detail: bool,
+    },
+}
 
 /// Parsed timestamps from workflow history, computed once on data receipt.
 struct ParsedTimestamps {
@@ -57,6 +76,14 @@ pub struct FlowsListScreen {
     active_banner: Option<Banner>,
     /// When true, a page navigation is pending and needs a server fetch.
     pending_fetch: bool,
+    /// Active overlay on this page.
+    overlay: Option<Overlay>,
+    /// Flow/ticket ID to navigate to (push detail) on the next data cycle.
+    pending_goto: Option<String>,
+    /// Flow/ticket ID to highlight (select without pushing) on the next data cycle.
+    pending_highlight: Option<String>,
+    /// Detail screen to push after a pending goto resolved successfully.
+    pending_detail_push: Option<Box<dyn Screen>>,
 }
 
 impl FlowsListScreen {
@@ -72,6 +99,10 @@ impl FlowsListScreen {
             active_status: None,
             active_banner: None,
             pending_fetch: false,
+            overlay: None,
+            pending_goto: None,
+            pending_highlight: None,
+            pending_detail_push: None,
         }
     }
 
@@ -81,6 +112,16 @@ impl FlowsListScreen {
 
     pub fn shortcut_char(&self) -> char {
         'f'
+    }
+
+    /// Returns the pending goto ticket ID, if any.
+    pub fn pending_goto(&self) -> Option<&str> {
+        self.pending_goto.as_deref()
+    }
+
+    /// Returns the pending highlight ticket ID, if any.
+    pub fn pending_highlight(&self) -> Option<&str> {
+        self.pending_highlight.as_deref()
     }
 
     /// Total number of pages based on server-reported total_count.
@@ -155,6 +196,84 @@ impl FlowsListScreen {
                 });
             }
         }
+    }
+
+    /// Handle a raw key event when the overlay is active.
+    /// Returns an `OverlayAction` indicating what the caller should do.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> OverlayAction {
+        match self.overlay {
+            Some(Overlay::GotoMenu(ref mut menu)) => {
+                let result = menu.handle_key(key);
+                match result {
+                    GotoMenuResult::Consumed => OverlayAction::None,
+                    GotoMenuResult::Close => {
+                        self.overlay = None;
+                        OverlayAction::None
+                    }
+                    GotoMenuResult::Selected(target) => {
+                        self.overlay = None;
+                        goto_target_to_action(target)
+                    }
+                }
+            }
+            None => OverlayAction::None,
+        }
+    }
+
+    /// Returns true if an overlay is currently active.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Close any active overlay.
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
+    }
+
+    /// Build goto targets for the currently selected flow.
+    fn goto_targets(&self) -> Option<Vec<GotoTarget>> {
+        let ticket_id = self.selected_ticket_id()?;
+        Some(build_flow_goto_targets(&ticket_id))
+    }
+
+    /// Process pending goto and highlight after data arrives.
+    ///
+    /// For pending_goto: finds the flow by ticket_id, selects it, and queues
+    /// a detail screen push. If not found, shows a banner error.
+    /// For pending_highlight: finds the flow and selects it without pushing.
+    fn handle_pending_navigation(&mut self) {
+        if let Some(ticket_id) = self.pending_goto.take() {
+            self.resolve_pending_goto(&ticket_id);
+        }
+        if let Some(ticket_id) = self.pending_highlight.take()
+            && let Some(idx) = self.display_ids.iter().position(|id| id == &ticket_id)
+        {
+            self.selected = idx;
+        }
+    }
+
+    fn resolve_pending_goto(&mut self, ticket_id: &str) {
+        let Some(idx) = self.display_ids.iter().position(|id| id == ticket_id) else {
+            self.active_banner = Some(Banner {
+                message: format!("Flow for {ticket_id} not found on current page"),
+                variant: BannerVariant::Error,
+                created_at: Instant::now(),
+            });
+            return;
+        };
+        self.selected = idx;
+        if let Some(entry) = self.entry_map.get(ticket_id) {
+            let detail = FlowDetailScreen::new(entry.workflow.clone());
+            self.pending_detail_push = Some(Box::new(detail));
+        }
+    }
+
+    /// Take a pending detail screen push, if one was queued by a goto navigation.
+    ///
+    /// The app layer calls this after `on_data` to determine whether to auto-push
+    /// a detail screen onto the tab stack.
+    pub fn take_pending_detail_push(&mut self) -> Option<Box<dyn Screen>> {
+        self.pending_detail_push.take()
     }
 
     /// Load a page of workflows from the server response, replacing current data.
@@ -279,6 +398,39 @@ fn entry_to_row(entry: &FlowEntry, now: DateTime<Utc>) -> Vec<String> {
         compute_total_time(entry, now),
         wf.pr_url.clone(),
     ]
+}
+
+/// Build goto targets for a flow with the given ticket ID.
+fn build_flow_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
+    vec![
+        GotoTarget {
+            label: "Ticket Details".to_string(),
+            screen: "ticket".to_string(),
+            id: ticket_id.to_string(),
+        },
+        GotoTarget {
+            label: "Worker".to_string(),
+            screen: "worker".to_string(),
+            id: ticket_id.to_string(),
+        },
+    ]
+}
+
+/// Convert a selected GotoTarget into an OverlayAction.
+fn goto_target_to_action(target: GotoTarget) -> OverlayAction {
+    match target.screen.as_str() {
+        "ticket" => OverlayAction::Goto {
+            tab: TabId::Tickets,
+            ticket_id: target.id,
+            push_detail: true,
+        },
+        "worker" => OverlayAction::Goto {
+            tab: TabId::Workers,
+            ticket_id: target.id,
+            push_detail: false,
+        },
+        _ => OverlayAction::None,
+    }
 }
 
 /// The column index of the progress count label in the table.
@@ -413,6 +565,12 @@ impl Screen for FlowsListScreen {
                 });
                 ScreenResult::Consumed
             }
+            Action::Goto => {
+                if let Some(targets) = self.goto_targets() {
+                    self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(targets)));
+                }
+                ScreenResult::Consumed
+            }
             Action::CancelFlow | Action::CloseTicket => {
                 // Handled at the app level in cancel_selected_flow().
                 ScreenResult::Ignored
@@ -483,9 +641,18 @@ impl Screen for FlowsListScreen {
         table.render(area, buf, ctx);
 
         render_progress_bars(self, area, buf, ctx, &widths);
+
+        // Render overlay on top
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            menu.render(area, buf, ctx);
+        }
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            return menu.footer_commands();
+        }
+
         vec![
             FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
@@ -511,6 +678,11 @@ impl Screen for FlowsListScreen {
                 key_label: keymap.label_for(&Action::CloseTicket),
                 description: "Cancel".to_string(),
                 common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Goto),
+                description: "Goto".to_string(),
+                common: true,
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::Refresh),
@@ -548,6 +720,7 @@ impl Screen for FlowsListScreen {
                 self.active_status = None;
                 self.error = None;
                 self.load_page(workflows, *total_count);
+                self.handle_pending_navigation();
             }
             DataPayload::Flows(Err(msg)) => {
                 debug!(error = %msg, "flows: Loading -> Error");
@@ -612,6 +785,14 @@ impl Screen for FlowsListScreen {
 
     fn as_any_flows_mut(&mut self) -> Option<&mut FlowsListScreen> {
         Some(self)
+    }
+
+    fn set_pending_goto(&mut self, ticket_id: String) {
+        self.pending_goto = Some(ticket_id);
+    }
+
+    fn set_pending_highlight(&mut self, id: String) {
+        self.pending_highlight = Some(id);
     }
 }
 

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -11,9 +12,27 @@ use ur_rpc::proto::ticket::WorkflowInfo;
 use crate::context::TuiContext;
 use crate::data::DataPayload;
 use crate::keymap::{Action, Keymap};
-use crate::page::FooterCommand;
+use crate::page::{FooterCommand, TabId};
 use crate::screen::{Screen, ScreenResult};
 use crate::widgets::ThemedTable;
+use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState, GotoTarget};
+
+/// Active overlay on the flow detail screen.
+enum Overlay {
+    GotoMenu(GotoMenuState),
+}
+
+/// Result from handling an overlay key event on the flow detail screen.
+pub enum OverlayAction {
+    /// No action needed by the caller.
+    None,
+    /// Navigate to another tab for the given ticket.
+    Goto {
+        tab: TabId,
+        ticket_id: String,
+        push_detail: bool,
+    },
+}
 
 /// Screen showing the full detail view for a single workflow.
 ///
@@ -21,11 +40,47 @@ use crate::widgets::ThemedTable;
 /// `FlowsListScreen`. Pressing Back/Escape pops back to the list.
 pub struct FlowDetailScreen {
     workflow: WorkflowInfo,
+    overlay: Option<Overlay>,
 }
 
 impl FlowDetailScreen {
     pub fn new(workflow: WorkflowInfo) -> Self {
-        Self { workflow }
+        Self {
+            workflow,
+            overlay: None,
+        }
+    }
+
+    /// Handle a raw key event when the overlay is active.
+    /// Returns an `OverlayAction` indicating what the caller should do.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> OverlayAction {
+        match self.overlay {
+            Some(Overlay::GotoMenu(ref mut menu)) => {
+                let result = menu.handle_key(key);
+                match result {
+                    GotoMenuResult::Consumed => OverlayAction::None,
+                    GotoMenuResult::Close => {
+                        self.overlay = None;
+                        OverlayAction::None
+                    }
+                    GotoMenuResult::Selected(target) => {
+                        self.overlay = None;
+                        goto_target_to_action(target)
+                    }
+                }
+            }
+            None => OverlayAction::None,
+        }
+    }
+
+    /// Returns true if an overlay is currently active.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Close any active overlay.
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
     }
 }
 
@@ -33,6 +88,11 @@ impl Screen for FlowDetailScreen {
     fn handle_action(&mut self, action: Action) -> ScreenResult {
         match action {
             Action::Back => ScreenResult::Pop,
+            Action::Goto => {
+                let targets = build_flow_goto_targets(&self.workflow.ticket_id);
+                self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(targets)));
+                ScreenResult::Consumed
+            }
             Action::Quit => ScreenResult::Quit,
             _ => ScreenResult::Consumed,
         }
@@ -40,9 +100,17 @@ impl Screen for FlowDetailScreen {
 
     fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
         render_flow_detail(&self.workflow, area, buf, ctx);
+
+        // Render overlay on top
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            menu.render(area, buf, ctx);
+        }
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            return menu.footer_commands();
+        }
         detail_footer_commands(keymap)
     }
 
@@ -257,6 +325,11 @@ pub fn detail_footer_commands(keymap: &Keymap) -> Vec<FooterCommand> {
             common: false,
         },
         FooterCommand {
+            key_label: keymap.label_for(&Action::Goto),
+            description: "Goto".to_string(),
+            common: true,
+        },
+        FooterCommand {
             key_label: keymap.label_for(&Action::Back),
             description: "Back".to_string(),
             common: true,
@@ -267,6 +340,39 @@ pub fn detail_footer_commands(keymap: &Keymap) -> Vec<FooterCommand> {
             common: true,
         },
     ]
+}
+
+/// Build goto targets for a flow with the given ticket ID.
+fn build_flow_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
+    vec![
+        GotoTarget {
+            label: "Ticket Details".to_string(),
+            screen: "ticket".to_string(),
+            id: ticket_id.to_string(),
+        },
+        GotoTarget {
+            label: "Worker".to_string(),
+            screen: "worker".to_string(),
+            id: ticket_id.to_string(),
+        },
+    ]
+}
+
+/// Convert a selected GotoTarget into an OverlayAction.
+fn goto_target_to_action(target: GotoTarget) -> OverlayAction {
+    match target.screen.as_str() {
+        "ticket" => OverlayAction::Goto {
+            tab: TabId::Tickets,
+            ticket_id: target.id,
+            push_detail: true,
+        },
+        "worker" => OverlayAction::Goto {
+            tab: TabId::Workers,
+            ticket_id: target.id,
+            push_detail: false,
+        },
+        _ => OverlayAction::None,
+    }
 }
 
 #[cfg(test)]
@@ -389,10 +495,11 @@ mod tests {
     fn detail_footer_has_back_and_quit() {
         let keymap = Keymap::default();
         let cmds = detail_footer_commands(&keymap);
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
         assert_eq!(cmds[0].description, "Redrive");
-        assert_eq!(cmds[1].description, "Back");
-        assert_eq!(cmds[2].description, "Quit");
+        assert_eq!(cmds[1].description, "Goto");
+        assert_eq!(cmds[2].description, "Back");
+        assert_eq!(cmds[3].description, "Quit");
     }
 
     #[test]
