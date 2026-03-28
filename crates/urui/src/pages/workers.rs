@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
@@ -13,11 +14,17 @@ use ur_rpc::proto::core::WorkerSummary;
 use crate::context::TuiContext;
 use crate::data::{ActionResult, DataPayload};
 use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand};
+use crate::page::{Banner, BannerVariant, FooterCommand, TabId};
 use crate::screen::{Screen, ScreenResult};
 use crate::widgets::ThemedTable;
+use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState, GotoTarget};
 
 const PAGE_SIZE: usize = 20;
+
+/// Active overlay on this page.
+enum Overlay {
+    GotoMenu(GotoMenuState),
+}
 
 /// State for the Workers tab, showing active workers in a paginated table.
 pub struct WorkersListScreen {
@@ -33,6 +40,7 @@ pub struct WorkersListScreen {
     loaded: bool,
     error: Option<String>,
     active_banner: Option<Banner>,
+    overlay: Option<Overlay>,
     /// Worker ID to highlight (select without pushing) on the next data cycle.
     pending_highlight: Option<String>,
 }
@@ -48,6 +56,7 @@ impl WorkersListScreen {
             loaded: false,
             error: None,
             active_banner: None,
+            overlay: None,
             pending_highlight: None,
         }
     }
@@ -128,6 +137,21 @@ impl WorkersListScreen {
         self.clamp_selection();
     }
 
+    /// If a pending highlight is set, scroll to that worker or show a banner error.
+    fn apply_pending_highlight(&mut self) {
+        if let Some(id) = self.pending_highlight.take() {
+            if self.display_ids.iter().any(|wid| wid == &id) {
+                self.restore_selection_by_id(Some(&id));
+            } else {
+                self.active_banner = Some(Banner {
+                    message: format!("Worker {id} not found"),
+                    variant: BannerVariant::Error,
+                    created_at: Instant::now(),
+                });
+            }
+        }
+    }
+
     /// Returns the worker ID of the currently selected worker, if any.
     pub fn selected_worker_id(&self) -> Option<String> {
         self.page_ids().get(self.selected).cloned()
@@ -141,6 +165,60 @@ impl WorkersListScreen {
             self.pending_kills.insert(worker_id.to_string(), worker);
             self.preserve_selection_and_rebuild();
         }
+    }
+
+    /// Returns true if an overlay is currently active.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    /// Close any active overlay.
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
+    }
+
+    /// Handle a raw key event when the overlay is active.
+    /// Returns a `ScreenResult` indicating how the event was handled.
+    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> ScreenResult {
+        match self.overlay {
+            Some(Overlay::GotoMenu(ref mut menu)) => match menu.handle_key(key) {
+                GotoMenuResult::Selected(target) => {
+                    self.overlay = None;
+                    let tab = match target.screen.as_str() {
+                        "ticket" => TabId::Tickets,
+                        "flow" => TabId::Flows,
+                        _ => return ScreenResult::Consumed,
+                    };
+                    ScreenResult::Goto {
+                        tab,
+                        ticket_id: target.id,
+                        push_detail: true,
+                    }
+                }
+                GotoMenuResult::Close => {
+                    self.overlay = None;
+                    ScreenResult::Consumed
+                }
+                GotoMenuResult::Consumed => ScreenResult::Consumed,
+            },
+            None => ScreenResult::Consumed,
+        }
+    }
+
+    /// Build goto targets for the currently selected worker.
+    fn build_goto_targets(&self, worker_id: &str) -> Vec<GotoTarget> {
+        vec![
+            GotoTarget {
+                label: "Ticket Details".to_string(),
+                screen: "ticket".to_string(),
+                id: worker_id.to_string(),
+            },
+            GotoTarget {
+                label: "Flow Details".to_string(),
+                screen: "flow".to_string(),
+                id: worker_id.to_string(),
+            },
+        ]
     }
 
     /// Handle an async action result by showing a success or error banner.
@@ -219,6 +297,13 @@ impl Screen for WorkersListScreen {
                 self.loaded = false;
                 ScreenResult::Consumed
             }
+            Action::Goto => {
+                if let Some(worker_id) = self.selected_worker_id() {
+                    let targets = self.build_goto_targets(&worker_id);
+                    self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(targets)));
+                }
+                ScreenResult::Consumed
+            }
             Action::Quit => ScreenResult::Quit,
             _ => ScreenResult::Ignored,
         }
@@ -267,14 +352,27 @@ impl Screen for WorkersListScreen {
         };
 
         table.render(area, buf, ctx);
+
+        // Render overlay on top
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            menu.render(area, buf, ctx);
+        }
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
+            return menu.footer_commands();
+        }
         vec![
             FooterCommand {
                 key_label: keymap.label_for(&Action::CloseTicket),
                 description: "Kill".to_string(),
                 common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Goto),
+                description: "Goto".to_string(),
+                common: true,
             },
             FooterCommand {
                 key_label: keymap.label_for(&Action::NavigateDown),
@@ -321,6 +419,7 @@ impl Screen for WorkersListScreen {
                 }
                 self.error = None;
                 self.preserve_selection_and_rebuild();
+                self.apply_pending_highlight();
             }
             DataPayload::Workers(Err(msg)) => {
                 debug!(error = %msg, "workers: Loading -> Error");
@@ -720,5 +819,159 @@ mod tests {
         assert_eq!(page.display_ids.len(), 1);
         assert!(page.selected_worker_id().is_some());
         assert_eq!(page.selected_worker_id(), Some("ur-abc".to_string()));
+    }
+
+    #[test]
+    fn goto_opens_overlay_with_selected_worker() {
+        let mut page = WorkersListScreen::new();
+        let workers = vec![make_worker("ur-abc"), make_worker("ur-def")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        assert!(!page.has_overlay());
+        let result = page.handle_action(Action::Goto);
+        assert_eq!(result, ScreenResult::Consumed);
+        assert!(page.has_overlay());
+    }
+
+    #[test]
+    fn goto_ignored_when_no_workers() {
+        let mut page = WorkersListScreen::new();
+        page.on_data(&DataPayload::Workers(Ok(vec![])));
+
+        let result = page.handle_action(Action::Goto);
+        assert_eq!(result, ScreenResult::Consumed);
+        assert!(!page.has_overlay());
+    }
+
+    #[test]
+    fn goto_menu_select_ticket_details() {
+        let mut page = WorkersListScreen::new();
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.handle_action(Action::Goto);
+        assert!(page.has_overlay());
+
+        // Press '1' to select Ticket Details
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('1'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let result = page.handle_overlay_key(key);
+        assert!(!page.has_overlay());
+        match result {
+            ScreenResult::Goto {
+                tab,
+                ticket_id,
+                push_detail,
+            } => {
+                assert_eq!(tab, TabId::Tickets);
+                assert_eq!(ticket_id, "ur-abc");
+                assert!(push_detail);
+            }
+            other => panic!("Expected Goto, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_menu_select_flow_details() {
+        let mut page = WorkersListScreen::new();
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.handle_action(Action::Goto);
+
+        // Press '2' to select Flow Details
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('2'),
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let result = page.handle_overlay_key(key);
+        assert!(!page.has_overlay());
+        match result {
+            ScreenResult::Goto {
+                tab,
+                ticket_id,
+                push_detail,
+            } => {
+                assert_eq!(tab, TabId::Flows);
+                assert_eq!(ticket_id, "ur-abc");
+                assert!(push_detail);
+            }
+            other => panic!("Expected Goto, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_menu_esc_closes_overlay() {
+        let mut page = WorkersListScreen::new();
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        page.handle_action(Action::Goto);
+        assert!(page.has_overlay());
+
+        let key = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        );
+        let result = page.handle_overlay_key(key);
+        assert_eq!(result, ScreenResult::Consumed);
+        assert!(!page.has_overlay());
+    }
+
+    #[test]
+    fn pending_highlight_scrolls_to_worker() {
+        let mut page = WorkersListScreen::new();
+        page.set_pending_highlight("ur-def".to_string());
+
+        let workers = vec![
+            make_worker("ur-abc"),
+            make_worker("ur-def"),
+            make_worker("ur-ghi"),
+        ];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        assert_eq!(page.selected_worker_id(), Some("ur-def".to_string()));
+        assert!(page.pending_highlight.is_none());
+    }
+
+    #[test]
+    fn pending_highlight_shows_error_when_not_found() {
+        let mut page = WorkersListScreen::new();
+        page.set_pending_highlight("ur-missing".to_string());
+
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+
+        assert!(page.pending_highlight.is_none());
+        assert!(page.active_banner.is_some());
+        let banner = page.active_banner.as_ref().unwrap();
+        assert!(matches!(banner.variant, BannerVariant::Error));
+        assert!(banner.message.contains("ur-missing"));
+    }
+
+    #[test]
+    fn footer_shows_goto_command() {
+        let page = WorkersListScreen::new();
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Goto" && c.common));
+    }
+
+    #[test]
+    fn footer_shows_overlay_commands_when_overlay_active() {
+        let mut page = WorkersListScreen::new();
+        let workers = vec![make_worker("ur-abc")];
+        page.on_data(&DataPayload::Workers(Ok(workers)));
+        page.handle_action(Action::Goto);
+
+        let keymap = Keymap::default();
+        let cmds = page.footer_commands(&keymap);
+        // Should show overlay-specific commands (Navigate, Confirm, Close)
+        assert!(cmds.iter().any(|c| c.description == "Confirm"));
+        assert!(cmds.iter().any(|c| c.description == "Close"));
+        // Should NOT show normal commands like Goto
+        assert!(!cmds.iter().any(|c| c.description == "Goto"));
     }
 }
