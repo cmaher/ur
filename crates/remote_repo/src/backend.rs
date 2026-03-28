@@ -371,9 +371,11 @@ fn parse_check_runs(completed: CompletedExec) -> Result<Vec<CheckRun>> {
             let state = v["state"].as_str().unwrap_or("");
             // gh pr checks --json state returns terminal values directly
             // (SUCCESS, FAILURE, NEUTRAL, SKIPPED, ERROR, CANCELLED, etc.)
-            // and PENDING/EXPECTED for in-progress checks.
+            // and PENDING/EXPECTED/QUEUED/IN_PROGRESS for in-progress checks.
             let (status, conclusion) = match state.to_uppercase().as_str() {
-                "PENDING" | "EXPECTED" | "QUEUED" => (state.to_string(), String::new()),
+                "PENDING" | "EXPECTED" | "QUEUED" | "IN_PROGRESS" => {
+                    (state.to_string(), String::new())
+                }
                 _ => ("completed".to_string(), state.to_lowercase()),
             };
             CheckRun {
@@ -444,5 +446,22 @@ mod tests {
         let exec = completed(0, "[]", "");
         let runs = parse_check_runs(exec).unwrap();
         assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn in_progress_state_is_treated_as_pending_not_failed() {
+        let json = r#"[
+            {"name":"ci","state":"IN_PROGRESS","completedAt":""},
+            {"name":"bench","state":"IN_PROGRESS","completedAt":""}
+        ]"#;
+        let exec = completed(0, json, "");
+        let runs = parse_check_runs(exec).unwrap();
+
+        assert_eq!(runs.len(), 2);
+        // IN_PROGRESS must not be mapped to conclusion="in_progress" (which is_check_failed treats as failure)
+        for run in &runs {
+            assert_eq!(run.status, "IN_PROGRESS");
+            assert_eq!(run.conclusion, "");
+        }
     }
 }
