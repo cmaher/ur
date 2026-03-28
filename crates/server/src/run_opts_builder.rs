@@ -217,11 +217,8 @@ impl RunOptsBuilder {
         for mount in mounts {
             let resolved = resolve_template_path(&mount.source, host_config_dir)
                 .map_err(|e| format!("failed to resolve mount source '{}': {e}", mount.source))?;
-            match resolved {
-                ResolvedTemplatePath::HostPath(host_path) => {
-                    self.volumes
-                        .push((host_path, PathBuf::from(&mount.destination)));
-                }
+            let host_path = match resolved {
+                ResolvedTemplatePath::HostPath(host_path) => host_path,
                 ResolvedTemplatePath::ProjectRelative(_) => {
                     return Err(format!(
                         "mount source '{}' resolved to a project-relative path, \
@@ -229,7 +226,13 @@ impl RunOptsBuilder {
                         mount.source
                     ));
                 }
-            }
+            };
+            let container_path = if mount.readonly {
+                PathBuf::from(format!("{}:ro", mount.destination))
+            } else {
+                PathBuf::from(&mount.destination)
+            };
+            self.volumes.push((host_path, container_path));
         }
         Ok(self)
     }
@@ -408,6 +411,7 @@ mod tests {
         let mounts = vec![MountConfig {
             source: "/host/tickets".into(),
             destination: "/workspace/.tickets".into(),
+            readonly: false,
         }];
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/unused"))
@@ -424,6 +428,7 @@ mod tests {
         let mounts = vec![MountConfig {
             source: "%URCONFIG%/shared-data".into(),
             destination: "/var/data".into(),
+            readonly: false,
         }];
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/home/user/.ur"))
@@ -444,10 +449,12 @@ mod tests {
             MountConfig {
                 source: "/host/a".into(),
                 destination: "/container/a".into(),
+                readonly: false,
             },
             MountConfig {
                 source: "/host/b".into(),
                 destination: "/container/b".into(),
+                readonly: false,
             },
         ];
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
@@ -458,6 +465,32 @@ mod tests {
         assert_eq!(opts.volumes.len(), 2);
         assert_eq!(opts.volumes[0].0, PathBuf::from("/host/a"));
         assert_eq!(opts.volumes[0].1, PathBuf::from("/container/a"));
+        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/b"));
+        assert_eq!(opts.volumes[1].1, PathBuf::from("/container/b"));
+    }
+
+    #[test]
+    fn add_mounts_readonly_appends_ro_suffix() {
+        let mounts = vec![
+            MountConfig {
+                source: "/host/a".into(),
+                destination: "/container/a".into(),
+                readonly: true,
+            },
+            MountConfig {
+                source: "/host/b".into(),
+                destination: "/container/b".into(),
+                readonly: false,
+            },
+        ];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_mounts(&mounts, Path::new("/unused"))
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 2);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/a"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/container/a:ro"));
         assert_eq!(opts.volumes[1].0, PathBuf::from("/host/b"));
         assert_eq!(opts.volumes[1].1, PathBuf::from("/container/b"));
     }

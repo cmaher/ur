@@ -18,6 +18,8 @@ pub struct MountConfig {
     pub source: String,
     /// Absolute container-side destination path.
     pub destination: String,
+    /// Whether the mount is read-only (`:ro` suffix).
+    pub readonly: bool,
 }
 
 /// A parsed port mapping entry: host port -> container port.
@@ -31,20 +33,24 @@ pub struct PortMapping {
     pub container_port: u16,
 }
 
-/// Parse a mount string in `"source:destination"` format.
+/// Parse a mount string in `"source:destination"` or `"source:destination:ro"` format.
 ///
-/// Splits on the first `:` character. Validates that:
+/// Strips an optional `:ro` suffix, then splits on the first `:` character. Validates that:
 /// - The source is a valid template path (but not `%PROJECT%`)
 /// - The destination is an absolute path (starts with `/`)
+/// - If a suffix is present, it must be exactly `ro` (other suffixes are rejected)
 fn parse_mount_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Result<MountConfig> {
-    let colon_pos = raw.find(':').ok_or_else(|| {
+    // Detect and strip optional `:ro` suffix (or reject invalid suffixes).
+    let (mount_str, readonly) = parse_mount_suffix(project_key, index, raw)?;
+
+    let colon_pos = mount_str.find(':').ok_or_else(|| {
         anyhow::anyhow!(
             "project '{project_key}': mounts[{index}]: expected 'source:destination' format, got: {raw}"
         )
     })?;
 
-    let source = &raw[..colon_pos];
-    let destination = &raw[colon_pos + 1..];
+    let source = &mount_str[..colon_pos];
+    let destination = &mount_str[colon_pos + 1..];
 
     if source.is_empty() {
         anyhow::bail!("project '{project_key}': mounts[{index}]: source must not be empty");
@@ -73,7 +79,40 @@ fn parse_mount_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Resu
     Ok(MountConfig {
         source: source.to_string(),
         destination: destination.to_string(),
+        readonly,
     })
+}
+
+/// Parse an optional suffix from a mount string.
+///
+/// Returns the mount string without the suffix and whether readonly was specified.
+/// Only `:ro` is accepted; other suffixes (e.g., `:rw`, `:foo`) are rejected.
+fn parse_mount_suffix<'a>(
+    project_key: &str,
+    index: usize,
+    raw: &'a str,
+) -> anyhow::Result<(&'a str, bool)> {
+    // A mount has at least one colon (source:dest). If there's a second colon,
+    // the part after the last colon might be a suffix.
+    // We look for the last colon and check if the trailing segment is a known suffix.
+    let Some(last_colon) = raw.rfind(':') else {
+        return Ok((raw, false));
+    };
+    let suffix = &raw[last_colon + 1..];
+    let Some(first_colon) = raw.find(':') else {
+        return Ok((raw, false));
+    };
+    if first_colon == last_colon {
+        return Ok((raw, false));
+    }
+    // There are at least two colons — the part after the last is a suffix candidate.
+    if suffix == "ro" {
+        return Ok((&raw[..last_colon], true));
+    }
+    anyhow::bail!(
+        "project '{project_key}': mounts[{index}]: invalid mount suffix ':{suffix}' \
+         (only ':ro' is supported), got: {raw}"
+    )
 }
 
 /// Parse a port mapping string in `"host_port:container_port"` format.
@@ -2004,6 +2043,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
             MountConfig {
                 source: "%URCONFIG%/shared-data".into(),
                 destination: "/var/data".into(),
+                readonly: false,
             }
         );
         assert_eq!(
@@ -2011,6 +2051,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
             MountConfig {
                 source: "/opt/tools".into(),
                 destination: "/workspace/.tools".into(),
+                readonly: false,
             }
         );
     }
@@ -2073,6 +2114,82 @@ mounts = ["/opt/tools:relative/path"]
         let msg = err.to_string();
         assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("absolute path"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_parses_readonly_suffix() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+mounts = ["%URCONFIG%/shared-data:/var/data:ro", "/opt/tools:/workspace/.tools"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].container.mounts.len(), 2);
+        assert_eq!(
+            cfg.projects["ur"].container.mounts[0],
+            MountConfig {
+                source: "%URCONFIG%/shared-data".into(),
+                destination: "/var/data".into(),
+                readonly: true,
+            }
+        );
+        assert_eq!(
+            cfg.projects["ur"].container.mounts[1],
+            MountConfig {
+                source: "/opt/tools".into(),
+                destination: "/workspace/.tools".into(),
+                readonly: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mounts_rejects_invalid_suffix() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+mounts = ["/opt/tools:/workspace/.tools:rw"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[0]"), "{msg}");
+        assert!(msg.contains("invalid mount suffix"), "{msg}");
+        assert!(msg.contains(":rw"), "{msg}");
+    }
+
+    #[test]
+    fn mounts_rejects_unknown_suffix() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+mounts = ["/opt/tools:/workspace/.tools:foo"]
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("mounts[0]"), "{msg}");
+        assert!(msg.contains("invalid mount suffix"), "{msg}");
+        assert!(msg.contains(":foo"), "{msg}");
     }
 
     #[test]
@@ -3069,7 +3186,7 @@ quit = ["q"]
                 },
             );
             m.insert(
-                "ic".to_owned(),
+                "sa".to_owned(),
                 ProjectConfig {
                     key: "sa".to_owned(),
                     repo: String::new(),
