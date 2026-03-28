@@ -214,6 +214,35 @@ fn advance_claude_watch_state(
     }
 }
 
+/// Check the foreground process for a design worker and advance the state machine.
+///
+/// Returns `true` if Claude has exited and the container should stop.
+async fn check_design_worker_exit(session: &tmux::Session, state: &mut ClaudeWatchState) -> bool {
+    match session.pane_current_command().await {
+        Ok(foreground) => {
+            let (next_state, stop) = advance_claude_watch_state(*state, &foreground);
+            debug!(
+                foreground = %foreground,
+                state = ?state,
+                next_state = ?next_state,
+                "design worker foreground process check"
+            );
+            *state = next_state;
+            if stop {
+                info!(
+                    foreground = %foreground,
+                    "claude process exited in design worker, initiating shutdown"
+                );
+            }
+            stop
+        }
+        Err(e) => {
+            warn!(error = %e, "failed to query pane_current_command, treating as stopped");
+            true
+        }
+    }
+}
+
 /// Poll the tmux agent session and initiate container shutdown when Claude Code exits.
 async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
     let session = tmux::Session::agent();
@@ -234,30 +263,7 @@ async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret:
             Ok(true) => {
                 debug!("agent pane is alive");
                 if is_design_worker {
-                    match session.pane_current_command().await {
-                        Ok(foreground) => {
-                            let (next_state, stop) =
-                                advance_claude_watch_state(claude_watch_state, &foreground);
-                            debug!(
-                                foreground = %foreground,
-                                state = ?claude_watch_state,
-                                next_state = ?next_state,
-                                "design worker foreground process check"
-                            );
-                            claude_watch_state = next_state;
-                            if stop {
-                                info!(
-                                    foreground = %foreground,
-                                    "claude process exited in design worker, initiating shutdown"
-                                );
-                            }
-                            stop
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "failed to query pane_current_command, treating as stopped");
-                            true
-                        }
-                    }
+                    check_design_worker_exit(&session, &mut claude_watch_state).await
                 } else {
                     false
                 }
