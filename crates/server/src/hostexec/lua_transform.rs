@@ -12,6 +12,7 @@ use mlua::{Lua, StdLib, Value};
 #[derive(Debug, Clone)]
 pub struct WorkerContext {
     pub worker_id: String,
+    pub process_id: String,
     pub project_key: String,
     pub slot_path: PathBuf,
 }
@@ -79,6 +80,8 @@ impl LuaTransformManager {
                 .map_err(|e| anyhow::anyhow!("creating worker_context table: {e}"))?;
             tbl.set("worker_id", ctx.worker_id.as_str())
                 .map_err(|e| anyhow::anyhow!("setting worker_id: {e}"))?;
+            tbl.set("process_id", ctx.process_id.as_str())
+                .map_err(|e| anyhow::anyhow!("setting process_id: {e}"))?;
             tbl.set("project_key", ctx.project_key.as_str())
                 .map_err(|e| anyhow::anyhow!("setting project_key: {e}"))?;
             tbl.set("slot_path", ctx.slot_path.to_string_lossy().as_ref())
@@ -236,6 +239,89 @@ mod tests {
     }
 
     #[test]
+    fn test_git_commit_prepends_ticket_id() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "fix the bug".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["commit", "-m", "[ur-abc12] fix the bug"]);
+    }
+
+    #[test]
+    fn test_git_commit_no_double_prefix() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec![
+            "commit".into(),
+            "-m".into(),
+            "[ur-abc12] fix the bug".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["commit", "-m", "[ur-abc12] fix the bug"]);
+    }
+
+    #[test]
+    fn test_git_commit_no_prefix_without_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "hello".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, vec!["commit", "-m", "hello"]);
+    }
+
+    #[test]
+    fn test_git_commit_no_prefix_empty_process_id() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: String::new(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "hello".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["commit", "-m", "hello"]);
+    }
+
+    #[test]
+    fn test_git_non_commit_not_modified() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "main"]);
+    }
+
+    #[test]
     fn test_sandbox_no_io_access() {
         let mgr = LuaTransformManager::new();
         let script = r#"
@@ -282,6 +368,7 @@ mod tests {
         "#;
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -317,6 +404,7 @@ mod tests {
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -336,6 +424,7 @@ mod tests {
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -355,6 +444,7 @@ mod tests {
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -371,6 +461,7 @@ mod tests {
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -387,6 +478,7 @@ mod tests {
         let script = include_str!("default_scripts/git.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -420,6 +512,7 @@ mod tests {
         let mgr = LuaTransformManager::new();
         let ctx = WorkerContext {
             worker_id: "test-ab12".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -457,6 +550,7 @@ mod tests {
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -481,6 +575,7 @@ mod tests {
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -500,6 +595,7 @@ mod tests {
         let script = include_str!("default_scripts/gh.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -1026,6 +1122,7 @@ mod tests {
         let script = include_str!("default_scripts/cargo.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
         };
@@ -1045,6 +1142,7 @@ mod tests {
         let script = include_str!("default_scripts/cargo.lua");
         let ctx = WorkerContext {
             worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
         };
@@ -1805,6 +1903,7 @@ mod tests {
         let script = include_str!("default_scripts/ur.lua");
         let ctx = WorkerContext {
             worker_id: "w-1".into(),
+            process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: "/pool/ur/0".into(),
         };

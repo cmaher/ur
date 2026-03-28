@@ -398,6 +398,7 @@ impl HostExecServiceHandler {
                 let project_key = ctx.project_key.as_ref().unwrap();
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
+                    process_id: process_id.clone(),
                     project_key: project_key.clone(),
                     slot_path: ctx.slot_path.clone(),
                 };
@@ -416,6 +417,7 @@ impl HostExecServiceHandler {
                 // Worker has a slot but no project — raw workspace mount, defaults only
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
+                    process_id: process_id.clone(),
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                 };
