@@ -217,15 +217,8 @@ impl RunOptsBuilder {
         for mount in mounts {
             let resolved = resolve_template_path(&mount.source, host_config_dir)
                 .map_err(|e| format!("failed to resolve mount source '{}': {e}", mount.source))?;
-            match resolved {
-                ResolvedTemplatePath::HostPath(host_path) => {
-                    let container_path = if mount.readonly {
-                        PathBuf::from(format!("{}:ro", mount.destination))
-                    } else {
-                        PathBuf::from(&mount.destination)
-                    };
-                    self.volumes.push((host_path, container_path));
-                }
+            let host_path = match resolved {
+                ResolvedTemplatePath::HostPath(host_path) => host_path,
                 ResolvedTemplatePath::ProjectRelative(_) => {
                     return Err(format!(
                         "mount source '{}' resolved to a project-relative path, \
@@ -233,7 +226,13 @@ impl RunOptsBuilder {
                         mount.source
                     ));
                 }
-            }
+            };
+            let container_path = if mount.readonly {
+                PathBuf::from(format!("{}:ro", mount.destination))
+            } else {
+                PathBuf::from(&mount.destination)
+            };
+            self.volumes.push((host_path, container_path));
         }
         Ok(self)
     }

@@ -95,24 +95,24 @@ fn parse_mount_suffix<'a>(
     // A mount has at least one colon (source:dest). If there's a second colon,
     // the part after the last colon might be a suffix.
     // We look for the last colon and check if the trailing segment is a known suffix.
-    if let Some(last_colon) = raw.rfind(':') {
-        let suffix = &raw[last_colon + 1..];
-        // Only treat it as a suffix if there's another colon before this one
-        // (i.e., the last colon is not also the first colon).
-        if let Some(first_colon) = raw.find(':') {
-            if first_colon != last_colon {
-                // There are at least two colons — the part after the last is a suffix candidate.
-                if suffix == "ro" {
-                    return Ok((&raw[..last_colon], true));
-                }
-                anyhow::bail!(
-                    "project '{project_key}': mounts[{index}]: invalid mount suffix ':{suffix}' \
-                     (only ':ro' is supported), got: {raw}"
-                );
-            }
-        }
+    let Some(last_colon) = raw.rfind(':') else {
+        return Ok((raw, false));
+    };
+    let suffix = &raw[last_colon + 1..];
+    let Some(first_colon) = raw.find(':') else {
+        return Ok((raw, false));
+    };
+    if first_colon == last_colon {
+        return Ok((raw, false));
     }
-    Ok((raw, false))
+    // There are at least two colons — the part after the last is a suffix candidate.
+    if suffix == "ro" {
+        return Ok((&raw[..last_colon], true));
+    }
+    anyhow::bail!(
+        "project '{project_key}': mounts[{index}]: invalid mount suffix ':{suffix}' \
+         (only ':ro' is supported), got: {raw}"
+    )
 }
 
 /// Parse a port mapping string in `"host_port:container_port"` format.
