@@ -983,7 +983,11 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> anyhow::Result<()> {
         // Update page size before rendering so pagination is correct.
-        let area = terminal.get_frame().area();
+        // Use the live backend size rather than `get_frame().area()`, which
+        // only reflects the cached viewport from the previous draw call and
+        // would give the pre-resize dimensions after a terminal resize event.
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
         self.update_page_sizes(area);
 
         terminal.draw(|frame| {
