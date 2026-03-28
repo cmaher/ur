@@ -823,6 +823,7 @@ async fn process_launch(
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
             context_repos: context_repos.to_vec(),
+            dispatch: false,
         })
         .await?;
 

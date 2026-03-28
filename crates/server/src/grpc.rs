@@ -187,6 +187,7 @@ impl CoreServiceHandler {
         worker_id_str: &str,
         has_pool_slot: bool,
         strategy: crate::WorkerStrategy,
+        dispatch: bool,
     ) -> Result<(), Status> {
         // Bind the ticket to its worker on the workflow table (if a workflow exists).
         self.workflow_repo
@@ -205,7 +206,7 @@ impl CoreServiceHandler {
         // Design workers get the /design command dispatched automatically once
         // the workerd daemon is ready (reports idle). This runs in the
         // background so the launch RPC returns immediately.
-        if strategy == crate::WorkerStrategy::Design {
+        if strategy == crate::WorkerStrategy::Design && dispatch {
             spawn_design_dispatch(
                 self.worker_repo.clone(),
                 self.network_config.clone(),
@@ -411,8 +412,14 @@ impl CoreService for CoreServiceHandler {
                 reason: e.to_string(),
             })?;
 
-        self.post_launch_setup(&process_id, &worker_id_str, has_pool_slot, strategy)
-            .await?;
+        self.post_launch_setup(
+            &process_id,
+            &worker_id_str,
+            has_pool_slot,
+            strategy,
+            req.dispatch,
+        )
+        .await?;
 
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
