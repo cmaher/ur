@@ -629,6 +629,7 @@ mod tests {
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
+                tui: None,
             },
         );
         let worker_repo = test_worker_repo().await;
@@ -893,6 +894,7 @@ mod tests {
                 workflow_hooks_dir: None,
                 max_fix_attempts: ur_config::DEFAULT_MAX_FIX_ATTEMPTS,
                 protected_branches: ur_config::default_protected_branches(),
+                tui: None,
             },
         );
         let channel =
