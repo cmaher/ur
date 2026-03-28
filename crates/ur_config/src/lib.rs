@@ -3071,9 +3071,9 @@ quit = ["q"]
             m.insert(
                 "ic".to_owned(),
                 ProjectConfig {
-                    key: "ic".to_owned(),
+                    key: "sa".to_owned(),
                     repo: String::new(),
-                    name: "ichorous".to_owned(),
+                    name: "sample".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
                     git_hooks_dir: None,
@@ -3170,11 +3170,11 @@ quit = ["q"]
             // The name-based matching only fires on cwd dirname, so we verify
             // the data structure is correct by checking key-based matching via explicit.
             let projects = make_projects();
-            // "ic" project has name "ichorous"
-            assert_eq!(projects["ic"].name, "ichorous");
+            // "sa" project has name "sample"
+            assert_eq!(projects["sa"].name, "sample");
             // Explicit always passes through (doesn't use name matching)
-            let result = resolve_project(Some("ichorous".to_owned()), &projects);
-            assert_eq!(result, Some("ichorous".to_owned()));
+            let result = resolve_project(Some("sample".to_owned()), &projects);
+            assert_eq!(result, Some("sample".to_owned()));
         }
 
         #[test]
