@@ -688,6 +688,7 @@ async fn fetch_tickets_rpc(
         page_size,
         offset,
         include_children,
+        parent_id: None,
     });
     let response = client.list_tickets(request).await?;
     Ok(response.into_inner())
@@ -734,6 +735,7 @@ async fn fetch_ticket_detail_rpc(
                 page_size: child_page_size,
                 offset: child_offset,
                 include_children: None,
+                parent_id: None,
             })
             .await?;
         let inner = resp.into_inner();

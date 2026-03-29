@@ -1630,8 +1630,8 @@ mod tests {
         assert!(!app.active_screen().needs_data());
     }
 
-    #[test]
-    fn action_result_routes_to_detail_screen_when_active() {
+    #[tokio::test]
+    async fn action_result_routes_to_detail_screen_when_active() {
         let mut app = make_app();
         // Push a TicketDetailScreen onto the Tickets stack.
         let detail: Box<dyn Screen> = Box::new(TicketDetailScreen::new(
@@ -1656,8 +1656,8 @@ mod tests {
         assert!(app.tickets_page().banner().is_none());
     }
 
-    #[test]
-    fn action_result_routes_to_root_when_no_detail_screen() {
+    #[tokio::test]
+    async fn action_result_routes_to_root_when_no_detail_screen() {
         let mut app = make_app();
         // No detail screen pushed — root tickets list is active.
         assert!(app.active_screen().banner().is_none());
