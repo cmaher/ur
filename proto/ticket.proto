@@ -118,6 +118,8 @@ message ListTicketsRequest {
   optional int32 offset = 10;
   // When true, include child tickets in the result set.
   optional bool include_children = 11;
+  // Filter by direct parent ticket ID.
+  optional string parent_id = 12;
 }
 
 message ListTicketsResponse {
