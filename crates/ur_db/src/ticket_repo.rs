@@ -151,9 +151,13 @@ impl TicketRepo {
                 Option<String>,
                 String,
                 String,
+                i32,
+                i32,
             ),
         >(
-            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
              FROM ticket WHERE id = ?",
         )
         .bind(id)
@@ -175,6 +179,8 @@ impl TicketRepo {
                 branch,
                 created_at,
                 updated_at,
+                children_completed,
+                children_total,
             )| {
                 Ticket {
                     id,
@@ -192,8 +198,8 @@ impl TicketRepo {
                     branch,
                     created_at,
                     updated_at,
-                    children_completed: 0,
-                    children_total: 0,
+                    children_completed,
+                    children_total,
                 }
             },
         ))

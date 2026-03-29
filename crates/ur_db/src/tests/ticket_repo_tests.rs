@@ -1827,3 +1827,66 @@ async fn paginated_parent_id_filter_with_include_children_false_returns_children
 
     db.cleanup().await;
 }
+
+// ============================================================
+// get_ticket_by_id children counts
+// ============================================================
+
+#[tokio::test]
+async fn get_ticket_by_id_returns_children_counts() {
+    let db = TestDb::new().await;
+    let repo = repo(&db);
+
+    // Create a parent ticket
+    repo.create_ticket(&NewTicket {
+        id: Some("p-parent".into()),
+        type_: "task".into(),
+        priority: 1,
+        parent_id: None,
+        title: "Parent".into(),
+        body: String::new(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Create 3 children
+    for (i, id) in ["p-child1", "p-child2", "p-child3"].iter().enumerate() {
+        repo.create_ticket(&NewTicket {
+            id: Some((*id).into()),
+            type_: "task".into(),
+            priority: i as i32,
+            parent_id: Some("p-parent".into()),
+            title: format!("Child {}", i + 1),
+            body: String::new(),
+            project: "test".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    // Close one child
+    repo.update_ticket(
+        "p-child1",
+        &TicketUpdate {
+            status: Some("closed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    // Verify get_ticket_by_id returns correct children counts
+    let parent = repo.get_ticket_by_id("p-parent").await.unwrap().unwrap();
+    assert_eq!(parent.children_completed, 1);
+    assert_eq!(parent.children_total, 3);
+
+    // A ticket with no children should have 0/0
+    let child = repo.get_ticket_by_id("p-child2").await.unwrap().unwrap();
+    assert_eq!(child.children_completed, 0);
+    assert_eq!(child.children_total, 0);
+
+    db.cleanup().await;
+}
