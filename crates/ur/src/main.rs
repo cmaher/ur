@@ -758,6 +758,7 @@ async fn process_launch(
     mode: &str,
     skills: &[String],
     context_repos: &[String],
+    dispatch: bool,
     output: &OutputManager,
     projects: &HashMap<String, ur_config::ProjectConfig>,
 ) -> Result<()> {
@@ -823,7 +824,7 @@ async fn process_launch(
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
             context_repos: context_repos.to_vec(),
-            dispatch: false,
+            dispatch,
         })
         .await?;
 
@@ -1085,7 +1086,8 @@ async fn handle_worker_launch(
         let _ = process_stop(&mut client, &ticket_id, output).await;
         cancel_workflow(port, &ticket_id).await?;
     }
-    if dispatch {
+    let is_design = mode == "design";
+    if dispatch && !is_design {
         dispatch_ticket(port, &ticket_id).await?;
     }
     process_launch(
@@ -1097,6 +1099,7 @@ async fn handle_worker_launch(
         &mode,
         &skills_vec,
         &context_repos_vec,
+        dispatch && is_design,
         output,
         projects,
     )

@@ -114,6 +114,9 @@ impl DataManager {
     /// Spawn a background task that dispatches a ticket: creates a workflow
     /// with AWAITING_DISPATCH status, then launches a worker container.
     ///
+    /// Design-type tickets are routed through `launch_design_worker_rpc` instead,
+    /// which sets mode=design and dispatch=true so the server sends `/design <ticket>`.
+    ///
     /// The result is sent as `AppEvent::ActionResult` with a success or error message.
     pub fn dispatch_ticket(&self, ticket_id: String, projects: &HashMap<String, ProjectConfig>) {
         let port = self.port;
@@ -125,7 +128,12 @@ impl DataManager {
             .unwrap_or_default();
 
         tokio::spawn(async move {
-            let result = dispatch_ticket_rpc(port, &ticket_id, &project_key, &image_id).await;
+            let is_design = is_design_ticket(port, &ticket_id).await.unwrap_or(false);
+            let result = if is_design {
+                launch_design_worker_rpc(port, &ticket_id, &project_key, &image_id).await
+            } else {
+                dispatch_ticket_rpc(port, &ticket_id, &project_key, &image_id).await
+            };
             let action_result = match result {
                 Ok(()) => ActionResult {
                     result: Ok(format!("Dispatched {ticket_id}")),
@@ -954,6 +962,23 @@ async fn create_ticket_rpc(
         })
         .await?;
     Ok(resp.into_inner().id)
+}
+
+/// Check if a ticket is a design-type ticket by querying the server.
+async fn is_design_ticket(port: u16, ticket_id: &str) -> Result<bool> {
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .get_ticket(GetTicketRequest {
+            id: ticket_id.to_owned(),
+            activity_author_filter: None,
+        })
+        .await?;
+    let ticket = resp
+        .into_inner()
+        .ticket
+        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+    Ok(ticket.ticket_type == "design")
 }
 
 /// Launch a design worker for a ticket (no workflow).
