@@ -302,7 +302,7 @@ impl TicketRepo {
         let mut where_clause = String::from(" WHERE 1=1");
         let mut binds: Vec<String> = Vec::new();
 
-        if !include_children {
+        if !include_children && filter.parent_id.is_none() {
             where_clause.push_str(" AND parent_id IS NULL");
         }
         if let Some(ref project) = filter.project {

@@ -1795,3 +1795,35 @@ async fn project_prefix_respected_in_generated_id() {
 
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn paginated_parent_id_filter_with_include_children_false_returns_children() {
+    let (db, repo) = populated_db().await;
+
+    // Even with include_children=false, an explicit parent_id filter should
+    // return children of that parent (not be contradicted by AND parent_id IS NULL).
+    let (tickets, total) = repo
+        .list_tickets_paginated(
+            &TicketFilter {
+                project: None,
+                statuses: vec![],
+                type_: None,
+                parent_id: Some("epic-1".into()),
+                lifecycle_status: None,
+            },
+            None,
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // epic-1 has 3 children: task-1a, task-1b, task-1c
+    assert_eq!(total, 3);
+    assert_eq!(tickets.len(), 3);
+    for t in &tickets {
+        assert_eq!(t.parent_id.as_deref(), Some("epic-1"));
+    }
+
+    db.cleanup().await;
+}
