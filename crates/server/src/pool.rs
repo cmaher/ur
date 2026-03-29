@@ -855,6 +855,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_available_slot_excludes_shared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _) = test_pool(tmp.path(), 10).await;
+
+        // Insert a slot with name "shared" — this should never be returned
+        let shared_path = PathBuf::from("/fake/pool/testproj/shared");
+        insert_test_slot(&mgr.worker_repo, "testproj", "shared", &shared_path).await;
+
+        // find_available_slot must not return the shared slot
+        let available = mgr
+            .worker_repo
+            .find_available_slot("testproj")
+            .await
+            .unwrap();
+        assert!(
+            available.is_none(),
+            "shared slot must not be returned by find_available_slot"
+        );
+
+        // Insert a normal numeric slot — this one should be returned
+        let slot0_path = PathBuf::from("/fake/pool/testproj/0");
+        insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot0_path).await;
+
+        let available = mgr
+            .worker_repo
+            .find_available_slot("testproj")
+            .await
+            .unwrap();
+        assert!(available.is_some(), "numeric slot should be returned");
+        assert_eq!(available.unwrap().slot_name, "0");
+    }
+
+    #[tokio::test]
     async fn pool_root_and_slot_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let (mgr, workspace) = test_pool(tmp.path(), 10).await;
