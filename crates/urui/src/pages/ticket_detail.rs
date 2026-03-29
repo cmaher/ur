@@ -313,6 +313,7 @@ fn render_child_progress_bars(
     buf: &mut Buffer,
     ctx: &TuiContext,
     widths: &[Constraint],
+    scroll_offset: usize,
 ) {
     use ratatui::layout::Layout;
 
@@ -334,8 +335,8 @@ fn render_child_progress_bars(
     let data_start_y = inner.y + 1;
     let children = screen.visible_children();
 
-    for (i, ticket) in children.iter().enumerate() {
-        let row_y = data_start_y + i as u16;
+    for (i, ticket) in children.iter().enumerate().skip(scroll_offset) {
+        let row_y = data_start_y + (i - scroll_offset) as u16;
         if row_y >= inner.y + inner.height {
             break;
         }
@@ -518,9 +519,9 @@ fn render_child_table(screen: &TicketDetailScreen, area: Rect, buf: &mut Buffer,
         widths: widths.clone(),
         page_info,
     };
-    table.render(area, buf, ctx);
+    let scroll_offset = table.render(area, buf, ctx);
 
-    render_child_progress_bars(screen, area, buf, ctx, &widths);
+    render_child_progress_bars(screen, area, buf, ctx, &widths, scroll_offset);
 }
 
 impl Screen for TicketDetailScreen {

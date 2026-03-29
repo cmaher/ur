@@ -23,7 +23,10 @@ pub struct ThemedTable<'a> {
 
 impl<'a> ThemedTable<'a> {
     /// Render the themed table into the given area.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+    ///
+    /// Returns the scroll offset (number of rows scrolled from the top)
+    /// that ratatui applied to keep the selected row visible.
+    pub fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) -> usize {
         let theme = &ctx.theme;
 
         let header_cells: Vec<Cell> = self
@@ -86,5 +89,6 @@ impl<'a> ThemedTable<'a> {
         let mut state = TableState::default();
         state.select(self.selected);
         StatefulWidget::render(table, area, buf, &mut state);
+        state.offset()
     }
 }

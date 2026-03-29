@@ -380,10 +380,21 @@ impl App {
             Err(err) => warn!(error = %err, "action result error"),
         }
         let success = result.result.is_ok();
-        match self.active_tab {
-            TabId::Tickets => self.tickets_page_mut().on_action_result(&result),
-            TabId::Flows => self.flows_page_mut().on_action_result(&result),
-            TabId::Workers => self.workers_page_mut().on_action_result(&result),
+        // When a detail screen is on top of the Tickets stack, route the
+        // action result to it rather than the root list screen so that
+        // dispatch/close/cancel banners appear on the detail view.
+        if self.active_tab == TabId::Tickets {
+            if let Some(detail) = self.active_screen_mut().as_any_ticket_detail_mut() {
+                detail.on_action_result(&result);
+            } else {
+                self.tickets_page_mut().on_action_result(&result);
+            }
+        } else {
+            match self.active_tab {
+                TabId::Tickets => unreachable!(),
+                TabId::Flows => self.flows_page_mut().on_action_result(&result),
+                TabId::Workers => self.workers_page_mut().on_action_result(&result),
+            }
         }
         if success {
             self.fetch_active_tab_data();
@@ -493,9 +504,17 @@ impl App {
     }
 
     /// Launch a design worker for the currently selected ticket on the tickets page.
+    ///
+    /// When a `TicketDetailScreen` is active, launches for the highlighted child
+    /// ticket rather than the parent.
     fn launch_design_for_selected_ticket(&mut self) {
-        if let Some(ticket_id) = self.tickets_page().selected_ticket_id() {
-            self.tickets_page_mut()
+        let ticket_id = if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+            detail.selected_child_id()
+        } else {
+            self.tickets_page().selected_ticket_id()
+        };
+        if let Some(ticket_id) = ticket_id {
+            self.active_screen_mut()
                 .set_status(format!("Launching design worker for {ticket_id}..."));
             self.data_manager
                 .launch_design_worker(ticket_id, &self.ctx.project_configs);
@@ -1609,5 +1628,47 @@ mod tests {
         // Second call with the same dimensions — height unchanged, no stale.
         app.update_page_sizes(Rect::new(0, 0, 80, 50));
         assert!(!app.active_screen().needs_data());
+    }
+
+    #[tokio::test]
+    async fn action_result_routes_to_detail_screen_when_active() {
+        let mut app = make_app();
+        // Push a TicketDetailScreen onto the Tickets stack.
+        let detail: Box<dyn Screen> = Box::new(TicketDetailScreen::new(
+            "ur-test1".to_string(),
+            "ur".to_string(),
+        ));
+        app.stacks.get_mut(&TabId::Tickets).unwrap().push(detail);
+
+        // The active screen (detail) should have no banner initially.
+        assert!(app.active_screen().banner().is_none());
+
+        // Send a success action result.
+        let result = crate::data::ActionResult {
+            result: Ok("Dispatched ur-test1".to_string()),
+            silent_on_success: false,
+        };
+        app.handle_action_result(result);
+
+        // The detail screen (active) should now have the banner.
+        assert!(app.active_screen().banner().is_some());
+        // The root tickets list screen should NOT have a banner.
+        assert!(app.tickets_page().banner().is_none());
+    }
+
+    #[tokio::test]
+    async fn action_result_routes_to_root_when_no_detail_screen() {
+        let mut app = make_app();
+        // No detail screen pushed — root tickets list is active.
+        assert!(app.active_screen().banner().is_none());
+
+        let result = crate::data::ActionResult {
+            result: Err("Something failed".to_string()),
+            silent_on_success: false,
+        };
+        app.handle_action_result(result);
+
+        // The root tickets list should have the error banner.
+        assert!(app.tickets_page().banner().is_some());
     }
 }

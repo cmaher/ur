@@ -134,6 +134,7 @@ impl TicketClient {
                 page_size: None,
                 offset: None,
                 include_children: None,
+                parent_id: None,
             }))
             .await
             .map_err(|s| anyhow::anyhow!("list_tickets failed: {}", s.message()))?;

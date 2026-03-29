@@ -481,7 +481,7 @@ impl TicketService for TicketServiceHandler {
                     project: req.project.filter(|s| !s.is_empty()),
                     statuses,
                     type_: req.ticket_type.filter(|s| !s.is_empty()),
-                    parent_id: None,
+                    parent_id: req.parent_id.filter(|s| !s.is_empty()),
                     lifecycle_status: None,
                 };
 
