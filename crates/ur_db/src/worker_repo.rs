@@ -295,7 +295,11 @@ impl WorkerRepo {
             .collect())
     }
 
-    /// Find the first available slot for a project (not linked to an active worker).
+    /// Find the first available exclusive slot for a project (not linked to an active worker).
+    ///
+    /// Only returns slots with numeric names (exclusive pool slots like "0", "1", "2").
+    /// Shared slots (name = "shared") are excluded — they are managed separately by
+    /// `acquire_shared_slot` and should never be assigned to code workers.
     pub async fn find_available_slot(
         &self,
         project_key: &str,
@@ -304,6 +308,7 @@ impl WorkerRepo {
             "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at
              FROM slot s
              WHERE s.project_key = ?
+               AND s.slot_name != 'shared'
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
                  INNER JOIN worker w ON w.worker_id = ws.worker_id
@@ -678,6 +683,11 @@ async fn scan_disk_slots(dir: &Path) -> HashSet<String> {
             .map(|ft| ft.is_dir())
             .unwrap_or(false);
         if is_dir && let Some(name) = entry.file_name().to_str() {
+            // Skip "shared" — it is managed separately by acquire_shared_slot
+            // and must never be treated as an exclusive pool slot.
+            if name == "shared" {
+                continue;
+            }
             names.insert(name.to_owned());
         }
     }
