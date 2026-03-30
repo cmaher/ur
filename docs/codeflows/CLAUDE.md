@@ -15,3 +15,4 @@ Detailed flow diagrams for cross-cutting concerns. Consult these before modifyin
 - `docs/codeflows/server-lifecycle.md` — Server lifecycle (`ur start`/`ur stop`, builderd spawn, compose generation, port allocation, network topology)
 - `docs/codeflows/skill-loading.md` — Skill loading (baking skills into images, selective runtime activation)
 - `docs/codeflows/ui-events.md` — UI events pipeline (SQLite triggers, UiEventPoller, gRPC streaming, TUI consumption)
+- `docs/codeflows/urui-v2-tea.md` — urui v2 TEA architecture (TEA loop, Msg/Cmd design, input focus stack, Component trait, navigation model, data fetching, UI event throttling)
