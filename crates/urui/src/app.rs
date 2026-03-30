@@ -224,13 +224,12 @@ impl App {
         }
 
         // If the ticket detail page has an active overlay, route raw keys to it.
-        if self.active_tab == TabId::Tickets {
-            if let Some(detail) = self.active_screen().as_any_ticket_detail() {
-                if detail.has_overlay() {
-                    self.handle_ticket_detail_overlay_key(key);
-                    return;
-                }
-            }
+        if self.active_tab == TabId::Tickets
+            && let Some(detail) = self.active_screen().as_any_ticket_detail()
+            && detail.has_overlay()
+        {
+            self.handle_ticket_detail_overlay_key(key);
+            return;
         }
 
         // If the active screen has a banner, Enter or Escape dismisses it.
