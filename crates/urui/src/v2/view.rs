@@ -1,15 +1,140 @@
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::Style;
 
+use crate::context::TuiContext;
+
+use super::components::banner::render_banner;
+use super::components::footer::render_footer;
+use super::components::header::render_header;
+use super::components::status::render_status;
 use super::model::Model;
 
 /// Root view function: renders the current model to the terminal frame.
 ///
 /// In the TEA architecture, the view is a pure function from Model to UI.
 /// It reads the model and draws widgets — no mutation, no side effects.
-pub fn view(model: &Model, frame: &mut Frame) {
-    let _area = frame.area();
+///
+/// Layout:
+/// - Row 0: Header (tab bar)
+/// - Row 1: Sub-header (banner or status message, always reserved)
+/// - Row 2..n-1: Content area (page-specific, future)
+/// - Row n: Footer (commands from input stack)
+pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
+    let area = frame.area();
 
-    // For the initial scaffolding, render an empty screen.
-    // Future: dispatch to page-specific view functions based on navigation_model.
-    let _ = model;
+    // Fill the entire frame with the base background so no terminal
+    // theme bleeds through in margins or empty regions.
+    let base_style = Style::default()
+        .bg(ctx.theme.base_100)
+        .fg(ctx.theme.base_content);
+    frame.buffer_mut().set_style(area, base_style);
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // header
+        Constraint::Length(1), // sub-header (banner or status, always reserved)
+        Constraint::Fill(1),   // content
+        Constraint::Length(1), // footer
+    ])
+    .split(area);
+
+    // Header: tab bar
+    render_header(chunks[0], frame.buffer_mut(), ctx, &model.navigation_model);
+
+    // Sub-header: banner takes priority over status
+    if let Some(ref banner) = model.banner {
+        render_banner(chunks[1], frame.buffer_mut(), ctx, banner);
+    } else if let Some(ref status) = model.status {
+        render_status(chunks[1], frame.buffer_mut(), ctx, status);
+    }
+
+    // Content area: future page-specific rendering will go here.
+    // For now this area is filled with the base background from above.
+
+    // Footer: commands collected from the input stack
+    let commands = model.input_stack.footer_commands();
+    render_footer(chunks[3], frame.buffer_mut(), ctx, &commands);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keymap::Keymap;
+    use crate::theme::Theme;
+    use ratatui::{Terminal, backend::TestBackend};
+    use ur_config::TuiConfig;
+
+    fn make_ctx() -> TuiContext {
+        let tui_config = TuiConfig::default();
+        let theme = Theme::resolve(&tui_config);
+        let keymap = Keymap::default();
+        TuiContext {
+            theme,
+            keymap,
+            projects: vec![],
+            project_configs: std::collections::HashMap::new(),
+            tui_config: TuiConfig::default(),
+            config_dir: std::path::PathBuf::from("/tmp/test-urui"),
+            project_filter: None,
+        }
+    }
+
+    #[test]
+    fn view_renders_without_panic() {
+        let model = Model::initial();
+        let ctx = make_ctx();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| view(&model, frame, &ctx)).unwrap();
+    }
+
+    #[test]
+    fn view_renders_header_with_tab_labels() {
+        let model = Model::initial();
+        let ctx = make_ctx();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| view(&model, frame, &ctx)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        // Header is row 0 - check it contains tab text
+        let row0: String = (0..80)
+            .map(|x| {
+                buf.cell((x, 0))
+                    .unwrap()
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        assert!(row0.contains("ickets"), "header should show Tickets tab");
+    }
+
+    #[test]
+    fn view_renders_footer_with_global_commands() {
+        let model = Model::initial();
+        let ctx = make_ctx();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| view(&model, frame, &ctx)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        // Footer is the last row (row 23)
+        let last_row: String = (0..80)
+            .map(|x| {
+                buf.cell((x, 23))
+                    .unwrap()
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        // GlobalHandler provides Ctrl+C, Tab, Esc
+        assert!(
+            last_row.contains("Ctrl+C"),
+            "footer should show Ctrl+C command"
+        );
+    }
 }

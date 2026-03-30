@@ -17,7 +17,10 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
+use crate::context::TuiContext;
+use crate::keymap::Keymap;
 use crate::terminal::{restore_terminal, setup_terminal};
+use crate::theme::Theme;
 
 use self::cmd_runner::CmdRunner;
 use self::model::Model;
@@ -67,11 +70,30 @@ fn read_and_send_event(tx: &mpsc::UnboundedSender<Msg>) -> bool {
     }
 }
 
+/// Build a `TuiContext` from the loaded configuration.
+fn build_tui_context(config: &ur_config::Config, project_filter: &Option<String>) -> TuiContext {
+    let theme = Theme::resolve(&config.tui);
+    let keymap = Keymap::default();
+    let mut projects: Vec<String> = config.projects.keys().cloned().collect();
+    projects.sort();
+
+    TuiContext {
+        theme,
+        keymap,
+        projects,
+        project_configs: config.projects.clone(),
+        tui_config: config.tui.clone(),
+        config_dir: config.config_dir.clone(),
+        project_filter: project_filter.clone(),
+    }
+}
+
 /// The core TEA loop: read events, update model, execute commands, render view.
 async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
     let config = ur_config::Config::load()?;
     let port = config.server_port;
     let project_filter = ur_config::resolve_project(None, &config.projects);
+    let ctx = build_tui_context(&config, &project_filter);
 
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Msg>();
     let cmd_runner = CmdRunner::new(msg_tx.clone(), port, project_filter);
@@ -105,7 +127,7 @@ async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyh
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
 
     // Initial render
-    terminal.draw(|frame| view(&model, frame))?;
+    terminal.draw(|frame| view(&model, frame, &ctx))?;
 
     // Event loop
     while let Some(msg) = msg_rx.recv().await {
@@ -120,7 +142,7 @@ async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyh
         cmd_runner.execute_all(cmds);
 
         // Re-render after each update
-        terminal.draw(|frame| view(&model, frame))?;
+        terminal.draw(|frame| view(&model, frame, &ctx))?;
     }
 
     Ok(())
