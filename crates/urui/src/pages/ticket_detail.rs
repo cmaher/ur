@@ -58,6 +58,8 @@ pub struct TicketDetailScreen {
     active_status: Option<StatusMessage>,
     /// Active goto menu overlay state.
     goto_menu: Option<GotoMenuState>,
+    /// When false (default), closed children are hidden from the child list.
+    show_closed: bool,
 }
 
 impl TicketDetailScreen {
@@ -73,6 +75,7 @@ impl TicketDetailScreen {
             active_banner: None,
             active_status: None,
             goto_menu: None,
+            show_closed: false,
         }
     }
 
@@ -94,6 +97,15 @@ impl TicketDetailScreen {
     /// Returns the page size for child fetching.
     pub fn child_page_size(&self) -> i32 {
         self.page_size as i32
+    }
+
+    /// Returns a status filter for child fetching: excludes closed unless toggled.
+    pub fn child_status_filter(&self) -> Option<String> {
+        if self.show_closed {
+            None
+        } else {
+            Some("open,in_progress".to_string())
+        }
     }
 
     /// Update page size based on available area, reserving header (1) + preview (5).
@@ -582,7 +594,13 @@ impl Screen for TicketDetailScreen {
             | Action::CancelFlow
             | Action::CreateTicket => ScreenResult::Consumed,
             Action::SetPriority => ScreenResult::Consumed,
-            Action::Filter => ScreenResult::Consumed,
+            Action::Filter => {
+                self.show_closed = !self.show_closed;
+                self.current_page = 0;
+                self.selected_row = 0;
+                self.mark_stale();
+                ScreenResult::Consumed
+            }
             _ => ScreenResult::Ignored,
         }
     }
@@ -657,6 +675,16 @@ impl Screen for TicketDetailScreen {
             FooterCommand {
                 key_label: keymap.label_for(&Action::OpenDescription),
                 description: "Description".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::Filter),
+                description: if self.show_closed {
+                    "Hide closed"
+                } else {
+                    "Show closed"
+                }
+                .to_string(),
                 common: false,
             },
             FooterCommand {
@@ -1011,6 +1039,63 @@ mod tests {
         // Can't go before first page
         screen.handle_action(Action::PageLeft);
         assert_eq!(screen.current_page, 0);
+    }
+
+    #[test]
+    fn filter_toggles_show_closed() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        // Default: closed hidden
+        assert!(!screen.show_closed);
+        assert_eq!(
+            screen.child_status_filter(),
+            Some("open,in_progress".to_string())
+        );
+
+        // Toggle to show closed
+        screen.handle_action(Action::Filter);
+        assert!(screen.show_closed);
+        assert_eq!(screen.child_status_filter(), None);
+        assert!(screen.needs_data()); // marked stale
+
+        // Load data, then toggle back
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![],
+            0,
+        )))));
+        screen.handle_action(Action::Filter);
+        assert!(!screen.show_closed);
+        assert_eq!(
+            screen.child_status_filter(),
+            Some("open,in_progress".to_string())
+        );
+    }
+
+    #[test]
+    fn filter_toggle_resets_pagination() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        screen.page_size = 2;
+        screen.current_page = 3;
+        screen.selected_row = 1;
+
+        screen.handle_action(Action::Filter);
+        assert_eq!(screen.current_page, 0);
+        assert_eq!(screen.selected_row, 0);
+    }
+
+    #[test]
+    fn footer_shows_closed_toggle_label() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let keymap = Keymap::default();
+
+        let cmds = screen.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Show closed"));
+
+        screen.show_closed = true;
+        let cmds = screen.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Hide closed"));
     }
 
     #[test]

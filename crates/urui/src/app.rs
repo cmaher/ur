@@ -874,8 +874,13 @@ impl App {
             debug!(tab = ?self.active_tab, fetch = "detail", %ticket_id, "fetch active tab data");
             let page_size = detail.child_page_size();
             let offset = detail.child_offset();
-            self.data_manager
-                .fetch_ticket_detail(ticket_id, Some(page_size), Some(offset));
+            let status_filter = detail.child_status_filter();
+            self.data_manager.fetch_ticket_detail(
+                ticket_id,
+                Some(page_size),
+                Some(offset),
+                status_filter,
+            );
             return;
         }
         // If the top of the active stack is an activities screen, fetch its data.

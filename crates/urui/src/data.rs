@@ -373,6 +373,7 @@ impl DataManager {
         ticket_id: String,
         child_page_size: Option<i32>,
         child_offset: Option<i32>,
+        child_status_filter: Option<String>,
     ) {
         let port = self.port;
         let tx = self.sender.clone();
@@ -384,6 +385,7 @@ impl DataManager {
                 &ticket_id,
                 child_page_size,
                 child_offset,
+                child_status_filter,
             )
             .await
             {
@@ -713,6 +715,7 @@ async fn fetch_ticket_detail_rpc(
     ticket_id: &str,
     child_page_size: Option<i32>,
     child_offset: Option<i32>,
+    child_status_filter: Option<String>,
 ) -> Result<(GetTicketResponse, Vec<Ticket>, i32)> {
     let ticket_id_owned = ticket_id.to_owned();
     let ticket_id_for_children = ticket_id.to_owned();
@@ -736,7 +739,7 @@ async fn fetch_ticket_detail_rpc(
             .list_tickets(ListTicketsRequest {
                 project: None,
                 ticket_type: None,
-                status: None,
+                status: child_status_filter,
                 meta_key: None,
                 meta_value: None,
                 tree_root_id: None,
