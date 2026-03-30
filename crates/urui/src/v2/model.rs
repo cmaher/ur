@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -83,6 +84,52 @@ pub struct WorkerListData {
 #[derive(Debug, Clone)]
 pub struct TicketActivitiesData {
     pub activities: Vec<ActivityEntry>,
+}
+
+/// Sub-model for the ticket activities page (full-screen activities viewer).
+#[derive(Debug, Clone)]
+pub struct TicketActivitiesModel {
+    pub ticket_id: String,
+    pub ticket_title: String,
+    pub data: LoadState<TicketActivitiesData>,
+    /// Selected row within the current page.
+    pub selected_row: usize,
+    /// Current page (client-side pagination).
+    pub current_page: usize,
+    /// Number of activities per page.
+    pub page_size: usize,
+    /// Unique authors extracted from the last successful fetch.
+    /// Index 0 is always "all" (no filter).
+    pub authors: Vec<String>,
+    /// Currently selected author index (0 = all).
+    pub author_index: usize,
+}
+
+/// Sub-model for the ticket body page (full-screen markdown body viewer).
+#[derive(Debug)]
+pub struct TicketBodyModel {
+    pub ticket_id: String,
+    pub title: String,
+    pub body: String,
+    /// Current vertical scroll offset (lines from the top).
+    pub scroll_offset: usize,
+    /// Height of the body pane from the last render, used for page scrolling.
+    pub last_body_height: Cell<usize>,
+    /// Rendered line count from the last render, used to clamp scroll.
+    pub last_total_lines: Cell<usize>,
+}
+
+impl Clone for TicketBodyModel {
+    fn clone(&self) -> Self {
+        Self {
+            ticket_id: self.ticket_id.clone(),
+            title: self.title.clone(),
+            body: self.body.clone(),
+            scroll_offset: self.scroll_offset,
+            last_body_height: self.last_body_height.clone(),
+            last_total_lines: self.last_total_lines.clone(),
+        }
+    }
 }
 
 /// Tracks which tabs have dirty data from UI events and manages a cooldown
@@ -304,6 +351,10 @@ pub struct Model {
     pub active_overlay: Option<ActiveOverlay>,
     /// Ticket list filter state.
     pub ticket_filters: TicketFilters,
+    /// Sub-model for the ticket activities page (set when viewing activities).
+    pub ticket_activities: Option<TicketActivitiesModel>,
+    /// Sub-model for the ticket body page (set when viewing body).
+    pub ticket_body: Option<TicketBodyModel>,
 }
 
 impl Model {
@@ -330,6 +381,8 @@ impl Model {
             status: None,
             active_overlay: None,
             ticket_filters: TicketFilters::default(),
+            ticket_activities: None,
+            ticket_body: None,
         }
     }
 }

@@ -50,6 +50,24 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
 /// Takes ownership of the NavigationModel to avoid double-borrow of `model`,
 /// since navigation methods need `&mut Model` for input stack manipulation.
 fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    if matches!(
+        nav_msg,
+        NavMsg::ActivitiesNavigate { .. }
+            | NavMsg::ActivitiesPageRight
+            | NavMsg::ActivitiesPageLeft
+            | NavMsg::ActivitiesCycleFilter
+            | NavMsg::ActivitiesRefresh
+    ) {
+        return handle_activities_nav(model, nav_msg);
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::BodyScrollDown | NavMsg::BodyScrollUp | NavMsg::BodyPageDown | NavMsg::BodyPageUp
+    ) {
+        return handle_body_nav(model, nav_msg);
+    }
+
     let mut nav = std::mem::replace(
         &mut model.navigation_model,
         super::navigation::NavigationModel::initial(),
@@ -63,9 +81,137 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
         NavMsg::Push(page) => nav.push(page, &mut model),
         NavMsg::Pop => nav.pop(&mut model),
         NavMsg::Goto(page) => nav.goto(page, &mut model),
+        // Already handled above
+        _ => vec![],
     };
     model.navigation_model = nav;
     (model, cmds)
+}
+
+/// Handle navigation messages specific to the activities page.
+fn handle_activities_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    let Some(ref mut am) = model.ticket_activities else {
+        return (model, vec![]);
+    };
+
+    match nav_msg {
+        NavMsg::ActivitiesNavigate { delta } => {
+            activities_navigate(am, delta);
+        }
+        NavMsg::ActivitiesPageRight => {
+            activities_page_right(am);
+        }
+        NavMsg::ActivitiesPageLeft => {
+            activities_page_left(am);
+        }
+        NavMsg::ActivitiesCycleFilter => {
+            if let Some(cmd) = activities_cycle_filter(am) {
+                return (model, vec![cmd]);
+            }
+        }
+        NavMsg::ActivitiesRefresh => {
+            let cmd = activities_refresh(am);
+            return (model, vec![cmd]);
+        }
+        _ => {}
+    }
+    (model, vec![])
+}
+
+/// Navigate up/down within the current activities page.
+fn activities_navigate(am: &mut super::model::TicketActivitiesModel, delta: i32) {
+    if delta > 0 {
+        let page_count = page_activity_count(am);
+        if page_count > 0 && am.selected_row < page_count - 1 {
+            am.selected_row += 1;
+        }
+    } else if am.selected_row > 0 {
+        am.selected_row -= 1;
+    }
+}
+
+/// Navigate to the next page in the activities table.
+fn activities_page_right(am: &mut super::model::TicketActivitiesModel) {
+    let total_pages = activities_total_pages(am);
+    if am.current_page + 1 < total_pages {
+        am.current_page += 1;
+        am.selected_row = 0;
+    }
+}
+
+/// Navigate to the previous page in the activities table.
+fn activities_page_left(am: &mut super::model::TicketActivitiesModel) {
+    if am.current_page > 0 {
+        am.current_page -= 1;
+        am.selected_row = 0;
+    }
+}
+
+/// Cycle the author filter and return a fetch command if the filter changed.
+fn activities_cycle_filter(am: &mut super::model::TicketActivitiesModel) -> Option<Cmd> {
+    if am.authors.len() <= 1 {
+        return None;
+    }
+    am.author_index = (am.author_index + 1) % am.authors.len();
+    am.current_page = 0;
+    am.selected_row = 0;
+    am.data = LoadState::Loading;
+    Some(activities_fetch_cmd(am))
+}
+
+/// Mark activities stale and return the fetch command to refresh.
+fn activities_refresh(am: &mut super::model::TicketActivitiesModel) -> Cmd {
+    am.data = LoadState::Loading;
+    activities_fetch_cmd(am)
+}
+
+/// Build the fetch command for the current activities model state.
+fn activities_fetch_cmd(am: &super::model::TicketActivitiesModel) -> Cmd {
+    let author_filter = if am.author_index == 0 {
+        None
+    } else {
+        am.authors.get(am.author_index).cloned()
+    };
+    Cmd::Fetch(FetchCmd::Activities {
+        ticket_id: am.ticket_id.clone(),
+        author_filter,
+    })
+}
+
+/// Count activities on the current page for navigation clamping.
+fn page_activity_count(am: &super::model::TicketActivitiesModel) -> usize {
+    let total = am.data.data().map(|d| d.activities.len()).unwrap_or(0);
+    let start = am.current_page * am.page_size;
+    if start >= total {
+        return 0;
+    }
+    (start + am.page_size).min(total) - start
+}
+
+/// Calculate total pages for the activities model.
+fn activities_total_pages(am: &super::model::TicketActivitiesModel) -> usize {
+    let total = am.data.data().map(|d| d.activities.len()).unwrap_or(0);
+    if total == 0 || am.page_size == 0 {
+        1
+    } else {
+        total.div_ceil(am.page_size)
+    }
+}
+
+/// Handle navigation messages specific to the body page.
+fn handle_body_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    use super::pages::ticket_body::{
+        body_page_down, body_page_up, body_scroll_down, body_scroll_up,
+    };
+
+    match nav_msg {
+        NavMsg::BodyScrollDown => body_scroll_down(&mut model, 1),
+        NavMsg::BodyScrollUp => body_scroll_up(&mut model, 1),
+        NavMsg::BodyPageDown => body_page_down(&mut model),
+        NavMsg::BodyPageUp => body_page_up(&mut model),
+        _ => {}
+    }
+    (model, vec![])
 }
 
 /// Handle a tick: auto-dismiss expired banners and flush dirty tabs.
@@ -254,14 +400,18 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
             };
         }
         DataMsg::ActivitiesLoaded { ticket_id, result } => {
-            if let Some(ref mut detail_model) = model.ticket_detail {
-                if detail_model.ticket_id == ticket_id {
-                    detail_model.activities = match result {
-                        Ok(activities) => LoadState::Loaded(TicketActivitiesData { activities }),
-                        Err(e) => LoadState::Error(e),
-                    };
-                }
+            if let Some(ref mut detail_model) = model.ticket_detail
+                && detail_model.ticket_id == ticket_id
+            {
+                detail_model.activities = match &result {
+                    Ok(activities) => LoadState::Loaded(TicketActivitiesData {
+                        activities: activities.clone(),
+                    }),
+                    Err(e) => LoadState::Error(e.clone()),
+                };
             }
+            // Also update the full-screen activities page model if active.
+            super::pages::ticket_activities::handle_activities_data(&mut model, ticket_id, result);
         }
     }
     (model, vec![])

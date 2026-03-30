@@ -46,6 +46,17 @@ pub enum PageId {
     TicketList,
     /// Detail page for a specific ticket.
     TicketDetail { ticket_id: String },
+    /// Activities page for a specific ticket.
+    TicketActivities {
+        ticket_id: String,
+        ticket_title: String,
+    },
+    /// Body page for a specific ticket.
+    TicketBody {
+        ticket_id: String,
+        title: String,
+        body: String,
+    },
     /// The root flows list page.
     FlowList,
     /// The root workers list page.
@@ -182,6 +193,8 @@ impl NavigationModel {
 /// Page-specific initialization logic (pushing input handlers, starting
 /// data fetches) is handled here. Each page type maps to specific setup.
 fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
+    use super::pages::ticket_activities::{TicketActivitiesHandler, start_activities_fetch};
+    use super::pages::ticket_body::{TicketBodyHandler, init_body_model};
     use super::update::{
         start_flow_list_fetch, start_ticket_detail_fetch, start_ticket_list_fetch,
         start_worker_list_fetch,
@@ -195,6 +208,23 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
         PageId::TicketDetail { ticket_id } => {
             let cmd = start_ticket_detail_fetch(model, ticket_id.clone());
             vec![cmd]
+        }
+        PageId::TicketActivities {
+            ticket_id,
+            ticket_title,
+        } => {
+            model.input_stack.push(Box::new(TicketActivitiesHandler));
+            let cmd = start_activities_fetch(model, ticket_id.clone(), ticket_title.clone());
+            vec![cmd]
+        }
+        PageId::TicketBody {
+            ticket_id,
+            title,
+            body,
+        } => {
+            model.input_stack.push(Box::new(TicketBodyHandler));
+            init_body_model(model, ticket_id.clone(), title.clone(), body.clone());
+            vec![]
         }
         PageId::FlowList => {
             let cmd = start_flow_list_fetch(model);
@@ -212,10 +242,18 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
 /// Currently all pages push zero handlers during init (handlers will be
 /// added when page-specific components are implemented). The return value
 /// ensures the input stack stays consistent.
-fn teardown_page(_page: &PageId, _model: &mut Model) -> usize {
-    // No page-specific input handlers yet. When components push handlers
-    // during init, this function must return the matching count.
-    0
+fn teardown_page(page: &PageId, model: &mut Model) -> usize {
+    match page {
+        PageId::TicketActivities { .. } => {
+            model.ticket_activities = None;
+            1 // TicketActivitiesHandler
+        }
+        PageId::TicketBody { .. } => {
+            model.ticket_body = None;
+            1 // TicketBodyHandler
+        }
+        _ => 0,
+    }
 }
 
 #[cfg(test)]

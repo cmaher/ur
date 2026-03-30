@@ -17,6 +17,9 @@ use super::components::project_input::render_project_input;
 use super::components::settings_overlay::render_settings_overlay;
 use super::components::status::render_status;
 use super::model::{ActiveOverlay, Model};
+use super::navigation::PageId;
+use super::pages::ticket_activities::render_ticket_activities;
+use super::pages::ticket_body::render_ticket_body;
 
 /// Root view function: renders the current model to the terminal frame.
 ///
@@ -56,8 +59,8 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
         render_status(chunks[1], frame.buffer_mut(), ctx, status);
     }
 
-    // Content area: future page-specific rendering will go here.
-    // For now this area is filled with the base background from above.
+    // Content area: render the active page.
+    render_page_content(chunks[2], frame.buffer_mut(), ctx, model);
 
     // Active overlay (rendered on top of content area)
     render_active_overlay(area, frame.buffer_mut(), ctx, model);
@@ -65,6 +68,20 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
     // Footer: commands collected from the input stack
     let commands = model.input_stack.footer_commands();
     render_footer(chunks[3], frame.buffer_mut(), ctx, &commands);
+}
+
+/// Render the content area based on the current page.
+fn render_page_content(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+    match model.navigation_model.current_page() {
+        PageId::TicketActivities { .. } => {
+            render_ticket_activities(area, buf, ctx, model);
+        }
+        PageId::TicketBody { .. } => {
+            render_ticket_body(area, buf, ctx, model);
+        }
+        // Other pages not yet implemented in v2 — content area stays blank.
+        _ => {}
+    }
 }
 
 /// Render the currently active overlay, if any.

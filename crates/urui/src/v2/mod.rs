@@ -7,6 +7,7 @@ mod model;
 mod msg;
 pub(crate) mod navigation;
 mod overlay_update;
+pub mod pages;
 mod update;
 mod view;
 

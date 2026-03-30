@@ -195,6 +195,28 @@ pub enum NavMsg {
     Pop,
     /// Navigate directly to a specific page (push if not already current).
     Goto(PageId),
+
+    // ── Ticket activities page messages ──────────────────────────────
+    /// Navigate within the activities table by delta (+1 down, -1 up).
+    ActivitiesNavigate { delta: i32 },
+    /// Page right in the activities table.
+    ActivitiesPageRight,
+    /// Page left in the activities table.
+    ActivitiesPageLeft,
+    /// Cycle the author filter in the activities page.
+    ActivitiesCycleFilter,
+    /// Refresh the activities page data.
+    ActivitiesRefresh,
+
+    // ── Ticket body page messages ────────────────────────────────────
+    /// Scroll the body page down by one line.
+    BodyScrollDown,
+    /// Scroll the body page up by one line.
+    BodyScrollUp,
+    /// Page down in the body page.
+    BodyPageDown,
+    /// Page up in the body page.
+    BodyPageUp,
 }
 
 /// Messages carrying data fetched asynchronously from gRPC calls.
