@@ -20,6 +20,7 @@ use crate::event::{AppEvent, EventManager, EventReceiver, UiEventItem};
 use crate::keymap::Action;
 use crate::notifications::NotificationManager;
 use crate::page::TabId;
+use crate::pages::ticket_detail::DetailOverlayAction;
 use crate::pages::tickets::{
     OverlayAction, open_filter_menu, open_force_close_confirm, open_priority_picker,
 };
@@ -222,6 +223,16 @@ impl App {
             return;
         }
 
+        // If the ticket detail page has an active overlay, route raw keys to it.
+        if self.active_tab == TabId::Tickets {
+            if let Some(detail) = self.active_screen().as_any_ticket_detail() {
+                if detail.has_overlay() {
+                    self.handle_ticket_detail_overlay_key(key);
+                    return;
+                }
+            }
+        }
+
         // If the active screen has a banner, Enter or Escape dismisses it.
         if self.active_screen().banner().is_some()
             && matches!(key.code, KeyCode::Enter | KeyCode::Esc)
@@ -264,7 +275,10 @@ impl App {
                 open_filter_menu(self.tickets_page_mut(), &projects);
             }
             Action::SetPriority if self.active_tab == TabId::Tickets => {
-                if self.tickets_page().selected_ticket_id().is_some() {
+                if self.active_screen().as_any_ticket_detail().is_some() {
+                    // On a detail page, let the screen open its own priority picker.
+                    self.dispatch_to_screen(Action::SetPriority);
+                } else if self.tickets_page().selected_ticket_id().is_some() {
                     open_priority_picker(self.tickets_page_mut());
                 }
             }
@@ -323,6 +337,33 @@ impl App {
         let filters_after = self.tickets_page().filters().to_config();
         if filters_before != filters_after {
             save_ticket_filters(&self.ctx.config_dir, &filters_after);
+        }
+    }
+
+    /// Route a key event to the ticket detail page's overlay.
+    fn handle_ticket_detail_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let Some(Action::SwitchTab(tab)) = self.ctx.keymap.resolve(key) {
+            if let Some(detail) = self.active_screen_mut().as_any_ticket_detail_mut() {
+                detail.close_overlay();
+            }
+            self.switch_tab(tab);
+            return;
+        }
+        let Some(detail) = self.active_screen_mut().as_any_ticket_detail_mut() else {
+            return;
+        };
+        match detail.handle_overlay_key(key) {
+            DetailOverlayAction::SetPriority {
+                ticket_id,
+                priority,
+            } => {
+                self.data_manager
+                    .update_ticket_priority(ticket_id, priority);
+            }
+            DetailOverlayAction::Screen(result) => {
+                self.dispatch_screen_result(result);
+            }
+            DetailOverlayAction::None => {}
         }
     }
 
@@ -785,6 +826,11 @@ impl App {
     fn dispatch_to_screen(&mut self, action: Action) {
         let result = self.active_screen_mut().handle_action(action.clone());
         debug!(?action, ?result, "dispatch to screen");
+        self.dispatch_screen_result(result);
+    }
+
+    /// Handle a `ScreenResult` by pushing/popping screens, navigating, etc.
+    fn dispatch_screen_result(&mut self, result: ScreenResult) {
         match result {
             ScreenResult::Quit => {
                 self.should_quit = true;

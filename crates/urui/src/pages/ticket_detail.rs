@@ -19,7 +19,24 @@ use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
 use crate::pages::tickets::{build_ticket_goto_targets, goto_target_to_screen_result};
 use crate::screen::{Screen, ScreenResult};
 use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState};
+use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
 use crate::widgets::{MiniProgressBar, ThemedTable};
+
+/// Active overlay on the ticket detail page.
+enum Overlay {
+    GotoMenu(GotoMenuState),
+    PriorityPicker(PriorityPickerState),
+}
+
+/// Result from handling an overlay key event on the detail page.
+pub enum DetailOverlayAction {
+    /// No action needed by the caller.
+    None,
+    /// User selected a priority for the given ticket.
+    SetPriority { ticket_id: String, priority: i64 },
+    /// Navigate to a screen (from goto menu).
+    Screen(ScreenResult),
+}
 
 /// Internal data-lifecycle state for ticket detail.
 #[derive(Debug, Clone)]
@@ -56,8 +73,8 @@ pub struct TicketDetailScreen {
     page_size: usize,
     active_banner: Option<Banner>,
     active_status: Option<StatusMessage>,
-    /// Active goto menu overlay state.
-    goto_menu: Option<GotoMenuState>,
+    /// Active overlay state.
+    overlay: Option<Overlay>,
     /// When false (default), closed children are hidden from the child list.
     show_closed: bool,
 }
@@ -74,7 +91,7 @@ impl TicketDetailScreen {
             page_size: 20,
             active_banner: None,
             active_status: None,
-            goto_menu: None,
+            overlay: None,
             show_closed: false,
         }
     }
@@ -232,32 +249,50 @@ impl TicketDetailScreen {
         }
     }
 
-    /// Returns true if the goto menu overlay is currently active.
+    /// Returns true if an overlay is currently active.
     pub fn has_overlay(&self) -> bool {
-        self.goto_menu.is_some()
+        self.overlay.is_some()
     }
 
     /// Close any active overlay.
     pub fn close_overlay(&mut self) {
-        self.goto_menu = None;
+        self.overlay = None;
     }
 
-    /// Handle a raw key event when the goto menu overlay is active.
-    /// Returns a `ScreenResult` indicating how the event was handled.
-    pub fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> ScreenResult {
-        let Some(ref mut menu) = self.goto_menu else {
-            return ScreenResult::Consumed;
-        };
-        match menu.handle_key(key) {
-            GotoMenuResult::Selected(target) => {
-                self.goto_menu = None;
-                goto_target_to_screen_result(&target)
-            }
-            GotoMenuResult::Close => {
-                self.goto_menu = None;
-                ScreenResult::Consumed
-            }
-            GotoMenuResult::Consumed => ScreenResult::Consumed,
+    /// Handle a raw key event when an overlay is active.
+    /// Returns a `DetailOverlayAction` indicating what the caller should do.
+    pub fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> DetailOverlayAction {
+        match self.overlay {
+            Some(Overlay::GotoMenu(ref mut menu)) => match menu.handle_key(key) {
+                GotoMenuResult::Selected(target) => {
+                    self.overlay = None;
+                    DetailOverlayAction::Screen(goto_target_to_screen_result(&target))
+                }
+                GotoMenuResult::Close => {
+                    self.overlay = None;
+                    DetailOverlayAction::None
+                }
+                GotoMenuResult::Consumed => DetailOverlayAction::None,
+            },
+            Some(Overlay::PriorityPicker(ref mut picker)) => match picker.handle_key(key) {
+                PriorityPickerResult::Consumed => DetailOverlayAction::None,
+                PriorityPickerResult::Close => {
+                    self.overlay = None;
+                    DetailOverlayAction::None
+                }
+                PriorityPickerResult::Selected(priority) => {
+                    let ticket_id = self.selected_child_id();
+                    self.overlay = None;
+                    match ticket_id {
+                        Some(id) => DetailOverlayAction::SetPriority {
+                            ticket_id: id,
+                            priority,
+                        },
+                        None => DetailOverlayAction::None,
+                    }
+                }
+            },
+            None => DetailOverlayAction::None,
         }
     }
 
@@ -582,7 +617,17 @@ impl Screen for TicketDetailScreen {
             }
             Action::Goto => {
                 if let Some(child_id) = self.selected_child_id() {
-                    self.goto_menu = Some(GotoMenuState::new(build_ticket_goto_targets(&child_id)));
+                    self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(
+                        build_ticket_goto_targets(&child_id),
+                    )));
+                }
+                ScreenResult::Consumed
+            }
+            Action::SetPriority => {
+                if let Some(child) = self.selected_child() {
+                    self.overlay = Some(Overlay::PriorityPicker(PriorityPickerState::new(
+                        child.priority,
+                    )));
                 }
                 ScreenResult::Consumed
             }
@@ -593,7 +638,6 @@ impl Screen for TicketDetailScreen {
             | Action::CloseTicket
             | Action::CancelFlow
             | Action::CreateTicket => ScreenResult::Consumed,
-            Action::SetPriority => ScreenResult::Consumed,
             Action::Filter => {
                 self.show_closed = !self.show_closed;
                 self.current_page = 0;
@@ -631,15 +675,19 @@ impl Screen for TicketDetailScreen {
             }
         }
 
-        // Render goto menu overlay on top if active.
-        if let Some(ref menu) = self.goto_menu {
-            menu.render(area, buf, ctx);
+        // Render overlay on top if active.
+        match &self.overlay {
+            Some(Overlay::GotoMenu(menu)) => menu.render(area, buf, ctx),
+            Some(Overlay::PriorityPicker(picker)) => picker.render(area, buf, ctx),
+            None => {}
         }
     }
 
     fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        if let Some(ref menu) = self.goto_menu {
-            return menu.footer_commands();
+        match &self.overlay {
+            Some(Overlay::GotoMenu(menu)) => return menu.footer_commands(),
+            Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
+            None => {}
         }
         vec![
             FooterCommand {
@@ -655,6 +703,11 @@ impl Screen for TicketDetailScreen {
             FooterCommand {
                 key_label: keymap.label_for(&Action::Dispatch),
                 description: "Dispatch".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: keymap.label_for(&Action::SetPriority),
+                description: "Priority".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -1106,5 +1159,120 @@ mod tests {
         assert_eq!(TicketDetailScreen::dispatch_label(&t), "Closed");
         t.dispatch_status = "implementing".to_string();
         assert_eq!(TicketDetailScreen::dispatch_label(&t), "Dispatched");
+    }
+
+    #[test]
+    fn set_priority_opens_overlay_with_child_selected() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        let mut child = make_ticket("ur-c0", "ur", "open");
+        child.priority = 3;
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![child],
+            1,
+        )))));
+
+        assert!(!screen.has_overlay());
+        screen.handle_action(Action::SetPriority);
+        assert!(screen.has_overlay());
+    }
+
+    #[test]
+    fn set_priority_no_op_without_children() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![],
+            0,
+        )))));
+
+        screen.handle_action(Action::SetPriority);
+        assert!(!screen.has_overlay());
+    }
+
+    #[test]
+    fn priority_overlay_select_returns_set_priority_action() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        let mut child = make_ticket("ur-c0", "ur", "open");
+        child.priority = 3;
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail,
+            vec![child],
+            1,
+        )))));
+
+        screen.handle_action(Action::SetPriority);
+        assert!(screen.has_overlay());
+
+        // Press '1' to select priority 1 (High)
+        let key = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
+        let result = screen.handle_overlay_key(key);
+        assert!(!screen.has_overlay());
+        assert!(matches!(
+            result,
+            DetailOverlayAction::SetPriority {
+                ticket_id,
+                priority: 1,
+            } if ticket_id == "ur-c0"
+        ));
+    }
+
+    #[test]
+    fn priority_overlay_esc_closes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        let children = vec![make_ticket("ur-c0", "ur", "open")];
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 1,
+        )))));
+
+        screen.handle_action(Action::SetPriority);
+        assert!(screen.has_overlay());
+
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let result = screen.handle_overlay_key(key);
+        assert!(!screen.has_overlay());
+        assert!(matches!(result, DetailOverlayAction::None));
+    }
+
+    #[test]
+    fn footer_shows_priority_command() {
+        let screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let keymap = Keymap::default();
+        let cmds = screen.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Priority"));
+    }
+
+    #[test]
+    fn footer_shows_overlay_commands_when_priority_picker_active() {
+        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+        let ticket = make_ticket("ur-abc", "ur", "open");
+        let detail = make_detail_response(ticket);
+        let children = vec![make_ticket("ur-c0", "ur", "open")];
+        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
+            detail, children, 1,
+        )))));
+
+        let keymap = Keymap::default();
+        // Before overlay: should have normal commands including Priority
+        let cmds = screen.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Priority"));
+
+        // Open priority picker
+        screen.handle_action(Action::SetPriority);
+        let cmds = screen.footer_commands(&keymap);
+        // Now should show overlay commands, not the normal ones
+        assert!(!cmds.iter().any(|c| c.description == "Priority"));
     }
 }
