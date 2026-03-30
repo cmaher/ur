@@ -161,8 +161,12 @@ impl GithubPollerManager {
                 }
             };
 
-            if let Err(e) = backend
-                .reply_bot_comment(*pr_number, comment_id_i64, &body)
+            // Try replying as a PR review comment first. If the comment is
+            // actually a conversation (issue) comment, the review-reply
+            // endpoint returns 404. Fall back to posting a standalone issue
+            // comment in that case.
+            if let Err(e) = self
+                .post_reply_with_fallback(&backend, *pr_number, comment_id_i64, &body)
                 .await
             {
                 warn!(
@@ -178,6 +182,31 @@ impl GithubPollerManager {
             self.mark_replies_posted(comment_id, ticket_ids).await;
 
             tokio::time::sleep(API_CALL_DELAY).await;
+        }
+    }
+
+    /// Try posting a threaded reply to a PR review comment. If the comment
+    /// is actually a conversation comment (404), fall back to a standalone
+    /// issue comment.
+    async fn post_reply_with_fallback(
+        &self,
+        backend: &GhBackend,
+        pr_number: i64,
+        comment_id: i64,
+        body: &str,
+    ) -> Result<(), anyhow::Error> {
+        let prefixed = format!("\u{1F916} {body}");
+        match backend.reply_bot_comment(pr_number, comment_id, body).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("HTTP 404") || err_str.contains("not found") {
+                    backend.post_issue_comment(pr_number, &prefixed).await?;
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 
