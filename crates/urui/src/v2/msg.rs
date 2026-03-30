@@ -2,6 +2,8 @@ use crossterm::event::KeyEvent;
 use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
+use super::navigation::{PageId, TabId};
+
 /// Messages that drive the TEA update loop.
 ///
 /// Every state change flows through a `Msg`. The update function pattern-matches
@@ -16,6 +18,23 @@ pub enum Msg {
     Quit,
     /// Asynchronous data fetched from the server arrived.
     Data(Box<DataMsg>),
+    /// Navigation messages for tab switching and page stack manipulation.
+    Nav(NavMsg),
+}
+
+/// Navigation messages for controlling tabs and page stacks.
+#[derive(Debug, Clone)]
+pub enum NavMsg {
+    /// Switch to a specific tab. If already on that tab, pop to root.
+    TabSwitch(TabId),
+    /// Cycle to the next tab in display order.
+    TabNext,
+    /// Push a new page onto the active tab's stack.
+    Push(PageId),
+    /// Pop the current page from the active tab's stack.
+    Pop,
+    /// Navigate directly to a specific page (push if not already current).
+    Goto(PageId),
 }
 
 /// Messages carrying data fetched asynchronously from gRPC calls.
@@ -64,6 +83,24 @@ mod tests {
     #[test]
     fn data_msg_tickets_error() {
         let msg = DataMsg::TicketsLoaded(Err("connection refused".to_string()));
+        let _ = format!("{msg:?}");
+    }
+
+    #[test]
+    fn nav_msg_is_debug() {
+        let msg = NavMsg::TabSwitch(TabId::Tickets);
+        let _ = format!("{msg:?}");
+    }
+
+    #[test]
+    fn nav_msg_is_clone() {
+        let msg = NavMsg::Pop;
+        let _ = msg.clone();
+    }
+
+    #[test]
+    fn msg_nav_variant() {
+        let msg = Msg::Nav(NavMsg::Push(PageId::TicketList));
         let _ = format!("{msg:?}");
     }
 }

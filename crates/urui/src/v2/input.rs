@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::msg::Msg;
+use super::msg::{Msg, NavMsg};
 
 /// A command displayed in the footer bar, collected from active input handlers.
 #[derive(Debug, Clone)]
@@ -129,9 +129,10 @@ impl InputHandler for GlobalHandler {
             return InputResult::Capture(Msg::Quit);
         }
         if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
-            // Future: produce a TabSwitch message. For now, bubble since
-            // tab switching is not yet wired.
-            return InputResult::Bubble;
+            return InputResult::Capture(Msg::Nav(NavMsg::TabNext));
+        }
+        if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+            return InputResult::Capture(Msg::Nav(NavMsg::Pop));
         }
         InputResult::Bubble
     }
@@ -146,6 +147,11 @@ impl InputHandler for GlobalHandler {
             FooterCommand {
                 key_label: "Tab".to_string(),
                 description: "Switch tab".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: "Esc".to_string(),
+                description: "Back".to_string(),
                 common: true,
             },
         ]
@@ -344,10 +350,30 @@ mod tests {
     }
 
     #[test]
+    fn global_handler_tab_produces_nav_tab_next() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Tab, KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TabNext)) => {}
+            other => panic!("expected Capture(Nav(TabNext)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_handler_esc_produces_nav_pop() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::Pop)) => {}
+            other => panic!("expected Capture(Nav(Pop)), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn global_handler_footer_commands() {
         let handler = GlobalHandler;
         let commands = handler.footer_commands();
-        assert!(commands.len() >= 2);
+        assert!(commands.len() >= 3);
         assert!(commands.iter().all(|c| c.common));
     }
 

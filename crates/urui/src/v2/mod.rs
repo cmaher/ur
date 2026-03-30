@@ -1,8 +1,10 @@
 mod cmd;
 mod cmd_runner;
+mod component;
 pub mod input;
 mod model;
 mod msg;
+pub(crate) mod navigation;
 mod update;
 mod view;
 

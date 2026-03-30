@@ -2,6 +2,7 @@ use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
 use super::input::{GlobalHandler, InputStack};
+use super::navigation::NavigationModel;
 
 /// Tracks the loading state of asynchronous data.
 ///
@@ -123,16 +124,6 @@ pub struct Model {
     pub worker_list: WorkerListModel,
 }
 
-/// Navigation state — tracks which page/tab is active.
-///
-/// Will be expanded with tab IDs, page stacks, etc. as navigation components
-/// are implemented.
-#[derive(Debug, Clone)]
-pub struct NavigationModel {
-    /// Placeholder field; will hold active tab, breadcrumb stack, etc.
-    _placeholder: (),
-}
-
 impl Model {
     /// Create the initial application model.
     pub fn initial() -> Self {
@@ -140,7 +131,7 @@ impl Model {
         input_stack.push(Box::new(GlobalHandler));
         Self {
             should_quit: false,
-            navigation_model: NavigationModel { _placeholder: () },
+            navigation_model: NavigationModel::initial(),
             input_stack,
             ticket_list: TicketListModel {
                 data: LoadState::NotLoaded,

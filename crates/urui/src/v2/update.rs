@@ -3,7 +3,7 @@ use super::model::{
     FlowListData, LoadState, Model, TicketActivitiesData, TicketDetailData, TicketDetailModel,
     TicketListData, WorkerListData,
 };
-use super::msg::{DataMsg, Msg};
+use super::msg::{DataMsg, Msg, NavMsg};
 
 /// Pure update function: given the current model and a message, produces a new
 /// model and a list of commands to execute.
@@ -20,6 +20,7 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
         Msg::KeyPressed(key) => handle_key(model, key),
         Msg::Tick => (model, vec![]),
         Msg::Data(data_msg) => handle_data(model, *data_msg),
+        Msg::Nav(nav_msg) => handle_nav(model, nav_msg),
     }
 }
 
@@ -32,6 +33,29 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
         Some(msg) => update(model, msg),
         None => (model, vec![]),
     }
+}
+
+/// Handle a navigation message by delegating to the NavigationModel.
+///
+/// Takes ownership of the NavigationModel to avoid double-borrow of `model`,
+/// since navigation methods need `&mut Model` for input stack manipulation.
+fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    let mut nav = std::mem::replace(
+        &mut model.navigation_model,
+        super::navigation::NavigationModel::initial(),
+    );
+    let cmds = match nav_msg {
+        NavMsg::TabSwitch(tab) => nav.switch_tab(tab, &mut model),
+        NavMsg::TabNext => {
+            let next = nav.active_tab.next();
+            nav.switch_tab(next, &mut model)
+        }
+        NavMsg::Push(page) => nav.push(page, &mut model),
+        NavMsg::Pop => nav.pop(&mut model),
+        NavMsg::Goto(page) => nav.goto(page, &mut model),
+    };
+    model.navigation_model = nav;
+    (model, cmds)
 }
 
 /// Handle a data message by updating the appropriate sub-model's `LoadState`.
@@ -381,5 +405,77 @@ mod tests {
     fn refresh_all_produces_batch() {
         let cmd = refresh_all_cmd();
         assert!(matches!(cmd, Cmd::Batch(_)));
+    }
+
+    #[test]
+    fn nav_tab_switch_changes_active_tab() {
+        use crate::v2::navigation::TabId;
+        let model = Model::initial();
+        let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Flows)));
+        assert_eq!(new_model.navigation_model.active_tab, TabId::Flows);
+    }
+
+    #[test]
+    fn nav_tab_next_cycles_tab() {
+        use crate::v2::navigation::{PageId, TabId};
+        let model = Model::initial();
+        assert_eq!(model.navigation_model.active_tab, TabId::Tickets);
+        let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::TabNext));
+        assert_eq!(new_model.navigation_model.active_tab, TabId::Flows);
+    }
+
+    #[test]
+    fn nav_push_adds_page() {
+        use crate::v2::navigation::PageId;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::Nav(NavMsg::Push(PageId::TicketDetail {
+                ticket_id: "ur-abc".into(),
+            })),
+        );
+        assert_eq!(new_model.navigation_model.active_stack_depth(), 2);
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn nav_pop_removes_page() {
+        use crate::v2::navigation::PageId;
+        let model = Model::initial();
+        // First push a detail page
+        let (model, _) = update(
+            model,
+            Msg::Nav(NavMsg::Push(PageId::TicketDetail {
+                ticket_id: "ur-abc".into(),
+            })),
+        );
+        assert_eq!(model.navigation_model.active_stack_depth(), 2);
+
+        // Then pop it
+        let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::Pop));
+        assert_eq!(new_model.navigation_model.active_stack_depth(), 1);
+    }
+
+    #[test]
+    fn nav_goto_pushes_if_not_current() {
+        use crate::v2::navigation::PageId;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::Nav(NavMsg::Goto(PageId::TicketDetail {
+                ticket_id: "ur-xyz".into(),
+            })),
+        );
+        assert_eq!(new_model.navigation_model.active_stack_depth(), 2);
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn nav_goto_same_page_is_noop() {
+        use crate::v2::navigation::PageId;
+        let model = Model::initial();
+        let (new_model, cmds) = update(model, Msg::Nav(NavMsg::Goto(PageId::TicketList)));
+        assert_eq!(new_model.navigation_model.active_stack_depth(), 1);
+        assert!(cmds.is_empty());
     }
 }
