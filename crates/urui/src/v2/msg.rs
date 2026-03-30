@@ -1,4 +1,6 @@
 use crossterm::event::KeyEvent;
+use ur_rpc::proto::core::WorkerSummary;
+use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
 /// Messages that drive the TEA update loop.
 ///
@@ -12,19 +14,29 @@ pub enum Msg {
     Tick,
     /// The user requested to quit (Ctrl+C or q).
     Quit,
-    /// A command completed and produced a result message.
-    CmdResult(CmdResultMsg),
+    /// Asynchronous data fetched from the server arrived.
+    Data(Box<DataMsg>),
 }
 
-/// Result messages produced by asynchronous command execution.
+/// Messages carrying data fetched asynchronously from gRPC calls.
 ///
-/// As more features are added, variants will be added here for gRPC responses,
-/// data fetches, etc.
+/// Each variant corresponds to a `FetchCmd` and carries either the
+/// successfully loaded data or an error string.
 #[derive(Debug, Clone)]
-pub enum CmdResultMsg {
-    /// Placeholder for future command results. Will be replaced by real
-    /// variants as features are implemented.
-    _Placeholder,
+pub enum DataMsg {
+    /// Ticket list fetched: (tickets, total_count).
+    TicketsLoaded(Result<(Vec<Ticket>, i32), String>),
+    /// Full ticket detail fetched: (detail_response, children, total_children).
+    DetailLoaded(Box<Result<(GetTicketResponse, Vec<Ticket>, i32), String>>),
+    /// Workflow list fetched: (workflows, total_count).
+    FlowsLoaded(Result<(Vec<WorkflowInfo>, i32), String>),
+    /// Worker list fetched.
+    WorkersLoaded(Result<Vec<WorkerSummary>, String>),
+    /// Activities for a specific ticket fetched.
+    ActivitiesLoaded {
+        ticket_id: String,
+        result: Result<Vec<ActivityEntry>, String>,
+    },
 }
 
 #[cfg(test)]
@@ -34,7 +46,6 @@ mod tests {
     #[test]
     fn msg_is_debug() {
         let msg = Msg::Quit;
-        // Verify Debug is implemented
         let _ = format!("{msg:?}");
     }
 
@@ -42,5 +53,17 @@ mod tests {
     fn msg_is_clone() {
         let msg = Msg::Quit;
         let _ = msg.clone();
+    }
+
+    #[test]
+    fn data_msg_is_debug() {
+        let msg = DataMsg::WorkersLoaded(Ok(vec![]));
+        let _ = format!("{msg:?}");
+    }
+
+    #[test]
+    fn data_msg_tickets_error() {
+        let msg = DataMsg::TicketsLoaded(Err("connection refused".to_string()));
+        let _ = format!("{msg:?}");
     }
 }

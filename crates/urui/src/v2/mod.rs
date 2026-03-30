@@ -66,8 +66,12 @@ fn read_and_send_event(tx: &mpsc::UnboundedSender<Msg>) -> bool {
 
 /// The core TEA loop: read events, update model, execute commands, render view.
 async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+    let config = ur_config::Config::load()?;
+    let port = config.server_port;
+    let project_filter = ur_config::resolve_project(None, &config.projects);
+
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Msg>();
-    let cmd_runner = CmdRunner::new(msg_tx.clone());
+    let cmd_runner = CmdRunner::new(msg_tx.clone(), port, project_filter);
 
     // Spawn crossterm reader task
     let crossterm_tx = msg_tx.clone();
