@@ -1031,8 +1031,8 @@ impl App {
 
     /// Update dynamic page sizes based on the available content area.
     fn update_page_sizes(&mut self, area: Rect) {
-        // Content area is total height minus header (1) and footer (1).
-        let content_height = area.height.saturating_sub(2);
+        // Content area is total height minus header (1), sub-header (1), and footer (1).
+        let content_height = area.height.saturating_sub(3);
         self.tickets_page_mut().update_page_size(content_height);
         if let Some(detail) = self.active_screen_mut().as_any_ticket_detail_mut() {
             detail.update_child_page_size(content_height);
@@ -1596,7 +1596,7 @@ mod tests {
         app.stacks.get_mut(&TabId::Tickets).unwrap().push(detail);
 
         // Call update_page_sizes with a height large enough to produce a
-        // different page size (> 20, the default).  content_height = 50 - 2 = 48.
+        // different page size (> 20, the default).  content_height = 50 - 3 = 47.
         app.update_page_sizes(Rect::new(0, 0, 80, 50));
 
         // The detail screen should now need data (was marked stale).
