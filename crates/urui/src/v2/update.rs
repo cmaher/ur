@@ -30,6 +30,7 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
         Msg::BannerDismiss => handle_banner_dismiss(model),
         Msg::StatusShow(text) => handle_status_show(model, text),
         Msg::StatusClear => handle_status_clear(model),
+        Msg::Overlay(overlay_msg) => super::overlay_update::handle_overlay(model, overlay_msg),
     }
 }
 

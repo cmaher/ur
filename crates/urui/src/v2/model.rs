@@ -191,6 +191,88 @@ pub struct WorkerListModel {
     pub data: LoadState<WorkerListData>,
 }
 
+/// Which overlay is currently active, if any.
+#[derive(Debug, Clone)]
+pub enum ActiveOverlay {
+    /// Priority picker overlay for a specific ticket.
+    PriorityPicker { ticket_id: String, cursor: usize },
+    /// Filter menu overlay.
+    FilterMenu {
+        cursor: usize,
+        expanded: Option<FilterCategory>,
+        sub_cursor: usize,
+    },
+    /// Goto menu overlay with available targets.
+    GotoMenu {
+        targets: Vec<super::msg::GotoTarget>,
+        cursor: usize,
+    },
+    /// Force-close confirmation overlay.
+    ForceCloseConfirm {
+        ticket_id: String,
+        open_children: i32,
+    },
+    /// Create action menu overlay.
+    CreateActionMenu {
+        pending: super::msg::PendingTicket,
+        cursor: usize,
+    },
+    /// Project input text overlay.
+    ProjectInput { buffer: String },
+    /// Settings overlay.
+    Settings {
+        level: SettingsLevel,
+        top_cursor: usize,
+        active_column: usize,
+        column_cursors: [usize; 3],
+        light_themes: Vec<String>,
+        dark_themes: Vec<String>,
+        custom_themes: Vec<String>,
+    },
+}
+
+/// The filter categories available in the filter menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterCategory {
+    Status,
+    Priority,
+    Project,
+    ShowChildren,
+}
+
+/// Which level the settings overlay is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsLevel {
+    /// Top-level settings menu.
+    TopLevel,
+    /// Theme picker with three columns.
+    ThemePicker,
+}
+
+/// Persisted filter selections applied to the ticket list.
+#[derive(Debug, Clone)]
+pub struct TicketFilters {
+    /// Which statuses are enabled. When empty, all are shown.
+    pub statuses: Vec<String>,
+    /// Which priorities are enabled. When empty, all are shown.
+    pub priorities: Vec<i64>,
+    /// Which projects are enabled. When empty, all are shown.
+    pub projects: Vec<String>,
+    /// Whether to show tickets that have a parent_id (children).
+    pub show_children: bool,
+}
+
+impl Default for TicketFilters {
+    fn default() -> Self {
+        Self {
+            statuses: vec!["open".to_string(), "in_progress".to_string()],
+            priorities: vec![],
+            projects: vec![],
+            show_children: false,
+        }
+    }
+}
+
 /// The top-level application model for the v2 TEA architecture.
 ///
 /// This struct holds all application state. It is owned by the main loop and
@@ -218,6 +300,10 @@ pub struct Model {
     pub banner: Option<BannerModel>,
     /// Active status message, if any.
     pub status: Option<StatusModel>,
+    /// Currently active overlay, if any.
+    pub active_overlay: Option<ActiveOverlay>,
+    /// Ticket list filter state.
+    pub ticket_filters: TicketFilters,
 }
 
 impl Model {
@@ -242,6 +328,8 @@ impl Model {
             ui_event_throttle: UiEventThrottle::new(),
             banner: None,
             status: None,
+            active_overlay: None,
+            ticket_filters: TicketFilters::default(),
         }
     }
 }

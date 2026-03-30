@@ -6,6 +6,7 @@ pub mod input;
 mod model;
 mod msg;
 pub(crate) mod navigation;
+mod overlay_update;
 mod update;
 mod view;
 

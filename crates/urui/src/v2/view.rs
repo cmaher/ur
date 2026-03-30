@@ -1,14 +1,22 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 
 use crate::context::TuiContext;
 
 use super::components::banner::render_banner;
+use super::components::create_action_menu::render_create_action_menu;
+use super::components::filter_menu::render_filter_menu;
 use super::components::footer::render_footer;
+use super::components::force_close_confirm::render_force_close_confirm;
+use super::components::goto_menu::render_goto_menu;
 use super::components::header::render_header;
+use super::components::priority_picker::render_priority_picker;
+use super::components::project_input::render_project_input;
+use super::components::settings_overlay::render_settings_overlay;
 use super::components::status::render_status;
-use super::model::Model;
+use super::model::{ActiveOverlay, Model};
 
 /// Root view function: renders the current model to the terminal frame.
 ///
@@ -51,9 +59,40 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
     // Content area: future page-specific rendering will go here.
     // For now this area is filled with the base background from above.
 
+    // Active overlay (rendered on top of content area)
+    render_active_overlay(area, frame.buffer_mut(), ctx, model);
+
     // Footer: commands collected from the input stack
     let commands = model.input_stack.footer_commands();
     render_footer(chunks[3], frame.buffer_mut(), ctx, &commands);
+}
+
+/// Render the currently active overlay, if any.
+fn render_active_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+    match &model.active_overlay {
+        None => {}
+        Some(ActiveOverlay::PriorityPicker { .. }) => {
+            render_priority_picker(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::FilterMenu { .. }) => {
+            render_filter_menu(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::GotoMenu { .. }) => {
+            render_goto_menu(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::ForceCloseConfirm { .. }) => {
+            render_force_close_confirm(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::CreateActionMenu { .. }) => {
+            render_create_action_menu(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::ProjectInput { .. }) => {
+            render_project_input(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::Settings { .. }) => {
+            render_settings_overlay(area, buf, ctx, model);
+        }
+    }
 }
 
 #[cfg(test)]

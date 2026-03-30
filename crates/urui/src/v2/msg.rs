@@ -35,6 +35,142 @@ pub enum Msg {
     StatusShow(String),
     /// Clear the current status message.
     StatusClear,
+    /// Overlay messages for modal overlays.
+    Overlay(OverlayMsg),
+}
+
+/// Messages produced by overlay components.
+#[derive(Debug, Clone)]
+pub enum OverlayMsg {
+    /// A key was captured by a modal overlay but has no meaningful action.
+    /// The overlay stays open; this is a no-op for the update function.
+    Consumed,
+    /// Open the priority picker overlay for the given ticket, starting at
+    /// the ticket's current priority.
+    OpenPriorityPicker {
+        ticket_id: String,
+        current_priority: i64,
+    },
+    /// The user selected a priority in the picker.
+    PrioritySelected { ticket_id: String, priority: i64 },
+    /// Navigate the priority picker cursor by delta (+1 down, -1 up).
+    PriorityPickerNavigate { delta: i32 },
+    /// Confirm the currently highlighted priority.
+    PriorityPickerConfirm,
+    /// Quick-select a priority by digit (0-4).
+    PriorityPickerQuickSelect { digit: i64 },
+    /// The user cancelled the priority picker.
+    PriorityCancelled,
+
+    /// Open the filter menu overlay.
+    OpenFilterMenu,
+    /// Navigate the filter menu cursor.
+    FilterMenuNavigate { delta: i32 },
+    /// Activate/toggle the current item in the filter menu.
+    FilterMenuActivate,
+    /// Quick-toggle an item by digit key.
+    FilterMenuQuickToggle { digit: char },
+    /// The filter menu was closed (filters are mutated in-place in the model).
+    FilterMenuClosed,
+
+    /// Open the goto menu overlay with the given targets.
+    OpenGotoMenu { targets: Vec<GotoTarget> },
+    /// Navigate the goto menu cursor.
+    GotoMenuNavigate { delta: i32 },
+    /// Confirm the currently highlighted goto target.
+    GotoMenuConfirm,
+    /// Quick-select a goto target by digit key.
+    GotoMenuQuickSelect { digit: usize },
+    /// The user selected a goto target.
+    GotoSelected(GotoTarget),
+    /// The user cancelled the goto menu.
+    GotoCancelled,
+
+    /// Open the force-close confirmation overlay.
+    OpenForceCloseConfirm {
+        ticket_id: String,
+        open_children: i32,
+    },
+    /// The user pressed y/1 to confirm force close (internal, resolves to ForceCloseConfirmed).
+    ForceCloseConfirmYes,
+    /// The user confirmed the force close.
+    ForceCloseConfirmed { ticket_id: String },
+    /// The user cancelled the force close.
+    ForceCloseCancelled,
+
+    /// Open the create action menu overlay.
+    OpenCreateActionMenu { pending: PendingTicket },
+    /// Navigate the create action menu cursor.
+    CreateActionNavigate { delta: i32 },
+    /// Confirm the currently highlighted create action.
+    CreateActionConfirm,
+    /// Quick-select a create action by digit key (1-4).
+    CreateActionQuickSelect { index: usize },
+    /// The user selected a create action.
+    CreateActionSelected(CreateAction),
+
+    /// Open the project input overlay.
+    OpenProjectInput,
+    /// A character was typed into the project input.
+    ProjectInputChar(char),
+    /// Backspace in the project input.
+    ProjectInputBackspace,
+    /// The user pressed Enter in the project input (resolved by update to ProjectInputSubmitted).
+    ProjectInputSubmitRequest,
+    /// The user submitted project input text.
+    ProjectInputSubmitted(String),
+    /// The user cancelled project input.
+    ProjectInputCancelled,
+
+    /// Open the settings overlay.
+    OpenSettings { custom_theme_names: Vec<String> },
+    /// Esc was pressed in the settings overlay (back or close depending on level).
+    SettingsEsc,
+    /// Navigate within the settings overlay.
+    SettingsNavigate { direction: SettingsDirection },
+    /// Activate the current settings item.
+    SettingsActivate,
+    /// The user selected a theme in settings.
+    ThemeSelected(String),
+    /// The settings overlay was closed.
+    SettingsClosed,
+}
+
+/// A target that the user can navigate to via the goto menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GotoTarget {
+    /// Display label shown in the menu (e.g., "Flow Details").
+    pub label: String,
+    /// The screen name to navigate to (e.g., "flow", "worker", "ticket").
+    pub screen: String,
+    /// The entity ID to navigate to.
+    pub id: String,
+}
+
+/// The four actions available after editing a ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateAction {
+    Create,
+    Dispatch,
+    Design,
+    Abandon,
+}
+
+/// Direction for navigating within the settings overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Summary of a ticket pending creation.
+#[derive(Debug, Clone)]
+pub struct PendingTicket {
+    pub project: String,
+    pub title: String,
+    pub priority: i64,
 }
 
 /// A single UI event received from the server's event stream.

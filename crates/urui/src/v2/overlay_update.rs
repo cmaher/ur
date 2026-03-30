@@ -1,0 +1,1060 @@
+//! Overlay message handling for the v2 update loop.
+//!
+//! Each overlay open message pushes its modal handler onto the input stack and
+//! sets `model.active_overlay`. Each close/cancel/select message pops the handler
+//! and clears the overlay. Internal navigation messages mutate the overlay state
+//! in-place.
+
+use super::cmd::Cmd;
+use super::components::create_action_menu::{action_at, action_count};
+use super::components::filter_menu::{
+    CATEGORIES, FilterMenuHandler, PRIORITY_OPTIONS, STATUS_OPTIONS, toggle_vec,
+};
+use super::components::force_close_confirm::ForceCloseConfirmHandler;
+use super::components::goto_menu::{GotoMenuHandler, resolve_goto_target};
+use super::components::priority_picker::{
+    PriorityPickerHandler, cursor_to_priority, priority_count, priority_to_cursor,
+};
+use super::components::project_input::ProjectInputHandler;
+use super::components::settings_overlay::{
+    SettingsOverlayHandler, build_settings_state, selected_theme_name, snap_cursor,
+};
+use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
+use super::msg::OverlayMsg;
+
+/// Handle an overlay message, returning updated model and commands.
+pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
+        OverlayMsg::Consumed => (model, vec![]),
+
+        // === Priority Picker ===
+        OverlayMsg::OpenPriorityPicker {
+            ticket_id,
+            current_priority,
+        } => {
+            let cursor = priority_to_cursor(current_priority);
+            model.active_overlay = Some(ActiveOverlay::PriorityPicker { ticket_id, cursor });
+            model.input_stack.push(Box::new(PriorityPickerHandler));
+            (model, vec![])
+        }
+        OverlayMsg::PriorityPickerNavigate { delta } => {
+            if let Some(ActiveOverlay::PriorityPicker { ref mut cursor, .. }) = model.active_overlay
+            {
+                let count = priority_count();
+                if delta > 0 && *cursor < count - 1 {
+                    *cursor += 1;
+                } else if delta < 0 && *cursor > 0 {
+                    *cursor -= 1;
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::PriorityPickerConfirm => {
+            if let Some(ActiveOverlay::PriorityPicker {
+                ref ticket_id,
+                cursor,
+            }) = model.active_overlay
+            {
+                let priority = cursor_to_priority(cursor);
+                let ticket_id = ticket_id.clone();
+                close_overlay(&mut model);
+                return handle_overlay(
+                    model,
+                    OverlayMsg::PrioritySelected {
+                        ticket_id,
+                        priority,
+                    },
+                );
+            }
+            (model, vec![])
+        }
+        OverlayMsg::PriorityPickerQuickSelect { digit } => {
+            if let Some(ActiveOverlay::PriorityPicker { ref ticket_id, .. }) = model.active_overlay
+            {
+                let ticket_id = ticket_id.clone();
+                close_overlay(&mut model);
+                return handle_overlay(
+                    model,
+                    OverlayMsg::PrioritySelected {
+                        ticket_id,
+                        priority: digit,
+                    },
+                );
+            }
+            (model, vec![])
+        }
+        OverlayMsg::PrioritySelected { .. } => {
+            // Terminal message — consumed by the page-level update (future).
+            // For now, just close the overlay if still open.
+            (model, vec![])
+        }
+        OverlayMsg::PriorityCancelled => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+
+        // === Filter Menu ===
+        OverlayMsg::OpenFilterMenu => {
+            model.active_overlay = Some(ActiveOverlay::FilterMenu {
+                cursor: 0,
+                expanded: None,
+                sub_cursor: 0,
+            });
+            model.input_stack.push(Box::new(FilterMenuHandler));
+            (model, vec![])
+        }
+        OverlayMsg::FilterMenuNavigate { delta } => {
+            handle_filter_navigate(&mut model, delta);
+            (model, vec![])
+        }
+        OverlayMsg::FilterMenuActivate => {
+            handle_filter_activate(&mut model);
+            (model, vec![])
+        }
+        OverlayMsg::FilterMenuQuickToggle { digit } => {
+            handle_filter_quick_toggle(&mut model, digit);
+            (model, vec![])
+        }
+        OverlayMsg::FilterMenuClosed => {
+            // If expanded, collapse first (Esc collapses submenu).
+            if let Some(ActiveOverlay::FilterMenu {
+                ref mut expanded, ..
+            }) = model.active_overlay
+            {
+                if expanded.is_some() {
+                    *expanded = None;
+                    return (model, vec![]);
+                }
+            }
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+
+        // === Goto Menu ===
+        OverlayMsg::OpenGotoMenu { targets } => {
+            model.active_overlay = Some(ActiveOverlay::GotoMenu { targets, cursor: 0 });
+            model.input_stack.push(Box::new(GotoMenuHandler));
+            (model, vec![])
+        }
+        OverlayMsg::GotoMenuNavigate { delta } => {
+            if let Some(ActiveOverlay::GotoMenu {
+                ref targets,
+                ref mut cursor,
+            }) = model.active_overlay
+            {
+                let count = targets.len();
+                if delta > 0 && count > 0 && *cursor < count - 1 {
+                    *cursor += 1;
+                } else if delta < 0 && *cursor > 0 {
+                    *cursor -= 1;
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::GotoMenuConfirm => {
+            if let Some(ActiveOverlay::GotoMenu {
+                ref targets,
+                cursor,
+            }) = model.active_overlay
+            {
+                if let Some(target) = resolve_goto_target(targets, cursor) {
+                    close_overlay(&mut model);
+                    return handle_overlay(model, OverlayMsg::GotoSelected(target));
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::GotoMenuQuickSelect { digit } => {
+            if let Some(ActiveOverlay::GotoMenu { ref targets, .. }) = model.active_overlay {
+                // digit is 1-indexed
+                if digit >= 1 && digit <= targets.len() {
+                    if let Some(target) = resolve_goto_target(targets, digit - 1) {
+                        close_overlay(&mut model);
+                        return handle_overlay(model, OverlayMsg::GotoSelected(target));
+                    }
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::GotoSelected(_) => {
+            // Terminal message — consumed by the page-level update (future).
+            (model, vec![])
+        }
+        OverlayMsg::GotoCancelled => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+
+        // === Force Close Confirm ===
+        OverlayMsg::OpenForceCloseConfirm {
+            ticket_id,
+            open_children,
+        } => {
+            model.active_overlay = Some(ActiveOverlay::ForceCloseConfirm {
+                ticket_id,
+                open_children,
+            });
+            model.input_stack.push(Box::new(ForceCloseConfirmHandler));
+            (model, vec![])
+        }
+        OverlayMsg::ForceCloseConfirmYes => {
+            if let Some(ActiveOverlay::ForceCloseConfirm { ref ticket_id, .. }) =
+                model.active_overlay
+            {
+                let ticket_id = ticket_id.clone();
+                close_overlay(&mut model);
+                return handle_overlay(model, OverlayMsg::ForceCloseConfirmed { ticket_id });
+            }
+            (model, vec![])
+        }
+        OverlayMsg::ForceCloseConfirmed { .. } => {
+            // Terminal message — consumed by the page-level update (future).
+            (model, vec![])
+        }
+        OverlayMsg::ForceCloseCancelled => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+
+        // === Create Action Menu ===
+        OverlayMsg::OpenCreateActionMenu { pending } => {
+            model.active_overlay = Some(ActiveOverlay::CreateActionMenu { pending, cursor: 0 });
+            model.input_stack.push(Box::new(
+                super::components::create_action_menu::CreateActionMenuHandler,
+            ));
+            (model, vec![])
+        }
+        OverlayMsg::CreateActionNavigate { delta } => {
+            if let Some(ActiveOverlay::CreateActionMenu { ref mut cursor, .. }) =
+                model.active_overlay
+            {
+                let count = action_count();
+                if delta > 0 {
+                    *cursor = (*cursor + 1) % count;
+                } else if delta < 0 {
+                    *cursor = (*cursor + count - 1) % count;
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::CreateActionConfirm => {
+            if let Some(ActiveOverlay::CreateActionMenu { cursor, .. }) = model.active_overlay {
+                if let Some(action) = action_at(cursor) {
+                    close_overlay(&mut model);
+                    return handle_overlay(model, OverlayMsg::CreateActionSelected(action));
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::CreateActionQuickSelect { index } => {
+            if let Some(action) = action_at(index) {
+                close_overlay(&mut model);
+                return handle_overlay(model, OverlayMsg::CreateActionSelected(action));
+            }
+            (model, vec![])
+        }
+        OverlayMsg::CreateActionSelected(_) => {
+            // Terminal message — consumed by the page-level update (future).
+            (model, vec![])
+        }
+
+        // === Project Input ===
+        OverlayMsg::OpenProjectInput => {
+            model.active_overlay = Some(ActiveOverlay::ProjectInput {
+                buffer: String::new(),
+            });
+            model.input_stack.push(Box::new(ProjectInputHandler));
+            (model, vec![])
+        }
+        OverlayMsg::ProjectInputChar(c) => {
+            if let Some(ActiveOverlay::ProjectInput { ref mut buffer }) = model.active_overlay {
+                buffer.push(c);
+            }
+            (model, vec![])
+        }
+        OverlayMsg::ProjectInputBackspace => {
+            if let Some(ActiveOverlay::ProjectInput { ref mut buffer }) = model.active_overlay {
+                buffer.pop();
+            }
+            (model, vec![])
+        }
+        OverlayMsg::ProjectInputSubmitRequest => {
+            if let Some(ActiveOverlay::ProjectInput { ref buffer }) = model.active_overlay {
+                let text = buffer.clone();
+                close_overlay(&mut model);
+                return handle_overlay(model, OverlayMsg::ProjectInputSubmitted(text));
+            }
+            (model, vec![])
+        }
+        OverlayMsg::ProjectInputSubmitted(_) => {
+            // Terminal message — consumed by the page-level update (future).
+            (model, vec![])
+        }
+        OverlayMsg::ProjectInputCancelled => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+
+        // === Settings Overlay ===
+        OverlayMsg::OpenSettings { custom_theme_names } => {
+            model.active_overlay = Some(build_settings_state(custom_theme_names));
+            model.input_stack.push(Box::new(SettingsOverlayHandler));
+            (model, vec![])
+        }
+        OverlayMsg::SettingsEsc => handle_settings_esc(model),
+        OverlayMsg::SettingsNavigate { direction } => {
+            handle_settings_navigate(&mut model, direction);
+            (model, vec![])
+        }
+        OverlayMsg::SettingsActivate => handle_settings_activate(model),
+        OverlayMsg::ThemeSelected(_) => {
+            // Terminal message — consumed by the page-level update (future).
+            (model, vec![])
+        }
+        OverlayMsg::SettingsClosed => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+    }
+}
+
+/// Close the current overlay: clear state and pop the modal handler.
+fn close_overlay(model: &mut Model) {
+    if model.active_overlay.is_some() {
+        model.active_overlay = None;
+        model.input_stack.pop();
+    }
+}
+
+// === Filter Menu helpers ===
+
+fn handle_filter_navigate(model: &mut Model, delta: i32) {
+    if let Some(ActiveOverlay::FilterMenu {
+        ref mut cursor,
+        ref expanded,
+        ref mut sub_cursor,
+    }) = model.active_overlay
+    {
+        if let Some(cat) = expanded {
+            let count = filter_submenu_count(*cat, &model.ticket_filters);
+            if delta > 0 && count > 0 && *sub_cursor < count - 1 {
+                *sub_cursor += 1;
+            } else if delta < 0 && *sub_cursor > 0 {
+                *sub_cursor -= 1;
+            }
+        } else if delta > 0 && *cursor < CATEGORIES.len() - 1 {
+            *cursor += 1;
+        } else if delta < 0 && *cursor > 0 {
+            *cursor -= 1;
+        }
+    }
+}
+
+fn handle_filter_activate(model: &mut Model) {
+    // We need to extract values to avoid multiple mutable borrows.
+    let (expanded, cursor) = match &model.active_overlay {
+        Some(ActiveOverlay::FilterMenu {
+            expanded, cursor, ..
+        }) => (*expanded, *cursor),
+        _ => return,
+    };
+
+    if let Some(cat) = expanded {
+        let sub_cursor = match &model.active_overlay {
+            Some(ActiveOverlay::FilterMenu { sub_cursor, .. }) => *sub_cursor,
+            _ => return,
+        };
+        toggle_filter_item(cat, sub_cursor, model);
+    } else {
+        let cat = CATEGORIES[cursor];
+        if cat == FilterCategory::ShowChildren {
+            model.ticket_filters.show_children = !model.ticket_filters.show_children;
+        } else if let Some(ActiveOverlay::FilterMenu {
+            ref mut expanded,
+            ref mut sub_cursor,
+            ..
+        }) = model.active_overlay
+        {
+            *expanded = Some(cat);
+            *sub_cursor = 0;
+        }
+    }
+}
+
+fn handle_filter_quick_toggle(model: &mut Model, c: char) {
+    let expanded = match &model.active_overlay {
+        Some(ActiveOverlay::FilterMenu { expanded, .. }) => *expanded,
+        _ => return,
+    };
+
+    if expanded.is_none() {
+        let digit = (c as u8 - b'0') as usize;
+        if digit >= 1 && digit <= CATEGORIES.len() {
+            // Set cursor and activate
+            if let Some(ActiveOverlay::FilterMenu { ref mut cursor, .. }) = model.active_overlay {
+                *cursor = digit - 1;
+            }
+            handle_filter_activate(model);
+        }
+        return;
+    }
+
+    let Some(cat) = expanded else { return };
+    let digit = (c as u8 - b'0') as usize;
+    let index = match cat {
+        FilterCategory::Priority => {
+            if digit <= 4 {
+                digit
+            } else {
+                return;
+            }
+        }
+        _ => {
+            if digit == 0 {
+                return;
+            }
+            digit - 1
+        }
+    };
+    let count = filter_submenu_count(cat, &model.ticket_filters);
+    if index < count {
+        toggle_filter_item(cat, index, model);
+    }
+}
+
+fn toggle_filter_item(cat: FilterCategory, index: usize, model: &mut Model) {
+    match cat {
+        FilterCategory::Status => {
+            let value = STATUS_OPTIONS[index].to_string();
+            toggle_vec(&mut model.ticket_filters.statuses, value);
+        }
+        FilterCategory::Priority => {
+            let value = PRIORITY_OPTIONS[index];
+            toggle_vec(&mut model.ticket_filters.priorities, value);
+        }
+        FilterCategory::Project => {
+            // We don't have project names in the model — they come from ctx.
+            // For now, this is a no-op. When pages integrate, they will supply
+            // project names through the overlay's open message.
+        }
+        FilterCategory::ShowChildren => {}
+    }
+}
+
+fn filter_submenu_count(cat: FilterCategory, _filters: &super::model::TicketFilters) -> usize {
+    match cat {
+        FilterCategory::Status => STATUS_OPTIONS.len(),
+        FilterCategory::Priority => PRIORITY_OPTIONS.len(),
+        FilterCategory::Project => 0, // Populated from ctx at render time
+        FilterCategory::ShowChildren => 0,
+    }
+}
+
+// === Settings helpers ===
+
+fn handle_settings_esc(mut model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ActiveOverlay::Settings { ref mut level, .. }) = model.active_overlay {
+        match level {
+            SettingsLevel::ThemePicker => {
+                *level = SettingsLevel::TopLevel;
+                return (model, vec![]);
+            }
+            SettingsLevel::TopLevel => {
+                close_overlay(&mut model);
+                return (model, vec![]);
+            }
+        }
+    }
+    close_overlay(&mut model);
+    (model, vec![])
+}
+
+fn handle_settings_navigate(model: &mut Model, direction: super::msg::SettingsDirection) {
+    use super::msg::SettingsDirection;
+
+    if let Some(ActiveOverlay::Settings {
+        ref level,
+        ref mut active_column,
+        ref mut column_cursors,
+        ref light_themes,
+        ref dark_themes,
+        ref custom_themes,
+        ..
+    }) = model.active_overlay
+    {
+        if *level != SettingsLevel::ThemePicker {
+            return;
+        }
+
+        match direction {
+            SettingsDirection::Left => {
+                if *active_column > 0 {
+                    *active_column -= 1;
+                    let count =
+                        column_item_count(*active_column, light_themes, dark_themes, custom_themes);
+                    column_cursors[*active_column] =
+                        snap_cursor(column_cursors[*active_column], count);
+                }
+            }
+            SettingsDirection::Right => {
+                if *active_column < 2 {
+                    *active_column += 1;
+                    let count =
+                        column_item_count(*active_column, light_themes, dark_themes, custom_themes);
+                    column_cursors[*active_column] =
+                        snap_cursor(column_cursors[*active_column], count);
+                }
+            }
+            SettingsDirection::Down => {
+                let count =
+                    column_item_count(*active_column, light_themes, dark_themes, custom_themes);
+                if count > 0 && column_cursors[*active_column] < count - 1 {
+                    column_cursors[*active_column] += 1;
+                }
+            }
+            SettingsDirection::Up => {
+                if column_cursors[*active_column] > 0 {
+                    column_cursors[*active_column] -= 1;
+                }
+            }
+        }
+    }
+}
+
+fn column_item_count(col: usize, light: &[String], dark: &[String], custom: &[String]) -> usize {
+    match col {
+        0 => light.len(),
+        1 => dark.len(),
+        2 => custom.len(),
+        _ => 0,
+    }
+}
+
+fn handle_settings_activate(mut model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ActiveOverlay::Settings {
+        ref mut level,
+        active_column,
+        column_cursors,
+        ref light_themes,
+        ref dark_themes,
+        ref custom_themes,
+        ..
+    }) = model.active_overlay
+    {
+        match level {
+            SettingsLevel::TopLevel => {
+                *level = SettingsLevel::ThemePicker;
+                return (model, vec![]);
+            }
+            SettingsLevel::ThemePicker => {
+                if let Some(name) = selected_theme_name(
+                    active_column,
+                    column_cursors,
+                    light_themes,
+                    dark_themes,
+                    custom_themes,
+                ) {
+                    // Don't close the overlay — user can keep browsing themes.
+                    return handle_overlay(model, OverlayMsg::ThemeSelected(name));
+                }
+            }
+        }
+    }
+    (model, vec![])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::v2::model::Model;
+    use crate::v2::msg::{CreateAction, GotoTarget, OverlayMsg, PendingTicket, SettingsDirection};
+
+    #[test]
+    fn consumed_is_noop() {
+        let model = Model::initial();
+        let (new_model, cmds) = handle_overlay(model, OverlayMsg::Consumed);
+        assert!(new_model.active_overlay.is_none());
+        assert!(cmds.is_empty());
+    }
+
+    // === Priority Picker ===
+
+    #[test]
+    fn open_priority_picker_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 2,
+            },
+        );
+        assert!(new_model.active_overlay.is_some());
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::PriorityPicker { ticket_id, cursor }) => {
+                assert_eq!(ticket_id, "ur-abc");
+                assert_eq!(*cursor, 2);
+            }
+            _ => panic!("expected PriorityPicker"),
+        }
+    }
+
+    #[test]
+    fn priority_navigate_down() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 0,
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::PriorityPickerNavigate { delta: 1 });
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::PriorityPicker { cursor, .. }) => assert_eq!(*cursor, 1),
+            _ => panic!("expected PriorityPicker"),
+        }
+    }
+
+    #[test]
+    fn priority_navigate_up_no_underflow() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 0,
+            },
+        );
+        let (new_model, _) =
+            handle_overlay(model, OverlayMsg::PriorityPickerNavigate { delta: -1 });
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::PriorityPicker { cursor, .. }) => assert_eq!(*cursor, 0),
+            _ => panic!("expected PriorityPicker"),
+        }
+    }
+
+    #[test]
+    fn priority_confirm_closes_and_selects() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 2,
+            },
+        );
+        let initial_stack = model.input_stack.len();
+        let (new_model, _) = handle_overlay(model, OverlayMsg::PriorityPickerConfirm);
+        assert!(new_model.active_overlay.is_none());
+        assert_eq!(new_model.input_stack.len(), initial_stack - 1);
+    }
+
+    #[test]
+    fn priority_quick_select_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 0,
+            },
+        );
+        let (new_model, _) =
+            handle_overlay(model, OverlayMsg::PriorityPickerQuickSelect { digit: 3 });
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn priority_cancelled_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenPriorityPicker {
+                ticket_id: "ur-abc".into(),
+                current_priority: 0,
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::PriorityCancelled);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Filter Menu ===
+
+    #[test]
+    fn open_filter_menu_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(model, OverlayMsg::OpenFilterMenu);
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::FilterMenu { .. })
+        ));
+    }
+
+    #[test]
+    fn filter_navigate_and_activate_show_children() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenFilterMenu);
+        // Navigate to ShowChildren (index 3)
+        let (model, _) = handle_overlay(model, OverlayMsg::FilterMenuNavigate { delta: 1 });
+        let (model, _) = handle_overlay(model, OverlayMsg::FilterMenuNavigate { delta: 1 });
+        let (model, _) = handle_overlay(model, OverlayMsg::FilterMenuNavigate { delta: 1 });
+        assert!(!model.ticket_filters.show_children);
+        let (new_model, _) = handle_overlay(model, OverlayMsg::FilterMenuActivate);
+        assert!(new_model.ticket_filters.show_children);
+    }
+
+    #[test]
+    fn filter_esc_collapses_submenu_first() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenFilterMenu);
+        // Activate to expand Status submenu
+        let (model, _) = handle_overlay(model, OverlayMsg::FilterMenuActivate);
+        match &model.active_overlay {
+            Some(ActiveOverlay::FilterMenu { expanded, .. }) => {
+                assert!(expanded.is_some());
+            }
+            _ => panic!("expected FilterMenu"),
+        }
+        // Esc should collapse, not close
+        let (new_model, _) = handle_overlay(model, OverlayMsg::FilterMenuClosed);
+        assert!(new_model.active_overlay.is_some());
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::FilterMenu { expanded, .. }) => {
+                assert!(expanded.is_none());
+            }
+            _ => panic!("expected FilterMenu"),
+        }
+    }
+
+    #[test]
+    fn filter_esc_closes_when_not_expanded() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenFilterMenu);
+        let (new_model, _) = handle_overlay(model, OverlayMsg::FilterMenuClosed);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Goto Menu ===
+
+    #[test]
+    fn open_goto_menu_sets_state() {
+        let targets = vec![GotoTarget {
+            label: "Test".into(),
+            screen: "test".into(),
+            id: "id-1".into(),
+        }];
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(model, OverlayMsg::OpenGotoMenu { targets });
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::GotoMenu { .. })
+        ));
+    }
+
+    #[test]
+    fn goto_confirm_closes() {
+        let targets = vec![GotoTarget {
+            label: "Test".into(),
+            screen: "test".into(),
+            id: "id-1".into(),
+        }];
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenGotoMenu { targets });
+        let (new_model, _) = handle_overlay(model, OverlayMsg::GotoMenuConfirm);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn goto_quick_select_closes() {
+        let targets = vec![
+            GotoTarget {
+                label: "A".into(),
+                screen: "a".into(),
+                id: "1".into(),
+            },
+            GotoTarget {
+                label: "B".into(),
+                screen: "b".into(),
+                id: "2".into(),
+            },
+        ];
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenGotoMenu { targets });
+        let (new_model, _) = handle_overlay(model, OverlayMsg::GotoMenuQuickSelect { digit: 2 });
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn goto_cancelled_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenGotoMenu { targets: vec![] });
+        let (new_model, _) = handle_overlay(model, OverlayMsg::GotoCancelled);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Force Close Confirm ===
+
+    #[test]
+    fn open_force_close_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: "ur-abc".into(),
+                open_children: 3,
+            },
+        );
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::ForceCloseConfirm { .. })
+        ));
+    }
+
+    #[test]
+    fn force_close_confirm_yes_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: "ur-abc".into(),
+                open_children: 3,
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ForceCloseConfirmYes);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn force_close_cancelled_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: "ur-abc".into(),
+                open_children: 3,
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ForceCloseCancelled);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Create Action Menu ===
+
+    #[test]
+    fn open_create_action_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenCreateActionMenu {
+                pending: PendingTicket {
+                    project: "ur".into(),
+                    title: "Test".into(),
+                    priority: 2,
+                },
+            },
+        );
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::CreateActionMenu { .. })
+        ));
+    }
+
+    #[test]
+    fn create_action_navigate_wraps() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenCreateActionMenu {
+                pending: PendingTicket {
+                    project: "ur".into(),
+                    title: "Test".into(),
+                    priority: 2,
+                },
+            },
+        );
+        // Navigate up from 0 should wrap to last
+        let (new_model, _) = handle_overlay(model, OverlayMsg::CreateActionNavigate { delta: -1 });
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::CreateActionMenu { cursor, .. }) => {
+                assert_eq!(*cursor, action_count() - 1);
+            }
+            _ => panic!("expected CreateActionMenu"),
+        }
+    }
+
+    #[test]
+    fn create_action_quick_select_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenCreateActionMenu {
+                pending: PendingTicket {
+                    project: "ur".into(),
+                    title: "Test".into(),
+                    priority: 2,
+                },
+            },
+        );
+        let (new_model, _) =
+            handle_overlay(model, OverlayMsg::CreateActionQuickSelect { index: 0 });
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Project Input ===
+
+    #[test]
+    fn open_project_input_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(model, OverlayMsg::OpenProjectInput);
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::ProjectInput { .. })
+        ));
+    }
+
+    #[test]
+    fn project_input_char_appends() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenProjectInput);
+        let (model, _) = handle_overlay(model, OverlayMsg::ProjectInputChar('u'));
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ProjectInputChar('r'));
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::ProjectInput { buffer }) => assert_eq!(buffer, "ur"),
+            _ => panic!("expected ProjectInput"),
+        }
+    }
+
+    #[test]
+    fn project_input_backspace_deletes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenProjectInput);
+        let (model, _) = handle_overlay(model, OverlayMsg::ProjectInputChar('a'));
+        let (model, _) = handle_overlay(model, OverlayMsg::ProjectInputChar('b'));
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ProjectInputBackspace);
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::ProjectInput { buffer }) => assert_eq!(buffer, "a"),
+            _ => panic!("expected ProjectInput"),
+        }
+    }
+
+    #[test]
+    fn project_input_submit_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenProjectInput);
+        let (model, _) = handle_overlay(model, OverlayMsg::ProjectInputChar('u'));
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ProjectInputSubmitRequest);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn project_input_cancelled_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(model, OverlayMsg::OpenProjectInput);
+        let (new_model, _) = handle_overlay(model, OverlayMsg::ProjectInputCancelled);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    // === Settings Overlay ===
+
+    #[test]
+    fn open_settings_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenSettings {
+                custom_theme_names: vec![],
+            },
+        );
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::Settings { .. })
+        ));
+    }
+
+    #[test]
+    fn settings_esc_at_top_level_closes() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenSettings {
+                custom_theme_names: vec![],
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::SettingsEsc);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn settings_activate_enters_theme_picker() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenSettings {
+                custom_theme_names: vec![],
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::SettingsActivate);
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::Settings { level, .. }) => {
+                assert_eq!(*level, SettingsLevel::ThemePicker);
+            }
+            _ => panic!("expected Settings"),
+        }
+    }
+
+    #[test]
+    fn settings_esc_at_theme_picker_returns_to_top() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenSettings {
+                custom_theme_names: vec![],
+            },
+        );
+        let (model, _) = handle_overlay(model, OverlayMsg::SettingsActivate);
+        let (new_model, _) = handle_overlay(model, OverlayMsg::SettingsEsc);
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::Settings { level, .. }) => {
+                assert_eq!(*level, SettingsLevel::TopLevel);
+            }
+            _ => panic!("expected Settings"),
+        }
+    }
+
+    #[test]
+    fn settings_navigate_in_theme_picker() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenSettings {
+                custom_theme_names: vec![],
+            },
+        );
+        let (model, _) = handle_overlay(model, OverlayMsg::SettingsActivate);
+        // Navigate down
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::SettingsNavigate {
+                direction: SettingsDirection::Down,
+            },
+        );
+        match &model.active_overlay {
+            Some(ActiveOverlay::Settings { column_cursors, .. }) => {
+                assert_eq!(column_cursors[0], 1)
+            }
+            _ => panic!("expected Settings"),
+        }
+        // Navigate right
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::SettingsNavigate {
+                direction: SettingsDirection::Right,
+            },
+        );
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::Settings { active_column, .. }) => assert_eq!(*active_column, 1),
+            _ => panic!("expected Settings"),
+        }
+    }
+}
