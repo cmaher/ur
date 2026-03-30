@@ -1,5 +1,6 @@
 mod cmd;
 mod cmd_runner;
+pub mod input;
 mod model;
 mod msg;
 mod update;

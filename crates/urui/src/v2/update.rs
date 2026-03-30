@@ -1,5 +1,3 @@
-use crossterm::event::{KeyCode, KeyModifiers};
-
 use super::cmd::Cmd;
 use super::model::Model;
 use super::msg::Msg;
@@ -25,12 +23,15 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Handle a key press event. Ctrl+C triggers quit; other keys are no-ops for now.
+/// Handle a key press event by dispatching through the input stack.
+/// The input stack walks handlers top-to-bottom; the first capture wins.
+/// If a handler captures the key and produces a message, that message is
+/// fed back through update() recursively.
 fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return update(model, Msg::Quit);
+    match model.input_stack.dispatch(key) {
+        Some(msg) => update(model, msg),
+        None => (model, vec![]),
     }
-    (model, vec![])
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+use super::input::{GlobalHandler, InputStack};
+
 /// The top-level application model for the v2 TEA architecture.
 ///
 /// This struct holds all application state. It is owned by the main loop and
@@ -8,6 +10,9 @@ pub struct Model {
     pub should_quit: bool,
     /// Placeholder for future navigation state (active tab, page stack, etc.).
     pub navigation_model: NavigationModel,
+    /// The input focus stack. Handlers are walked top-to-bottom on each key
+    /// event; the first to capture wins. Also collects footer commands.
+    pub input_stack: InputStack,
 }
 
 /// Navigation state — tracks which page/tab is active.
@@ -23,9 +28,12 @@ pub struct NavigationModel {
 impl Model {
     /// Create the initial application model.
     pub fn initial() -> Self {
+        let mut input_stack = InputStack::default();
+        input_stack.push(Box::new(GlobalHandler));
         Self {
             should_quit: false,
             navigation_model: NavigationModel { _placeholder: () },
+            input_stack,
         }
     }
 }
