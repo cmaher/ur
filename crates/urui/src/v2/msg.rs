@@ -20,6 +20,18 @@ pub enum Msg {
     Data(Box<DataMsg>),
     /// Navigation messages for tab switching and page stack manipulation.
     Nav(NavMsg),
+    /// A batch of UI events received from the server's event stream.
+    /// Each item describes an entity that changed (ticket, workflow, worker).
+    UiEvent(Vec<UiEventItem>),
+}
+
+/// A single UI event received from the server's event stream.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct UiEventItem {
+    /// The entity type: "ticket", "workflow", or "worker".
+    pub entity_type: String,
+    /// The entity identifier (e.g. ticket ID or workflow ticket_id).
+    pub entity_id: String,
 }
 
 /// Navigation messages for controlling tabs and page stacks.
@@ -101,6 +113,25 @@ mod tests {
     #[test]
     fn msg_nav_variant() {
         let msg = Msg::Nav(NavMsg::Push(PageId::TicketList));
+        let _ = format!("{msg:?}");
+    }
+
+    #[test]
+    fn ui_event_item_is_debug_clone() {
+        let item = UiEventItem {
+            entity_type: "ticket".to_string(),
+            entity_id: "ur-abc".to_string(),
+        };
+        let _ = format!("{item:?}");
+        let _ = item.clone();
+    }
+
+    #[test]
+    fn msg_ui_event_variant() {
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "workflow".to_string(),
+            entity_id: "ur-xyz".to_string(),
+        }]);
         let _ = format!("{msg:?}");
     }
 }

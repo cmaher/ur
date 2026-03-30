@@ -14,6 +14,9 @@ pub enum Cmd {
     Quit,
     /// Fetch data from the server via gRPC.
     Fetch(FetchCmd),
+    /// Subscribe to the UI event stream from the server.
+    /// Spawns a long-lived background task that forwards server events as `Msg::UiEvent`.
+    SubscribeUiEvents,
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

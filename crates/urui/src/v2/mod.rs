@@ -100,6 +100,9 @@ async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyh
 
     let mut model = Model::initial();
 
+    // Subscribe to the server's UI event stream for live updates.
+    cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
+
     // Initial render
     terminal.draw(|frame| view(&model, frame))?;
 

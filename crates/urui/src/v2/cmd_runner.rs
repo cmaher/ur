@@ -1,8 +1,8 @@
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, info, trace, warn};
 
 use super::cmd::{Cmd, FetchCmd};
-use super::msg::{DataMsg, Msg};
+use super::msg::{DataMsg, Msg, UiEventItem};
 
 /// Executes `Cmd` values produced by the update function and sends result
 /// `Msg`s back through the event channel.
@@ -45,6 +45,7 @@ impl CmdRunner {
                 }
             }
             Cmd::Fetch(fetch) => self.execute_fetch(fetch),
+            Cmd::SubscribeUiEvents => self.subscribe_ui_events(),
         }
     }
 
@@ -53,6 +54,20 @@ impl CmdRunner {
         for cmd in cmds {
             self.execute(cmd);
         }
+    }
+
+    /// Spawn a long-lived background task that subscribes to the server's UI
+    /// event stream and forwards batches as `Msg::UiEvent`.
+    fn subscribe_ui_events(&self) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+
+        tokio::spawn(async move {
+            debug!(port, "v2: subscribing to UI event stream");
+            if let Err(e) = consume_ui_event_stream(port, &tx).await {
+                warn!(port, error = %e, "v2: UI event stream disconnected");
+            }
+        });
     }
 
     /// Spawn an async task to execute a data-fetching command via gRPC.
@@ -317,6 +332,52 @@ async fn fetch_activities(
             e.to_string()
         })?;
     Ok(resp.into_inner().activities)
+}
+
+/// Connect to the UI event stream and forward batches as `Msg::UiEvent`.
+///
+/// Reuses the same gRPC `SubscribeUiEvents` RPC as v1. Each batch of events
+/// is converted to `UiEventItem` values and sent through the message channel.
+async fn consume_ui_event_stream(port: u16, tx: &mpsc::UnboundedSender<Msg>) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::SubscribeUiEventsRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    let response = client
+        .subscribe_ui_events(SubscribeUiEventsRequest {})
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut stream = response.into_inner();
+    info!(port, "v2: UI event stream connected successfully");
+
+    while let Some(batch) = stream.message().await.map_err(|e| e.to_string())? {
+        let items: Vec<UiEventItem> = batch
+            .events
+            .into_iter()
+            .map(|ev| UiEventItem {
+                entity_type: ui_event_type_to_str(ev.entity_type()),
+                entity_id: ev.entity_id,
+            })
+            .collect();
+        trace!(batch_size = items.len(), "v2: received UI event batch");
+        if !items.is_empty() && tx.send(Msg::UiEvent(items)).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Convert a proto UiEventType enum value to a string label.
+fn ui_event_type_to_str(t: ur_rpc::proto::ticket::UiEventType) -> String {
+    use ur_rpc::proto::ticket::UiEventType;
+    match t {
+        UiEventType::Ticket => "ticket".to_owned(),
+        UiEventType::Workflow => "workflow".to_owned(),
+        UiEventType::Worker => "worker".to_owned(),
+        UiEventType::Unknown => "unknown".to_owned(),
+    }
 }
 
 #[cfg(test)]

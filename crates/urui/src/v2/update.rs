@@ -3,7 +3,8 @@ use super::model::{
     FlowListData, LoadState, Model, TicketActivitiesData, TicketDetailData, TicketDetailModel,
     TicketListData, WorkerListData,
 };
-use super::msg::{DataMsg, Msg, NavMsg};
+use super::msg::{DataMsg, Msg, NavMsg, UiEventItem};
+use super::navigation::TabId;
 
 /// Pure update function: given the current model and a message, produces a new
 /// model and a list of commands to execute.
@@ -18,9 +19,10 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
             (model, vec![Cmd::Quit])
         }
         Msg::KeyPressed(key) => handle_key(model, key),
-        Msg::Tick => (model, vec![]),
+        Msg::Tick => handle_tick(model),
         Msg::Data(data_msg) => handle_data(model, *data_msg),
         Msg::Nav(nav_msg) => handle_nav(model, nav_msg),
+        Msg::UiEvent(items) => handle_ui_event(model, items),
     }
 }
 
@@ -56,6 +58,105 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
     };
     model.navigation_model = nav;
     (model, cmds)
+}
+
+/// Handle a tick: check if the throttle cooldown has elapsed and flush dirty tabs.
+fn handle_tick(mut model: Model) -> (Model, Vec<Cmd>) {
+    if model.ui_event_throttle.should_flush() {
+        let cmds = flush_throttle(&mut model);
+        (model, cmds)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Handle a batch of UI events from the server's event stream.
+///
+/// Maps entity types to the tabs whose data needs refreshing and accumulates
+/// them in the throttle. If no cooldown is active, flushes immediately.
+fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd>) {
+    let dirty_tabs = items
+        .iter()
+        .flat_map(|item| match item.entity_type.as_str() {
+            "ticket" => [Some(TabId::Tickets), Some(TabId::Flows), None],
+            "workflow" => [Some(TabId::Flows), None, None],
+            "worker" => [Some(TabId::Workers), None, None],
+            _ => [None, None, None],
+        });
+    model.ui_event_throttle.mark_dirty(dirty_tabs.flatten());
+
+    let cmds = if model.ui_event_throttle.should_flush() {
+        flush_throttle(&mut model)
+    } else {
+        vec![]
+    };
+    (model, cmds)
+}
+
+/// Flush the throttle: issue re-fetch commands for all dirty tabs.
+///
+/// For the active tab, issues a direct fetch command. For non-active tabs,
+/// the data will be marked stale on the next tab switch (the LoadState is
+/// set back to NotLoaded so it re-fetches when viewed).
+fn flush_throttle(model: &mut Model) -> Vec<Cmd> {
+    let dirty = model.ui_event_throttle.flush();
+    if dirty.is_empty() {
+        return vec![];
+    }
+
+    let active_tab = model.navigation_model.active_tab;
+    let mut cmds = Vec::new();
+
+    for tab in &dirty {
+        if *tab == active_tab {
+            cmds.push(fetch_cmd_for_tab(*tab, model));
+        } else {
+            invalidate_tab(*tab, model);
+        }
+    }
+    cmds
+}
+
+/// Return the appropriate fetch `Cmd` for a given tab.
+fn fetch_cmd_for_tab(tab: TabId, model: &Model) -> Cmd {
+    match tab {
+        TabId::Tickets => {
+            let mut cmds = vec![Cmd::Fetch(FetchCmd::Tickets {
+                page_size: None,
+                offset: None,
+                include_children: None,
+                statuses: vec![],
+            })];
+            // If a ticket detail is open, also re-fetch it.
+            if let Some(ref detail) = model.ticket_detail {
+                cmds.push(Cmd::Fetch(FetchCmd::TicketDetail {
+                    ticket_id: detail.ticket_id.clone(),
+                    child_page_size: None,
+                    child_offset: None,
+                    child_status_filter: None,
+                }));
+                cmds.push(Cmd::Fetch(FetchCmd::Activities {
+                    ticket_id: detail.ticket_id.clone(),
+                    author_filter: None,
+                }));
+            }
+            Cmd::batch(cmds)
+        }
+        TabId::Flows => Cmd::Fetch(FetchCmd::Flows {
+            page_size: None,
+            offset: None,
+        }),
+        TabId::Workers => Cmd::Fetch(FetchCmd::Workers),
+    }
+}
+
+/// Set a non-active tab's data back to `NotLoaded` so it re-fetches when viewed.
+fn invalidate_tab(tab: TabId, model: &mut Model) {
+    match tab {
+        TabId::Tickets => model.ticket_list.data = LoadState::NotLoaded,
+        TabId::Flows => model.flow_list.data = LoadState::NotLoaded,
+        TabId::Workers => model.worker_list.data = LoadState::NotLoaded,
+    }
 }
 
 /// Handle a data message by updating the appropriate sub-model's `LoadState`.
@@ -214,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_is_noop() {
+    fn tick_is_noop_when_no_dirty_tabs() {
         let model = Model::initial();
         let (new_model, cmds) = update(model, Msg::Tick);
         assert!(!new_model.should_quit);
@@ -417,7 +518,7 @@ mod tests {
 
     #[test]
     fn nav_tab_next_cycles_tab() {
-        use crate::v2::navigation::{PageId, TabId};
+        use crate::v2::navigation::TabId;
         let model = Model::initial();
         assert_eq!(model.navigation_model.active_tab, TabId::Tickets);
         let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::TabNext));
@@ -477,5 +578,137 @@ mod tests {
         let (new_model, cmds) = update(model, Msg::Nav(NavMsg::Goto(PageId::TicketList)));
         assert_eq!(new_model.navigation_model.active_stack_depth(), 1);
         assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_ticket_triggers_fetch_for_active_tab() {
+        // Active tab is Tickets by default, so a ticket event should produce a fetch.
+        let model = Model::initial();
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "ticket".to_string(),
+            entity_id: "ur-abc".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+        // Throttle should have flushed (no prior cooldown).
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_worker_on_tickets_tab_invalidates_workers() {
+        // Active tab is Tickets. Worker event should invalidate workers tab (NotLoaded).
+        let mut model = Model::initial();
+        model.worker_list.data = LoadState::Loaded(WorkerListData { workers: vec![] });
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "worker".to_string(),
+            entity_id: "w-1".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+        // Workers tab is not active, so it should be invalidated (NotLoaded).
+        assert!(matches!(new_model.worker_list.data, LoadState::NotLoaded));
+        // No fetch commands for the inactive tab.
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_throttle_accumulates_during_cooldown() {
+        let model = Model::initial();
+        // First event: flushes immediately (no cooldown).
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "ticket".to_string(),
+            entity_id: "ur-1".to_string(),
+        }]);
+        let (model, _) = update(model, msg);
+
+        // Cooldown is now active. Second event should accumulate.
+        let msg2 = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "worker".to_string(),
+            entity_id: "w-2".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg2);
+        // Workers tab should be dirty but not flushed (in cooldown).
+        assert!(new_model.ui_event_throttle.dirty.contains(&TabId::Workers));
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn tick_flushes_throttle_after_cooldown() {
+        use std::time::{Duration, Instant};
+
+        let mut model = Model::initial();
+        // Simulate dirty tabs with an expired cooldown.
+        model.ui_event_throttle.mark_dirty([TabId::Tickets]);
+        model.ui_event_throttle.cooldown_start = Some(Instant::now() - Duration::from_millis(300));
+
+        let (new_model, cmds) = update(model, Msg::Tick);
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn tick_does_not_flush_during_cooldown() {
+        use std::time::Instant;
+
+        let mut model = Model::initial();
+        // Simulate dirty tabs with an active cooldown.
+        model.ui_event_throttle.mark_dirty([TabId::Tickets]);
+        model.ui_event_throttle.cooldown_start = Some(Instant::now());
+
+        let (new_model, cmds) = update(model, Msg::Tick);
+        assert!(!new_model.ui_event_throttle.dirty.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_workflow_marks_flows_dirty() {
+        let mut model = Model::initial();
+        // Switch to Workers tab so flows are not active.
+        model.navigation_model.active_tab = TabId::Workers;
+        model.flow_list.data = LoadState::Loaded(FlowListData {
+            workflows: vec![],
+            total_count: 0,
+        });
+
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "workflow".to_string(),
+            entity_id: "ur-flow".to_string(),
+        }]);
+        let (new_model, _) = update(model, msg);
+        // Flows tab should be invalidated (NotLoaded) since it was not active.
+        assert!(matches!(new_model.flow_list.data, LoadState::NotLoaded));
+    }
+
+    #[test]
+    fn ui_event_unknown_type_is_noop() {
+        let model = Model::initial();
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "unknown".to_string(),
+            entity_id: "x".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_empty_batch_is_noop() {
+        let model = Model::initial();
+        let msg = Msg::UiEvent(vec![]);
+        let (new_model, cmds) = update(model, msg);
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn fetch_cmd_for_tab_includes_detail_refetch() {
+        let mut model = Model::initial();
+        model.ticket_detail = Some(TicketDetailModel {
+            ticket_id: "ur-det".to_string(),
+            data: LoadState::Loading,
+            activities: LoadState::Loading,
+        });
+        let cmd = fetch_cmd_for_tab(TabId::Tickets, &model);
+        // Should be a Batch containing ticket list + detail + activities.
+        assert!(matches!(cmd, Cmd::Batch(_)));
     }
 }

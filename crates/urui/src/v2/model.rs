@@ -1,8 +1,14 @@
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
 use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
 use super::input::{GlobalHandler, InputStack};
-use super::navigation::NavigationModel;
+use super::navigation::{NavigationModel, TabId};
+
+/// Cooldown duration between batched UI event fetches.
+const THROTTLE_COOLDOWN: Duration = Duration::from_millis(200);
 
 /// Tracks the loading state of asynchronous data.
 ///
@@ -75,6 +81,55 @@ pub struct TicketActivitiesData {
     pub activities: Vec<ActivityEntry>,
 }
 
+/// Tracks which tabs have dirty data from UI events and manages a cooldown
+/// window so that rapid-fire events are batched into periodic fetches.
+#[derive(Debug, Clone)]
+pub struct UiEventThrottle {
+    /// Tabs whose data has changed since the last flush.
+    pub dirty: HashSet<TabId>,
+    /// When the current cooldown window started, if one is active.
+    pub cooldown_start: Option<Instant>,
+}
+
+impl UiEventThrottle {
+    /// Create a new throttle with no dirty tabs and no active cooldown.
+    pub fn new() -> Self {
+        Self {
+            dirty: HashSet::new(),
+            cooldown_start: None,
+        }
+    }
+
+    /// Mark the given tabs as dirty (their data has changed).
+    pub fn mark_dirty(&mut self, tabs: impl IntoIterator<Item = TabId>) {
+        self.dirty.extend(tabs);
+    }
+
+    /// Returns true if the cooldown has elapsed and there are dirty tabs
+    /// waiting to be flushed.
+    pub fn should_flush(&self) -> bool {
+        if self.dirty.is_empty() {
+            return false;
+        }
+        match self.cooldown_start {
+            None => true,
+            Some(start) => start.elapsed() >= THROTTLE_COOLDOWN,
+        }
+    }
+
+    /// Drain all dirty tabs and restart the cooldown timer.
+    ///
+    /// Returns the set of tabs that were dirty. The caller is responsible
+    /// for issuing re-fetch commands for those tabs.
+    pub fn flush(&mut self) -> HashSet<TabId> {
+        let tabs = std::mem::take(&mut self.dirty);
+        if !tabs.is_empty() {
+            self.cooldown_start = Some(Instant::now());
+        }
+        tabs
+    }
+}
+
 /// Sub-model for the ticket list page.
 #[derive(Debug, Clone)]
 pub struct TicketListModel {
@@ -122,6 +177,8 @@ pub struct Model {
     pub flow_list: FlowListModel,
     /// Sub-model for the workers page.
     pub worker_list: WorkerListModel,
+    /// Throttle for UI event-driven data refreshes.
+    pub ui_event_throttle: UiEventThrottle,
 }
 
 impl Model {
@@ -143,6 +200,7 @@ impl Model {
             worker_list: WorkerListModel {
                 data: LoadState::NotLoaded,
             },
+            ui_event_throttle: UiEventThrottle::new(),
         }
     }
 }
@@ -196,5 +254,85 @@ mod tests {
         assert!(matches!(model.flow_list.data, LoadState::NotLoaded));
         assert!(matches!(model.worker_list.data, LoadState::NotLoaded));
         assert!(model.ticket_detail.is_none());
+    }
+
+    #[test]
+    fn throttle_new_has_no_dirty_tabs() {
+        let throttle = UiEventThrottle::new();
+        assert!(throttle.dirty.is_empty());
+        assert!(throttle.cooldown_start.is_none());
+    }
+
+    #[test]
+    fn throttle_mark_dirty_adds_tabs() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets, TabId::Flows]);
+        assert!(throttle.dirty.contains(&TabId::Tickets));
+        assert!(throttle.dirty.contains(&TabId::Flows));
+    }
+
+    #[test]
+    fn throttle_should_flush_when_dirty_no_cooldown() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets]);
+        assert!(throttle.should_flush());
+    }
+
+    #[test]
+    fn throttle_should_not_flush_when_empty() {
+        let throttle = UiEventThrottle::new();
+        assert!(!throttle.should_flush());
+    }
+
+    #[test]
+    fn throttle_should_not_flush_during_cooldown() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets]);
+        throttle.cooldown_start = Some(Instant::now());
+        assert!(!throttle.should_flush());
+    }
+
+    #[test]
+    fn throttle_should_flush_after_cooldown_elapsed() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets]);
+        throttle.cooldown_start = Some(Instant::now() - Duration::from_millis(300));
+        assert!(throttle.should_flush());
+    }
+
+    #[test]
+    fn throttle_flush_returns_dirty_and_clears() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets, TabId::Workers]);
+        let flushed = throttle.flush();
+        assert!(flushed.contains(&TabId::Tickets));
+        assert!(flushed.contains(&TabId::Workers));
+        assert!(throttle.dirty.is_empty());
+        assert!(throttle.cooldown_start.is_some());
+    }
+
+    #[test]
+    fn throttle_flush_empty_does_not_start_cooldown() {
+        let mut throttle = UiEventThrottle::new();
+        let flushed = throttle.flush();
+        assert!(flushed.is_empty());
+        assert!(throttle.cooldown_start.is_none());
+    }
+
+    #[test]
+    fn throttle_accumulates_during_cooldown() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Tickets]);
+        let _ = throttle.flush();
+        throttle.mark_dirty([TabId::Flows]);
+        assert!(!throttle.should_flush());
+        assert!(throttle.dirty.contains(&TabId::Flows));
+    }
+
+    #[test]
+    fn initial_model_has_empty_throttle() {
+        let model = Model::initial();
+        assert!(model.ui_event_throttle.dirty.is_empty());
+        assert!(model.ui_event_throttle.cooldown_start.is_none());
     }
 }
