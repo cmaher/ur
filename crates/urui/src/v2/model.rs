@@ -4,8 +4,12 @@ use std::time::{Duration, Instant};
 use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
+use super::components::banner::BannerVariant;
 use super::input::{GlobalHandler, InputStack};
 use super::navigation::{NavigationModel, TabId};
+
+/// Duration after which success banners auto-dismiss.
+const BANNER_AUTO_DISMISS_SECS: u64 = 5;
 
 /// Cooldown duration between batched UI event fetches.
 const THROTTLE_COOLDOWN: Duration = Duration::from_millis(200);
@@ -130,6 +134,37 @@ impl UiEventThrottle {
     }
 }
 
+/// Active banner notification state.
+#[derive(Debug, Clone)]
+pub struct BannerModel {
+    /// The message text displayed in the banner.
+    pub message: String,
+    /// The visual variant (success/error) controlling colors.
+    pub variant: BannerVariant,
+    /// When the banner was created, used for auto-dismiss timing.
+    pub created_at: Instant,
+}
+
+impl BannerModel {
+    /// Returns true if this banner should be auto-dismissed based on elapsed time.
+    /// Success banners expire after `BANNER_AUTO_DISMISS_SECS`; error banners are sticky.
+    pub fn is_expired(&self) -> bool {
+        match self.variant {
+            BannerVariant::Success => {
+                self.created_at.elapsed().as_secs() >= BANNER_AUTO_DISMISS_SECS
+            }
+            BannerVariant::Error => false,
+        }
+    }
+}
+
+/// Active status message state.
+#[derive(Debug, Clone)]
+pub struct StatusModel {
+    /// The status text displayed in the header area.
+    pub text: String,
+}
+
 /// Sub-model for the ticket list page.
 #[derive(Debug, Clone)]
 pub struct TicketListModel {
@@ -179,6 +214,10 @@ pub struct Model {
     pub worker_list: WorkerListModel,
     /// Throttle for UI event-driven data refreshes.
     pub ui_event_throttle: UiEventThrottle,
+    /// Active banner notification, if any.
+    pub banner: Option<BannerModel>,
+    /// Active status message, if any.
+    pub status: Option<StatusModel>,
 }
 
 impl Model {
@@ -201,6 +240,8 @@ impl Model {
                 data: LoadState::NotLoaded,
             },
             ui_event_throttle: UiEventThrottle::new(),
+            banner: None,
+            status: None,
         }
     }
 }

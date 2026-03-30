@@ -1,6 +1,7 @@
 mod cmd;
 mod cmd_runner;
 mod component;
+pub mod components;
 pub mod input;
 mod model;
 mod msg;

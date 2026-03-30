@@ -1,7 +1,10 @@
+use std::time::Instant;
+
 use super::cmd::{Cmd, FetchCmd};
+use super::components::banner::BannerHandler;
 use super::model::{
-    FlowListData, LoadState, Model, TicketActivitiesData, TicketDetailData, TicketDetailModel,
-    TicketListData, WorkerListData,
+    BannerModel, FlowListData, LoadState, Model, StatusModel, TicketActivitiesData,
+    TicketDetailData, TicketDetailModel, TicketListData, WorkerListData,
 };
 use super::msg::{DataMsg, Msg, NavMsg, UiEventItem};
 use super::navigation::TabId;
@@ -23,6 +26,10 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
         Msg::Data(data_msg) => handle_data(model, *data_msg),
         Msg::Nav(nav_msg) => handle_nav(model, nav_msg),
         Msg::UiEvent(items) => handle_ui_event(model, items),
+        Msg::BannerShow { message, variant } => handle_banner_show(model, message, variant),
+        Msg::BannerDismiss => handle_banner_dismiss(model),
+        Msg::StatusShow(text) => handle_status_show(model, text),
+        Msg::StatusClear => handle_status_clear(model),
     }
 }
 
@@ -60,14 +67,21 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
     (model, cmds)
 }
 
-/// Handle a tick: check if the throttle cooldown has elapsed and flush dirty tabs.
+/// Handle a tick: auto-dismiss expired banners and flush dirty tabs.
 fn handle_tick(mut model: Model) -> (Model, Vec<Cmd>) {
-    if model.ui_event_throttle.should_flush() {
-        let cmds = flush_throttle(&mut model);
-        (model, cmds)
-    } else {
-        (model, vec![])
+    let mut cmds = Vec::new();
+
+    // Check for banner auto-dismiss (success banners expire after timeout).
+    if model.banner.as_ref().is_some_and(|b| b.is_expired()) {
+        model.banner = None;
+        model.input_stack.pop();
     }
+
+    if model.ui_event_throttle.should_flush() {
+        cmds = flush_throttle(&mut model);
+    }
+
+    (model, cmds)
 }
 
 /// Handle a batch of UI events from the server's event stream.
@@ -157,6 +171,46 @@ fn invalidate_tab(tab: TabId, model: &mut Model) {
         TabId::Flows => model.flow_list.data = LoadState::NotLoaded,
         TabId::Workers => model.worker_list.data = LoadState::NotLoaded,
     }
+}
+
+/// Show a banner: set the model's banner state and push a BannerHandler onto the input stack.
+fn handle_banner_show(
+    mut model: Model,
+    message: String,
+    variant: super::components::banner::BannerVariant,
+) -> (Model, Vec<Cmd>) {
+    // If there's already a banner, pop its handler first.
+    if model.banner.is_some() {
+        model.input_stack.pop();
+    }
+    model.banner = Some(BannerModel {
+        message,
+        variant,
+        created_at: Instant::now(),
+    });
+    model.input_stack.push(Box::new(BannerHandler));
+    (model, vec![])
+}
+
+/// Dismiss the active banner: clear the model state and pop the BannerHandler.
+fn handle_banner_dismiss(mut model: Model) -> (Model, Vec<Cmd>) {
+    if model.banner.is_some() {
+        model.banner = None;
+        model.input_stack.pop();
+    }
+    (model, vec![])
+}
+
+/// Show a status message in the header area.
+fn handle_status_show(mut model: Model, text: String) -> (Model, Vec<Cmd>) {
+    model.status = Some(StatusModel { text });
+    (model, vec![])
+}
+
+/// Clear the current status message.
+fn handle_status_clear(mut model: Model) -> (Model, Vec<Cmd>) {
+    model.status = None;
+    (model, vec![])
 }
 
 /// Handle a data message by updating the appropriate sub-model's `LoadState`.
@@ -710,5 +764,217 @@ mod tests {
         let cmd = fetch_cmd_for_tab(TabId::Tickets, &model);
         // Should be a Batch containing ticket list + detail + activities.
         assert!(matches!(cmd, Cmd::Batch(_)));
+    }
+
+    #[test]
+    fn banner_show_sets_banner_and_pushes_handler() {
+        use super::super::components::banner::BannerVariant;
+        let model = Model::initial();
+        let initial_stack_len = model.input_stack.len();
+        let (new_model, cmds) = update(
+            model,
+            Msg::BannerShow {
+                message: "Success!".into(),
+                variant: BannerVariant::Success,
+            },
+        );
+        assert!(new_model.banner.is_some());
+        let banner = new_model.banner.as_ref().unwrap();
+        assert_eq!(banner.message, "Success!");
+        assert_eq!(banner.variant, BannerVariant::Success);
+        assert_eq!(new_model.input_stack.len(), initial_stack_len + 1);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn banner_show_replaces_existing_banner() {
+        use super::super::components::banner::BannerVariant;
+        let model = Model::initial();
+        let initial_stack_len = model.input_stack.len();
+
+        // Show first banner
+        let (model, _) = update(
+            model,
+            Msg::BannerShow {
+                message: "First".into(),
+                variant: BannerVariant::Success,
+            },
+        );
+        assert_eq!(model.input_stack.len(), initial_stack_len + 1);
+
+        // Show second banner (should replace, not stack)
+        let (new_model, _) = update(
+            model,
+            Msg::BannerShow {
+                message: "Second".into(),
+                variant: BannerVariant::Error,
+            },
+        );
+        assert_eq!(new_model.banner.as_ref().unwrap().message, "Second");
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+        // Stack size should remain the same (popped old, pushed new)
+        assert_eq!(new_model.input_stack.len(), initial_stack_len + 1);
+    }
+
+    #[test]
+    fn banner_dismiss_clears_banner_and_pops_handler() {
+        use super::super::components::banner::BannerVariant;
+        let model = Model::initial();
+        let initial_stack_len = model.input_stack.len();
+
+        // Show a banner
+        let (model, _) = update(
+            model,
+            Msg::BannerShow {
+                message: "Test".into(),
+                variant: BannerVariant::Success,
+            },
+        );
+        assert!(model.banner.is_some());
+
+        // Dismiss it
+        let (new_model, cmds) = update(model, Msg::BannerDismiss);
+        assert!(new_model.banner.is_none());
+        assert_eq!(new_model.input_stack.len(), initial_stack_len);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn banner_dismiss_when_no_banner_is_noop() {
+        let model = Model::initial();
+        let initial_stack_len = model.input_stack.len();
+        let (new_model, cmds) = update(model, Msg::BannerDismiss);
+        assert!(new_model.banner.is_none());
+        assert_eq!(new_model.input_stack.len(), initial_stack_len);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn banner_auto_dismiss_on_tick_for_expired_success() {
+        use super::super::components::banner::BannerVariant;
+        let mut model = Model::initial();
+        // Set a success banner that was created 10 seconds ago (expired).
+        model.banner = Some(BannerModel {
+            message: "Old success".into(),
+            variant: BannerVariant::Success,
+            created_at: Instant::now() - std::time::Duration::from_secs(10),
+        });
+        model.input_stack.push(Box::new(BannerHandler));
+        let initial_stack_len = model.input_stack.len();
+
+        let (new_model, _) = update(model, Msg::Tick);
+        assert!(new_model.banner.is_none());
+        assert_eq!(new_model.input_stack.len(), initial_stack_len - 1);
+    }
+
+    #[test]
+    fn banner_no_auto_dismiss_for_error() {
+        use super::super::components::banner::BannerVariant;
+        let mut model = Model::initial();
+        // Set an error banner that was created 10 seconds ago.
+        model.banner = Some(BannerModel {
+            message: "Error!".into(),
+            variant: BannerVariant::Error,
+            created_at: Instant::now() - std::time::Duration::from_secs(10),
+        });
+        model.input_stack.push(Box::new(BannerHandler));
+
+        let (new_model, _) = update(model, Msg::Tick);
+        // Error banners are sticky — should not be dismissed.
+        assert!(new_model.banner.is_some());
+    }
+
+    #[test]
+    fn banner_no_auto_dismiss_for_fresh_success() {
+        use super::super::components::banner::BannerVariant;
+        let mut model = Model::initial();
+        // Set a success banner that was just created (not expired).
+        model.banner = Some(BannerModel {
+            message: "Fresh".into(),
+            variant: BannerVariant::Success,
+            created_at: Instant::now(),
+        });
+        model.input_stack.push(Box::new(BannerHandler));
+
+        let (new_model, _) = update(model, Msg::Tick);
+        // Not expired yet — should remain.
+        assert!(new_model.banner.is_some());
+    }
+
+    #[test]
+    fn status_show_sets_status() {
+        let model = Model::initial();
+        let (new_model, cmds) = update(model, Msg::StatusShow("Loading...".into()));
+        assert!(new_model.status.is_some());
+        assert_eq!(new_model.status.as_ref().unwrap().text, "Loading...");
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn status_show_replaces_existing() {
+        let model = Model::initial();
+        let (model, _) = update(model, Msg::StatusShow("First".into()));
+        let (new_model, _) = update(model, Msg::StatusShow("Second".into()));
+        assert_eq!(new_model.status.as_ref().unwrap().text, "Second");
+    }
+
+    #[test]
+    fn status_clear_removes_status() {
+        let model = Model::initial();
+        let (model, _) = update(model, Msg::StatusShow("Active".into()));
+        assert!(model.status.is_some());
+        let (new_model, cmds) = update(model, Msg::StatusClear);
+        assert!(new_model.status.is_none());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn status_clear_when_no_status_is_noop() {
+        let model = Model::initial();
+        let (new_model, cmds) = update(model, Msg::StatusClear);
+        assert!(new_model.status.is_none());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn enter_key_dismisses_banner_via_handler() {
+        use super::super::components::banner::BannerVariant;
+        let model = Model::initial();
+        // Show a banner (this pushes BannerHandler)
+        let (model, _) = update(
+            model,
+            Msg::BannerShow {
+                message: "Test".into(),
+                variant: BannerVariant::Error,
+            },
+        );
+        assert!(model.banner.is_some());
+
+        // Press Enter — BannerHandler should capture it and produce BannerDismiss
+        let key = make_key(KeyCode::Enter, KeyModifiers::NONE);
+        let (new_model, _) = update(model, Msg::KeyPressed(key));
+        assert!(new_model.banner.is_none());
+    }
+
+    #[test]
+    fn esc_key_dismisses_banner_via_handler() {
+        use super::super::components::banner::BannerVariant;
+        let model = Model::initial();
+        // Show a banner
+        let (model, _) = update(
+            model,
+            Msg::BannerShow {
+                message: "Test".into(),
+                variant: BannerVariant::Success,
+            },
+        );
+
+        // Press Esc — BannerHandler should capture it (not GlobalHandler's Esc→Pop)
+        let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
+        let (new_model, _) = update(model, Msg::KeyPressed(key));
+        assert!(new_model.banner.is_none());
     }
 }

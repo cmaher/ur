@@ -2,6 +2,7 @@ use crossterm::event::KeyEvent;
 use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
+use super::components::banner::BannerVariant;
 use super::navigation::{PageId, TabId};
 
 /// Messages that drive the TEA update loop.
@@ -23,6 +24,17 @@ pub enum Msg {
     /// A batch of UI events received from the server's event stream.
     /// Each item describes an entity that changed (ticket, workflow, worker).
     UiEvent(Vec<UiEventItem>),
+    /// Show a banner notification with the given message and variant.
+    BannerShow {
+        message: String,
+        variant: BannerVariant,
+    },
+    /// Dismiss the currently active banner.
+    BannerDismiss,
+    /// Show a status message in the header area.
+    StatusShow(String),
+    /// Clear the current status message.
+    StatusClear,
 }
 
 /// A single UI event received from the server's event stream.
