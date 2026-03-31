@@ -43,7 +43,7 @@ const TICK_INTERVAL: Duration = Duration::from_secs(5);
 /// the terminal on exit. All state lives in `Model`; all mutations flow through
 /// the pure `update` function; side effects are expressed as `Cmd` values
 /// executed by the `CmdRunner`.
-pub async fn run_v2() -> anyhow::Result<()> {
+pub async fn run_v2(project: Option<String>) -> anyhow::Result<()> {
     let mut terminal = setup_terminal()?;
 
     // Ensure terminal is restored even if the app panics.
@@ -53,7 +53,7 @@ pub async fn run_v2() -> anyhow::Result<()> {
         default_hook(info);
     }));
 
-    let result = tea_loop(&mut terminal).await;
+    let result = tea_loop(&mut terminal, project).await;
 
     restore_terminal();
 
@@ -93,10 +93,13 @@ fn build_tui_context(config: &ur_config::Config, project_filter: &Option<String>
 }
 
 /// The core TEA loop: read events, update model, execute commands, render view.
-async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+async fn tea_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    project: Option<String>,
+) -> anyhow::Result<()> {
     let config = ur_config::Config::load()?;
     let port = config.server_port;
-    let project_filter = ur_config::resolve_project(None, &config.projects);
+    let project_filter = ur_config::resolve_project(project, &config.projects);
     let ctx = build_tui_context(&config, &project_filter);
 
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Msg>();

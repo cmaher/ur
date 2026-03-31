@@ -38,17 +38,17 @@ struct Cli {
     #[arg(short = 'p', long = "project")]
     project: Option<String>,
 
-    /// Use the v2 TEA-based UI instead of the default v1 UI.
-    #[arg(long = "v2")]
-    v2: bool,
+    /// Use the legacy v1 UI instead of the default v2 TEA-based UI.
+    #[arg(long = "v1")]
+    v1: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    if cli.v2 {
-        return v2::run_v2().await;
+    if !cli.v1 {
+        return v2::run_v2(cli.project).await;
     }
 
     let config = ur_config::Config::load()?;
