@@ -95,8 +95,8 @@ Tone: terse, technical. No performative agreement ("Great point!", "You're absol
 
 ## 6. Done
 
-**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
-If you cannot complete the task, run `workertools agent request-human "<reason>"` and stop.
+If you cannot complete the task, run `workertools status request-human "<reason>"` and stop.
 
 $ARGUMENTS

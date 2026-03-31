@@ -181,7 +181,7 @@ Served by the `workerd` daemon inside each worker container on port 9120.
   3. Buffer empty + !step_complete + lifecycle_step set → nudge agent
   4. No active dispatch → forward idle to server (`UpdateAgentStatus`)
 
-**`StepComplete()`** -- Called by `workertools step-complete` when agent finishes work.
+**`StepComplete()`** -- Called by `workertools status step-complete` when agent finishes work.
 - Sets `step_complete = true` on the `DispatchBuffer`
 - Next idle signal will trigger case 2 above
 

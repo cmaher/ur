@@ -7,7 +7,7 @@ description: Use when implementing a ticket — works directly for a single tick
 
 Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
 
-**If the ticket description and codebase do not provide enough context to implement confidently, run `workertools agent request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
+**If the ticket description and codebase do not provide enough context to implement confidently, run `workertools status request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
 
 ## Detect Mode — Single Ticket vs Epic
 
@@ -52,11 +52,11 @@ Do NOT run any verification commands unless specified in this section.
 
 @/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
 
-If you cannot complete the work, run `workertools agent request-human "<reason>"` and stop.
+If you cannot complete the work, run `workertools status request-human "<reason>"` and stop.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 No subagents needed. Just do the work.
 
@@ -143,11 +143,11 @@ After all dispatchable tickets are done and verification passes:
    ur ticket set-meta <epic-id> pr_summary "Summary of all changes across subagents" --output json
    ```
 
-If you cannot complete all work, run `workertools agent request-human "<reason>"` and stop.
+If you cannot complete all work, run `workertools status request-human "<reason>"` and stop.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
-**REQUIRED: Signal completion by running `workertools step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
+**REQUIRED: Signal completion by running `workertools status step-complete` in bash when all work is done.** The system will not advance until this signal is sent.
 
 ### Common Mistakes
 

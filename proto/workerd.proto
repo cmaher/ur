@@ -8,6 +8,7 @@ service WorkerDaemonService {
   rpc Design(DesignRequest) returns (DesignResponse);
   rpc AddressFeedbackTickets(AddressFeedbackRequest) returns (AddressFeedbackResponse);
   rpc StepComplete(StepCompleteRequest) returns (StepCompleteResponse);
+  rpc PauseNudge(PauseNudgeRequest) returns (PauseNudgeResponse);
 }
 
 message SendMessageRequest {
@@ -51,3 +52,7 @@ message AddressFeedbackResponse {}
 message StepCompleteRequest {}
 
 message StepCompleteResponse {}
+
+message PauseNudgeRequest {}
+
+message PauseNudgeResponse {}

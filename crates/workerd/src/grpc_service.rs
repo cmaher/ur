@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 
@@ -10,8 +12,9 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
     AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
-    ImplementRequest, ImplementResponse, NotifyIdleRequest, NotifyIdleResponse, SendMessageRequest,
-    SendMessageResponse, StepCompleteRequest, StepCompleteResponse,
+    ImplementRequest, ImplementResponse, NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest,
+    PauseNudgeResponse, SendMessageRequest, SendMessageResponse, StepCompleteRequest,
+    StepCompleteResponse,
 };
 
 /// Buffer for dispatched commands that workerd drains on idle signals.
@@ -27,6 +30,9 @@ pub struct DispatchBuffer {
     /// The current lifecycle step name (e.g. "implementing", "addressing_feedback").
     /// Empty string means no active dispatch.
     pub lifecycle_step: String,
+    /// When set, nudges are suppressed until this instant.
+    /// `pause_nudge` sets this to 5 minutes from now; `step_complete` clears it.
+    pub nudge_suppressed_until: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -197,6 +203,15 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // Design nodes are excluded: the design skill manages its own step-complete
         // signaling, and nudging mid-design just confuses the agent.
         if !buf.lifecycle_step.is_empty() && buf.lifecycle_step != "designing" {
+            // If nudge is suppressed, silently return without nudging or forwarding idle.
+            if let Some(suppressed_until) = buf.nudge_suppressed_until
+                && Instant::now() < suppressed_until
+            {
+                info!("Nudge suppressed, skipping");
+                drop(buf);
+                return Ok(Response::new(NotifyIdleResponse {}));
+            }
+
             let step = buf.lifecycle_step.clone();
             info!(
                 lifecycle_step = step.as_str(),
@@ -205,7 +220,10 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             drop(buf);
 
             let nudge_message = format!(
-                "You have finished the '{step}' step commands. Please run `workertools step-complete` to signal completion, or `/request-human` if you need help."
+                "Your '{step}' step is still in progress. Next steps:\n\
+                 - Run `workertools status step-complete` to signal completion\n\
+                 - Run `workertools status pause-nudge` if you are waiting on a background job or agent\n\
+                 - Run `workertools status request-human \"<reason>\"` if you need help"
             );
             let session = tmux::Session::agent();
             if let Err(e) = session.send_keys(&nudge_message).await {
@@ -229,7 +247,18 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         info!("StepComplete received, marking step as complete");
         let mut buf = self.dispatch_buffer.lock().await;
         buf.step_complete = true;
+        buf.nudge_suppressed_until = None;
         Ok(Response::new(StepCompleteResponse {}))
+    }
+
+    async fn pause_nudge(
+        &self,
+        _request: Request<PauseNudgeRequest>,
+    ) -> Result<Response<PauseNudgeResponse>, Status> {
+        info!("PauseNudge received, suppressing nudges for 5 minutes");
+        let mut buf = self.dispatch_buffer.lock().await;
+        buf.nudge_suppressed_until = Some(Instant::now() + Duration::from_secs(300));
+        Ok(Response::new(PauseNudgeResponse {}))
     }
 
     async fn implement(

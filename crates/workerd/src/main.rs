@@ -160,6 +160,7 @@ async fn run_daemon_only() -> Result<()> {
                 commands: std::collections::VecDeque::new(),
                 step_complete: false,
                 lifecycle_step: String::new(),
+                nudge_suppressed_until: None,
             },
         )),
     };
