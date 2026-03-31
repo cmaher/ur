@@ -16,6 +16,7 @@ mod screen;
 mod terminal;
 mod theme;
 mod throttle;
+mod v2;
 mod widgets;
 
 use clap::Parser;
@@ -36,11 +37,20 @@ struct Cli {
     /// the project from the current directory name.
     #[arg(short = 'p', long = "project")]
     project: Option<String>,
+
+    /// Use the legacy v1 UI instead of the default v2 TEA-based UI.
+    #[arg(long = "v1")]
+    v1: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if !cli.v1 {
+        return v2::run_v2(cli.project).await;
+    }
+
     let config = ur_config::Config::load()?;
     let _guard = logging::init(&config.logs_dir);
 
