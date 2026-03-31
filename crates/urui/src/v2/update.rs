@@ -61,10 +61,12 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
 /// never torn down during tab switches.
 fn dispatch_root_page_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
     use super::input::InputResult;
+    use super::pages::tickets_list::TicketListHandler;
     use super::pages::workers_list::WorkerListHandler;
 
     let handler: Option<&dyn super::input::InputHandler> =
         match model.navigation_model.current_page() {
+            super::navigation::PageId::TicketList => Some(&TicketListHandler),
             super::navigation::PageId::WorkerList => Some(&WorkerListHandler),
             _ => None,
         };
@@ -99,6 +101,24 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
         NavMsg::BodyScrollDown | NavMsg::BodyScrollUp | NavMsg::BodyPageDown | NavMsg::BodyPageUp
     ) {
         return handle_body_nav(model, nav_msg);
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::TicketTableNavigate { .. }
+            | NavMsg::TicketTablePageRight
+            | NavMsg::TicketTablePageLeft
+            | NavMsg::TicketTableSelect
+            | NavMsg::TicketListRefresh
+            | NavMsg::TicketListPriority
+            | NavMsg::TicketListClose
+            | NavMsg::TicketListOpen
+            | NavMsg::TicketListDispatch
+            | NavMsg::TicketListDesign
+            | NavMsg::TicketListRedrive
+            | NavMsg::TicketListGoto
+    ) {
+        return super::pages::tickets_list::handle_ticket_table_nav(model, nav_msg);
     }
 
     if matches!(
@@ -327,12 +347,9 @@ fn flush_throttle(model: &mut Model) -> Vec<Cmd> {
 fn fetch_cmd_for_tab(tab: TabId, model: &Model) -> Cmd {
     match tab {
         TabId::Tickets => {
-            let mut cmds = vec![Cmd::Fetch(FetchCmd::Tickets {
-                page_size: None,
-                offset: None,
-                include_children: None,
-                statuses: vec![],
-            })];
+            let mut cmds = vec![super::pages::tickets_list::build_ticket_list_fetch_cmd(
+                model,
+            )];
             // If a ticket detail is open, also re-fetch it.
             if let Some(ref detail) = model.ticket_detail {
                 cmds.push(Cmd::Fetch(FetchCmd::TicketDetail {
@@ -563,10 +580,14 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
     match data_msg {
         DataMsg::TicketsLoaded(result) => {
             model.ticket_list.data = match result {
-                Ok((tickets, total_count)) => LoadState::Loaded(TicketListData {
-                    tickets,
-                    total_count,
-                }),
+                Ok((tickets, total_count)) => {
+                    let data = TicketListData {
+                        tickets,
+                        total_count,
+                    };
+                    super::pages::tickets_list::apply_tickets_data(&mut model, data.clone());
+                    LoadState::Loaded(data)
+                }
                 Err(e) => LoadState::Error(e),
             };
         }
@@ -655,12 +676,7 @@ pub fn refresh_all_cmd() -> Cmd {
 /// for the ticket list page.
 pub fn start_ticket_list_fetch(model: &mut Model) -> Cmd {
     model.ticket_list.data = LoadState::Loading;
-    Cmd::Fetch(FetchCmd::Tickets {
-        page_size: None,
-        offset: None,
-        include_children: None,
-        statuses: vec![],
-    })
+    super::pages::tickets_list::build_ticket_list_fetch_cmd(model)
 }
 
 /// Set a sub-model to `Loading` and return the corresponding fetch command

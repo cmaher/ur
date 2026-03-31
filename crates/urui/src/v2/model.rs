@@ -333,6 +333,8 @@ impl TicketTableModel {
 #[derive(Debug, Clone)]
 pub struct TicketListModel {
     pub data: LoadState<TicketListData>,
+    /// Shared ticket table state (selection, pagination, page data).
+    pub table: TicketTableModel,
 }
 
 /// Sub-model for the ticket detail page.
@@ -494,6 +496,7 @@ impl Model {
             input_stack,
             ticket_list: TicketListModel {
                 data: LoadState::NotLoaded,
+                table: TicketTableModel::empty(),
             },
             ticket_detail: None,
             flow_list: FlowListModel {

@@ -217,6 +217,22 @@ pub enum NavMsg {
     TicketTablePageLeft,
     /// Select the currently highlighted ticket in the table.
     TicketTableSelect,
+    /// Refresh the ticket list data.
+    TicketListRefresh,
+    /// Open the priority picker for the selected ticket in the list.
+    TicketListPriority,
+    /// Close the selected ticket in the list.
+    TicketListClose,
+    /// Re-open the selected ticket in the list.
+    TicketListOpen,
+    /// Dispatch the selected ticket in the list.
+    TicketListDispatch,
+    /// Launch a design worker for the selected ticket.
+    TicketListDesign,
+    /// Redrive the selected ticket's workflow.
+    TicketListRedrive,
+    /// Open the goto menu for the selected ticket.
+    TicketListGoto,
 
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).

@@ -20,6 +20,7 @@ use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::ticket_activities::render_ticket_activities;
 use super::pages::ticket_body::render_ticket_body;
+use super::pages::tickets_list::render_tickets_list;
 use super::pages::workers_list::render_workers_list;
 
 /// Root view function: renders the current model to the terminal frame.
@@ -78,9 +79,11 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
 /// tab switches), so their footer commands are collected separately.
 fn root_page_footer_commands(model: &Model) -> Vec<super::input::FooterCommand> {
     use super::input::InputHandler;
+    use super::pages::tickets_list::TicketListHandler;
     use super::pages::workers_list::WorkerListHandler;
 
     match model.navigation_model.current_page() {
+        PageId::TicketList => TicketListHandler.footer_commands(),
         PageId::WorkerList => WorkerListHandler.footer_commands(),
         _ => vec![],
     }
@@ -97,6 +100,9 @@ fn render_page_content(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &M
         }
         PageId::WorkerList => {
             render_workers_list(area, buf, ctx, model);
+        }
+        PageId::TicketList => {
+            render_tickets_list(area, buf, ctx, model);
         }
         // Other pages not yet implemented in v2 — content area stays blank.
         _ => {}
@@ -190,13 +196,14 @@ mod tests {
     fn view_renders_footer_with_global_commands() {
         let model = Model::initial();
         let ctx = make_ctx();
-        let backend = TestBackend::new(80, 24);
+        // Use a wide terminal so all footer commands fit (ticket list adds many).
+        let backend = TestBackend::new(200, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| view(&model, frame, &ctx)).unwrap();
 
         let buf = terminal.backend().buffer();
         // Footer is the last row (row 23)
-        let last_row: String = (0..80)
+        let last_row: String = (0..200)
             .map(|x| {
                 buf.cell((x, 23))
                     .unwrap()
