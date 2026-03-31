@@ -334,11 +334,7 @@ fn run_editor_flow(
 /// Re-initialize the terminal after returning from an external editor.
 fn reinit_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )?;
+    crossterm::execute!(io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
     terminal.clear()?;
     Ok(())
 }
