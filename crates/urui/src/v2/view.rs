@@ -20,6 +20,7 @@ use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::ticket_activities::render_ticket_activities;
 use super::pages::ticket_body::render_ticket_body;
+use super::pages::workers_list::render_workers_list;
 
 /// Root view function: renders the current model to the terminal frame.
 ///
@@ -65,9 +66,24 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
     // Active overlay (rendered on top of content area)
     render_active_overlay(area, frame.buffer_mut(), ctx, model);
 
-    // Footer: commands collected from the input stack
-    let commands = model.input_stack.footer_commands();
+    // Footer: commands collected from the input stack + root page commands
+    let mut commands = model.input_stack.footer_commands();
+    commands.extend(root_page_footer_commands(model));
     render_footer(chunks[3], frame.buffer_mut(), ctx, &commands);
+}
+
+/// Collect footer commands from the current root page handler.
+///
+/// Root pages don't push handlers onto the input stack (they persist across
+/// tab switches), so their footer commands are collected separately.
+fn root_page_footer_commands(model: &Model) -> Vec<super::input::FooterCommand> {
+    use super::input::InputHandler;
+    use super::pages::workers_list::WorkerListHandler;
+
+    match model.navigation_model.current_page() {
+        PageId::WorkerList => WorkerListHandler.footer_commands(),
+        _ => vec![],
+    }
 }
 
 /// Render the content area based on the current page.
@@ -78,6 +94,9 @@ fn render_page_content(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &M
         }
         PageId::TicketBody { .. } => {
             render_ticket_body(area, buf, ctx, model);
+        }
+        PageId::WorkerList => {
+            render_workers_list(area, buf, ctx, model);
         }
         // Other pages not yet implemented in v2 — content area stays blank.
         _ => {}

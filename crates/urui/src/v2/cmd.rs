@@ -17,6 +17,8 @@ pub enum Cmd {
     /// Subscribe to the UI event stream from the server.
     /// Spawns a long-lived background task that forwards server events as `Msg::UiEvent`.
     SubscribeUiEvents,
+    /// Stop (kill) a worker by its ID.
+    StopWorker { worker_id: String },
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

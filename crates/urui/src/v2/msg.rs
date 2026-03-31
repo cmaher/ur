@@ -208,6 +208,20 @@ pub enum NavMsg {
     /// Refresh the activities page data.
     ActivitiesRefresh,
 
+    // ── Workers list page messages ────────────────────────────────────
+    /// Navigate within the workers table by delta (+1 down, -1 up).
+    WorkersNavigate { delta: i32 },
+    /// Page right in the workers table.
+    WorkersPageRight,
+    /// Page left in the workers table.
+    WorkersPageLeft,
+    /// Refresh the workers list data.
+    WorkersRefresh,
+    /// Kill (stop) the currently selected worker.
+    WorkersKill,
+    /// Open the goto menu for the currently selected worker.
+    WorkersGoto,
+
     // ── Ticket body page messages ────────────────────────────────────
     /// Scroll the body page down by one line.
     BodyScrollDown,
@@ -237,6 +251,11 @@ pub enum DataMsg {
     ActivitiesLoaded {
         ticket_id: String,
         result: Result<Vec<ActivityEntry>, String>,
+    },
+    /// A worker stop (kill) operation completed.
+    WorkerStopped {
+        worker_id: String,
+        result: Result<(), String>,
     },
 }
 

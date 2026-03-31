@@ -46,6 +46,7 @@ impl CmdRunner {
             }
             Cmd::Fetch(fetch) => self.execute_fetch(fetch),
             Cmd::SubscribeUiEvents => self.subscribe_ui_events(),
+            Cmd::StopWorker { worker_id } => self.execute_stop_worker(worker_id),
         }
     }
 
@@ -67,6 +68,21 @@ impl CmdRunner {
             if let Err(e) = consume_ui_event_stream(port, &tx).await {
                 warn!(port, error = %e, "v2: UI event stream disconnected");
             }
+        });
+    }
+
+    /// Spawn an async task to stop a worker via the `WorkerStop` gRPC call.
+    fn execute_stop_worker(&self, worker_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+
+        tokio::spawn(async move {
+            debug!(port, %worker_id, "v2: stopping worker");
+            let result = stop_worker(port, &worker_id).await;
+            let _ = tx.send(Msg::Data(Box::new(DataMsg::WorkerStopped {
+                worker_id,
+                result,
+            })));
         });
     }
 
@@ -305,6 +321,27 @@ async fn fetch_workers(
         workers.retain(|w| w.project_key == *proj);
     }
     Ok(workers)
+}
+
+/// Stop a worker via `WorkerStop` gRPC.
+async fn stop_worker(port: u16, worker_id: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::core::WorkerStopRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+
+    debug!(port, %worker_id, "v2: stopping worker via RPC");
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = CoreServiceClient::new(channel);
+    client
+        .worker_stop(WorkerStopRequest {
+            worker_id: worker_id.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %worker_id, error = %e, "v2: worker stop failed");
+            e.to_string()
+        })?;
+    Ok(())
 }
 
 /// Fetch activities for a specific ticket via `GetTicket` with optional

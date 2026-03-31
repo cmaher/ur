@@ -36,11 +36,35 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
 
 /// Handle a key press event by dispatching through the input stack.
 /// The input stack walks handlers top-to-bottom; the first capture wins.
+/// If no handler captures the key, root page handlers get a chance.
 /// If a handler captures the key and produces a message, that message is
 /// fed back through update() recursively.
 fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
     match model.input_stack.dispatch(key) {
         Some(msg) => update(model, msg),
+        None => dispatch_root_page_key(model, key),
+    }
+}
+
+/// Dispatch a key event to the current root page's handler when the input
+/// stack doesn't capture it. Root pages (TicketList, FlowList, WorkerList)
+/// don't push handlers onto the stack because they're always present and
+/// never torn down during tab switches.
+fn dispatch_root_page_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
+    use super::input::InputResult;
+    use super::pages::workers_list::WorkerListHandler;
+
+    let handler: Option<&dyn super::input::InputHandler> =
+        match model.navigation_model.current_page() {
+            super::navigation::PageId::WorkerList => Some(&WorkerListHandler),
+            _ => None,
+        };
+
+    match handler {
+        Some(h) => match h.handle_key(key) {
+            InputResult::Capture(msg) => update(model, msg),
+            InputResult::Bubble => (model, vec![]),
+        },
         None => (model, vec![]),
     }
 }
@@ -66,6 +90,18 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
         NavMsg::BodyScrollDown | NavMsg::BodyScrollUp | NavMsg::BodyPageDown | NavMsg::BodyPageUp
     ) {
         return handle_body_nav(model, nav_msg);
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::WorkersNavigate { .. }
+            | NavMsg::WorkersPageRight
+            | NavMsg::WorkersPageLeft
+            | NavMsg::WorkersRefresh
+            | NavMsg::WorkersKill
+            | NavMsg::WorkersGoto
+    ) {
+        return super::pages::workers_list::handle_workers_nav(model, nav_msg);
     }
 
     let mut nav = std::mem::replace(
@@ -398,6 +434,10 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
                 Ok(workers) => LoadState::Loaded(WorkerListData { workers }),
                 Err(e) => LoadState::Error(e),
             };
+            super::pages::workers_list::clamp_selection(&mut model);
+        }
+        DataMsg::WorkerStopped { worker_id, result } => {
+            return super::pages::workers_list::handle_worker_stopped(model, worker_id, result);
         }
         DataMsg::ActivitiesLoaded { ticket_id, result } => {
             if let Some(ref mut detail_model) = model.ticket_detail

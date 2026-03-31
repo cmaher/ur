@@ -232,10 +232,17 @@ pub struct FlowListModel {
     pub data: LoadState<FlowListData>,
 }
 
+/// Number of workers displayed per page.
+pub const WORKER_PAGE_SIZE: usize = 20;
+
 /// Sub-model for the workers page.
 #[derive(Debug, Clone)]
 pub struct WorkerListModel {
     pub data: LoadState<WorkerListData>,
+    /// Selected row index within the current page.
+    pub selected_row: usize,
+    /// Current page (zero-indexed).
+    pub current_page: usize,
 }
 
 /// Which overlay is currently active, if any.
@@ -375,6 +382,8 @@ impl Model {
             },
             worker_list: WorkerListModel {
                 data: LoadState::NotLoaded,
+                selected_row: 0,
+                current_page: 0,
             },
             ui_event_throttle: UiEventThrottle::new(),
             banner: None,
