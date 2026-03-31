@@ -512,7 +512,7 @@ impl InputHandler for FlowListHandler {
         vec![
             FooterCommand {
                 key_label: "V".to_string(),
-                description: "Redrive".to_string(),
+                description: "Move to Verify".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -575,6 +575,9 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
     match key.code {
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowsRedrive)),
+        KeyCode::Char('S') => Some(Msg::Overlay(OverlayMsg::OpenSettings {
+            custom_theme_names: vec![],
+        })),
         _ => None,
     }
 }
@@ -887,7 +890,7 @@ mod tests {
         let cmds = handler.footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
-        assert!(cmds.iter().any(|c| c.description == "Redrive"));
+        assert!(cmds.iter().any(|c| c.description == "Move to Verify"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));
         assert!(cmds.iter().any(|c| c.description == "Refresh"));
     }

@@ -27,6 +27,16 @@ pub enum Cmd {
     WorkerOp(super::msg::WorkerOpMsg),
     /// Fire a macOS desktop notification via terminal-notifier.
     FireDesktopNotification(super::notifications::DesktopNotification),
+    /// Persist the selected theme name to ur.toml (async I/O).
+    /// The CmdRunner uses its own project_filter to determine whether to
+    /// save per-project or globally.
+    PersistTheme { theme_name: String },
+    /// Break out of the TEA loop and spawn $EDITOR for ticket creation.
+    /// After the editor exits, the TEA loop re-enters with the parsed result.
+    SpawnEditor {
+        parent_id: Option<String>,
+        project: Option<String>,
+    },
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

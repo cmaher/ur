@@ -199,6 +199,7 @@ pub struct PendingTicket {
     pub project: String,
     pub title: String,
     pub priority: i64,
+    pub body: String,
     /// Optional parent ticket ID for child ticket creation.
     pub parent_id: Option<String>,
 }
@@ -247,8 +248,6 @@ pub enum NavMsg {
     TicketListDispatch,
     /// Launch a design worker for the selected ticket.
     TicketListDesign,
-    /// Redrive the selected ticket's workflow.
-    TicketListRedrive,
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
@@ -425,6 +424,8 @@ pub enum TicketOpMsg {
     },
     /// Redrive a ticket's workflow to verifying status.
     Redrive { ticket_id: String },
+    /// Open (reopen) a ticket by setting its status to "open".
+    Open { ticket_id: String },
 }
 
 /// Ticket operation result messages. Each variant carries the outcome of a
@@ -445,6 +446,8 @@ pub enum TicketOpResultMsg {
     DesignLaunched { result: Result<String, String> },
     /// Redrive completed.
     Redriven { result: Result<String, String> },
+    /// Open/reopen completed.
+    Opened { result: Result<String, String> },
 }
 
 /// Flow operation request messages. Each variant carries the parameters needed

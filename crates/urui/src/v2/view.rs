@@ -217,13 +217,13 @@ mod tests {
         let model = Model::initial();
         let ctx = make_ctx();
         // Use a wide terminal so all footer commands fit (ticket list adds many).
-        let backend = TestBackend::new(200, 24);
+        let backend = TestBackend::new(250, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| view(&model, frame, &ctx)).unwrap();
 
         let buf = terminal.backend().buffer();
         // Footer is the last row (row 23)
-        let last_row: String = (0..200)
+        let last_row: String = (0..250)
             .map(|x| {
                 buf.cell((x, 23))
                     .unwrap()
@@ -233,10 +233,10 @@ mod tests {
                     .unwrap_or(' ')
             })
             .collect();
-        // GlobalHandler provides Ctrl+C, Tab, Esc
+        // GlobalHandler provides Q Quit, Tab, Esc
         assert!(
-            last_row.contains("Ctrl+C"),
-            "footer should show Ctrl+C command"
+            last_row.contains("Quit"),
+            "footer should show Quit command, got: {last_row}"
         );
     }
 }

@@ -21,7 +21,8 @@ use super::components::settings_overlay::{
 };
 use super::components::title_input::TitleInputHandler;
 use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
-use super::msg::OverlayMsg;
+use super::msg::{GotoTarget, Msg, NavMsg, OverlayMsg};
+use super::navigation::{PageId, TabId};
 
 /// Handle an overlay message, returning updated model and commands.
 pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
@@ -252,14 +253,47 @@ fn handle_goto_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
-        OverlayMsg::GotoSelected(_) => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
-        }
+        OverlayMsg::GotoSelected(target) => handle_goto_selected(model, target),
         OverlayMsg::GotoCancelled => {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
+
+/// Handle a selected goto target by navigating to the appropriate page/tab.
+fn handle_goto_selected(mut model: Model, target: GotoTarget) -> (Model, Vec<Cmd>) {
+    match target.screen.as_str() {
+        "ticket" => {
+            let page = PageId::TicketDetail {
+                ticket_id: target.id,
+            };
+            let mut nav = std::mem::replace(
+                &mut model.navigation_model,
+                super::navigation::NavigationModel::initial(),
+            );
+            let cmds = nav.push(page, &mut model);
+            model.navigation_model = nav;
+            (model, cmds)
+        }
+        "flow" => {
+            // Switch to flows tab, then push flow detail
+            let (mut model, mut cmds) =
+                super::update::update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Flows)));
+            let page = PageId::FlowDetail {
+                ticket_id: target.id,
+            };
+            let mut nav = std::mem::replace(
+                &mut model.navigation_model,
+                super::navigation::NavigationModel::initial(),
+            );
+            let push_cmds = nav.push(page, &mut model);
+            model.navigation_model = nav;
+            cmds.extend(push_cmds);
+            (model, cmds)
+        }
+        "worker" => super::update::update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Workers))),
         _ => (model, vec![]),
     }
 }
@@ -359,6 +393,9 @@ fn handle_create_action_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Ve
 }
 
 /// Handle project input overlay messages.
+///
+/// These overlays are no longer used by the create ticket flow (which now uses
+/// $EDITOR), but the handlers remain for backward compatibility.
 fn handle_project_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenProjectInput => {
@@ -381,26 +418,24 @@ fn handle_project_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Ve
             (model, vec![])
         }
         OverlayMsg::ProjectInputSubmitRequest => {
-            if let Some(ActiveOverlay::ProjectInput { ref buffer }) = model.active_overlay {
-                let text = buffer.clone();
+            if let Some(ActiveOverlay::ProjectInput { .. }) = model.active_overlay {
                 close_overlay(&mut model);
-                return handle_overlay(model, OverlayMsg::ProjectInputSubmitted(text));
             }
             (model, vec![])
         }
-        OverlayMsg::ProjectInputSubmitted(project) => {
-            super::create_ticket::handle_project_submitted(model, project)
-        }
+        OverlayMsg::ProjectInputSubmitted(_) => (model, vec![]),
         OverlayMsg::ProjectInputCancelled => {
             close_overlay(&mut model);
-            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
-            (model, cmds)
+            (model, vec![])
         }
         _ => (model, vec![]),
     }
 }
 
 /// Handle title input overlay messages.
+///
+/// These overlays are no longer used by the create ticket flow (which now uses
+/// $EDITOR), but the handlers remain for backward compatibility.
 fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenTitleInput => {
@@ -423,21 +458,15 @@ fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<
             (model, vec![])
         }
         OverlayMsg::TitleInputSubmitRequest => {
-            if let Some(ActiveOverlay::TitleInput { ref buffer }) = model.active_overlay {
-                let text = buffer.clone();
+            if let Some(ActiveOverlay::TitleInput { .. }) = model.active_overlay {
                 close_overlay(&mut model);
-                return super::create_ticket::handle_title_submitted(model, text);
             }
             (model, vec![])
         }
-        OverlayMsg::TitleInputSubmitted(_) => {
-            // Terminal message — handled by TitleInputSubmitRequest above.
-            (model, vec![])
-        }
+        OverlayMsg::TitleInputSubmitted(_) => (model, vec![]),
         OverlayMsg::TitleInputCancelled => {
             close_overlay(&mut model);
-            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
-            (model, cmds)
+            (model, vec![])
         }
         _ => (model, vec![]),
     }
@@ -447,7 +476,13 @@ fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<
 fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenSettings { custom_theme_names } => {
-            model.active_overlay = Some(build_settings_state(custom_theme_names));
+            // Merge explicit names with model's custom theme names from config.
+            let names = if custom_theme_names.is_empty() {
+                model.custom_theme_names.clone()
+            } else {
+                custom_theme_names
+            };
+            model.active_overlay = Some(build_settings_state(names));
             model.input_stack.push(Box::new(SettingsOverlayHandler));
             (model, vec![])
         }
@@ -457,9 +492,12 @@ fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd
             (model, vec![])
         }
         OverlayMsg::SettingsActivate => handle_settings_activate(model),
-        OverlayMsg::ThemeSelected(_) => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
+        OverlayMsg::ThemeSelected(name) => {
+            // Apply the theme immediately by setting pending_theme_swap,
+            // and persist the selection to ur.toml.
+            model.pending_theme_swap = Some(name.clone());
+            let cmd = Cmd::PersistTheme { theme_name: name };
+            (model, vec![cmd])
         }
         OverlayMsg::SettingsClosed => {
             close_overlay(&mut model);
@@ -1040,6 +1078,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },
@@ -1060,6 +1099,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },
@@ -1084,6 +1124,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },

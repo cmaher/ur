@@ -82,7 +82,6 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         NavMsg::TicketListOpen => handle_open(model),
         NavMsg::TicketListDispatch => handle_dispatch(model),
         NavMsg::TicketListDesign => handle_design(model),
-        NavMsg::TicketListRedrive => handle_redrive(model),
         NavMsg::TicketListGoto => handle_goto(model),
         NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
         _ => (model, vec![]),
@@ -146,13 +145,22 @@ fn handle_priority(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Close the selected ticket.
+/// Close the selected ticket, prompting for force close if it has open children.
 fn handle_close(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::Close {
-            ticket_id: ticket.id.clone(),
-        });
-        crate::v2::update::update(model, msg)
+        let open_children = ticket.children_total - ticket.children_completed;
+        if open_children > 0 {
+            let msg = Msg::Overlay(OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: ticket.id.clone(),
+                open_children,
+            });
+            crate::v2::update::update(model, msg)
+        } else {
+            let msg = Msg::TicketOp(TicketOpMsg::Close {
+                ticket_id: ticket.id.clone(),
+            });
+            crate::v2::update::update(model, msg)
+        }
     } else {
         (model, vec![])
     }
@@ -161,14 +169,10 @@ fn handle_close(model: Model) -> (Model, Vec<Cmd>) {
 /// Re-open the selected ticket (set status back to "open").
 fn handle_open(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        // OpenTicket in v1 dispatches a status update to "open".
-        // In v2, we use the same TicketOp message pattern. The server-side
-        // "Open" action reopens a closed ticket.
-        let ticket_id = ticket.id.clone();
-        let msg = Msg::StatusShow(format!("Reopening {ticket_id}..."));
-        let (model, _) = crate::v2::update::update(model, msg);
-        // The cmd_runner handles the actual reopen via gRPC
-        (model, vec![Cmd::TicketOp(TicketOpMsg::Close { ticket_id })])
+        let msg = Msg::TicketOp(TicketOpMsg::Open {
+            ticket_id: ticket.id.clone(),
+        });
+        crate::v2::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -202,18 +206,6 @@ fn handle_design(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Redrive the selected ticket's workflow.
-fn handle_redrive(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::Redrive {
-            ticket_id: ticket.id.clone(),
-        });
-        crate::v2::update::update(model, msg)
-    } else {
-        (model, vec![])
-    }
-}
-
 /// Open the goto menu for the selected ticket.
 fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
@@ -228,8 +220,9 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
 /// Input handler for the tickets list page.
 ///
 /// Handles ticket-specific actions: Create (C), Dispatch (D), Open/reopen (O),
-/// Priority (P), Design (S), Close (X), Filter (f), Goto (g), Settings (*),
-/// Refresh (r), Redrive (V), plus TicketTable navigation (j/k/h/l/Enter).
+/// Priority (P), Design (S), Close (X), Flows (f), Goto (g), Workers (w),
+/// Refresh (r), Filter (*), Settings (,),
+/// plus TicketTable navigation (j/k/h/l/Enter).
 ///
 /// This is a root page handler: it is not pushed onto the input stack but
 /// dispatched directly from `dispatch_root_page_key` when the current page
@@ -262,6 +255,7 @@ impl InputHandler for TicketListHandler {
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
+            // Capitals alphabetical
             FooterCommand {
                 key_label: "C".to_string(),
                 description: "Create".to_string(),
@@ -288,18 +282,14 @@ impl InputHandler for TicketListHandler {
                 common: false,
             },
             FooterCommand {
-                key_label: "V".to_string(),
-                description: "Redrive".to_string(),
-                common: false,
-            },
-            FooterCommand {
                 key_label: "X".to_string(),
                 description: "Close".to_string(),
                 common: false,
             },
+            // Lowercase alphabetical
             FooterCommand {
                 key_label: "f".to_string(),
-                description: "Filter".to_string(),
+                description: "Flows".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -312,6 +302,28 @@ impl InputHandler for TicketListHandler {
                 description: "Refresh".to_string(),
                 common: false,
             },
+            FooterCommand {
+                key_label: "w".to_string(),
+                description: "Workers".to_string(),
+                common: false,
+            },
+            // Symbols
+            FooterCommand {
+                key_label: "Space".to_string(),
+                description: "Details".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "*".to_string(),
+                description: "Filter".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: ",".to_string(),
+                description: "Settings".to_string(),
+                common: false,
+            },
+            // Common (right side)
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
@@ -346,7 +358,7 @@ fn handle_table_key(code: KeyCode) -> Option<Msg> {
         }
         KeyCode::Char('h') | KeyCode::Left => Some(Msg::Nav(NavMsg::TicketTablePageLeft)),
         KeyCode::Char('l') | KeyCode::Right => Some(Msg::Nav(NavMsg::TicketTablePageRight)),
-        KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketTableSelect)),
+        KeyCode::Char(' ') | KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketTableSelect)),
         _ => None,
     }
 }
@@ -363,7 +375,6 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketListOpen)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
         KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketListDesign)),
-        KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketListRedrive)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketListCreate)),
         _ => None,
     }
@@ -372,10 +383,16 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
 /// Handle lowercase action keys.
 fn handle_action_key(code: KeyCode) -> Option<Msg> {
     match code {
-        KeyCode::Char('f') => Some(Msg::Overlay(OverlayMsg::OpenFilterMenu)),
+        KeyCode::Char('f') => Some(Msg::Nav(NavMsg::TabSwitch(
+            crate::v2::navigation::TabId::Flows,
+        ))),
+        KeyCode::Char('w') => Some(Msg::Nav(NavMsg::TabSwitch(
+            crate::v2::navigation::TabId::Workers,
+        ))),
         KeyCode::Char('r') => Some(Msg::Nav(NavMsg::TicketListRefresh)),
         KeyCode::Char('g') => Some(Msg::Nav(NavMsg::TicketListGoto)),
-        KeyCode::Char('*') => Some(Msg::Overlay(OverlayMsg::OpenSettings {
+        KeyCode::Char('*') => Some(Msg::Overlay(OverlayMsg::OpenFilterMenu)),
+        KeyCode::Char(',') => Some(Msg::Overlay(OverlayMsg::OpenSettings {
             custom_theme_names: vec![],
         })),
         _ => None,
@@ -463,6 +480,15 @@ mod tests {
     }
 
     #[test]
+    fn handler_captures_space_as_select() {
+        let handler = TicketListHandler;
+        match handler.handle_key(plain_key(KeyCode::Char(' '))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketTableSelect)) => {}
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_captures_enter_as_select() {
         let handler = TicketListHandler;
         match handler.handle_key(plain_key(KeyCode::Enter)) {
@@ -490,11 +516,13 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_f_as_filter() {
+    fn handler_captures_f_as_flows_tab() {
         let handler = TicketListHandler;
         match handler.handle_key(plain_key(KeyCode::Char('f'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::OpenFilterMenu)) => {}
-            other => panic!("expected filter menu, got {other:?}"),
+            InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(
+                crate::v2::navigation::TabId::Flows,
+            ))) => {}
+            other => panic!("expected flows tab switch, got {other:?}"),
         }
     }
 
@@ -535,8 +563,15 @@ mod tests {
         assert!(cmds.iter().any(|c| c.description == "Create"));
         assert!(cmds.iter().any(|c| c.description == "Dispatch"));
         assert!(cmds.iter().any(|c| c.description == "Close"));
-        assert!(cmds.iter().any(|c| c.description == "Filter"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.description == "Filter" && c.key_label == "*")
+        );
         assert!(cmds.iter().any(|c| c.description == "Priority"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.description == "Details" && c.key_label == "Space")
+        );
     }
 
     #[test]

@@ -1,37 +1,33 @@
 //! Create ticket flow orchestration for v2.
 //!
-//! The create ticket flow is a multi-step overlay sequence:
-//! 1. ProjectInput — user enters the project key
-//! 2. TitleInput — user enters the ticket title
-//! 3. CreateActionMenu — user chooses the action (Create, Dispatch, Design, Abandon)
-//!
-//! Each step produces an `OverlayMsg` that is handled here to advance the flow.
-//! The `CreateTicketState` in the model accumulates data across steps.
+//! The create ticket flow shells out to $EDITOR with a frontmatter template,
+//! parses the result, then shows the CreateActionMenu overlay for the user
+//! to choose the action (Create, Dispatch, Design, Abandon).
 //!
 //! Entry points:
 //! - `start_create_flow`: begins the flow from the ticket list (no parent)
 //! - `start_create_child_flow`: begins the flow from ticket detail (with parent ID)
 
 use super::cmd::Cmd;
-use super::model::{CreateTicketState, Model};
-use super::msg::{Msg, OverlayMsg, PendingTicket};
+use super::model::Model;
 
 /// Start the create ticket flow (top-level ticket, no parent).
 ///
-/// Opens the ProjectInput overlay and initializes the create ticket state.
+/// Emits `Cmd::SpawnEditor` which causes the TEA loop to break out, run
+/// the editor, and re-enter with the parsed result.
 pub fn start_create_flow(model: Model) -> (Model, Vec<Cmd>) {
-    let mut model = model;
-    model.create_ticket_state = Some(CreateTicketState {
-        project: String::new(),
-        parent_id: None,
-    });
-    super::update::update(model, Msg::Overlay(OverlayMsg::OpenProjectInput))
+    (
+        model,
+        vec![Cmd::SpawnEditor {
+            parent_id: None,
+            project: None,
+        }],
+    )
 }
 
 /// Start the create child ticket flow (child of the ticket on the detail page).
 ///
-/// Opens the ProjectInput overlay and initializes the create ticket state
-/// with the parent ticket's ID and project pre-filled.
+/// Emits `Cmd::SpawnEditor` with the parent's ID and project pre-filled.
 pub fn start_create_child_flow(model: Model) -> (Model, Vec<Cmd>) {
     let (parent_id, project) = match &model.ticket_detail {
         Some(detail) => {
@@ -46,159 +42,40 @@ pub fn start_create_child_flow(model: Model) -> (Model, Vec<Cmd>) {
         None => return (model, vec![]),
     };
 
-    let mut model = model;
-    model.create_ticket_state = Some(CreateTicketState {
-        project: project.clone(),
-        parent_id: Some(parent_id),
-    });
-
-    // If we already have a project from the parent, skip to title input.
-    if !project.is_empty() {
-        return super::update::update(model, Msg::Overlay(OverlayMsg::OpenTitleInput));
-    }
-
-    super::update::update(model, Msg::Overlay(OverlayMsg::OpenProjectInput))
-}
-
-/// Handle the project input being submitted during the create ticket flow.
-///
-/// Stores the project in the create ticket state and advances to the title
-/// input step.
-pub fn handle_project_submitted(mut model: Model, project: String) -> (Model, Vec<Cmd>) {
-    if let Some(ref mut state) = model.create_ticket_state {
-        state.project = project;
+    let project_opt = if project.is_empty() {
+        None
     } else {
-        // No active create flow — discard.
-        return (model, vec![]);
-    }
-
-    super::update::update(model, Msg::Overlay(OverlayMsg::OpenTitleInput))
-}
-
-/// Handle the title input being submitted during the create ticket flow.
-///
-/// Builds the `PendingTicket` from the accumulated state and opens the
-/// `CreateActionMenu` overlay for the user to choose the final action.
-pub fn handle_title_submitted(model: Model, title: String) -> (Model, Vec<Cmd>) {
-    let pending = match &model.create_ticket_state {
-        Some(state) => PendingTicket {
-            project: state.project.clone(),
-            title,
-            priority: 0,
-            parent_id: state.parent_id.clone(),
-        },
-        None => return (model, vec![]),
+        Some(project)
     };
 
-    // Clear the create state — the pending ticket now carries all the data.
-    let mut model = model;
-    model.create_ticket_state = None;
-
-    super::update::update(
+    (
         model,
-        Msg::Overlay(OverlayMsg::OpenCreateActionMenu { pending }),
+        vec![Cmd::SpawnEditor {
+            parent_id: Some(parent_id),
+            project: project_opt,
+        }],
     )
-}
-
-/// Cancel the create ticket flow, clearing any accumulated state.
-pub fn cancel_create_flow(mut model: Model) -> (Model, Vec<Cmd>) {
-    model.create_ticket_state = None;
-    (model, vec![])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::v2::model::{
-        ActiveOverlay, LoadState, Model, TicketDetailData, TicketDetailModel, TicketTableModel,
+        LoadState, Model, TicketDetailData, TicketDetailModel, TicketTableModel,
     };
-    #[test]
-    fn start_create_flow_sets_state_and_opens_project_input() {
-        let model = Model::initial();
-        let (new_model, _) = start_create_flow(model);
-        assert!(new_model.create_ticket_state.is_some());
-        let state = new_model.create_ticket_state.as_ref().unwrap();
-        assert!(state.project.is_empty());
-        assert!(state.parent_id.is_none());
-        assert!(matches!(
-            new_model.active_overlay,
-            Some(ActiveOverlay::ProjectInput { .. })
-        ));
-    }
 
     #[test]
-    fn handle_project_submitted_stores_project_and_opens_title_input() {
+    fn start_create_flow_emits_spawn_editor() {
         let model = Model::initial();
-        let (model, _) = start_create_flow(model);
-        let (new_model, _) = handle_project_submitted(model, "ur".to_string());
-        // Project should be stored (or consumed since we move to title input)
-        assert!(matches!(
-            new_model.active_overlay,
-            Some(ActiveOverlay::TitleInput { .. })
-        ));
-    }
-
-    #[test]
-    fn handle_title_submitted_opens_create_action_menu() {
-        let mut model = Model::initial();
-        model.create_ticket_state = Some(CreateTicketState {
-            project: "ur".to_string(),
-            parent_id: None,
-        });
-        let (new_model, _) = handle_title_submitted(model, "Fix the bug".to_string());
-        assert!(new_model.create_ticket_state.is_none());
-        match &new_model.active_overlay {
-            Some(ActiveOverlay::CreateActionMenu { pending, .. }) => {
-                assert_eq!(pending.project, "ur");
-                assert_eq!(pending.title, "Fix the bug");
-                assert_eq!(pending.priority, 0);
-                assert!(pending.parent_id.is_none());
+        let (_, cmds) = start_create_flow(model);
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            Cmd::SpawnEditor { parent_id, project } => {
+                assert!(parent_id.is_none());
+                assert!(project.is_none());
             }
-            other => panic!("expected CreateActionMenu, got {other:?}"),
+            other => panic!("expected SpawnEditor, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn handle_title_submitted_with_parent_id() {
-        let mut model = Model::initial();
-        model.create_ticket_state = Some(CreateTicketState {
-            project: "ur".to_string(),
-            parent_id: Some("ur-abc".to_string()),
-        });
-        let (new_model, _) = handle_title_submitted(model, "Child task".to_string());
-        match &new_model.active_overlay {
-            Some(ActiveOverlay::CreateActionMenu { pending, .. }) => {
-                assert_eq!(pending.parent_id, Some("ur-abc".to_string()));
-            }
-            other => panic!("expected CreateActionMenu, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cancel_create_flow_clears_state() {
-        let mut model = Model::initial();
-        model.create_ticket_state = Some(CreateTicketState {
-            project: "ur".to_string(),
-            parent_id: None,
-        });
-        let (new_model, _) = cancel_create_flow(model);
-        assert!(new_model.create_ticket_state.is_none());
-    }
-
-    #[test]
-    fn handle_project_submitted_no_active_flow() {
-        let model = Model::initial();
-        let (new_model, cmds) = handle_project_submitted(model, "ur".to_string());
-        assert!(new_model.create_ticket_state.is_none());
-        assert!(cmds.is_empty());
-    }
-
-    #[test]
-    fn handle_title_submitted_no_active_flow() {
-        let model = Model::initial();
-        let (new_model, cmds) = handle_title_submitted(model, "title".to_string());
-        assert!(new_model.create_ticket_state.is_none());
-        assert!(cmds.is_empty());
     }
 
     fn make_detail_model(ticket_id: &str, project: &str) -> TicketDetailModel {
@@ -240,22 +117,21 @@ mod tests {
     fn start_create_child_flow_with_project() {
         let mut model = Model::initial();
         model.ticket_detail = Some(make_detail_model("ur-abc", "ur"));
-        let (new_model, _) = start_create_child_flow(model);
-        // Should skip to title input since project is known
-        assert!(matches!(
-            new_model.active_overlay,
-            Some(ActiveOverlay::TitleInput { .. })
-        ));
-        let state = new_model.create_ticket_state.as_ref().unwrap();
-        assert_eq!(state.project, "ur");
-        assert_eq!(state.parent_id, Some("ur-abc".to_string()));
+        let (_, cmds) = start_create_child_flow(model);
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            Cmd::SpawnEditor { parent_id, project } => {
+                assert_eq!(parent_id.as_deref(), Some("ur-abc"));
+                assert_eq!(project.as_deref(), Some("ur"));
+            }
+            other => panic!("expected SpawnEditor, got {other:?}"),
+        }
     }
 
     #[test]
     fn start_create_child_flow_without_detail() {
         let model = Model::initial();
-        let (new_model, cmds) = start_create_child_flow(model);
-        assert!(new_model.create_ticket_state.is_none());
+        let (_, cmds) = start_create_child_flow(model);
         assert!(cmds.is_empty());
     }
 }

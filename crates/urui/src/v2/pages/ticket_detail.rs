@@ -314,13 +314,22 @@ fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Close the selected child.
+/// Close the selected child, prompting for force close if it has open children.
 fn handle_detail_close(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
-        let msg = Msg::TicketOp(TicketOpMsg::Close {
-            ticket_id: ticket.id.clone(),
-        });
-        crate::v2::update::update(model, msg)
+        let open_children = ticket.children_total - ticket.children_completed;
+        if open_children > 0 {
+            let msg = Msg::Overlay(OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: ticket.id.clone(),
+                open_children,
+            });
+            crate::v2::update::update(model, msg)
+        } else {
+            let msg = Msg::TicketOp(TicketOpMsg::Close {
+                ticket_id: ticket.id.clone(),
+            });
+            crate::v2::update::update(model, msg)
+        }
     } else {
         (model, vec![])
     }

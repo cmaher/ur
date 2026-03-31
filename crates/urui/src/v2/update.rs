@@ -131,7 +131,6 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListOpen
             | NavMsg::TicketListDispatch
             | NavMsg::TicketListDesign
-            | NavMsg::TicketListRedrive
             | NavMsg::TicketListGoto
             | NavMsg::TicketListCreate
     ) {
@@ -518,7 +517,8 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
         TicketOpMsg::LaunchDesign { ticket_id, .. } => {
             format!("Launching design worker for {ticket_id}...")
         }
-        TicketOpMsg::Redrive { ticket_id } => format!("Redriving {ticket_id}..."),
+        TicketOpMsg::Redrive { ticket_id } => format!("Moving {ticket_id} to Verify..."),
+        TicketOpMsg::Open { ticket_id } => format!("Reopening {ticket_id}..."),
     };
 
     // Feed through update to set the status and issue the command.
@@ -545,6 +545,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::Created { result } => (result, false),
         TicketOpResultMsg::DesignLaunched { result } => (result, false),
         TicketOpResultMsg::Redriven { result } => (result, false),
+        TicketOpResultMsg::Opened { result } => (result, false),
     };
 
     match result {
@@ -1558,6 +1559,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test ticket".into(),
                     priority: 0,
+                    body: String::new(),
                     parent_id: None,
                 },
             }),
@@ -1602,14 +1604,7 @@ mod tests {
             }),
         );
         assert!(new_model.status.is_some());
-        assert!(
-            new_model
-                .status
-                .as_ref()
-                .unwrap()
-                .text
-                .contains("Redriving")
-        );
+        assert!(new_model.status.as_ref().unwrap().text.contains("Moving"));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
     }
 
@@ -1802,7 +1797,7 @@ mod tests {
         let (new_model, _) = update(
             model,
             Msg::TicketOpResult(TicketOpResultMsg::Redriven {
-                result: Ok("Redrove ur-red to verifying".into()),
+                result: Ok("Moved ur-red to Verify".into()),
             }),
         );
         assert!(new_model.banner.is_some());
