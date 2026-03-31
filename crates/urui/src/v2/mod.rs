@@ -156,6 +156,18 @@ async fn tea_loop(
     // Subscribe to the server's UI event stream for live updates.
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
 
+    // Trigger the initial data fetch for the starting tab so it doesn't
+    // stay stuck on "Loading..." until the user manually refreshes.
+    {
+        let nav = std::mem::replace(
+            &mut model.navigation_model,
+            navigation::NavigationModel::initial(),
+        );
+        let init_cmds = nav.init_current_page(&mut model);
+        model.navigation_model = nav;
+        cmd_runner.execute_all(init_cmds);
+    }
+
     // Initial render
     terminal.draw(|frame| view(&model, frame, &ctx))?;
 
