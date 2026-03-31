@@ -349,10 +349,24 @@ pub struct TicketDetailModel {
     pub show_closed: bool,
 }
 
+/// Number of flows displayed per page.
+pub const FLOW_PAGE_SIZE: usize = 20;
+
 /// Sub-model for the flows page.
 #[derive(Debug, Clone)]
 pub struct FlowListModel {
     pub data: LoadState<FlowListData>,
+    /// Selected row index within the current page.
+    pub selected_row: usize,
+    /// Current page (zero-indexed, server-side pagination).
+    pub current_page: usize,
+}
+
+/// Sub-model for the flow detail page (set when viewing a single workflow).
+#[derive(Debug, Clone)]
+pub struct FlowDetailModel {
+    pub ticket_id: String,
+    pub workflow: WorkflowInfo,
 }
 
 /// Number of workers displayed per page.
@@ -469,6 +483,8 @@ pub struct Model {
     pub ticket_detail: Option<TicketDetailModel>,
     /// Sub-model for the flows page.
     pub flow_list: FlowListModel,
+    /// Sub-model for the flow detail page (set when viewing a flow).
+    pub flow_detail: Option<FlowDetailModel>,
     /// Sub-model for the workers page.
     pub worker_list: WorkerListModel,
     /// Throttle for UI event-driven data refreshes.
@@ -505,7 +521,10 @@ impl Model {
             ticket_detail: None,
             flow_list: FlowListModel {
                 data: LoadState::NotLoaded,
+                selected_row: 0,
+                current_page: 0,
             },
+            flow_detail: None,
             worker_list: WorkerListModel {
                 data: LoadState::NotLoaded,
                 selected_row: 0,

@@ -1,3 +1,5 @@
+pub mod flow_detail;
+pub mod flows_list;
 pub mod ticket_activities;
 pub mod ticket_body;
 pub mod ticket_detail;

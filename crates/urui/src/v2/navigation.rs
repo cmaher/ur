@@ -59,6 +59,8 @@ pub enum PageId {
     },
     /// The root flows list page.
     FlowList,
+    /// Detail page for a specific flow/workflow.
+    FlowDetail { ticket_id: String },
     /// The root workers list page.
     WorkerList,
 }
@@ -230,6 +232,10 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
             let cmd = start_flow_list_fetch(model);
             vec![cmd]
         }
+        PageId::FlowDetail { ticket_id } => {
+            super::pages::flow_detail::init_flow_detail(model, ticket_id.clone());
+            vec![]
+        }
         PageId::WorkerList => {
             let cmd = start_worker_list_fetch(model);
             vec![cmd]
@@ -251,6 +257,10 @@ fn teardown_page(page: &PageId, model: &mut Model) -> usize {
         PageId::TicketBody { .. } => {
             model.ticket_body = None;
             1 // TicketBodyHandler
+        }
+        PageId::FlowDetail { .. } => {
+            model.flow_detail = None;
+            0 // FlowDetailHandler dispatched from root, not pushed
         }
         _ => 0,
     }

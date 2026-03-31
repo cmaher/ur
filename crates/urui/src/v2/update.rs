@@ -61,15 +61,18 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
 /// never torn down during tab switches.
 fn dispatch_root_page_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
     use super::input::InputResult;
+    use super::pages::flow_detail::FlowDetailHandler;
+    use super::pages::flows_list::FlowListHandler;
+    use super::pages::ticket_detail::TicketDetailHandler;
     use super::pages::tickets_list::TicketListHandler;
     use super::pages::workers_list::WorkerListHandler;
-
-    use super::pages::ticket_detail::TicketDetailHandler;
 
     let handler: Option<&dyn super::input::InputHandler> =
         match model.navigation_model.current_page() {
             super::navigation::PageId::TicketList => Some(&TicketListHandler),
             super::navigation::PageId::TicketDetail { .. } => Some(&TicketDetailHandler),
+            super::navigation::PageId::FlowList => Some(&FlowListHandler),
+            super::navigation::PageId::FlowDetail { .. } => Some(&FlowDetailHandler),
             super::navigation::PageId::WorkerList => Some(&WorkerListHandler),
             _ => None,
         };
@@ -87,7 +90,17 @@ fn dispatch_root_page_key(model: Model, key: crossterm::event::KeyEvent) -> (Mod
 ///
 /// Takes ownership of the NavigationModel to avoid double-borrow of `model`,
 /// since navigation methods need `&mut Model` for input stack manipulation.
-fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+fn handle_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    // dispatch_page_nav routes to the appropriate page handler or falls through
+    // to global navigation. It always returns Some.
+    dispatch_page_nav(model, nav_msg).expect("dispatch_page_nav always returns Some")
+}
+
+/// Dispatch a NavMsg to the appropriate page-specific handler, or handle
+/// it as a global navigation action (tab switch, push, pop, goto).
+///
+/// Always returns `Some` — the outer `handle_nav` simply unwraps the result.
+fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)> {
     if matches!(
         nav_msg,
         NavMsg::ActivitiesNavigate { .. }
@@ -96,14 +109,14 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
             | NavMsg::ActivitiesCycleFilter
             | NavMsg::ActivitiesRefresh
     ) {
-        return handle_activities_nav(model, nav_msg);
+        return Some(handle_activities_nav(model, nav_msg));
     }
 
     if matches!(
         nav_msg,
         NavMsg::BodyScrollDown | NavMsg::BodyScrollUp | NavMsg::BodyPageDown | NavMsg::BodyPageUp
     ) {
-        return handle_body_nav(model, nav_msg);
+        return Some(handle_body_nav(model, nav_msg));
     }
 
     if matches!(
@@ -121,7 +134,9 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
             | NavMsg::TicketListRedrive
             | NavMsg::TicketListGoto
     ) {
-        return super::pages::tickets_list::handle_ticket_table_nav(model, nav_msg);
+        return Some(super::pages::tickets_list::handle_ticket_table_nav(
+            model, nav_msg,
+        ));
     }
 
     if matches!(
@@ -144,7 +159,32 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
             | NavMsg::TicketDetailOpenActivities
             | NavMsg::TicketDetailCreateChild
     ) {
-        return super::pages::ticket_detail::handle_ticket_detail_nav(model, nav_msg);
+        return Some(super::pages::ticket_detail::handle_ticket_detail_nav(
+            model, nav_msg,
+        ));
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::FlowsNavigate { .. }
+            | NavMsg::FlowsPageRight
+            | NavMsg::FlowsPageLeft
+            | NavMsg::FlowsSelect
+            | NavMsg::FlowsRefresh
+            | NavMsg::FlowsCancel
+            | NavMsg::FlowsRedrive
+            | NavMsg::FlowsGoto
+    ) {
+        return Some(super::pages::flows_list::handle_flows_nav(model, nav_msg));
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::FlowDetailCancel | NavMsg::FlowDetailRedrive | NavMsg::FlowDetailGoto
+    ) {
+        return Some(super::pages::flow_detail::handle_flow_detail_nav(
+            model, nav_msg,
+        ));
     }
 
     if matches!(
@@ -156,9 +196,16 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
             | NavMsg::WorkersKill
             | NavMsg::WorkersGoto
     ) {
-        return super::pages::workers_list::handle_workers_nav(model, nav_msg);
+        return Some(super::pages::workers_list::handle_workers_nav(
+            model, nav_msg,
+        ));
     }
 
+    Some(handle_global_nav(model, nav_msg))
+}
+
+/// Handle global navigation actions: tab switching, pushing, popping, and goto.
+fn handle_global_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
     let mut nav = std::mem::replace(
         &mut model.navigation_model,
         super::navigation::NavigationModel::initial(),
@@ -172,7 +219,7 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
         NavMsg::Push(page) => nav.push(page, &mut model),
         NavMsg::Pop => nav.pop(&mut model),
         NavMsg::Goto(page) => nav.goto(page, &mut model),
-        // Already handled above
+        // Already handled by page-specific dispatchers above
         _ => vec![],
     };
     model.navigation_model = nav;
@@ -644,11 +691,13 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
                 Ok((workflows, total_count)) => {
                     let (notif_msgs, notif_cmds) =
                         model.notifications.process_flow_updates(&workflows);
-                    let data = LoadState::Loaded(FlowListData {
+                    let data = FlowListData {
                         workflows,
                         total_count,
-                    });
-                    model.flow_list.data = data;
+                    };
+                    super::pages::flows_list::apply_flows_data(&mut model, &data);
+                    model.flow_list.data = LoadState::Loaded(data);
+                    super::pages::flows_list::clamp_selection(&mut model);
                     // Process the last notification message (banner) through update.
                     // We only show the most recent one to avoid banner churn.
                     let mut cmds = notif_cmds;

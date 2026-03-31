@@ -282,6 +282,32 @@ pub enum NavMsg {
     /// Refresh the activities page data.
     ActivitiesRefresh,
 
+    // ── Flows list page messages ────────────────────────────────────
+    /// Navigate within the flows table by delta (+1 down, -1 up).
+    FlowsNavigate { delta: i32 },
+    /// Page right in the flows table.
+    FlowsPageRight,
+    /// Page left in the flows table.
+    FlowsPageLeft,
+    /// Select the currently highlighted flow.
+    FlowsSelect,
+    /// Refresh the flows list data.
+    FlowsRefresh,
+    /// Cancel the selected flow's workflow.
+    FlowsCancel,
+    /// Redrive the selected flow's workflow.
+    FlowsRedrive,
+    /// Open the goto menu for the selected flow.
+    FlowsGoto,
+
+    // ── Flow detail page messages ─────────────────────────────────────
+    /// Cancel the workflow shown in flow detail.
+    FlowDetailCancel,
+    /// Redrive the workflow shown in flow detail.
+    FlowDetailRedrive,
+    /// Open the goto menu from flow detail.
+    FlowDetailGoto,
+
     // ── Workers list page messages ────────────────────────────────────
     /// Navigate within the workers table by delta (+1 down, -1 up).
     WorkersNavigate { delta: i32 },
