@@ -228,14 +228,14 @@ mod tests {
         stack.push(Box::new(PageHandler));
 
         let commands = stack.footer_commands();
-        // Global (3 common) + Page (2 non-common)
-        assert_eq!(commands.len(), 5);
+        // Global (5 common: Q, q, Tab, t/f/w, Esc) + Page (2 non-common)
+        assert_eq!(commands.len(), 7);
 
         let non_common: Vec<&FooterCommand> = commands.iter().filter(|c| !c.common).collect();
         assert_eq!(non_common.len(), 2);
 
         let common: Vec<&FooterCommand> = commands.iter().filter(|c| c.common).collect();
-        assert_eq!(common.len(), 3);
+        assert_eq!(common.len(), 5);
     }
 
     #[test]
