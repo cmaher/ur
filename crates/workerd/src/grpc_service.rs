@@ -204,12 +204,12 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         // signaling, and nudging mid-design just confuses the agent.
         if !buf.lifecycle_step.is_empty() && buf.lifecycle_step != "designing" {
             // If nudge is suppressed, silently return without nudging or forwarding idle.
-            if let Some(suppressed_until) = buf.nudge_suppressed_until {
-                if Instant::now() < suppressed_until {
-                    info!("Nudge suppressed, skipping");
-                    drop(buf);
-                    return Ok(Response::new(NotifyIdleResponse {}));
-                }
+            if let Some(suppressed_until) = buf.nudge_suppressed_until
+                && Instant::now() < suppressed_until
+            {
+                info!("Nudge suppressed, skipping");
+                drop(buf);
+                return Ok(Response::new(NotifyIdleResponse {}));
             }
 
             let step = buf.lifecycle_step.clone();
