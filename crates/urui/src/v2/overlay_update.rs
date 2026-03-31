@@ -83,10 +83,15 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
-        OverlayMsg::PrioritySelected { .. } => {
-            // Terminal message — consumed by the page-level update (future).
-            // For now, just close the overlay if still open.
-            (model, vec![])
+        OverlayMsg::PrioritySelected {
+            ticket_id,
+            priority,
+        } => {
+            let op = super::msg::TicketOpMsg::SetPriority {
+                ticket_id,
+                priority,
+            };
+            super::update::update(model, super::msg::Msg::TicketOp(op))
         }
         OverlayMsg::PriorityCancelled => {
             close_overlay(&mut model);
@@ -207,9 +212,9 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
-        OverlayMsg::ForceCloseConfirmed { .. } => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
+        OverlayMsg::ForceCloseConfirmed { ticket_id } => {
+            let op = super::msg::TicketOpMsg::ForceClose { ticket_id };
+            super::update::update(model, super::msg::Msg::TicketOp(op))
         }
         OverlayMsg::ForceCloseCancelled => {
             close_overlay(&mut model);
@@ -238,23 +243,34 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             (model, vec![])
         }
         OverlayMsg::CreateActionConfirm => {
-            if let Some(ActiveOverlay::CreateActionMenu { cursor, .. }) = model.active_overlay {
+            if let Some(ActiveOverlay::CreateActionMenu {
+                cursor,
+                ref pending,
+            }) = model.active_overlay
+            {
                 if let Some(action) = action_at(cursor) {
+                    let pending = pending.clone();
                     close_overlay(&mut model);
-                    return handle_overlay(model, OverlayMsg::CreateActionSelected(action));
+                    return handle_create_action(model, action, pending);
                 }
             }
             (model, vec![])
         }
         OverlayMsg::CreateActionQuickSelect { index } => {
-            if let Some(action) = action_at(index) {
+            if let Some(ActiveOverlay::CreateActionMenu { ref pending, .. }) = model.active_overlay
+                && let Some(action) = action_at(index)
+            {
+                let pending = pending.clone();
                 close_overlay(&mut model);
-                return handle_overlay(model, OverlayMsg::CreateActionSelected(action));
+                return handle_create_action(model, action, pending);
             }
             (model, vec![])
         }
-        OverlayMsg::CreateActionSelected(_) => {
-            // Terminal message — consumed by the page-level update (future).
+        OverlayMsg::CreateActionSelected(action) => {
+            // Legacy path: action without pending context. No-op since the
+            // pending data is now extracted and handled directly in
+            // CreateActionConfirm/QuickSelect above.
+            let _ = action;
             (model, vec![])
         }
 
@@ -561,6 +577,44 @@ fn handle_settings_activate(mut model: Model) -> (Model, Vec<Cmd>) {
         }
     }
     (model, vec![])
+}
+
+/// Handle a create action selection with the pending ticket data.
+///
+/// Maps each `CreateAction` variant to the corresponding `TicketOpMsg`.
+/// The `Abandon` action is a no-op (the ticket is simply discarded).
+fn handle_create_action(
+    model: Model,
+    action: super::msg::CreateAction,
+    pending: super::msg::PendingTicket,
+) -> (Model, Vec<Cmd>) {
+    use super::msg::{CreateAction, TicketOpMsg};
+
+    let op = match action {
+        CreateAction::Create => TicketOpMsg::Create { pending },
+        CreateAction::Dispatch => {
+            // For dispatch, we need project_key and image_id. These are derived
+            // from the pending's project field. The cmd_runner resolves the actual
+            // image from server config; we pass what we have.
+            let project_key = pending.project.clone();
+            TicketOpMsg::CreateAndDispatch {
+                pending,
+                project_key,
+                image_id: String::new(),
+            }
+        }
+        CreateAction::Design => {
+            let project_key = pending.project.clone();
+            TicketOpMsg::CreateAndDesign {
+                pending,
+                project_key,
+                image_id: String::new(),
+            }
+        }
+        CreateAction::Abandon => return (model, vec![]),
+    };
+
+    super::update::update(model, super::msg::Msg::TicketOp(op))
 }
 
 #[cfg(test)]

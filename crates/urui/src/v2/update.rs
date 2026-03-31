@@ -6,7 +6,7 @@ use super::model::{
     BannerModel, FlowListData, LoadState, Model, StatusModel, TicketActivitiesData,
     TicketDetailData, TicketDetailModel, TicketListData, WorkerListData,
 };
-use super::msg::{DataMsg, Msg, NavMsg, UiEventItem};
+use super::msg::{DataMsg, Msg, NavMsg, TicketOpMsg, TicketOpResultMsg, UiEventItem};
 use super::navigation::TabId;
 
 /// Pure update function: given the current model and a message, produces a new
@@ -31,6 +31,8 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
         Msg::StatusShow(text) => handle_status_show(model, text),
         Msg::StatusClear => handle_status_clear(model),
         Msg::Overlay(overlay_msg) => super::overlay_update::handle_overlay(model, overlay_msg),
+        Msg::TicketOp(op_msg) => handle_ticket_op(model, op_msg),
+        Msg::TicketOpResult(result_msg) => handle_ticket_op_result(model, result_msg),
     }
 }
 
@@ -394,6 +396,81 @@ fn handle_status_show(mut model: Model, text: String) -> (Model, Vec<Cmd>) {
 fn handle_status_clear(mut model: Model) -> (Model, Vec<Cmd>) {
     model.status = None;
     (model, vec![])
+}
+
+/// Handle a ticket operation request: return the Cmd to execute and set a
+/// status message while the operation is in flight.
+fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
+    let status_text = match &op {
+        TicketOpMsg::Dispatch { ticket_id, .. } => format!("Dispatching {ticket_id}..."),
+        TicketOpMsg::DispatchAll { ticket_id, .. } => format!("Dispatching {ticket_id}..."),
+        TicketOpMsg::Close { ticket_id } => format!("Closing {ticket_id}..."),
+        TicketOpMsg::ForceClose { ticket_id } => format!("Force-closing {ticket_id}..."),
+        TicketOpMsg::SetPriority {
+            ticket_id,
+            priority,
+        } => format!("Setting P{priority} on {ticket_id}..."),
+        TicketOpMsg::Create { pending } => format!("Creating ticket in {}...", pending.project),
+        TicketOpMsg::CreateAndDispatch { pending, .. } => {
+            format!("Creating and dispatching in {}...", pending.project)
+        }
+        TicketOpMsg::CreateAndDesign { pending, .. } => {
+            format!("Creating with design in {}...", pending.project)
+        }
+        TicketOpMsg::LaunchDesign { ticket_id, .. } => {
+            format!("Launching design worker for {ticket_id}...")
+        }
+        TicketOpMsg::Redrive { ticket_id } => format!("Redriving {ticket_id}..."),
+    };
+
+    // Feed through update to set the status and issue the command.
+    let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
+    cmds.push(Cmd::TicketOp(op));
+    (model, cmds)
+}
+
+/// Handle a ticket operation result: clear status, show banner.
+///
+/// Success results show an auto-dismissing success banner.
+/// Error results show a sticky error banner.
+/// Priority-set success is silent (no banner) since the UI updates via events.
+fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Model, Vec<Cmd>) {
+    use super::components::banner::BannerVariant;
+
+    let (model, _) = update(model, Msg::StatusClear);
+
+    let (result, silent_on_success) = match result_msg {
+        TicketOpResultMsg::Dispatched { result } => (result, false),
+        TicketOpResultMsg::Closed { result } => (result, false),
+        TicketOpResultMsg::ForceClosed { result } => (result, true),
+        TicketOpResultMsg::PrioritySet { result } => (result, true),
+        TicketOpResultMsg::Created { result } => (result, false),
+        TicketOpResultMsg::DesignLaunched { result } => (result, false),
+        TicketOpResultMsg::Redriven { result } => (result, false),
+    };
+
+    match result {
+        Ok(message) => {
+            if silent_on_success {
+                (model, vec![])
+            } else {
+                update(
+                    model,
+                    Msg::BannerShow {
+                        message,
+                        variant: BannerVariant::Success,
+                    },
+                )
+            }
+        }
+        Err(message) => update(
+            model,
+            Msg::BannerShow {
+                message,
+                variant: BannerVariant::Error,
+            },
+        ),
+    }
 }
 
 /// Handle a data message by updating the appropriate sub-model's `LoadState`.
@@ -1167,5 +1244,358 @@ mod tests {
         let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
         let (new_model, _) = update(model, Msg::KeyPressed(key));
         assert!(new_model.banner.is_none());
+    }
+
+    // ── Ticket operation tests ──────────────────────────────────────
+
+    #[test]
+    fn ticket_op_dispatch_sets_status_and_produces_cmd() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: "ur-abc".into(),
+                project_key: "ur".into(),
+                image_id: "img".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("ur-abc"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_close_sets_status_and_produces_cmd() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::Close {
+                ticket_id: "ur-xyz".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("Closing"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_force_close_sets_status() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::ForceClose {
+                ticket_id: "ur-fc".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Force-closing")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_set_priority_sets_status() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::SetPriority {
+                ticket_id: "ur-pri".into(),
+                priority: 2,
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("P2"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_create_sets_status() {
+        use crate::v2::msg::{PendingTicket, TicketOpMsg};
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::Create {
+                pending: PendingTicket {
+                    project: "ur".into(),
+                    title: "Test ticket".into(),
+                    priority: 0,
+                },
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("Creating"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_launch_design_sets_status() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: "ur-des".into(),
+                project_key: "ur".into(),
+                image_id: "img".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("design worker")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_redrive_sets_status() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::Redrive {
+                ticket_id: "ur-red".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Redriving")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    #[test]
+    fn ticket_op_dispatch_all_sets_status() {
+        use crate::v2::msg::TicketOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::TicketOp(TicketOpMsg::DispatchAll {
+                ticket_id: "ur-all".into(),
+                project_key: "ur".into(),
+                image_id: "img".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Dispatching")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    // ── Ticket operation result tests ───────────────────────────────
+
+    #[test]
+    fn ticket_op_result_dispatched_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Dispatched {
+                result: Ok("Dispatched ur-abc".into()),
+            }),
+        );
+        assert!(new_model.status.is_none());
+        assert!(new_model.banner.is_some());
+        let banner = new_model.banner.as_ref().unwrap();
+        assert_eq!(banner.variant, BannerVariant::Success);
+        assert!(banner.message.contains("Dispatched"));
+    }
+
+    #[test]
+    fn ticket_op_result_dispatched_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Dispatched {
+                result: Err("connection refused".into()),
+            }),
+        );
+        assert!(new_model.status.is_none());
+        assert!(new_model.banner.is_some());
+        let banner = new_model.banner.as_ref().unwrap();
+        assert_eq!(banner.variant, BannerVariant::Error);
+        assert!(banner.message.contains("connection refused"));
+    }
+
+    #[test]
+    fn ticket_op_result_closed_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Closed {
+                result: Ok("ur-abc → closed".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_force_closed_success_is_silent() {
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::ForceClosed {
+                result: Ok("ur-abc → closed (force)".into()),
+            }),
+        );
+        // Force close success is silent (no banner).
+        assert!(new_model.banner.is_none());
+        assert!(new_model.status.is_none());
+    }
+
+    #[test]
+    fn ticket_op_result_force_closed_error_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::ForceClosed {
+                result: Err("rpc failed".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_priority_set_success_is_silent() {
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::PrioritySet {
+                result: Ok("Priority set to P2 for ur-abc".into()),
+            }),
+        );
+        // Priority set success is silent.
+        assert!(new_model.banner.is_none());
+    }
+
+    #[test]
+    fn ticket_op_result_priority_set_error_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::PrioritySet {
+                result: Err("update failed".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_created_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Created {
+                result: Ok("Created ur-new".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_design_launched_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::DesignLaunched {
+                result: Ok("Launched design worker for ur-des".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_redriven_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Redriven {
+                result: Ok("Redrove ur-red to verifying".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn ticket_op_result_clears_status_before_banner() {
+        use crate::v2::msg::TicketOpResultMsg;
+        // Set a status first, then handle a result.
+        let model = Model::initial();
+        let (model, _) = update(model, Msg::StatusShow("In progress...".into()));
+        assert!(model.status.is_some());
+
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Dispatched {
+                result: Ok("Done".into()),
+            }),
+        );
+        assert!(new_model.status.is_none());
     }
 }

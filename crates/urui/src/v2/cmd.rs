@@ -19,6 +19,8 @@ pub enum Cmd {
     SubscribeUiEvents,
     /// Stop (kill) a worker by its ID.
     StopWorker { worker_id: String },
+    /// Execute a ticket operation (dispatch, close, priority, create, etc.).
+    TicketOp(super::msg::TicketOpMsg),
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

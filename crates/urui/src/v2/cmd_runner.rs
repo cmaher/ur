@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use super::cmd::{Cmd, FetchCmd};
-use super::msg::{DataMsg, Msg, UiEventItem};
+use super::msg::{DataMsg, Msg, TicketOpMsg, TicketOpResultMsg, UiEventItem};
 
 /// Executes `Cmd` values produced by the update function and sends result
 /// `Msg`s back through the event channel.
@@ -47,6 +47,7 @@ impl CmdRunner {
             Cmd::Fetch(fetch) => self.execute_fetch(fetch),
             Cmd::SubscribeUiEvents => self.subscribe_ui_events(),
             Cmd::StopWorker { worker_id } => self.execute_stop_worker(worker_id),
+            Cmd::TicketOp(op) => self.execute_ticket_op(op),
         }
     }
 
@@ -83,6 +84,174 @@ impl CmdRunner {
                 worker_id,
                 result,
             })));
+        });
+    }
+
+    /// Route a ticket operation to the appropriate handler method.
+    fn execute_ticket_op(&self, op: TicketOpMsg) {
+        match op {
+            TicketOpMsg::Dispatch {
+                ticket_id,
+                project_key,
+                image_id,
+            }
+            | TicketOpMsg::DispatchAll {
+                ticket_id,
+                project_key,
+                image_id,
+            } => self.exec_dispatch(ticket_id, project_key, image_id),
+            TicketOpMsg::Close { ticket_id } => self.exec_close(ticket_id),
+            TicketOpMsg::ForceClose { ticket_id } => self.exec_force_close(ticket_id),
+            TicketOpMsg::SetPriority {
+                ticket_id,
+                priority,
+            } => self.exec_set_priority(ticket_id, priority),
+            TicketOpMsg::Create { pending } => self.exec_create(pending),
+            TicketOpMsg::CreateAndDispatch {
+                pending,
+                project_key,
+                image_id,
+            } => self.exec_create_and_dispatch(pending, project_key, image_id),
+            TicketOpMsg::CreateAndDesign {
+                pending,
+                project_key,
+                image_id,
+            } => self.exec_create_and_design(pending, project_key, image_id),
+            TicketOpMsg::LaunchDesign {
+                ticket_id,
+                project_key,
+                image_id,
+            } => self.exec_launch_design(ticket_id, project_key, image_id),
+            TicketOpMsg::Redrive { ticket_id } => self.exec_redrive(ticket_id),
+        }
+    }
+
+    fn exec_dispatch(&self, ticket_id: String, project_key: String, image_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: dispatching ticket");
+            let result = dispatch_ticket(port, &ticket_id, &project_key, &image_id).await;
+            let msg = TicketOpResultMsg::Dispatched {
+                result: result.map(|()| format!("Dispatched {ticket_id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_close(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: closing ticket");
+            let result = update_ticket_status(port, &ticket_id, "closed", false).await;
+            let msg = TicketOpResultMsg::Closed {
+                result: result.map(|()| format!("{ticket_id} → closed")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_force_close(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: force-closing ticket");
+            let result = update_ticket_status(port, &ticket_id, "closed", true).await;
+            let msg = TicketOpResultMsg::ForceClosed {
+                result: result.map(|()| format!("{ticket_id} → closed (force)")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_set_priority(&self, ticket_id: String, priority: i64) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, priority, "v2: setting ticket priority");
+            let result = update_ticket_priority(port, &ticket_id, priority).await;
+            let msg = TicketOpResultMsg::PrioritySet {
+                result: result.map(|()| format!("Priority set to P{priority} for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_create(&self, pending: super::msg::PendingTicket) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, project = %pending.project, "v2: creating ticket");
+            let result = create_ticket(port, &pending).await;
+            let msg = TicketOpResultMsg::Created {
+                result: result.map(|id| format!("Created {id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_create_and_dispatch(
+        &self,
+        pending: super::msg::PendingTicket,
+        project_key: String,
+        image_id: String,
+    ) {
+        let tx = self.msg_tx.clone();
+        let tx2 = tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, project = %pending.project, "v2: creating and dispatching ticket");
+            let result = create_and_dispatch(port, &pending, &project_key, &image_id, &tx2).await;
+            let msg = TicketOpResultMsg::Created {
+                result: result.map(|id| format!("Created and dispatched {id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_create_and_design(
+        &self,
+        pending: super::msg::PendingTicket,
+        project_key: String,
+        image_id: String,
+    ) {
+        let tx = self.msg_tx.clone();
+        let tx2 = tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, project = %pending.project, "v2: creating ticket with design worker");
+            let result = create_and_design(port, &pending, &project_key, &image_id, &tx2).await;
+            let msg = TicketOpResultMsg::Created {
+                result: result.map(|id| format!("Created {id} with design worker")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_launch_design(&self, ticket_id: String, project_key: String, image_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: launching design worker");
+            let result = launch_design_worker(port, &ticket_id, &project_key, &image_id).await;
+            let msg = TicketOpResultMsg::DesignLaunched {
+                result: result.map(|()| format!("Launched design worker for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_redrive(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: redriving ticket");
+            let result = redrive_ticket(port, &ticket_id).await;
+            let msg = TicketOpResultMsg::Redriven {
+                result: result.map(|()| format!("Redrove {ticket_id} to verifying")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
         });
     }
 
@@ -415,6 +584,247 @@ fn ui_event_type_to_str(t: ur_rpc::proto::ticket::UiEventType) -> String {
         UiEventType::Worker => "worker".to_owned(),
         UiEventType::Unknown => "unknown".to_owned(),
     }
+}
+
+/// Dispatch a ticket: create workflow + launch worker container.
+///
+/// Checks if the ticket is a design type first; if so, routes through
+/// the design worker launch path instead.
+async fn dispatch_ticket(
+    port: u16,
+    ticket_id: &str,
+    project_key: &str,
+    image_id: &str,
+) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::core::WorkerLaunchRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+    use ur_rpc::proto::ticket::{CreateWorkflowRequest, GetTicketRequest};
+
+    // Check if design ticket
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .get_ticket(GetTicketRequest {
+            id: ticket_id.to_owned(),
+            activity_author_filter: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let is_design = resp
+        .into_inner()
+        .ticket
+        .map(|t| t.ticket_type == "design")
+        .unwrap_or(false);
+
+    if is_design {
+        return launch_design_worker(port, ticket_id, project_key, image_id).await;
+    }
+
+    // Create workflow
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut ticket_client = TicketServiceClient::new(channel);
+    ticket_client
+        .create_workflow(CreateWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+            status: ur_rpc::lifecycle::AWAITING_DISPATCH.to_owned(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Launch worker
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut core_client = CoreServiceClient::new(channel);
+    core_client
+        .worker_launch(WorkerLaunchRequest {
+            worker_id: ticket_id.to_owned(),
+            image_id: image_id.to_owned(),
+            cpus: 2,
+            memory: "8G".into(),
+            workspace_dir: String::new(),
+            claude_credentials: String::new(),
+            mode: String::new(),
+            skills: Vec::new(),
+            project_key: project_key.to_owned(),
+            context_repos: vec![],
+            dispatch: false,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Update a ticket's status, optionally forcing recursive close of children.
+async fn update_ticket_status(
+    port: u16,
+    ticket_id: &str,
+    status: &str,
+    force: bool,
+) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::UpdateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: None,
+            status: Some(status.to_owned()),
+            title: None,
+            body: None,
+            force,
+            ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Update a ticket's priority.
+async fn update_ticket_priority(port: u16, ticket_id: &str, priority: i64) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::UpdateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: Some(priority),
+            status: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Create a ticket, returning the new ticket ID.
+async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result<String, String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::CreateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .create_ticket(CreateTicketRequest {
+            project: pending.project.clone(),
+            ticket_type: "task".to_owned(),
+            status: String::new(),
+            priority: pending.priority,
+            parent_id: None,
+            title: pending.title.clone(),
+            body: String::new(),
+            id: None,
+            created_at: None,
+            wip: false,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resp.into_inner().id)
+}
+
+/// Create a ticket and dispatch it (create workflow + launch worker).
+async fn create_and_dispatch(
+    port: u16,
+    pending: &super::msg::PendingTicket,
+    project_key: &str,
+    image_id: &str,
+    tx: &tokio::sync::mpsc::UnboundedSender<Msg>,
+) -> Result<String, String> {
+    let ticket_id = create_ticket(port, pending).await?;
+    let _ = tx.send(Msg::StatusShow(format!(
+        "Launching worker for {ticket_id}..."
+    )));
+    dispatch_ticket(port, &ticket_id, project_key, image_id).await?;
+    Ok(ticket_id)
+}
+
+/// Create a ticket and launch a design worker for it.
+async fn create_and_design(
+    port: u16,
+    pending: &super::msg::PendingTicket,
+    project_key: &str,
+    image_id: &str,
+    tx: &tokio::sync::mpsc::UnboundedSender<Msg>,
+) -> Result<String, String> {
+    let ticket_id = create_ticket(port, pending).await?;
+    let _ = tx.send(Msg::StatusShow(format!(
+        "Launching design worker for {ticket_id}..."
+    )));
+    launch_design_worker(port, &ticket_id, project_key, image_id).await?;
+    Ok(ticket_id)
+}
+
+/// Launch a design worker for an existing ticket (no workflow).
+fn launch_design_worker(
+    port: u16,
+    ticket_id: &str,
+    project_key: &str,
+    image_id: &str,
+) -> impl std::future::Future<Output = Result<(), String>> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::core::WorkerLaunchRequest;
+    use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+
+    let ticket_id = ticket_id.to_owned();
+    let project_key = project_key.to_owned();
+    let image_id = image_id.to_owned();
+
+    async move {
+        let channel = connect(port).await.map_err(|e| e.to_string())?;
+        let mut core_client = CoreServiceClient::new(channel);
+        core_client
+            .worker_launch(WorkerLaunchRequest {
+                worker_id: ticket_id,
+                image_id,
+                cpus: 2,
+                memory: "8G".into(),
+                workspace_dir: String::new(),
+                claude_credentials: String::new(),
+                mode: "design".to_owned(),
+                skills: Vec::new(),
+                project_key,
+                context_repos: vec![],
+                dispatch: true,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+/// Redrive a ticket to verifying status.
+async fn redrive_ticket(port: u16, ticket_id: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::RedriveTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .redrive_ticket(RedriveTicketRequest {
+            id: ticket_id.to_owned(),
+            to_status: "verifying".to_owned(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]

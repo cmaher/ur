@@ -37,6 +37,10 @@ pub enum Msg {
     StatusClear,
     /// Overlay messages for modal overlays.
     Overlay(OverlayMsg),
+    /// A ticket operation request (user action → Cmd + status message).
+    TicketOp(TicketOpMsg),
+    /// A ticket operation result (gRPC completed → banner).
+    TicketOpResult(TicketOpResultMsg),
 }
 
 /// Messages produced by overlay components.
@@ -257,6 +261,74 @@ pub enum DataMsg {
         worker_id: String,
         result: Result<(), String>,
     },
+}
+
+/// Ticket operation request messages. Each variant carries the parameters needed
+/// to initiate the operation. The update function returns a `Cmd::TicketOp` and
+/// sets a status message while the operation is in flight.
+#[derive(Debug, Clone)]
+pub enum TicketOpMsg {
+    /// Dispatch a single ticket (create workflow + launch worker).
+    Dispatch {
+        ticket_id: String,
+        project_key: String,
+        image_id: String,
+    },
+    /// Dispatch the parent ticket from a detail view (same RPC as Dispatch,
+    /// but targets the parent rather than a selected child).
+    DispatchAll {
+        ticket_id: String,
+        project_key: String,
+        image_id: String,
+    },
+    /// Close a ticket by setting its status to "closed".
+    Close { ticket_id: String },
+    /// Force-close a ticket and all its open children.
+    ForceClose { ticket_id: String },
+    /// Set a ticket's priority.
+    SetPriority { ticket_id: String, priority: i64 },
+    /// Create a new ticket from a pending ticket template.
+    Create { pending: PendingTicket },
+    /// Create a ticket and immediately dispatch it.
+    CreateAndDispatch {
+        pending: PendingTicket,
+        project_key: String,
+        image_id: String,
+    },
+    /// Create a ticket and launch a design worker for it.
+    CreateAndDesign {
+        pending: PendingTicket,
+        project_key: String,
+        image_id: String,
+    },
+    /// Launch a design worker for an existing ticket.
+    LaunchDesign {
+        ticket_id: String,
+        project_key: String,
+        image_id: String,
+    },
+    /// Redrive a ticket's workflow to verifying status.
+    Redrive { ticket_id: String },
+}
+
+/// Ticket operation result messages. Each variant carries the outcome of a
+/// completed gRPC call. The update function clears the status and shows a banner.
+#[derive(Debug, Clone)]
+pub enum TicketOpResultMsg {
+    /// Dispatch completed.
+    Dispatched { result: Result<String, String> },
+    /// Close completed.
+    Closed { result: Result<String, String> },
+    /// Force-close completed.
+    ForceClosed { result: Result<String, String> },
+    /// Priority set completed.
+    PrioritySet { result: Result<String, String> },
+    /// Ticket created.
+    Created { result: Result<String, String> },
+    /// Design worker launched.
+    DesignLaunched { result: Result<String, String> },
+    /// Redrive completed.
+    Redriven { result: Result<String, String> },
 }
 
 #[cfg(test)]
