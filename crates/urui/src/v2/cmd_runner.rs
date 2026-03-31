@@ -2,7 +2,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
 use super::cmd::{Cmd, FetchCmd};
-use super::msg::{DataMsg, Msg, TicketOpMsg, TicketOpResultMsg, UiEventItem};
+use super::msg::{
+    DataMsg, FlowOpMsg, FlowOpResultMsg, Msg, TicketOpMsg, TicketOpResultMsg, UiEventItem,
+    WorkerOpMsg, WorkerOpResultMsg,
+};
 
 /// Executes `Cmd` values produced by the update function and sends result
 /// `Msg`s back through the event channel.
@@ -48,6 +51,8 @@ impl CmdRunner {
             Cmd::SubscribeUiEvents => self.subscribe_ui_events(),
             Cmd::StopWorker { worker_id } => self.execute_stop_worker(worker_id),
             Cmd::TicketOp(op) => self.execute_ticket_op(op),
+            Cmd::FlowOp(op) => self.execute_flow_op(op),
+            Cmd::WorkerOp(op) => self.execute_worker_op(op),
         }
     }
 
@@ -252,6 +257,46 @@ impl CmdRunner {
                 result: result.map(|()| format!("Redrove {ticket_id} to verifying")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    /// Route a flow operation to the appropriate handler method.
+    fn execute_flow_op(&self, op: FlowOpMsg) {
+        match op {
+            FlowOpMsg::Cancel { ticket_id } => self.exec_flow_cancel(ticket_id),
+        }
+    }
+
+    fn exec_flow_cancel(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: cancelling workflow");
+            let result = cancel_workflow(port, &ticket_id).await;
+            let msg = FlowOpResultMsg::Cancelled {
+                result: result.map(|()| format!("Cancelled workflow for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::FlowOpResult(msg));
+        });
+    }
+
+    /// Route a worker operation to the appropriate handler method.
+    fn execute_worker_op(&self, op: WorkerOpMsg) {
+        match op {
+            WorkerOpMsg::Kill { worker_id } => self.exec_worker_kill(worker_id),
+        }
+    }
+
+    fn exec_worker_kill(&self, worker_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %worker_id, "v2: killing worker");
+            let result = stop_worker(port, &worker_id).await;
+            let msg = WorkerOpResultMsg::Killed {
+                result: result.map(|()| format!("Killed worker {worker_id}")),
+            };
+            let _ = tx.send(Msg::WorkerOpResult(msg));
         });
     }
 
@@ -824,6 +869,26 @@ async fn redrive_ticket(port: u16, ticket_id: &str) -> Result<(), String> {
         })
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Cancel the active workflow for a ticket via `CancelWorkflow` gRPC.
+async fn cancel_workflow(port: u16, ticket_id: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::CancelWorkflowRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %ticket_id, error = %e, "v2: workflow cancel failed");
+            e.to_string()
+        })?;
     Ok(())
 }
 

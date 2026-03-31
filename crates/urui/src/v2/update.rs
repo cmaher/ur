@@ -6,7 +6,10 @@ use super::model::{
     BannerModel, FlowListData, LoadState, Model, StatusModel, TicketActivitiesData,
     TicketDetailData, TicketDetailModel, TicketListData, WorkerListData,
 };
-use super::msg::{DataMsg, Msg, NavMsg, TicketOpMsg, TicketOpResultMsg, UiEventItem};
+use super::msg::{
+    DataMsg, FlowOpMsg, FlowOpResultMsg, Msg, NavMsg, TicketOpMsg, TicketOpResultMsg, UiEventItem,
+    WorkerOpMsg, WorkerOpResultMsg,
+};
 use super::navigation::TabId;
 
 /// Pure update function: given the current model and a message, produces a new
@@ -33,6 +36,10 @@ pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
         Msg::Overlay(overlay_msg) => super::overlay_update::handle_overlay(model, overlay_msg),
         Msg::TicketOp(op_msg) => handle_ticket_op(model, op_msg),
         Msg::TicketOpResult(result_msg) => handle_ticket_op_result(model, result_msg),
+        Msg::FlowOp(op_msg) => handle_flow_op(model, op_msg),
+        Msg::FlowOpResult(result_msg) => handle_flow_op_result(model, result_msg),
+        Msg::WorkerOp(op_msg) => handle_worker_op(model, op_msg),
+        Msg::WorkerOpResult(result_msg) => handle_worker_op_result(model, result_msg),
     }
 }
 
@@ -463,6 +470,84 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
                 )
             }
         }
+        Err(message) => update(
+            model,
+            Msg::BannerShow {
+                message,
+                variant: BannerVariant::Error,
+            },
+        ),
+    }
+}
+
+/// Handle a flow operation request: set status message and issue the command.
+fn handle_flow_op(model: Model, op: FlowOpMsg) -> (Model, Vec<Cmd>) {
+    let status_text = match &op {
+        FlowOpMsg::Cancel { ticket_id } => format!("Cancelling workflow for {ticket_id}..."),
+    };
+
+    let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
+    cmds.push(Cmd::FlowOp(op));
+    (model, cmds)
+}
+
+/// Handle a flow operation result: clear status, show banner.
+fn handle_flow_op_result(model: Model, result_msg: FlowOpResultMsg) -> (Model, Vec<Cmd>) {
+    use super::components::banner::BannerVariant;
+
+    let (model, _) = update(model, Msg::StatusClear);
+
+    let result = match result_msg {
+        FlowOpResultMsg::Cancelled { result } => result,
+    };
+
+    match result {
+        Ok(message) => update(
+            model,
+            Msg::BannerShow {
+                message,
+                variant: BannerVariant::Success,
+            },
+        ),
+        Err(message) => update(
+            model,
+            Msg::BannerShow {
+                message,
+                variant: BannerVariant::Error,
+            },
+        ),
+    }
+}
+
+/// Handle a worker operation request: set status message and issue the command.
+fn handle_worker_op(model: Model, op: WorkerOpMsg) -> (Model, Vec<Cmd>) {
+    let status_text = match &op {
+        WorkerOpMsg::Kill { worker_id } => format!("Killing worker {worker_id}..."),
+    };
+
+    let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
+    cmds.push(Cmd::WorkerOp(op));
+    (model, cmds)
+}
+
+/// Handle a worker operation result: clear status, show banner.
+fn handle_worker_op_result(model: Model, result_msg: WorkerOpResultMsg) -> (Model, Vec<Cmd>) {
+    use super::components::banner::BannerVariant;
+
+    let (model, _) = update(model, Msg::StatusClear);
+
+    let result = match result_msg {
+        WorkerOpResultMsg::Killed { result } => result,
+    };
+
+    match result {
+        Ok(message) => update(
+            model,
+            Msg::BannerShow {
+                message,
+                variant: BannerVariant::Success,
+            },
+        ),
         Err(message) => update(
             model,
             Msg::BannerShow {
@@ -1593,6 +1678,151 @@ mod tests {
         let (new_model, _) = update(
             model,
             Msg::TicketOpResult(TicketOpResultMsg::Dispatched {
+                result: Ok("Done".into()),
+            }),
+        );
+        assert!(new_model.status.is_none());
+    }
+
+    // ── Flow operation tests ──────────────────────────────────────────
+
+    #[test]
+    fn flow_op_cancel_sets_status_and_cmd() {
+        use crate::v2::msg::FlowOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::FlowOp(FlowOpMsg::Cancel {
+                ticket_id: "ur-abc".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Cancelling")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::FlowOp(_))));
+    }
+
+    #[test]
+    fn flow_op_result_cancelled_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Cancelled {
+                result: Ok("Cancelled workflow for ur-abc".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn flow_op_result_cancelled_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Cancelled {
+                result: Err("connection refused".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
+    fn flow_op_result_clears_status_before_banner() {
+        use crate::v2::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (model, _) = update(model, Msg::StatusShow("Cancelling...".into()));
+        assert!(model.status.is_some());
+
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Cancelled {
+                result: Ok("Done".into()),
+            }),
+        );
+        assert!(new_model.status.is_none());
+    }
+
+    // ── Worker operation tests ────────────────────────────────────────
+
+    #[test]
+    fn worker_op_kill_sets_status_and_cmd() {
+        use crate::v2::msg::WorkerOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::WorkerOp(WorkerOpMsg::Kill {
+                worker_id: "wk-123".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("Killing"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::WorkerOp(_))));
+    }
+
+    #[test]
+    fn worker_op_result_killed_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::WorkerOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::WorkerOpResult(WorkerOpResultMsg::Killed {
+                result: Ok("Killed worker wk-123".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn worker_op_result_killed_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::WorkerOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::WorkerOpResult(WorkerOpResultMsg::Killed {
+                result: Err("worker not found".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
+    fn worker_op_result_clears_status_before_banner() {
+        use crate::v2::msg::WorkerOpResultMsg;
+        let model = Model::initial();
+        let (model, _) = update(model, Msg::StatusShow("Killing worker...".into()));
+        assert!(model.status.is_some());
+
+        let (new_model, _) = update(
+            model,
+            Msg::WorkerOpResult(WorkerOpResultMsg::Killed {
                 result: Ok("Done".into()),
             }),
         );

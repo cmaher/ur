@@ -41,6 +41,14 @@ pub enum Msg {
     TicketOp(TicketOpMsg),
     /// A ticket operation result (gRPC completed → banner).
     TicketOpResult(TicketOpResultMsg),
+    /// A flow operation request (user action → Cmd + status message).
+    FlowOp(FlowOpMsg),
+    /// A flow operation result (gRPC completed → banner).
+    FlowOpResult(FlowOpResultMsg),
+    /// A worker operation request (user action → Cmd + status message).
+    WorkerOp(WorkerOpMsg),
+    /// A worker operation result (gRPC completed → banner).
+    WorkerOpResult(WorkerOpResultMsg),
 }
 
 /// Messages produced by overlay components.
@@ -329,6 +337,40 @@ pub enum TicketOpResultMsg {
     DesignLaunched { result: Result<String, String> },
     /// Redrive completed.
     Redriven { result: Result<String, String> },
+}
+
+/// Flow operation request messages. Each variant carries the parameters needed
+/// to initiate the operation. The update function returns a `Cmd::FlowOp` and
+/// sets a status message while the operation is in flight.
+#[derive(Debug, Clone)]
+pub enum FlowOpMsg {
+    /// Cancel the active workflow for a ticket.
+    Cancel { ticket_id: String },
+}
+
+/// Flow operation result messages. Each variant carries the outcome of a
+/// completed gRPC call. The update function clears the status and shows a banner.
+#[derive(Debug, Clone)]
+pub enum FlowOpResultMsg {
+    /// Cancel completed.
+    Cancelled { result: Result<String, String> },
+}
+
+/// Worker operation request messages. Each variant carries the parameters needed
+/// to initiate the operation. The update function returns a `Cmd::WorkerOp` and
+/// sets a status message while the operation is in flight.
+#[derive(Debug, Clone)]
+pub enum WorkerOpMsg {
+    /// Kill (stop) a worker by its ID.
+    Kill { worker_id: String },
+}
+
+/// Worker operation result messages. Each variant carries the outcome of a
+/// completed gRPC call. The update function clears the status and shows a banner.
+#[derive(Debug, Clone)]
+pub enum WorkerOpResultMsg {
+    /// Kill completed.
+    Killed { result: Result<String, String> },
 }
 
 #[cfg(test)]

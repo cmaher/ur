@@ -21,6 +21,10 @@ pub enum Cmd {
     StopWorker { worker_id: String },
     /// Execute a ticket operation (dispatch, close, priority, create, etc.).
     TicketOp(super::msg::TicketOpMsg),
+    /// Execute a flow operation (cancel, etc.).
+    FlowOp(super::msg::FlowOpMsg),
+    /// Execute a worker operation (kill, etc.).
+    WorkerOp(super::msg::WorkerOpMsg),
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.
