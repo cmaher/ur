@@ -2,6 +2,7 @@ mod cmd;
 mod cmd_runner;
 mod component;
 pub mod components;
+mod create_ticket;
 pub mod input;
 mod model;
 mod msg;

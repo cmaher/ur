@@ -410,6 +410,8 @@ pub enum ActiveOverlay {
     },
     /// Project input text overlay.
     ProjectInput { buffer: String },
+    /// Title input text overlay.
+    TitleInput { buffer: String },
     /// Settings overlay.
     Settings {
         level: SettingsLevel,
@@ -464,6 +466,23 @@ impl Default for TicketFilters {
     }
 }
 
+/// Tracks the multi-step create ticket flow state.
+///
+/// The create ticket flow is a sequence of overlays:
+/// 1. ProjectInput — user enters the project key
+/// 2. TitleInput — user enters the ticket title
+/// 3. CreateActionMenu — user chooses the action (Create, Dispatch, Design, Abandon)
+///
+/// This state accumulates data as each step completes and is cleared when the
+/// flow finishes (either by completing or being cancelled).
+#[derive(Debug, Clone)]
+pub struct CreateTicketState {
+    /// The project key entered in step 1.
+    pub project: String,
+    /// Optional parent ticket ID (set when creating a child from the detail page).
+    pub parent_id: Option<String>,
+}
+
 /// The top-level application model for the v2 TEA architecture.
 ///
 /// This struct holds all application state. It is owned by the main loop and
@@ -503,6 +522,8 @@ pub struct Model {
     pub ticket_body: Option<TicketBodyModel>,
     /// Notification tracking model for workflow state transitions.
     pub notifications: NotificationModel,
+    /// In-progress create ticket flow state, if any.
+    pub create_ticket_state: Option<CreateTicketState>,
 }
 
 impl Model {
@@ -538,6 +559,7 @@ impl Model {
             ticket_activities: None,
             ticket_body: None,
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
+            create_ticket_state: None,
         }
     }
 }

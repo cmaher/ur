@@ -134,6 +134,19 @@ pub enum OverlayMsg {
     /// The user cancelled project input.
     ProjectInputCancelled,
 
+    /// Open the title input overlay.
+    OpenTitleInput,
+    /// A character was typed into the title input.
+    TitleInputChar(char),
+    /// Backspace in the title input.
+    TitleInputBackspace,
+    /// The user pressed Enter in the title input (resolved by update to TitleInputSubmitted).
+    TitleInputSubmitRequest,
+    /// The user submitted title input text.
+    TitleInputSubmitted(String),
+    /// The user cancelled title input.
+    TitleInputCancelled,
+
     /// Open the settings overlay.
     OpenSettings { custom_theme_names: Vec<String> },
     /// Esc was pressed in the settings overlay (back or close depending on level).
@@ -183,6 +196,8 @@ pub struct PendingTicket {
     pub project: String,
     pub title: String,
     pub priority: i64,
+    /// Optional parent ticket ID for child ticket creation.
+    pub parent_id: Option<String>,
 }
 
 /// A single UI event received from the server's event stream.
@@ -233,6 +248,8 @@ pub enum NavMsg {
     TicketListRedrive,
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
+    /// Create a new ticket (opens the create ticket flow).
+    TicketListCreate,
 
     // ── Ticket detail page messages ────────────────────────────────
     /// Navigate within the ticket detail children table by delta (+1 down, -1 up).

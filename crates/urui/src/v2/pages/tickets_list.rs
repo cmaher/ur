@@ -84,6 +84,7 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         NavMsg::TicketListDesign => handle_design(model),
         NavMsg::TicketListRedrive => handle_redrive(model),
         NavMsg::TicketListGoto => handle_goto(model),
+        NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
         _ => (model, vec![]),
     }
 }
@@ -363,7 +364,7 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
         KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketListDesign)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketListRedrive)),
-        KeyCode::Char('C') => Some(Msg::Overlay(OverlayMsg::OpenProjectInput)),
+        KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketListCreate)),
         _ => None,
     }
 }
@@ -502,8 +503,8 @@ mod tests {
         let handler = TicketListHandler;
         let key = make_key(KeyCode::Char('C'), KeyModifiers::SHIFT);
         match handler.handle_key(key) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::OpenProjectInput)) => {}
-            other => panic!("expected project input, got {other:?}"),
+            InputResult::Capture(Msg::Nav(NavMsg::TicketListCreate)) => {}
+            other => panic!("expected ticket list create, got {other:?}"),
         }
     }
 

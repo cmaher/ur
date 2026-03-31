@@ -11,3 +11,4 @@ pub mod project_input;
 pub mod settings_overlay;
 pub mod status;
 pub mod ticket_table;
+pub mod title_input;

@@ -133,6 +133,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListDesign
             | NavMsg::TicketListRedrive
             | NavMsg::TicketListGoto
+            | NavMsg::TicketListCreate
     ) {
         return Some(super::pages::tickets_list::handle_ticket_table_nav(
             model, nav_msg,
@@ -1550,6 +1551,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test ticket".into(),
                     priority: 0,
+                    parent_id: None,
                 },
             }),
         );

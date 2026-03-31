@@ -19,6 +19,7 @@ use super::components::project_input::ProjectInputHandler;
 use super::components::settings_overlay::{
     SettingsOverlayHandler, build_settings_state, selected_theme_name, snap_cursor,
 };
+use super::components::title_input::TitleInputHandler;
 use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
 use super::msg::OverlayMsg;
 
@@ -267,10 +268,11 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             (model, vec![])
         }
         OverlayMsg::CreateActionSelected(action) => {
-            // Legacy path: action without pending context. No-op since the
-            // pending data is now extracted and handled directly in
-            // CreateActionConfirm/QuickSelect above.
-            let _ = action;
+            // Esc sends Abandon here directly (without going through Confirm).
+            // Close the overlay and discard the pending ticket.
+            if matches!(action, super::msg::CreateAction::Abandon) {
+                close_overlay(&mut model);
+            }
             (model, vec![])
         }
 
@@ -302,13 +304,51 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
-        OverlayMsg::ProjectInputSubmitted(_) => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
+        OverlayMsg::ProjectInputSubmitted(project) => {
+            super::create_ticket::handle_project_submitted(model, project)
         }
         OverlayMsg::ProjectInputCancelled => {
             close_overlay(&mut model);
+            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
+            (model, cmds)
+        }
+
+        // === Title Input ===
+        OverlayMsg::OpenTitleInput => {
+            model.active_overlay = Some(ActiveOverlay::TitleInput {
+                buffer: String::new(),
+            });
+            model.input_stack.push(Box::new(TitleInputHandler));
             (model, vec![])
+        }
+        OverlayMsg::TitleInputChar(c) => {
+            if let Some(ActiveOverlay::TitleInput { ref mut buffer }) = model.active_overlay {
+                buffer.push(c);
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TitleInputBackspace => {
+            if let Some(ActiveOverlay::TitleInput { ref mut buffer }) = model.active_overlay {
+                buffer.pop();
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TitleInputSubmitRequest => {
+            if let Some(ActiveOverlay::TitleInput { ref buffer }) = model.active_overlay {
+                let text = buffer.clone();
+                close_overlay(&mut model);
+                return super::create_ticket::handle_title_submitted(model, text);
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TitleInputSubmitted(_) => {
+            // Terminal message — handled by TitleInputSubmitRequest above.
+            (model, vec![])
+        }
+        OverlayMsg::TitleInputCancelled => {
+            close_overlay(&mut model);
+            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
+            (model, cmds)
         }
 
         // === Settings Overlay ===
@@ -905,6 +945,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    parent_id: None,
                 },
             },
         );
@@ -924,6 +965,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    parent_id: None,
                 },
             },
         );
@@ -947,6 +989,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    parent_id: None,
                 },
             },
         );

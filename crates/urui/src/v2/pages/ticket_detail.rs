@@ -474,8 +474,7 @@ fn handle_open_activities(mut model: Model) -> (Model, Vec<Cmd>) {
 
 /// Open the project input overlay for creating a child ticket.
 fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
-    let msg = Msg::Overlay(OverlayMsg::OpenProjectInput);
-    crate::v2::update::update(model, msg)
+    crate::v2::create_ticket::start_create_child_flow(model)
 }
 
 /// Get the currently selected child ticket, if any.

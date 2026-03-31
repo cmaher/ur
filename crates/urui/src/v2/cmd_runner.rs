@@ -779,7 +779,7 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
             ticket_type: "task".to_owned(),
             status: String::new(),
             priority: pending.priority,
-            parent_id: None,
+            parent_id: pending.parent_id.clone(),
             title: pending.title.clone(),
             body: String::new(),
             id: None,
