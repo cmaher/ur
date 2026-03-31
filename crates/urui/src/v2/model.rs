@@ -8,6 +8,7 @@ use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowIn
 use super::components::banner::BannerVariant;
 use super::input::{GlobalHandler, InputStack};
 use super::navigation::{NavigationModel, TabId};
+use super::notifications::NotificationModel;
 
 /// Duration after which success banners auto-dismiss.
 const BANNER_AUTO_DISMISS_SECS: u64 = 5;
@@ -478,6 +479,8 @@ pub struct Model {
     pub ticket_activities: Option<TicketActivitiesModel>,
     /// Sub-model for the ticket body page (set when viewing body).
     pub ticket_body: Option<TicketBodyModel>,
+    /// Notification tracking model for workflow state transitions.
+    pub notifications: NotificationModel,
 }
 
 impl Model {
@@ -508,6 +511,7 @@ impl Model {
             ticket_filters: TicketFilters::default(),
             ticket_activities: None,
             ticket_body: None,
+            notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
         }
     }
 }

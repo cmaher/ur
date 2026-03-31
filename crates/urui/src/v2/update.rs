@@ -584,10 +584,24 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
         }
         DataMsg::FlowsLoaded(result) => {
             model.flow_list.data = match result {
-                Ok((workflows, total_count)) => LoadState::Loaded(FlowListData {
-                    workflows,
-                    total_count,
-                }),
+                Ok((workflows, total_count)) => {
+                    let (notif_msgs, notif_cmds) =
+                        model.notifications.process_flow_updates(&workflows);
+                    let data = LoadState::Loaded(FlowListData {
+                        workflows,
+                        total_count,
+                    });
+                    model.flow_list.data = data;
+                    // Process the last notification message (banner) through update.
+                    // We only show the most recent one to avoid banner churn.
+                    let mut cmds = notif_cmds;
+                    if let Some(msg) = notif_msgs.into_iter().last() {
+                        let (m, extra_cmds) = update(model, msg);
+                        model = m;
+                        cmds.extend(extra_cmds);
+                    }
+                    return (model, cmds);
+                }
                 Err(e) => LoadState::Error(e),
             };
         }

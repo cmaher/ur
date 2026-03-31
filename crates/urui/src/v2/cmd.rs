@@ -25,6 +25,8 @@ pub enum Cmd {
     FlowOp(super::msg::FlowOpMsg),
     /// Execute a worker operation (kill, etc.).
     WorkerOp(super::msg::WorkerOpMsg),
+    /// Fire a macOS desktop notification via terminal-notifier.
+    FireDesktopNotification(super::notifications::DesktopNotification),
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

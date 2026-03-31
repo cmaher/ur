@@ -53,6 +53,13 @@ impl CmdRunner {
             Cmd::TicketOp(op) => self.execute_ticket_op(op),
             Cmd::FlowOp(op) => self.execute_flow_op(op),
             Cmd::WorkerOp(op) => self.execute_worker_op(op),
+            Cmd::FireDesktopNotification(notification) => {
+                // Fire-and-forget: spawn a blocking task to avoid blocking
+                // the async runtime with process spawn.
+                tokio::task::spawn_blocking(move || {
+                    super::notifications::fire_desktop_notification(&notification, None);
+                });
+            }
         }
     }
 

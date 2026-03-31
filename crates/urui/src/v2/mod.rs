@@ -6,6 +6,7 @@ pub mod input;
 mod model;
 mod msg;
 pub(crate) mod navigation;
+mod notifications;
 mod overlay_update;
 pub mod pages;
 mod update;
@@ -124,6 +125,7 @@ async fn tea_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyh
     });
 
     let mut model = Model::initial();
+    model.notifications = notifications::NotificationModel::new(config.tui.notifications.clone());
 
     // Subscribe to the server's UI event stream for live updates.
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
