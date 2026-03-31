@@ -318,6 +318,11 @@ impl InputHandler for TicketListHandler {
             },
             // Symbols
             FooterCommand {
+                key_label: "Space".to_string(),
+                description: "Details".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "*".to_string(),
                 description: "Filter".to_string(),
                 common: false,
@@ -362,7 +367,7 @@ fn handle_table_key(code: KeyCode) -> Option<Msg> {
         }
         KeyCode::Char('h') | KeyCode::Left => Some(Msg::Nav(NavMsg::TicketTablePageLeft)),
         KeyCode::Char('l') | KeyCode::Right => Some(Msg::Nav(NavMsg::TicketTablePageRight)),
-        KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketTableSelect)),
+        KeyCode::Char(' ') | KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketTableSelect)),
         _ => None,
     }
 }
@@ -485,6 +490,15 @@ mod tests {
     }
 
     #[test]
+    fn handler_captures_space_as_select() {
+        let handler = TicketListHandler;
+        match handler.handle_key(plain_key(KeyCode::Char(' '))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketTableSelect)) => {}
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_captures_enter_as_select() {
         let handler = TicketListHandler;
         match handler.handle_key(plain_key(KeyCode::Enter)) {
@@ -564,6 +578,10 @@ mod tests {
                 .any(|c| c.description == "Filter" && c.key_label == "*")
         );
         assert!(cmds.iter().any(|c| c.description == "Priority"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.description == "Details" && c.key_label == "Space")
+        );
     }
 
     #[test]

@@ -21,7 +21,8 @@ use super::components::settings_overlay::{
 };
 use super::components::title_input::TitleInputHandler;
 use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
-use super::msg::OverlayMsg;
+use super::msg::{GotoTarget, Msg, NavMsg, OverlayMsg};
+use super::navigation::{PageId, TabId};
 
 /// Handle an overlay message, returning updated model and commands.
 pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
@@ -252,14 +253,47 @@ fn handle_goto_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
-        OverlayMsg::GotoSelected(_) => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
-        }
+        OverlayMsg::GotoSelected(target) => handle_goto_selected(model, target),
         OverlayMsg::GotoCancelled => {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
+
+/// Handle a selected goto target by navigating to the appropriate page/tab.
+fn handle_goto_selected(mut model: Model, target: GotoTarget) -> (Model, Vec<Cmd>) {
+    match target.screen.as_str() {
+        "ticket" => {
+            let page = PageId::TicketDetail {
+                ticket_id: target.id,
+            };
+            let mut nav = std::mem::replace(
+                &mut model.navigation_model,
+                super::navigation::NavigationModel::initial(),
+            );
+            let cmds = nav.push(page, &mut model);
+            model.navigation_model = nav;
+            (model, cmds)
+        }
+        "flow" => {
+            // Switch to flows tab, then push flow detail
+            let (mut model, mut cmds) =
+                super::update::update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Flows)));
+            let page = PageId::FlowDetail {
+                ticket_id: target.id,
+            };
+            let mut nav = std::mem::replace(
+                &mut model.navigation_model,
+                super::navigation::NavigationModel::initial(),
+            );
+            let push_cmds = nav.push(page, &mut model);
+            model.navigation_model = nav;
+            cmds.extend(push_cmds);
+            (model, cmds)
+        }
+        "worker" => super::update::update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Workers))),
         _ => (model, vec![]),
     }
 }
