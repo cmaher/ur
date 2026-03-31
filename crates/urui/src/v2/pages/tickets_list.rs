@@ -220,7 +220,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
 /// Input handler for the tickets list page.
 ///
 /// Handles ticket-specific actions: Create (C), Dispatch (D), Open/reopen (O),
-/// Priority (P), Design (S), Close (X), Flows (f), Goto (g), Workers (w),
+/// Priority (P), Design (S), Close (X), Goto (g),
 /// Refresh (r), Filter (*), Settings (,),
 /// plus TicketTable navigation (j/k/h/l/Enter).
 ///
@@ -288,11 +288,6 @@ impl InputHandler for TicketListHandler {
             },
             // Lowercase alphabetical
             FooterCommand {
-                key_label: "f".to_string(),
-                description: "Flows".to_string(),
-                common: false,
-            },
-            FooterCommand {
                 key_label: "g".to_string(),
                 description: "Goto".to_string(),
                 common: false,
@@ -300,11 +295,6 @@ impl InputHandler for TicketListHandler {
             FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "w".to_string(),
-                description: "Workers".to_string(),
                 common: false,
             },
             // Symbols
@@ -383,12 +373,6 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
 /// Handle lowercase action keys.
 fn handle_action_key(code: KeyCode) -> Option<Msg> {
     match code {
-        KeyCode::Char('f') => Some(Msg::Nav(NavMsg::TabSwitch(
-            crate::v2::navigation::TabId::Flows,
-        ))),
-        KeyCode::Char('w') => Some(Msg::Nav(NavMsg::TabSwitch(
-            crate::v2::navigation::TabId::Workers,
-        ))),
         KeyCode::Char('r') => Some(Msg::Nav(NavMsg::TicketListRefresh)),
         KeyCode::Char('g') => Some(Msg::Nav(NavMsg::TicketListGoto)),
         KeyCode::Char('*') => Some(Msg::Overlay(OverlayMsg::OpenFilterMenu)),
@@ -516,14 +500,21 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_f_as_flows_tab() {
+    fn handler_bubbles_f_key() {
         let handler = TicketListHandler;
-        match handler.handle_key(plain_key(KeyCode::Char('f'))) {
-            InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(
-                crate::v2::navigation::TabId::Flows,
-            ))) => {}
-            other => panic!("expected flows tab switch, got {other:?}"),
-        }
+        assert!(matches!(
+            handler.handle_key(plain_key(KeyCode::Char('f'))),
+            InputResult::Bubble
+        ));
+    }
+
+    #[test]
+    fn handler_bubbles_w_key() {
+        let handler = TicketListHandler;
+        assert!(matches!(
+            handler.handle_key(plain_key(KeyCode::Char('w'))),
+            InputResult::Bubble
+        ));
     }
 
     #[test]

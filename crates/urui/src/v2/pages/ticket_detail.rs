@@ -519,7 +519,7 @@ fn build_child_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
 ///
 /// Handles ticket-specific actions on children: Dispatch All (A), Create child (C),
 /// Dispatch (D), Open/reopen (O), Priority (P), Design (S), Redrive (V),
-/// Close (X), activities (a), description (d), filter (f), goto (g),
+/// Close (X), activities (a), toggle-closed (c), description (d), goto (g),
 /// refresh (r), plus children table navigation (j/k/h/l/Enter).
 ///
 /// This is a root page handler dispatched directly from `dispatch_root_page_key`.
@@ -602,7 +602,7 @@ impl InputHandler for TicketDetailHandler {
                 common: false,
             },
             FooterCommand {
-                key_label: "f".to_string(),
+                key_label: "c".to_string(),
                 description: "Toggle closed".to_string(),
                 common: false,
             },
@@ -679,7 +679,7 @@ fn handle_detail_action_key(code: KeyCode) -> Option<Msg> {
     match code {
         KeyCode::Char('a') => Some(Msg::Nav(NavMsg::TicketDetailOpenActivities)),
         KeyCode::Char('d') => Some(Msg::Nav(NavMsg::TicketDetailOpenDescription)),
-        KeyCode::Char('f') => Some(Msg::Nav(NavMsg::TicketDetailToggleClosed)),
+        KeyCode::Char('c') => Some(Msg::Nav(NavMsg::TicketDetailToggleClosed)),
         KeyCode::Char('g') => Some(Msg::Nav(NavMsg::TicketDetailGoto)),
         KeyCode::Char('r') => Some(Msg::Nav(NavMsg::TicketDetailRefresh)),
         _ => None,
@@ -784,12 +784,21 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_f_as_toggle_closed() {
+    fn handler_captures_c_as_toggle_closed() {
         let handler = TicketDetailHandler;
-        match handler.handle_key(plain_key(KeyCode::Char('f'))) {
+        match handler.handle_key(plain_key(KeyCode::Char('c'))) {
             InputResult::Capture(Msg::Nav(NavMsg::TicketDetailToggleClosed)) => {}
             other => panic!("expected toggle closed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handler_bubbles_f_key() {
+        let handler = TicketDetailHandler;
+        assert!(matches!(
+            handler.handle_key(plain_key(KeyCode::Char('f'))),
+            InputResult::Bubble
+        ));
     }
 
     #[test]
