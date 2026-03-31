@@ -317,7 +317,7 @@ fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
 /// Close the selected child, prompting for force close if it has open children.
 fn handle_detail_close(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
-        let open_children = (ticket.children_total - ticket.children_completed) as i32;
+        let open_children = ticket.children_total - ticket.children_completed;
         if open_children > 0 {
             let msg = Msg::Overlay(OverlayMsg::OpenForceCloseConfirm {
                 ticket_id: ticket.id.clone(),

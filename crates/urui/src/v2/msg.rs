@@ -199,6 +199,7 @@ pub struct PendingTicket {
     pub project: String,
     pub title: String,
     pub priority: i64,
+    pub body: String,
     /// Optional parent ticket ID for child ticket creation.
     pub parent_id: Option<String>,
 }

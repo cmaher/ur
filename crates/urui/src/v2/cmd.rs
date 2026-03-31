@@ -31,6 +31,12 @@ pub enum Cmd {
     /// The CmdRunner uses its own project_filter to determine whether to
     /// save per-project or globally.
     PersistTheme { theme_name: String },
+    /// Break out of the TEA loop and spawn $EDITOR for ticket creation.
+    /// After the editor exits, the TEA loop re-enters with the parsed result.
+    SpawnEditor {
+        parent_id: Option<String>,
+        project: Option<String>,
+    },
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.

@@ -393,6 +393,9 @@ fn handle_create_action_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Ve
 }
 
 /// Handle project input overlay messages.
+///
+/// These overlays are no longer used by the create ticket flow (which now uses
+/// $EDITOR), but the handlers remain for backward compatibility.
 fn handle_project_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenProjectInput => {
@@ -415,26 +418,24 @@ fn handle_project_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Ve
             (model, vec![])
         }
         OverlayMsg::ProjectInputSubmitRequest => {
-            if let Some(ActiveOverlay::ProjectInput { ref buffer }) = model.active_overlay {
-                let text = buffer.clone();
+            if let Some(ActiveOverlay::ProjectInput { .. }) = model.active_overlay {
                 close_overlay(&mut model);
-                return handle_overlay(model, OverlayMsg::ProjectInputSubmitted(text));
             }
             (model, vec![])
         }
-        OverlayMsg::ProjectInputSubmitted(project) => {
-            super::create_ticket::handle_project_submitted(model, project)
-        }
+        OverlayMsg::ProjectInputSubmitted(_) => (model, vec![]),
         OverlayMsg::ProjectInputCancelled => {
             close_overlay(&mut model);
-            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
-            (model, cmds)
+            (model, vec![])
         }
         _ => (model, vec![]),
     }
 }
 
 /// Handle title input overlay messages.
+///
+/// These overlays are no longer used by the create ticket flow (which now uses
+/// $EDITOR), but the handlers remain for backward compatibility.
 fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenTitleInput => {
@@ -457,21 +458,15 @@ fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<
             (model, vec![])
         }
         OverlayMsg::TitleInputSubmitRequest => {
-            if let Some(ActiveOverlay::TitleInput { ref buffer }) = model.active_overlay {
-                let text = buffer.clone();
+            if let Some(ActiveOverlay::TitleInput { .. }) = model.active_overlay {
                 close_overlay(&mut model);
-                return super::create_ticket::handle_title_submitted(model, text);
             }
             (model, vec![])
         }
-        OverlayMsg::TitleInputSubmitted(_) => {
-            // Terminal message — handled by TitleInputSubmitRequest above.
-            (model, vec![])
-        }
+        OverlayMsg::TitleInputSubmitted(_) => (model, vec![]),
         OverlayMsg::TitleInputCancelled => {
             close_overlay(&mut model);
-            let (model, cmds) = super::create_ticket::cancel_create_flow(model);
-            (model, cmds)
+            (model, vec![])
         }
         _ => (model, vec![]),
     }
@@ -1083,6 +1078,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },
@@ -1103,6 +1099,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },
@@ -1127,6 +1124,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test".into(),
                     priority: 2,
+                    body: String::new(),
                     parent_id: None,
                 },
             },

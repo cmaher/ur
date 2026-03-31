@@ -64,6 +64,9 @@ impl CmdRunner {
                 });
             }
             Cmd::PersistTheme { theme_name } => self.persist_theme(theme_name),
+            Cmd::SpawnEditor { .. } => {
+                // Handled by the TEA loop directly, not by CmdRunner.
+            }
         }
     }
 
@@ -816,7 +819,7 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
             priority: pending.priority,
             parent_id: pending.parent_id.clone(),
             title: pending.title.clone(),
-            body: String::new(),
+            body: pending.body.clone(),
             id: None,
             created_at: None,
             wip: false,

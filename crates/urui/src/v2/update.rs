@@ -1559,6 +1559,7 @@ mod tests {
                     project: "ur".into(),
                     title: "Test ticket".into(),
                     priority: 0,
+                    body: String::new(),
                     parent_id: None,
                 },
             }),
