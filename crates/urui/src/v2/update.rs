@@ -519,6 +519,7 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
             format!("Launching design worker for {ticket_id}...")
         }
         TicketOpMsg::Redrive { ticket_id } => format!("Redriving {ticket_id}..."),
+        TicketOpMsg::Open { ticket_id } => format!("Reopening {ticket_id}..."),
     };
 
     // Feed through update to set the status and issue the command.
@@ -545,6 +546,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::Created { result } => (result, false),
         TicketOpResultMsg::DesignLaunched { result } => (result, false),
         TicketOpResultMsg::Redriven { result } => (result, false),
+        TicketOpResultMsg::Opened { result } => (result, false),
     };
 
     match result {

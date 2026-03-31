@@ -128,6 +128,9 @@ impl InputHandler for GlobalHandler {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return InputResult::Capture(Msg::Quit);
         }
+        if key.modifiers.contains(KeyModifiers::SHIFT) && key.code == KeyCode::Char('Q') {
+            return InputResult::Capture(Msg::Quit);
+        }
         if key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
             return InputResult::Capture(Msg::Nav(NavMsg::TabNext));
         }
@@ -140,7 +143,7 @@ impl InputHandler for GlobalHandler {
     fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: "Ctrl+C".to_string(),
+                key_label: "Q".to_string(),
                 description: "Quit".to_string(),
                 common: true,
             },
@@ -375,6 +378,16 @@ mod tests {
         let commands = handler.footer_commands();
         assert!(commands.len() >= 3);
         assert!(commands.iter().all(|c| c.common));
+    }
+
+    #[test]
+    fn global_handler_captures_shift_q_as_quit() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Char('Q'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(msg) => assert!(matches!(msg, Msg::Quit)),
+            InputResult::Bubble => panic!("expected Capture for Shift+Q"),
+        }
     }
 
     #[test]

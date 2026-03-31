@@ -425,6 +425,8 @@ pub enum TicketOpMsg {
     },
     /// Redrive a ticket's workflow to verifying status.
     Redrive { ticket_id: String },
+    /// Open (reopen) a ticket by setting its status to "open".
+    Open { ticket_id: String },
 }
 
 /// Ticket operation result messages. Each variant carries the outcome of a
@@ -445,6 +447,8 @@ pub enum TicketOpResultMsg {
     DesignLaunched { result: Result<String, String> },
     /// Redrive completed.
     Redriven { result: Result<String, String> },
+    /// Open/reopen completed.
+    Opened { result: Result<String, String> },
 }
 
 /// Flow operation request messages. Each variant carries the parameters needed

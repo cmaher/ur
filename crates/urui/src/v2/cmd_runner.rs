@@ -135,6 +135,7 @@ impl CmdRunner {
                 image_id,
             } => self.exec_launch_design(ticket_id, project_key, image_id),
             TicketOpMsg::Redrive { ticket_id } => self.exec_redrive(ticket_id),
+            TicketOpMsg::Open { ticket_id } => self.exec_open(ticket_id),
         }
     }
 
@@ -159,6 +160,19 @@ impl CmdRunner {
             let result = update_ticket_status(port, &ticket_id, "closed", false).await;
             let msg = TicketOpResultMsg::Closed {
                 result: result.map(|()| format!("{ticket_id} → closed")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_open(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: reopening ticket");
+            let result = update_ticket_status(port, &ticket_id, "open", false).await;
+            let msg = TicketOpResultMsg::Opened {
+                result: result.map(|()| format!("{ticket_id} → open")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
