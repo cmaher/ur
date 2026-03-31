@@ -667,24 +667,7 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
         }
         DataMsg::DetailLoaded(result) => {
             if let Some(ref mut detail_model) = model.ticket_detail {
-                detail_model.data = match *result {
-                    Ok((detail, children, total_children)) => {
-                        // Populate the children table model
-                        detail_model.children_table.tickets = children.clone();
-                        detail_model.children_table.total_count = total_children;
-                        // Clamp selection if the new page has fewer rows
-                        let count = detail_model.children_table.tickets.len();
-                        if count > 0 && detail_model.children_table.selected_row >= count {
-                            detail_model.children_table.selected_row = count - 1;
-                        }
-                        LoadState::Loaded(TicketDetailData {
-                            detail,
-                            children,
-                            total_children,
-                        })
-                    }
-                    Err(e) => LoadState::Error(e),
-                };
+                detail_model.data = apply_detail_result(detail_model, *result);
             }
         }
         DataMsg::FlowsLoaded(result) => {
@@ -738,6 +721,30 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
         }
     }
     (model, vec![])
+}
+
+/// Apply a detail load result to the detail model, populating the children table
+/// and clamping selection as needed.
+fn apply_detail_result(
+    detail_model: &mut TicketDetailModel,
+    result: super::msg::DetailLoadResult,
+) -> LoadState<TicketDetailData> {
+    match result {
+        Ok((detail, children, total_children)) => {
+            detail_model.children_table.tickets = children.clone();
+            detail_model.children_table.total_count = total_children;
+            let count = detail_model.children_table.tickets.len();
+            if count > 0 && detail_model.children_table.selected_row >= count {
+                detail_model.children_table.selected_row = count - 1;
+            }
+            LoadState::Loaded(TicketDetailData {
+                detail,
+                children,
+                total_children,
+            })
+        }
+        Err(e) => LoadState::Error(e),
+    }
 }
 
 /// Build a batch of fetch commands to refresh all page data.

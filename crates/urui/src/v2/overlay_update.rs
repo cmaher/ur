@@ -24,11 +24,75 @@ use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
 use super::msg::OverlayMsg;
 
 /// Handle an overlay message, returning updated model and commands.
-pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::Consumed => (model, vec![]),
 
         // === Priority Picker ===
+        OverlayMsg::OpenPriorityPicker { .. }
+        | OverlayMsg::PriorityPickerNavigate { .. }
+        | OverlayMsg::PriorityPickerConfirm
+        | OverlayMsg::PriorityPickerQuickSelect { .. }
+        | OverlayMsg::PrioritySelected { .. }
+        | OverlayMsg::PriorityCancelled => handle_priority_overlay(model, msg),
+
+        // === Filter Menu ===
+        OverlayMsg::OpenFilterMenu
+        | OverlayMsg::FilterMenuNavigate { .. }
+        | OverlayMsg::FilterMenuActivate
+        | OverlayMsg::FilterMenuQuickToggle { .. }
+        | OverlayMsg::FilterMenuClosed => handle_filter_overlay(model, msg),
+
+        // === Goto Menu ===
+        OverlayMsg::OpenGotoMenu { .. }
+        | OverlayMsg::GotoMenuNavigate { .. }
+        | OverlayMsg::GotoMenuConfirm
+        | OverlayMsg::GotoMenuQuickSelect { .. }
+        | OverlayMsg::GotoSelected(_)
+        | OverlayMsg::GotoCancelled => handle_goto_overlay(model, msg),
+
+        // === Force Close Confirm ===
+        OverlayMsg::OpenForceCloseConfirm { .. }
+        | OverlayMsg::ForceCloseConfirmYes
+        | OverlayMsg::ForceCloseConfirmed { .. }
+        | OverlayMsg::ForceCloseCancelled => handle_force_close_overlay(model, msg),
+
+        // === Create Action Menu ===
+        OverlayMsg::OpenCreateActionMenu { .. }
+        | OverlayMsg::CreateActionNavigate { .. }
+        | OverlayMsg::CreateActionConfirm
+        | OverlayMsg::CreateActionQuickSelect { .. }
+        | OverlayMsg::CreateActionSelected(_) => handle_create_action_overlay(model, msg),
+
+        // === Project Input ===
+        OverlayMsg::OpenProjectInput
+        | OverlayMsg::ProjectInputChar(_)
+        | OverlayMsg::ProjectInputBackspace
+        | OverlayMsg::ProjectInputSubmitRequest
+        | OverlayMsg::ProjectInputSubmitted(_)
+        | OverlayMsg::ProjectInputCancelled => handle_project_input_overlay(model, msg),
+
+        // === Title Input ===
+        OverlayMsg::OpenTitleInput
+        | OverlayMsg::TitleInputChar(_)
+        | OverlayMsg::TitleInputBackspace
+        | OverlayMsg::TitleInputSubmitRequest
+        | OverlayMsg::TitleInputSubmitted(_)
+        | OverlayMsg::TitleInputCancelled => handle_title_input_overlay(model, msg),
+
+        // === Settings Overlay ===
+        OverlayMsg::OpenSettings { .. }
+        | OverlayMsg::SettingsEsc
+        | OverlayMsg::SettingsNavigate { .. }
+        | OverlayMsg::SettingsActivate
+        | OverlayMsg::ThemeSelected(_)
+        | OverlayMsg::SettingsClosed => handle_settings_overlay(model, msg),
+    }
+}
+
+/// Handle priority picker overlay messages.
+fn handle_priority_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenPriorityPicker {
             ticket_id,
             current_priority,
@@ -98,8 +162,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Filter Menu ===
+/// Handle filter menu overlay messages.
+fn handle_filter_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenFilterMenu => {
             model.active_overlay = Some(ActiveOverlay::FilterMenu {
                 cursor: 0,
@@ -122,21 +191,24 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             (model, vec![])
         }
         OverlayMsg::FilterMenuClosed => {
-            // If expanded, collapse first (Esc collapses submenu).
             if let Some(ActiveOverlay::FilterMenu {
                 ref mut expanded, ..
             }) = model.active_overlay
+                && expanded.is_some()
             {
-                if expanded.is_some() {
-                    *expanded = None;
-                    return (model, vec![]);
-                }
+                *expanded = None;
+                return (model, vec![]);
             }
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Goto Menu ===
+/// Handle goto menu overlay messages.
+fn handle_goto_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenGotoMenu { targets } => {
             model.active_overlay = Some(ActiveOverlay::GotoMenu { targets, cursor: 0 });
             model.input_stack.push(Box::new(GotoMenuHandler));
@@ -162,23 +234,21 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
                 ref targets,
                 cursor,
             }) = model.active_overlay
+                && let Some(target) = resolve_goto_target(targets, cursor)
             {
-                if let Some(target) = resolve_goto_target(targets, cursor) {
-                    close_overlay(&mut model);
-                    return handle_overlay(model, OverlayMsg::GotoSelected(target));
-                }
+                close_overlay(&mut model);
+                return handle_overlay(model, OverlayMsg::GotoSelected(target));
             }
             (model, vec![])
         }
         OverlayMsg::GotoMenuQuickSelect { digit } => {
-            if let Some(ActiveOverlay::GotoMenu { ref targets, .. }) = model.active_overlay {
-                // digit is 1-indexed
-                if digit >= 1 && digit <= targets.len() {
-                    if let Some(target) = resolve_goto_target(targets, digit - 1) {
-                        close_overlay(&mut model);
-                        return handle_overlay(model, OverlayMsg::GotoSelected(target));
-                    }
-                }
+            if let Some(ActiveOverlay::GotoMenu { ref targets, .. }) = model.active_overlay
+                && digit >= 1
+                && digit <= targets.len()
+                && let Some(target) = resolve_goto_target(targets, digit - 1)
+            {
+                close_overlay(&mut model);
+                return handle_overlay(model, OverlayMsg::GotoSelected(target));
             }
             (model, vec![])
         }
@@ -190,8 +260,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Force Close Confirm ===
+/// Handle force close confirm overlay messages.
+fn handle_force_close_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenForceCloseConfirm {
             ticket_id,
             open_children,
@@ -221,8 +296,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Create Action Menu ===
+/// Handle create action menu overlay messages.
+fn handle_create_action_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenCreateActionMenu { pending } => {
             model.active_overlay = Some(ActiveOverlay::CreateActionMenu { pending, cursor: 0 });
             model.input_stack.push(Box::new(
@@ -248,12 +328,11 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
                 cursor,
                 ref pending,
             }) = model.active_overlay
+                && let Some(action) = action_at(cursor)
             {
-                if let Some(action) = action_at(cursor) {
-                    let pending = pending.clone();
-                    close_overlay(&mut model);
-                    return handle_create_action(model, action, pending);
-                }
+                let pending = pending.clone();
+                close_overlay(&mut model);
+                return handle_create_action(model, action, pending);
             }
             (model, vec![])
         }
@@ -275,8 +354,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             }
             (model, vec![])
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Project Input ===
+/// Handle project input overlay messages.
+fn handle_project_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenProjectInput => {
             model.active_overlay = Some(ActiveOverlay::ProjectInput {
                 buffer: String::new(),
@@ -312,8 +396,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             let (model, cmds) = super::create_ticket::cancel_create_flow(model);
             (model, cmds)
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Title Input ===
+/// Handle title input overlay messages.
+fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenTitleInput => {
             model.active_overlay = Some(ActiveOverlay::TitleInput {
                 buffer: String::new(),
@@ -350,8 +439,13 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             let (model, cmds) = super::create_ticket::cancel_create_flow(model);
             (model, cmds)
         }
+        _ => (model, vec![]),
+    }
+}
 
-        // === Settings Overlay ===
+/// Handle settings overlay messages.
+fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
         OverlayMsg::OpenSettings { custom_theme_names } => {
             model.active_overlay = Some(build_settings_state(custom_theme_names));
             model.input_stack.push(Box::new(SettingsOverlayHandler));
@@ -371,6 +465,7 @@ pub fn handle_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
             close_overlay(&mut model);
             (model, vec![])
         }
+        _ => (model, vec![]),
     }
 }
 
@@ -661,7 +756,7 @@ fn handle_create_action(
 mod tests {
     use super::*;
     use crate::v2::model::Model;
-    use crate::v2::msg::{CreateAction, GotoTarget, OverlayMsg, PendingTicket, SettingsDirection};
+    use crate::v2::msg::{GotoTarget, OverlayMsg, PendingTicket, SettingsDirection};
 
     #[test]
     fn consumed_is_noop() {

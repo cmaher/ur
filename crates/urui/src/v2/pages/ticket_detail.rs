@@ -731,10 +731,9 @@ mod tests {
         model.ticket_detail = Some(TicketDetailModel {
             ticket_id: "ur-parent".to_string(),
             data: LoadState::Loaded(TicketDetailData {
-                detail: {
-                    let mut resp = GetTicketResponse::default();
-                    resp.ticket = Some(make_ticket("ur-parent", "Parent ticket"));
-                    resp
+                detail: GetTicketResponse {
+                    ticket: Some(make_ticket("ur-parent", "Parent ticket")),
+                    ..Default::default()
                 },
                 children: children.clone(),
                 total_children: 2,

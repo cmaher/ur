@@ -115,12 +115,11 @@ impl InputHandler for SettingsOverlayHandler {
 
 /// Render the settings overlay from the model state.
 pub fn render_settings_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
-    match &model.active_overlay {
-        Some(ActiveOverlay::Settings { level, .. }) => match level {
+    if let Some(ActiveOverlay::Settings { level, .. }) = &model.active_overlay {
+        match level {
             SettingsLevel::TopLevel => render_top_level(area, buf, ctx, model),
             SettingsLevel::ThemePicker => render_theme_picker(area, buf, ctx, model),
-        },
-        _ => {}
+        }
     }
 }
 

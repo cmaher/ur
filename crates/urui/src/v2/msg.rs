@@ -5,6 +5,9 @@ use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowIn
 use super::components::banner::BannerVariant;
 use super::navigation::{PageId, TabId};
 
+/// Result type for a full ticket detail fetch: (detail_response, children, total_children).
+pub type DetailLoadResult = Result<(GetTicketResponse, Vec<Ticket>, i32), String>;
+
 /// Messages that drive the TEA update loop.
 ///
 /// Every state change flows through a `Msg`. The update function pattern-matches
@@ -359,7 +362,7 @@ pub enum DataMsg {
     /// Ticket list fetched: (tickets, total_count).
     TicketsLoaded(Result<(Vec<Ticket>, i32), String>),
     /// Full ticket detail fetched: (detail_response, children, total_children).
-    DetailLoaded(Box<Result<(GetTicketResponse, Vec<Ticket>, i32), String>>),
+    DetailLoaded(Box<DetailLoadResult>),
     /// Workflow list fetched: (workflows, total_count).
     FlowsLoaded(Result<(Vec<WorkflowInfo>, i32), String>),
     /// Worker list fetched.

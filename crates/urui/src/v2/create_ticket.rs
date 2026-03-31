@@ -39,8 +39,7 @@ pub fn start_create_child_flow(model: Model) -> (Model, Vec<Cmd>) {
             let project = detail
                 .data
                 .data()
-                .map(|d| d.detail.ticket.as_ref().map(|t| t.project.clone()))
-                .flatten()
+                .and_then(|d| d.detail.ticket.as_ref().map(|t| t.project.clone()))
                 .unwrap_or_default();
             (parent_id, project)
         }
@@ -113,8 +112,6 @@ mod tests {
     use crate::v2::model::{
         ActiveOverlay, LoadState, Model, TicketDetailData, TicketDetailModel, TicketTableModel,
     };
-    use crate::v2::msg::OverlayMsg;
-
     #[test]
     fn start_create_flow_sets_state_and_opens_project_input() {
         let model = Model::initial();
