@@ -343,6 +343,10 @@ pub struct TicketDetailModel {
     pub ticket_id: String,
     pub data: LoadState<TicketDetailData>,
     pub activities: LoadState<TicketActivitiesData>,
+    /// Shared ticket table state for the children table.
+    pub children_table: TicketTableModel,
+    /// When false (default), closed children are hidden from the child list.
+    pub show_closed: bool,
 }
 
 /// Sub-model for the flows page.

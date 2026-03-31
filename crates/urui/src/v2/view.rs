@@ -20,6 +20,7 @@ use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::ticket_activities::render_ticket_activities;
 use super::pages::ticket_body::render_ticket_body;
+use super::pages::ticket_detail::render_ticket_detail;
 use super::pages::tickets_list::render_tickets_list;
 use super::pages::workers_list::render_workers_list;
 
@@ -79,11 +80,13 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
 /// tab switches), so their footer commands are collected separately.
 fn root_page_footer_commands(model: &Model) -> Vec<super::input::FooterCommand> {
     use super::input::InputHandler;
+    use super::pages::ticket_detail::TicketDetailHandler;
     use super::pages::tickets_list::TicketListHandler;
     use super::pages::workers_list::WorkerListHandler;
 
     match model.navigation_model.current_page() {
         PageId::TicketList => TicketListHandler.footer_commands(),
+        PageId::TicketDetail { .. } => TicketDetailHandler.footer_commands(),
         PageId::WorkerList => WorkerListHandler.footer_commands(),
         _ => vec![],
     }
@@ -103,6 +106,9 @@ fn render_page_content(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &M
         }
         PageId::TicketList => {
             render_tickets_list(area, buf, ctx, model);
+        }
+        PageId::TicketDetail { .. } => {
+            render_ticket_detail(area, buf, ctx, model);
         }
         // Other pages not yet implemented in v2 — content area stays blank.
         _ => {}

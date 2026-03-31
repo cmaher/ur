@@ -234,6 +234,42 @@ pub enum NavMsg {
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
 
+    // ── Ticket detail page messages ────────────────────────────────
+    /// Navigate within the ticket detail children table by delta (+1 down, -1 up).
+    TicketDetailNavigate { delta: i32 },
+    /// Page right in the ticket detail children table.
+    TicketDetailPageRight,
+    /// Page left in the ticket detail children table.
+    TicketDetailPageLeft,
+    /// Select the currently highlighted child in the detail children table.
+    TicketDetailSelect,
+    /// Refresh the ticket detail data.
+    TicketDetailRefresh,
+    /// Open the priority picker for the selected child in the detail.
+    TicketDetailPriority,
+    /// Close the selected child in the detail.
+    TicketDetailClose,
+    /// Reopen the selected child in the detail.
+    TicketDetailOpen,
+    /// Dispatch the selected child in the detail.
+    TicketDetailDispatch,
+    /// Dispatch all (the parent ticket itself).
+    TicketDetailDispatchAll,
+    /// Launch a design worker for the selected child.
+    TicketDetailDesign,
+    /// Redrive the selected child's workflow.
+    TicketDetailRedrive,
+    /// Open the goto menu for the selected child.
+    TicketDetailGoto,
+    /// Toggle show/hide closed children filter.
+    TicketDetailToggleClosed,
+    /// Open the description (body) of the parent ticket.
+    TicketDetailOpenDescription,
+    /// Open the activities page for the parent ticket.
+    TicketDetailOpenActivities,
+    /// Create a child ticket under the parent.
+    TicketDetailCreateChild,
+
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).
     ActivitiesNavigate { delta: i32 },

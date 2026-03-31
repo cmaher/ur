@@ -4,7 +4,7 @@ use super::cmd::{Cmd, FetchCmd};
 use super::components::banner::BannerHandler;
 use super::model::{
     BannerModel, FlowListData, LoadState, Model, StatusModel, TicketActivitiesData,
-    TicketDetailData, TicketDetailModel, TicketListData, WorkerListData,
+    TicketDetailData, TicketDetailModel, TicketListData, TicketTableModel, WorkerListData,
 };
 use super::msg::{
     DataMsg, FlowOpMsg, FlowOpResultMsg, Msg, NavMsg, TicketOpMsg, TicketOpResultMsg, UiEventItem,
@@ -64,9 +64,12 @@ fn dispatch_root_page_key(model: Model, key: crossterm::event::KeyEvent) -> (Mod
     use super::pages::tickets_list::TicketListHandler;
     use super::pages::workers_list::WorkerListHandler;
 
+    use super::pages::ticket_detail::TicketDetailHandler;
+
     let handler: Option<&dyn super::input::InputHandler> =
         match model.navigation_model.current_page() {
             super::navigation::PageId::TicketList => Some(&TicketListHandler),
+            super::navigation::PageId::TicketDetail { .. } => Some(&TicketDetailHandler),
             super::navigation::PageId::WorkerList => Some(&WorkerListHandler),
             _ => None,
         };
@@ -119,6 +122,29 @@ fn handle_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
             | NavMsg::TicketListGoto
     ) {
         return super::pages::tickets_list::handle_ticket_table_nav(model, nav_msg);
+    }
+
+    if matches!(
+        nav_msg,
+        NavMsg::TicketDetailNavigate { .. }
+            | NavMsg::TicketDetailPageRight
+            | NavMsg::TicketDetailPageLeft
+            | NavMsg::TicketDetailSelect
+            | NavMsg::TicketDetailRefresh
+            | NavMsg::TicketDetailPriority
+            | NavMsg::TicketDetailClose
+            | NavMsg::TicketDetailOpen
+            | NavMsg::TicketDetailDispatch
+            | NavMsg::TicketDetailDispatchAll
+            | NavMsg::TicketDetailDesign
+            | NavMsg::TicketDetailRedrive
+            | NavMsg::TicketDetailGoto
+            | NavMsg::TicketDetailToggleClosed
+            | NavMsg::TicketDetailOpenDescription
+            | NavMsg::TicketDetailOpenActivities
+            | NavMsg::TicketDetailCreateChild
+    ) {
+        return super::pages::ticket_detail::handle_ticket_detail_nav(model, nav_msg);
     }
 
     if matches!(
@@ -594,11 +620,21 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
         DataMsg::DetailLoaded(result) => {
             if let Some(ref mut detail_model) = model.ticket_detail {
                 detail_model.data = match *result {
-                    Ok((detail, children, total_children)) => LoadState::Loaded(TicketDetailData {
-                        detail,
-                        children,
-                        total_children,
-                    }),
+                    Ok((detail, children, total_children)) => {
+                        // Populate the children table model
+                        detail_model.children_table.tickets = children.clone();
+                        detail_model.children_table.total_count = total_children;
+                        // Clamp selection if the new page has fewer rows
+                        let count = detail_model.children_table.tickets.len();
+                        if count > 0 && detail_model.children_table.selected_row >= count {
+                            detail_model.children_table.selected_row = count - 1;
+                        }
+                        LoadState::Loaded(TicketDetailData {
+                            detail,
+                            children,
+                            total_children,
+                        })
+                    }
                     Err(e) => LoadState::Error(e),
                 };
             }
@@ -682,17 +718,30 @@ pub fn start_ticket_list_fetch(model: &mut Model) -> Cmd {
 /// Set a sub-model to `Loading` and return the corresponding fetch command
 /// for the ticket detail page.
 pub fn start_ticket_detail_fetch(model: &mut Model, ticket_id: String) -> Cmd {
+    // Preserve show_closed from a previous detail model if re-fetching same ticket.
+    let show_closed = model
+        .ticket_detail
+        .as_ref()
+        .filter(|d| d.ticket_id == ticket_id)
+        .is_some_and(|d| d.show_closed);
+    let child_status_filter = if show_closed {
+        None
+    } else {
+        Some("open,in_progress".to_string())
+    };
     model.ticket_detail = Some(TicketDetailModel {
         ticket_id: ticket_id.clone(),
         data: LoadState::Loading,
         activities: LoadState::Loading,
+        children_table: TicketTableModel::empty(),
+        show_closed,
     });
     Cmd::batch(vec![
         Cmd::Fetch(FetchCmd::TicketDetail {
             ticket_id: ticket_id.clone(),
             child_page_size: None,
             child_offset: None,
-            child_status_filter: None,
+            child_status_filter,
         }),
         Cmd::Fetch(FetchCmd::Activities {
             ticket_id,
@@ -843,6 +892,8 @@ mod tests {
             ticket_id: "ur-abc".to_string(),
             data: LoadState::Loading,
             activities: LoadState::Loading,
+            children_table: TicketTableModel::empty(),
+            show_closed: false,
         });
         let msg = Msg::Data(Box::new(DataMsg::DetailLoaded(Box::new(Ok((
             GetTicketResponse::default(),
@@ -876,6 +927,8 @@ mod tests {
             ticket_id: "ur-xyz".to_string(),
             data: LoadState::Loading,
             activities: LoadState::Loading,
+            children_table: TicketTableModel::empty(),
+            show_closed: false,
         });
         let msg = Msg::Data(Box::new(DataMsg::ActivitiesLoaded {
             ticket_id: "ur-xyz".to_string(),
@@ -893,6 +946,8 @@ mod tests {
             ticket_id: "ur-xyz".to_string(),
             data: LoadState::Loading,
             activities: LoadState::Loading,
+            children_table: TicketTableModel::empty(),
+            show_closed: false,
         });
         let msg = Msg::Data(Box::new(DataMsg::ActivitiesLoaded {
             ticket_id: "ur-other".to_string(),
@@ -1143,6 +1198,8 @@ mod tests {
             ticket_id: "ur-det".to_string(),
             data: LoadState::Loading,
             activities: LoadState::Loading,
+            children_table: TicketTableModel::empty(),
+            show_closed: false,
         });
         let cmd = fetch_cmd_for_tab(TabId::Tickets, &model);
         // Should be a Batch containing ticket list + detail + activities.
