@@ -524,6 +524,11 @@ pub struct Model {
     pub notifications: NotificationModel,
     /// In-progress create ticket flow state, if any.
     pub create_ticket_state: Option<CreateTicketState>,
+    /// When set, the tea loop should swap the theme on ctx before the next render.
+    /// Cleared after each swap.
+    pub pending_theme_swap: Option<String>,
+    /// Custom theme names from [tui.themes.*] in ur.toml, for the settings overlay.
+    pub custom_theme_names: Vec<String>,
 }
 
 impl Model {
@@ -560,6 +565,8 @@ impl Model {
             ticket_body: None,
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
             create_ticket_state: None,
+            pending_theme_swap: None,
+            custom_theme_names: vec![],
         }
     }
 }

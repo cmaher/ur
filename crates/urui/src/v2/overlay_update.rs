@@ -481,7 +481,13 @@ fn handle_title_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<
 fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenSettings { custom_theme_names } => {
-            model.active_overlay = Some(build_settings_state(custom_theme_names));
+            // Merge explicit names with model's custom theme names from config.
+            let names = if custom_theme_names.is_empty() {
+                model.custom_theme_names.clone()
+            } else {
+                custom_theme_names
+            };
+            model.active_overlay = Some(build_settings_state(names));
             model.input_stack.push(Box::new(SettingsOverlayHandler));
             (model, vec![])
         }
@@ -491,9 +497,12 @@ fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd
             (model, vec![])
         }
         OverlayMsg::SettingsActivate => handle_settings_activate(model),
-        OverlayMsg::ThemeSelected(_) => {
-            // Terminal message — consumed by the page-level update (future).
-            (model, vec![])
+        OverlayMsg::ThemeSelected(name) => {
+            // Apply the theme immediately by setting pending_theme_swap,
+            // and persist the selection to ur.toml.
+            model.pending_theme_swap = Some(name.clone());
+            let cmd = Cmd::PersistTheme { theme_name: name };
+            (model, vec![cmd])
         }
         OverlayMsg::SettingsClosed => {
             close_overlay(&mut model);

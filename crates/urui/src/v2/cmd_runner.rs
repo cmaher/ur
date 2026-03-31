@@ -18,6 +18,7 @@ pub struct CmdRunner {
     msg_tx: mpsc::UnboundedSender<Msg>,
     port: u16,
     project_filter: Option<String>,
+    config_dir: std::path::PathBuf,
 }
 
 impl CmdRunner {
@@ -26,11 +27,13 @@ impl CmdRunner {
         msg_tx: mpsc::UnboundedSender<Msg>,
         port: u16,
         project_filter: Option<String>,
+        config_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             msg_tx,
             port,
             project_filter,
+            config_dir,
         }
     }
 
@@ -60,6 +63,7 @@ impl CmdRunner {
                     super::notifications::fire_desktop_notification(&notification, None);
                 });
             }
+            Cmd::PersistTheme { theme_name } => self.persist_theme(theme_name),
         }
     }
 
@@ -68,6 +72,23 @@ impl CmdRunner {
         for cmd in cmds {
             self.execute(cmd);
         }
+    }
+
+    /// Persist the selected theme name to ur.toml in a background thread.
+    /// Uses the project_filter to decide per-project vs global save.
+    fn persist_theme(&self, theme_name: String) {
+        let config_dir = self.config_dir.clone();
+        let project = self.project_filter.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = if let Some(ref key) = project {
+                ur_config::save_project_theme_name(&config_dir, key, &theme_name)
+            } else {
+                ur_config::save_theme_name(&config_dir, &theme_name)
+            };
+            if let Err(e) = result {
+                warn!("failed to persist theme to ur.toml: {e}");
+            }
+        });
     }
 
     /// Spawn a long-lived background task that subscribes to the server's UI
@@ -919,7 +940,7 @@ mod tests {
 
     fn make_runner() -> (CmdRunner, mpsc::UnboundedReceiver<Msg>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        let runner = CmdRunner::new(tx, 0, None);
+        let runner = CmdRunner::new(tx, 0, None, std::path::PathBuf::from("/tmp"));
         (runner, rx)
     }
 

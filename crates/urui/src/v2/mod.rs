@@ -75,8 +75,22 @@ fn read_and_send_event(tx: &mpsc::UnboundedSender<Msg>) -> bool {
 }
 
 /// Build a `TuiContext` from the loaded configuration.
+///
+/// When a project filter is set, checks for a per-project theme override
+/// in `projects.<key>.tui.theme` and uses it instead of the global theme.
 fn build_tui_context(config: &ur_config::Config, project_filter: &Option<String>) -> TuiContext {
-    let theme = Theme::resolve(&config.tui);
+    let mut tui_config = config.tui.clone();
+
+    // 5a: Per-project theme override at startup.
+    if let Some(project_key) = project_filter
+        && let Some(project_cfg) = config.projects.get(project_key)
+        && let Some(tui) = &project_cfg.tui
+        && let Some(theme_name) = &tui.theme_name
+    {
+        tui_config.theme_name = theme_name.clone();
+    }
+
+    let theme = Theme::resolve(&tui_config);
     let keymap = Keymap::default();
     let mut projects: Vec<String> = config.projects.keys().cloned().collect();
     projects.sort();
@@ -86,7 +100,7 @@ fn build_tui_context(config: &ur_config::Config, project_filter: &Option<String>
         keymap,
         projects,
         project_configs: config.projects.clone(),
-        tui_config: config.tui.clone(),
+        tui_config,
         config_dir: config.config_dir.clone(),
         project_filter: project_filter.clone(),
     }
@@ -100,10 +114,15 @@ async fn tea_loop(
     let config = ur_config::Config::load()?;
     let port = config.server_port;
     let project_filter = ur_config::resolve_project(project, &config.projects);
-    let ctx = build_tui_context(&config, &project_filter);
+    let mut ctx = build_tui_context(&config, &project_filter);
 
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Msg>();
-    let cmd_runner = CmdRunner::new(msg_tx.clone(), port, project_filter);
+    let cmd_runner = CmdRunner::new(
+        msg_tx.clone(),
+        port,
+        project_filter,
+        config.config_dir.clone(),
+    );
 
     // Spawn crossterm reader task
     let crossterm_tx = msg_tx.clone();
@@ -130,6 +149,8 @@ async fn tea_loop(
 
     let mut model = Model::initial();
     model.notifications = notifications::NotificationModel::new(config.tui.notifications.clone());
+    model.custom_theme_names = ctx.tui_config.custom_themes.keys().cloned().collect();
+    model.custom_theme_names.sort();
 
     // Subscribe to the server's UI event stream for live updates.
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
@@ -144,6 +165,12 @@ async fn tea_loop(
 
         if model.should_quit {
             break;
+        }
+
+        // Apply pending theme swap before rendering.
+        if let Some(ref name) = model.pending_theme_swap {
+            ctx.swap_theme(name);
+            model.pending_theme_swap = None;
         }
 
         // Execute commands (may produce new messages)

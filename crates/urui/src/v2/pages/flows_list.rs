@@ -575,6 +575,9 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
     match key.code {
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowsRedrive)),
+        KeyCode::Char('S') => Some(Msg::Overlay(OverlayMsg::OpenSettings {
+            custom_theme_names: vec![],
+        })),
         _ => None,
     }
 }
