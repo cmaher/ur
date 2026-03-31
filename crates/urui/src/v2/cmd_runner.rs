@@ -275,7 +275,7 @@ impl CmdRunner {
             debug!(port, %ticket_id, "v2: redriving ticket");
             let result = redrive_ticket(port, &ticket_id).await;
             let msg = TicketOpResultMsg::Redriven {
-                result: result.map(|()| format!("Redrove {ticket_id} to verifying")),
+                result: result.map(|()| format!("Moved {ticket_id} to Verify")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });

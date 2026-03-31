@@ -512,7 +512,7 @@ impl InputHandler for FlowListHandler {
         vec![
             FooterCommand {
                 key_label: "V".to_string(),
-                description: "Redrive".to_string(),
+                description: "Move to Verify".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -887,7 +887,7 @@ mod tests {
         let cmds = handler.footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
-        assert!(cmds.iter().any(|c| c.description == "Redrive"));
+        assert!(cmds.iter().any(|c| c.description == "Move to Verify"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));
         assert!(cmds.iter().any(|c| c.description == "Refresh"));
     }

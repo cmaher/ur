@@ -247,8 +247,6 @@ pub enum NavMsg {
     TicketListDispatch,
     /// Launch a design worker for the selected ticket.
     TicketListDesign,
-    /// Redrive the selected ticket's workflow.
-    TicketListRedrive,
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
