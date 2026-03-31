@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::msg::{Msg, NavMsg};
+use super::navigation::TabId;
 
 /// A command displayed in the footer bar, collected from active input handlers.
 #[derive(Debug, Clone)]
@@ -119,8 +120,10 @@ impl InputStack {
 /// Global input handler that is always at the bottom of the stack.
 ///
 /// Handles application-wide shortcuts:
-/// - Ctrl+C → Quit
-/// - Tab → switch to next tab (future: cycle through TabId variants)
+/// - Ctrl+C / Shift+Q → Quit
+/// - Tab → switch to next tab
+/// - t/f/w → switch to Tickets/Flows/Workers tab
+/// - q / Esc → back (pop navigation)
 pub struct GlobalHandler;
 
 impl InputHandler for GlobalHandler {
@@ -137,6 +140,23 @@ impl InputHandler for GlobalHandler {
         if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
             return InputResult::Capture(Msg::Nav(NavMsg::Pop));
         }
+        if key.modifiers == KeyModifiers::NONE {
+            match key.code {
+                KeyCode::Char('q') => {
+                    return InputResult::Capture(Msg::Nav(NavMsg::Pop));
+                }
+                KeyCode::Char('t') => {
+                    return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Tickets)));
+                }
+                KeyCode::Char('f') => {
+                    return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Flows)));
+                }
+                KeyCode::Char('w') => {
+                    return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Workers)));
+                }
+                _ => {}
+            }
+        }
         InputResult::Bubble
     }
 
@@ -148,8 +168,18 @@ impl InputHandler for GlobalHandler {
                 common: true,
             },
             FooterCommand {
+                key_label: "q".to_string(),
+                description: "Back".to_string(),
+                common: true,
+            },
+            FooterCommand {
                 key_label: "Tab".to_string(),
                 description: "Switch tab".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: "t/f/w".to_string(),
+                description: "Tabs".to_string(),
                 common: true,
             },
             FooterCommand {
@@ -170,6 +200,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     use super::*;
+    use crate::v2::navigation::TabId;
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -376,8 +407,58 @@ mod tests {
     fn global_handler_footer_commands() {
         let handler = GlobalHandler;
         let commands = handler.footer_commands();
-        assert!(commands.len() >= 3);
+        assert!(commands.len() >= 5);
         assert!(commands.iter().all(|c| c.common));
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.key_label == "q" && c.description == "Back")
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.key_label == "t/f/w" && c.description == "Tabs")
+        );
+    }
+
+    #[test]
+    fn global_handler_q_produces_nav_pop() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::Pop)) => {}
+            other => panic!("expected Capture(Nav(Pop)), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_handler_t_produces_tab_switch_tickets() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Tickets))) => {}
+            other => panic!("expected Capture(Nav(TabSwitch(Tickets))), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_handler_f_produces_tab_switch_flows() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Char('f'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Flows))) => {}
+            other => panic!("expected Capture(Nav(TabSwitch(Flows))), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_handler_w_produces_tab_switch_workers() {
+        let handler = GlobalHandler;
+        let key = make_key(KeyCode::Char('w'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Workers))) => {}
+            other => panic!("expected Capture(Nav(TabSwitch(Workers))), got {other:?}"),
+        }
     }
 
     #[test]
