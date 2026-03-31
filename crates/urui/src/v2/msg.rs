@@ -208,6 +208,16 @@ pub enum NavMsg {
     /// Navigate directly to a specific page (push if not already current).
     Goto(PageId),
 
+    // ── Ticket table messages (shared across ticket list and detail) ──
+    /// Navigate within the ticket table by delta (+1 down, -1 up).
+    TicketTableNavigate { delta: i32 },
+    /// Page right in the ticket table.
+    TicketTablePageRight,
+    /// Page left in the ticket table.
+    TicketTablePageLeft,
+    /// Select the currently highlighted ticket in the table.
+    TicketTableSelect,
+
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).
     ActivitiesNavigate { delta: i32 },

@@ -212,6 +212,122 @@ pub struct StatusModel {
     pub text: String,
 }
 
+/// Default page size for ticket tables (used when the render area height is
+/// not yet known).
+pub const TICKET_TABLE_DEFAULT_PAGE_SIZE: usize = 20;
+
+/// Shared sub-model for ticket table state (reused on ticket list page and
+/// ticket detail page for the children table).
+///
+/// Holds selection, pagination, and the raw ticket rows. The TicketTable
+/// component renders from this slice; callers populate it with different
+/// data sources (top-level tickets vs children of a parent).
+#[derive(Debug, Clone)]
+pub struct TicketTableModel {
+    /// Ticket rows displayed on the current page.
+    pub tickets: Vec<Ticket>,
+    /// Total count of tickets matching the query (for pagination).
+    pub total_count: i32,
+    /// Selected row index within the current page.
+    pub selected_row: usize,
+    /// Current page (zero-indexed, server-side pagination).
+    pub current_page: usize,
+    /// Rows per page, derived from the render area height.
+    pub page_size: usize,
+}
+
+impl TicketTableModel {
+    /// Create a new, empty table model with default page size.
+    pub fn empty() -> Self {
+        Self {
+            tickets: vec![],
+            total_count: 0,
+            selected_row: 0,
+            current_page: 0,
+            page_size: TICKET_TABLE_DEFAULT_PAGE_SIZE,
+        }
+    }
+
+    /// Total number of pages given the current total_count and page_size.
+    pub fn total_pages(&self) -> usize {
+        let count = self.total_count as usize;
+        if count == 0 || self.page_size == 0 {
+            return 1;
+        }
+        count.div_ceil(self.page_size)
+    }
+
+    /// Navigate the selection up by one row, clamping at 0.
+    pub fn navigate_up(&mut self) {
+        if self.selected_row > 0 {
+            self.selected_row -= 1;
+        }
+    }
+
+    /// Navigate the selection down by one row, clamping at the last row.
+    pub fn navigate_down(&mut self) {
+        let count = self.tickets.len();
+        if count > 0 && self.selected_row < count - 1 {
+            self.selected_row += 1;
+        }
+    }
+
+    /// Move to the previous page. Returns true if the page changed (caller
+    /// should issue a fetch command).
+    pub fn page_left(&mut self) -> bool {
+        if self.current_page > 0 {
+            self.current_page -= 1;
+            self.selected_row = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move to the next page. Returns true if the page changed (caller
+    /// should issue a fetch command).
+    pub fn page_right(&mut self) -> bool {
+        if self.current_page + 1 < self.total_pages() {
+            self.current_page += 1;
+            self.selected_row = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update page size based on render area height. Returns true if the
+    /// page size changed (caller should issue a fetch command).
+    pub fn update_page_size(&mut self, area_height: u16) -> bool {
+        // 3 lines of chrome: 1 top border + 1 header row + 1 bottom border
+        let chrome = 3u16;
+        let available = area_height.saturating_sub(chrome) as usize;
+        if available > 0 && available != self.page_size {
+            self.page_size = available;
+            self.current_page = 0;
+            self.selected_row = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the currently selected ticket, if any.
+    pub fn selected_ticket(&self) -> Option<&Ticket> {
+        self.tickets.get(self.selected_row)
+    }
+
+    /// Page info string for the table footer (e.g. "Page 1/3 (42 total)").
+    pub fn page_info(&self) -> String {
+        let page_display = self.current_page + 1;
+        let total_pages = self.total_pages();
+        format!(
+            "Page {}/{} ({} total)",
+            page_display, total_pages, self.total_count
+        )
+    }
+}
+
 /// Sub-model for the ticket list page.
 #[derive(Debug, Clone)]
 pub struct TicketListModel {
