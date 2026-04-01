@@ -14,6 +14,8 @@ mod update;
 mod view;
 
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event};
@@ -63,7 +65,14 @@ pub async fn run_v2(project: Option<String>) -> anyhow::Result<()> {
 
 /// Poll for one crossterm event and send it through the channel.
 /// Returns `true` if the loop should break (error or channel closed).
-fn read_and_send_event(tx: &mpsc::UnboundedSender<Msg>) -> bool {
+///
+/// When `paused` is true, yields stdin to an external process (e.g. $EDITOR)
+/// by sleeping instead of polling for events.
+fn read_and_send_event(tx: &mpsc::UnboundedSender<Msg>, paused: &AtomicBool) -> bool {
+    if paused.load(Ordering::Acquire) {
+        std::thread::sleep(CROSSTERM_POLL_TIMEOUT);
+        return false;
+    }
     match event::poll(CROSSTERM_POLL_TIMEOUT) {
         Ok(true) => match event::read() {
             Ok(Event::Key(key)) => tx.send(Msg::KeyPressed(key)).is_err(),
@@ -125,11 +134,15 @@ async fn tea_loop(
         config.config_dir.clone(),
     );
 
+    // Pause flag: when true, the crossterm reader yields stdin to $EDITOR.
+    let reader_paused = Arc::new(AtomicBool::new(false));
+
     // Spawn crossterm reader task
     let crossterm_tx = msg_tx.clone();
+    let crossterm_paused = Arc::clone(&reader_paused);
     let _crossterm_handle = tokio::task::spawn_blocking(move || {
         while !crossterm_tx.is_closed() {
-            if read_and_send_event(&crossterm_tx) {
+            if read_and_send_event(&crossterm_tx, &crossterm_paused) {
                 break;
             }
         }
@@ -195,7 +208,10 @@ async fn tea_loop(
             let resolved_project =
                 resolve_editor_project(editor_project, parent_id.as_deref(), &project_filter, port)
                     .await;
-            let pending = run_editor_flow(terminal, resolved_project, parent_id)?;
+            reader_paused.store(true, Ordering::Release);
+            let pending = run_editor_flow(terminal, resolved_project, parent_id);
+            reader_paused.store(false, Ordering::Release);
+            let pending = pending?;
             if let Some(pending) = pending {
                 let open_msg = Msg::Overlay(msg::OverlayMsg::OpenCreateActionMenu { pending });
                 let (new_model, cmds) = update(model, open_msg);
