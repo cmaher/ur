@@ -154,7 +154,12 @@ impl NavigationModel {
             self.pop_to_root(model)
         } else {
             self.active_tab = target;
-            vec![]
+            // Trigger a fetch if the target tab's root data hasn't been loaded yet.
+            if is_tab_data_not_loaded(target, model) {
+                init_page(self.current_page(), model)
+            } else {
+                vec![]
+            }
         }
     }
 
@@ -180,6 +185,14 @@ impl NavigationModel {
         cmds
     }
 
+    /// Initialize the current page by triggering its data fetch.
+    ///
+    /// Called at startup to ensure the initial tab's data is loaded immediately
+    /// instead of showing a permanent "Loading..." state.
+    pub fn init_current_page(&self, model: &mut Model) -> Vec<Cmd> {
+        init_page(self.current_page(), model)
+    }
+
     /// Navigate directly to a specific page, pushing it if not already
     /// the current page.
     pub fn goto(&mut self, page: PageId, model: &mut Model) -> Vec<Cmd> {
@@ -187,6 +200,15 @@ impl NavigationModel {
             return vec![];
         }
         self.push(page, model)
+    }
+}
+
+/// Check whether a tab's root page data is in the `NotLoaded` state.
+fn is_tab_data_not_loaded(tab: TabId, model: &Model) -> bool {
+    match tab {
+        TabId::Tickets => matches!(model.ticket_list.data, super::model::LoadState::NotLoaded),
+        TabId::Flows => matches!(model.flow_list.data, super::model::LoadState::NotLoaded),
+        TabId::Workers => matches!(model.worker_list.data, super::model::LoadState::NotLoaded),
     }
 }
 
@@ -494,5 +516,65 @@ mod tests {
         // Pop the page
         nav.pop(&mut model);
         assert_eq!(model.input_stack.len(), initial_handler_count);
+    }
+
+    #[test]
+    fn init_current_page_returns_fetch_commands() {
+        let nav = NavigationModel::initial();
+        let mut model = Model::initial();
+        // Starting tab is Tickets with NotLoaded data — init should produce cmds.
+        let cmds = nav.init_current_page(&mut model);
+        assert!(!cmds.is_empty(), "startup init should trigger a fetch");
+    }
+
+    #[test]
+    fn switch_tab_triggers_fetch_when_not_loaded() {
+        let mut nav = NavigationModel::initial();
+        let mut model = Model::initial();
+        // Flows data starts as NotLoaded, so switching should trigger fetch.
+        let cmds = nav.switch_tab(TabId::Flows, &mut model);
+        assert!(
+            !cmds.is_empty(),
+            "switching to a NotLoaded tab should trigger a fetch"
+        );
+    }
+
+    #[test]
+    fn switch_tab_no_fetch_when_already_loaded() {
+        use crate::v2::model::{FlowListData, LoadState};
+        let mut nav = NavigationModel::initial();
+        let mut model = Model::initial();
+        // Simulate that Flows data was already loaded.
+        model.flow_list.data = LoadState::Loaded(FlowListData {
+            workflows: vec![],
+            total_count: 0,
+        });
+        let cmds = nav.switch_tab(TabId::Flows, &mut model);
+        assert!(
+            cmds.is_empty(),
+            "switching to an already-loaded tab should not trigger a fetch"
+        );
+    }
+
+    #[test]
+    fn switch_tab_refetches_invalidated_data() {
+        use crate::v2::model::{FlowListData, LoadState};
+        let mut nav = NavigationModel::initial();
+        let mut model = Model::initial();
+        // Simulate loaded then invalidated (back to NotLoaded).
+        model.flow_list.data = LoadState::Loaded(FlowListData {
+            workflows: vec![],
+            total_count: 0,
+        });
+        nav.switch_tab(TabId::Flows, &mut model);
+        // Invalidate the data.
+        model.flow_list.data = LoadState::NotLoaded;
+        // Switch away and back.
+        nav.switch_tab(TabId::Tickets, &mut model);
+        let cmds = nav.switch_tab(TabId::Flows, &mut model);
+        assert!(
+            !cmds.is_empty(),
+            "switching to an invalidated tab should trigger a re-fetch"
+        );
     }
 }
