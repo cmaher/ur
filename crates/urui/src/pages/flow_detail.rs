@@ -10,11 +10,11 @@ use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::cmd::Cmd;
+use crate::components::ThemedTable;
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{FlowDetailModel, Model};
 use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
-use crate::widgets::ThemedTable;
 
 /// Initialize the flow detail model from the currently loaded flow list data.
 ///

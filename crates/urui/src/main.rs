@@ -17,7 +17,6 @@ mod terminal;
 mod theme;
 mod update;
 mod view;
-mod widgets;
 
 use std::io;
 use std::sync::Arc;

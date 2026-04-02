@@ -7,9 +7,14 @@ pub mod goto_menu;
 pub mod header;
 pub mod overlay;
 pub mod priority_picker;
+pub mod progress_bar;
 pub mod project_input;
 pub mod settings_overlay;
 pub mod status;
+pub mod table;
 pub mod ticket_table;
 pub mod title_input;
 pub mod type_menu;
+
+pub use progress_bar::MiniProgressBar;
+pub use table::ThemedTable;

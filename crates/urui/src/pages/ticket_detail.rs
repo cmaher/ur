@@ -7,13 +7,13 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 
 use crate::cmd::{Cmd, FetchCmd};
+use crate::components::MiniProgressBar;
 use crate::components::ticket_table::render_ticket_table;
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{LoadState, Model, TicketDetailData};
 use crate::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
 use crate::navigation::PageId;
-use crate::widgets::MiniProgressBar;
 
 /// Render the ticket detail page into the given content area.
 ///

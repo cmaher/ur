@@ -11,7 +11,7 @@ use crate::context::TuiContext;
 /// Returns the inner content area (inside the border) for the caller to
 /// render content into.
 ///
-/// This is the v2 equivalent of `crate::widgets::overlay::render_overlay`,
+/// This is the v2 equivalent of `crate::components::overlay::render_overlay`,
 /// reusing the same visual style.
 pub fn render_overlay(
     area: Rect,

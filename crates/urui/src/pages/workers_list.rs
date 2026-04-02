@@ -6,11 +6,11 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::cmd::{Cmd, FetchCmd};
+use crate::components::ThemedTable;
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{LoadState, Model, WORKER_PAGE_SIZE, WorkerListData, WorkerListModel};
 use crate::msg::{GotoTarget, Msg, NavMsg};
-use crate::widgets::ThemedTable;
 
 use ur_rpc::proto::core::WorkerSummary;
 

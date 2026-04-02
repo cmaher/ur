@@ -10,12 +10,12 @@ use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::cmd::{Cmd, FetchCmd};
+use crate::components::{MiniProgressBar, ThemedTable};
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{FLOW_PAGE_SIZE, FlowListData, FlowListModel, LoadState, Model};
 use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg};
 use crate::navigation::PageId;
-use crate::widgets::{MiniProgressBar, ThemedTable};
 
 /// Column index of the progress count label in the table.
 const PROGRESS_COUNT_COL: usize = 3;

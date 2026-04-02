@@ -6,8 +6,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 use ur_rpc::proto::ticket::Ticket;
 
+use crate::components::{MiniProgressBar, ThemedTable};
 use crate::context::TuiContext;
-use crate::widgets::{MiniProgressBar, ThemedTable};
 
 use super::super::input::{FooterCommand, InputHandler, InputResult};
 use super::super::model::TicketTableModel;
