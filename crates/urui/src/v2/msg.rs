@@ -253,6 +253,8 @@ pub enum NavMsg {
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
     TicketListCreate,
+    /// Edit the highlighted ticket in $EDITOR.
+    TicketListEdit,
 
     // ── Ticket detail page messages ────────────────────────────────
     /// Navigate within the ticket detail children table by delta (+1 down, -1 up).
@@ -289,6 +291,8 @@ pub enum NavMsg {
     TicketDetailOpenActivities,
     /// Create a child ticket under the parent.
     TicketDetailCreateChild,
+    /// Edit the parent ticket in $EDITOR.
+    TicketDetailEdit,
 
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).
@@ -427,6 +431,14 @@ pub enum TicketOpMsg {
     Redrive { ticket_id: String },
     /// Open (reopen) a ticket by setting its status to "open".
     Open { ticket_id: String },
+    /// Update a ticket's editable fields (title, priority, body, project).
+    UpdateFields {
+        ticket_id: String,
+        project: String,
+        title: String,
+        priority: i64,
+        body: String,
+    },
 }
 
 /// Ticket operation result messages. Each variant carries the outcome of a
@@ -449,6 +461,8 @@ pub enum TicketOpResultMsg {
     Redriven { result: Result<String, String> },
     /// Open/reopen completed.
     Opened { result: Result<String, String> },
+    /// Ticket fields updated.
+    Updated { result: Result<String, String> },
 }
 
 /// Flow operation request messages. Each variant carries the parameters needed

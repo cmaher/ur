@@ -249,6 +249,7 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         NavMsg::TicketDetailOpenDescription => handle_open_description(model),
         NavMsg::TicketDetailOpenActivities => handle_open_activities(model),
         NavMsg::TicketDetailCreateChild => handle_create_child(model),
+        NavMsg::TicketDetailEdit => handle_edit_parent(model),
         _ => (model, vec![]),
     }
 }
@@ -481,6 +482,15 @@ fn handle_open_activities(mut model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
+/// Edit the parent ticket in $EDITOR.
+fn handle_edit_parent(model: Model) -> (Model, Vec<Cmd>) {
+    let Some(ref detail) = model.ticket_detail else {
+        return (model, vec![]);
+    };
+    let ticket_id = detail.ticket_id.clone();
+    (model, vec![Cmd::EditTicket { ticket_id }])
+}
+
 /// Open the project input overlay for creating a child ticket.
 fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
     crate::v2::create_ticket::start_create_child_flow(model)
@@ -564,6 +574,11 @@ impl InputHandler for TicketDetailHandler {
             FooterCommand {
                 key_label: "D".to_string(),
                 description: "Dispatch".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "E".to_string(),
+                description: "Edit".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -665,6 +680,7 @@ fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::TicketDetailDispatchAll)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketDetailCreateChild)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketDetailDispatch)),
+        KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketDetailOpen)),
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketDetailPriority)),
         KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketDetailDesign)),

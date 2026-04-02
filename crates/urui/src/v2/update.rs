@@ -133,6 +133,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListDesign
             | NavMsg::TicketListGoto
             | NavMsg::TicketListCreate
+            | NavMsg::TicketListEdit
     ) {
         return Some(super::pages::tickets_list::handle_ticket_table_nav(
             model, nav_msg,
@@ -158,6 +159,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketDetailOpenDescription
             | NavMsg::TicketDetailOpenActivities
             | NavMsg::TicketDetailCreateChild
+            | NavMsg::TicketDetailEdit
     ) {
         return Some(super::pages::ticket_detail::handle_ticket_detail_nav(
             model, nav_msg,
@@ -519,6 +521,9 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
         }
         TicketOpMsg::Redrive { ticket_id } => format!("Moving {ticket_id} to Verify..."),
         TicketOpMsg::Open { ticket_id } => format!("Reopening {ticket_id}..."),
+        TicketOpMsg::UpdateFields { ticket_id, .. } => {
+            format!("Updating {ticket_id}...")
+        }
     };
 
     // Feed through update to set the status and issue the command.
@@ -546,6 +551,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::DesignLaunched { result } => (result, false),
         TicketOpResultMsg::Redriven { result } => (result, false),
         TicketOpResultMsg::Opened { result } => (result, false),
+        TicketOpResultMsg::Updated { result } => (result, false),
     };
 
     match result {

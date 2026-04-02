@@ -67,6 +67,9 @@ impl CmdRunner {
             Cmd::SpawnEditor { .. } => {
                 // Handled by the TEA loop directly, not by CmdRunner.
             }
+            Cmd::EditTicket { .. } => {
+                // Handled by the TEA loop directly, not by CmdRunner.
+            }
         }
     }
 
@@ -160,6 +163,13 @@ impl CmdRunner {
             } => self.exec_launch_design(ticket_id, project_key, image_id),
             TicketOpMsg::Redrive { ticket_id } => self.exec_redrive(ticket_id),
             TicketOpMsg::Open { ticket_id } => self.exec_open(ticket_id),
+            TicketOpMsg::UpdateFields {
+                ticket_id,
+                project,
+                title,
+                priority,
+                body,
+            } => self.exec_update_fields(ticket_id, project, title, priority, body),
         }
     }
 
@@ -300,6 +310,27 @@ impl CmdRunner {
             let result = redrive_ticket(port, &ticket_id).await;
             let msg = TicketOpResultMsg::Redriven {
                 result: result.map(|()| format!("Moved {ticket_id} to Verify")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_update_fields(
+        &self,
+        ticket_id: String,
+        project: String,
+        title: String,
+        priority: i64,
+        body: String,
+    ) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: updating ticket fields");
+            let result =
+                update_ticket_fields(port, &ticket_id, &project, &title, priority, &body).await;
+            let msg = TicketOpResultMsg::Updated {
+                result: result.map(|()| format!("Updated {ticket_id}")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -797,6 +828,39 @@ async fn update_ticket_priority(port: u16, ticket_id: &str, priority: i64) -> Re
             parent_id: None,
             branch: None,
             project: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Update a ticket's editable fields (project, title, priority, body).
+async fn update_ticket_fields(
+    port: u16,
+    ticket_id: &str,
+    project: &str,
+    title: &str,
+    priority: i64,
+    body: &str,
+) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::UpdateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: Some(priority),
+            status: None,
+            title: Some(title.to_owned()),
+            body: Some(body.to_owned()),
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: Some(project.to_owned()),
         })
         .await
         .map_err(|e| e.to_string())?;

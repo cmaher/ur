@@ -41,6 +41,10 @@ pub enum Cmd {
         project: Option<String>,
         content: Option<String>,
     },
+    /// Break out of the TEA loop and spawn $EDITOR for editing an existing ticket.
+    /// The editor opens with the ticket's current fields pre-populated as frontmatter.
+    /// After saving, the update is submitted directly via gRPC (no action menu).
+    EditTicket { ticket_id: String },
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.
