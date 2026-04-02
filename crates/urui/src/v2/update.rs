@@ -130,7 +130,6 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListClose
             | NavMsg::TicketListOpen
             | NavMsg::TicketListDispatch
-            | NavMsg::TicketListDesign
             | NavMsg::TicketListGoto
             | NavMsg::TicketListCreate
             | NavMsg::TicketListEdit
@@ -152,7 +151,6 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketDetailOpen
             | NavMsg::TicketDetailDispatch
             | NavMsg::TicketDetailDispatchAll
-            | NavMsg::TicketDetailDesign
             | NavMsg::TicketDetailRedrive
             | NavMsg::TicketDetailGoto
             | NavMsg::TicketDetailToggleClosed
@@ -509,12 +507,13 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
             ticket_id,
             priority,
         } => format!("Setting P{priority} on {ticket_id}..."),
+        TicketOpMsg::SetType {
+            ticket_id,
+            ticket_type,
+        } => format!("Setting type to {ticket_type} on {ticket_id}..."),
         TicketOpMsg::Create { pending } => format!("Creating ticket in {}...", pending.project),
         TicketOpMsg::CreateAndDispatch { pending, .. } => {
             format!("Creating and dispatching in {}...", pending.project)
-        }
-        TicketOpMsg::CreateAndDesign { pending, .. } => {
-            format!("Creating with design in {}...", pending.project)
         }
         TicketOpMsg::LaunchDesign { ticket_id, .. } => {
             format!("Launching design worker for {ticket_id}...")
@@ -547,6 +546,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::Closed { result } => (result, false, None),
         TicketOpResultMsg::ForceClosed { result } => (result, true, None),
         TicketOpResultMsg::PrioritySet { result } => (result, true, None),
+        TicketOpResultMsg::TypeSet { result } => (result, true, None),
         TicketOpResultMsg::Created { result, pending } => (result, false, pending),
         TicketOpResultMsg::DesignLaunched { result } => (result, false, None),
         TicketOpResultMsg::Redriven { result } => (result, false, None),
@@ -1576,6 +1576,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test ticket".into(),
+                    ticket_type: "code".into(),
                     priority: 0,
                     body: String::new(),
                     parent_id: None,
@@ -1799,6 +1800,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".into(),
             title: "Test ticket".into(),
+            ticket_type: "code".into(),
             priority: 0,
             body: "Some body".into(),
             parent_id: None,

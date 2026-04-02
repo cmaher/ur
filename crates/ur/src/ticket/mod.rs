@@ -276,7 +276,7 @@ mod tests {
             } => {
                 assert_eq!(title, "My new ticket");
                 assert!(project.is_none());
-                assert_eq!(ticket_type, "task");
+                assert_eq!(ticket_type, "code");
                 assert!(parent.is_none());
                 assert_eq!(priority, 0);
                 assert_eq!(body, "");

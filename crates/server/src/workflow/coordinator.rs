@@ -614,7 +614,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some(id.to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Test ticket".to_string(),
             body: String::new(),

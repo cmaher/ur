@@ -20,6 +20,7 @@ use super::components::settings_overlay::{
     SettingsOverlayHandler, build_settings_state, selected_theme_name, snap_cursor,
 };
 use super::components::title_input::TitleInputHandler;
+use super::components::type_menu::{TypeMenuHandler, cursor_to_type, type_count, type_to_cursor};
 use super::model::{ActiveOverlay, FilterCategory, Model, SettingsLevel};
 use super::msg::{GotoTarget, Msg, NavMsg, OverlayMsg};
 use super::navigation::{PageId, TabId};
@@ -36,6 +37,14 @@ pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
         | OverlayMsg::PriorityPickerQuickSelect { .. }
         | OverlayMsg::PrioritySelected { .. }
         | OverlayMsg::PriorityCancelled => handle_priority_overlay(model, msg),
+
+        // === Type Menu ===
+        OverlayMsg::OpenTypeMenu { .. }
+        | OverlayMsg::TypeMenuNavigate { .. }
+        | OverlayMsg::TypeMenuConfirm
+        | OverlayMsg::TypeMenuQuickSelect { .. }
+        | OverlayMsg::TypeSelected { .. }
+        | OverlayMsg::TypeMenuCancelled => handle_type_overlay(model, msg),
 
         // === Filter Menu ===
         OverlayMsg::OpenFilterMenu
@@ -160,6 +169,83 @@ fn handle_priority_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd
             super::update::update(model, super::msg::Msg::TicketOp(op))
         }
         OverlayMsg::PriorityCancelled => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+        _ => (model, vec![]),
+    }
+}
+
+/// Handle type menu overlay messages.
+fn handle_type_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
+        OverlayMsg::OpenTypeMenu {
+            ticket_id,
+            current_type,
+        } => {
+            let cursor = type_to_cursor(&current_type);
+            model.active_overlay = Some(ActiveOverlay::TypeMenu { ticket_id, cursor });
+            model.input_stack.push(Box::new(TypeMenuHandler));
+            (model, vec![])
+        }
+        OverlayMsg::TypeMenuNavigate { delta } => {
+            if let Some(ActiveOverlay::TypeMenu { ref mut cursor, .. }) = model.active_overlay {
+                let count = type_count();
+                if delta > 0 && *cursor < count - 1 {
+                    *cursor += 1;
+                } else if delta < 0 && *cursor > 0 {
+                    *cursor -= 1;
+                }
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TypeMenuConfirm => {
+            if let Some(ActiveOverlay::TypeMenu {
+                ref ticket_id,
+                cursor,
+            }) = model.active_overlay
+            {
+                let ticket_type = cursor_to_type(cursor).to_owned();
+                let ticket_id = ticket_id.clone();
+                close_overlay(&mut model);
+                return handle_overlay(
+                    model,
+                    OverlayMsg::TypeSelected {
+                        ticket_id,
+                        ticket_type,
+                    },
+                );
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TypeMenuQuickSelect { index } => {
+            if index < type_count()
+                && let Some(ActiveOverlay::TypeMenu { ref ticket_id, .. }) = model.active_overlay
+            {
+                let ticket_id = ticket_id.clone();
+                let ticket_type = cursor_to_type(index).to_owned();
+                close_overlay(&mut model);
+                return handle_overlay(
+                    model,
+                    OverlayMsg::TypeSelected {
+                        ticket_id,
+                        ticket_type,
+                    },
+                );
+            }
+            (model, vec![])
+        }
+        OverlayMsg::TypeSelected {
+            ticket_id,
+            ticket_type,
+        } => {
+            let op = super::msg::TicketOpMsg::SetType {
+                ticket_id,
+                ticket_type,
+            };
+            super::update::update(model, super::msg::Msg::TicketOp(op))
+        }
+        OverlayMsg::TypeMenuCancelled => {
             close_overlay(&mut model);
             (model, vec![])
         }
@@ -776,18 +862,11 @@ fn handle_create_action(
                 image_id: String::new(),
             }
         }
-        CreateAction::Design => {
-            let project_key = pending.project.clone();
-            TicketOpMsg::CreateAndDesign {
-                pending,
-                project_key,
-                image_id: String::new(),
-            }
-        }
         CreateAction::Edit => {
             let content = crate::create_ticket::serialize_to_template(
                 &pending.project,
                 &pending.title,
+                &pending.ticket_type,
                 pending.priority,
                 &pending.body,
             );
@@ -1093,6 +1172,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
@@ -1114,6 +1194,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
@@ -1139,6 +1220,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
@@ -1305,5 +1387,103 @@ mod tests {
             Some(ActiveOverlay::Settings { active_column, .. }) => assert_eq!(*active_column, 1),
             _ => panic!("expected Settings"),
         }
+    }
+
+    // === Type Menu ===
+
+    #[test]
+    fn open_type_menu_sets_state() {
+        let model = Model::initial();
+        let (new_model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "design".into(),
+            },
+        );
+        assert!(new_model.active_overlay.is_some());
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::TypeMenu { ticket_id, cursor }) => {
+                assert_eq!(ticket_id, "ur-abc");
+                assert_eq!(*cursor, 1);
+            }
+            _ => panic!("expected TypeMenu"),
+        }
+    }
+
+    #[test]
+    fn type_navigate_down() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "code".into(),
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::TypeMenuNavigate { delta: 1 });
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::TypeMenu { cursor, .. }) => assert_eq!(*cursor, 1),
+            _ => panic!("expected TypeMenu"),
+        }
+    }
+
+    #[test]
+    fn type_navigate_up_clamps_at_zero() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "code".into(),
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::TypeMenuNavigate { delta: -1 });
+        match &new_model.active_overlay {
+            Some(ActiveOverlay::TypeMenu { cursor, .. }) => assert_eq!(*cursor, 0),
+            _ => panic!("expected TypeMenu"),
+        }
+    }
+
+    #[test]
+    fn type_confirm_closes_overlay() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "code".into(),
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::TypeMenuConfirm);
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn type_quick_select_closes_overlay() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "code".into(),
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::TypeMenuQuickSelect { index: 1 });
+        assert!(new_model.active_overlay.is_none());
+    }
+
+    #[test]
+    fn type_cancel_closes_overlay() {
+        let model = Model::initial();
+        let (model, _) = handle_overlay(
+            model,
+            OverlayMsg::OpenTypeMenu {
+                ticket_id: "ur-abc".into(),
+                current_type: "code".into(),
+            },
+        );
+        let (new_model, _) = handle_overlay(model, OverlayMsg::TypeMenuCancelled);
+        assert!(new_model.active_overlay.is_none());
     }
 }

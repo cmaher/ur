@@ -77,6 +77,26 @@ pub enum OverlayMsg {
     /// The user cancelled the priority picker.
     PriorityCancelled,
 
+    /// Open the type menu overlay for the given ticket, starting at
+    /// the ticket's current type.
+    OpenTypeMenu {
+        ticket_id: String,
+        current_type: String,
+    },
+    /// The user selected a type in the menu.
+    TypeSelected {
+        ticket_id: String,
+        ticket_type: String,
+    },
+    /// Navigate the type menu cursor by delta (+1 down, -1 up).
+    TypeMenuNavigate { delta: i32 },
+    /// Confirm the currently highlighted type.
+    TypeMenuConfirm,
+    /// Quick-select a type by index (0 or 1).
+    TypeMenuQuickSelect { index: usize },
+    /// The user cancelled the type menu.
+    TypeMenuCancelled,
+
     /// Open the filter menu overlay.
     OpenFilterMenu,
     /// Navigate the filter menu cursor.
@@ -180,7 +200,6 @@ pub struct GotoTarget {
 pub enum CreateAction {
     Create,
     Dispatch,
-    Design,
     Edit,
     Abandon,
 }
@@ -199,6 +218,7 @@ pub enum SettingsDirection {
 pub struct PendingTicket {
     pub project: String,
     pub title: String,
+    pub ticket_type: String,
     pub priority: i64,
     pub body: String,
     /// Optional parent ticket ID for child ticket creation.
@@ -241,14 +261,14 @@ pub enum NavMsg {
     TicketListRefresh,
     /// Open the priority picker for the selected ticket in the list.
     TicketListPriority,
+    /// Open the type menu for the selected ticket in the list.
+    TicketListType,
     /// Close the selected ticket in the list.
     TicketListClose,
     /// Re-open the selected ticket in the list.
     TicketListOpen,
-    /// Dispatch the selected ticket in the list.
+    /// Dispatch the selected ticket in the list (type-aware: code or design).
     TicketListDispatch,
-    /// Launch a design worker for the selected ticket.
-    TicketListDesign,
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
@@ -269,16 +289,16 @@ pub enum NavMsg {
     TicketDetailRefresh,
     /// Open the priority picker for the selected child in the detail.
     TicketDetailPriority,
+    /// Open the type menu for the selected child in the detail.
+    TicketDetailType,
     /// Close the selected child in the detail.
     TicketDetailClose,
     /// Reopen the selected child in the detail.
     TicketDetailOpen,
-    /// Dispatch the selected child in the detail.
+    /// Dispatch the selected child in the detail (type-aware: code or design).
     TicketDetailDispatch,
     /// Dispatch all (the parent ticket itself).
     TicketDetailDispatchAll,
-    /// Launch a design worker for the selected child.
-    TicketDetailDesign,
     /// Redrive the selected child's workflow.
     TicketDetailRedrive,
     /// Open the goto menu for the selected child.
@@ -407,16 +427,16 @@ pub enum TicketOpMsg {
     ForceClose { ticket_id: String },
     /// Set a ticket's priority.
     SetPriority { ticket_id: String, priority: i64 },
+    /// Set a ticket's type.
+    SetType {
+        ticket_id: String,
+        ticket_type: String,
+    },
     /// Create a new ticket from a pending ticket template.
     Create { pending: PendingTicket },
-    /// Create a ticket and immediately dispatch it.
+    /// Create a ticket and immediately dispatch it (type-aware: code dispatches
+    /// a workflow, design launches a design worker).
     CreateAndDispatch {
-        pending: PendingTicket,
-        project_key: String,
-        image_id: String,
-    },
-    /// Create a ticket and launch a design worker for it.
-    CreateAndDesign {
         pending: PendingTicket,
         project_key: String,
         image_id: String,
@@ -453,6 +473,8 @@ pub enum TicketOpResultMsg {
     ForceClosed { result: Result<String, String> },
     /// Priority set completed.
     PrioritySet { result: Result<String, String> },
+    /// Type set completed.
+    TypeSet { result: Result<String, String> },
     /// Ticket created. On error, the PendingTicket is preserved for retry.
     Created {
         result: Result<String, String>,

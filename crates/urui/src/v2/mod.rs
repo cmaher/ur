@@ -450,6 +450,7 @@ fn run_editor_flow(
                     parsed.project
                 },
                 title: parsed.title,
+                ticket_type: parsed.ticket_type,
                 priority: parsed.priority,
                 body: parsed.body,
                 parent_id,
@@ -481,6 +482,7 @@ async fn run_edit_ticket_flow(
     let content = create_ticket_v1::serialize_to_template(
         &ticket.project,
         &ticket.title,
+        &ticket.ticket_type,
         ticket.priority,
         &ticket.body,
     );
@@ -529,6 +531,7 @@ async fn fetch_ticket_for_edit(
     Ok(create_ticket_v1::PendingTicket {
         project: ticket.project,
         title: ticket.title,
+        ticket_type: ticket.ticket_type,
         priority: ticket.priority,
         body: ticket.body,
     })

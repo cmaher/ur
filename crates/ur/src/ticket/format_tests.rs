@@ -5,7 +5,7 @@ use super::format::{format_ticket_detail, format_ticket_list};
 fn sample_ticket(id: &str, title: &str) -> Ticket {
     Ticket {
         id: id.to_owned(),
-        ticket_type: "task".to_owned(),
+        ticket_type: "code".to_owned(),
         status: "open".to_owned(),
         priority: 1,
         parent_id: String::new(),
@@ -28,7 +28,7 @@ fn format_detail_minimal() {
     let out = format_ticket_detail(&t, &[], &[]);
     assert!(out.contains("ID:       ur-abc12"));
     assert!(out.contains("Title:    Test ticket"));
-    assert!(out.contains("Type:     task"));
+    assert!(out.contains("Type:     code"));
     assert!(out.contains("Status:   open"));
     assert!(out.contains("Priority: 1"));
     assert!(out.contains("Created:  2026-03-15T10:00:00Z"));

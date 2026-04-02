@@ -387,6 +387,8 @@ pub struct WorkerListModel {
 pub enum ActiveOverlay {
     /// Priority picker overlay for a specific ticket.
     PriorityPicker { ticket_id: String, cursor: usize },
+    /// Type menu overlay for a specific ticket.
+    TypeMenu { ticket_id: String, cursor: usize },
     /// Filter menu overlay.
     FilterMenu {
         cursor: usize,

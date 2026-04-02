@@ -55,7 +55,7 @@ async fn vacuum_into_data_survives() {
     // Insert test data before snapshotting.
     repo.create_ticket(&NewTicket {
         id: Some("snap-t1".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Snapshot ticket one".into(),
@@ -68,7 +68,7 @@ async fn vacuum_into_data_survives() {
 
     repo.create_ticket(&NewTicket {
         id: Some("snap-t2".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: None,
         title: "Snapshot ticket two".into(),
@@ -99,11 +99,11 @@ async fn vacuum_into_data_survives() {
     let t1 = snap_repo.get_ticket("snap-t1").await.unwrap().unwrap();
     assert_eq!(t1.title, "Snapshot ticket one");
     assert_eq!(t1.body, "Body one");
-    assert_eq!(t1.type_, "task");
+    assert_eq!(t1.type_, "code");
 
     let t2 = snap_repo.get_ticket("snap-t2").await.unwrap().unwrap();
     assert_eq!(t2.title, "Snapshot ticket two");
-    assert_eq!(t2.type_, "task");
+    assert_eq!(t2.type_, "code");
 
     let meta = snap_repo.get_meta("snap-t1", "ticket").await.unwrap();
     assert_eq!(meta.get("env").unwrap(), "prod");
@@ -125,7 +125,7 @@ async fn restore_into_new_file() {
     // Seed data.
     repo.create_ticket(&NewTicket {
         id: Some("restore-t1".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 3,
         parent_id: None,
         title: "Restore test ticket".into(),
@@ -225,7 +225,7 @@ async fn restore_fails_if_source_missing() {
 async fn seed_integrity_data(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: Some("int-epic".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Integrity epic".into(),
@@ -238,7 +238,7 @@ async fn seed_integrity_data(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("int-t1".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: Some("int-epic".into()),
         title: "Integrity task one".into(),
@@ -251,7 +251,7 @@ async fn seed_integrity_data(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("int-t2".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: Some("int-epic".into()),
         title: "Integrity task two".into(),
@@ -299,7 +299,7 @@ async fn assert_integrity_data(repo: &TicketRepo) {
     assert_eq!(all_tickets.len(), 3);
 
     let epic = repo.get_ticket("int-epic").await.unwrap().unwrap();
-    assert_eq!(epic.type_, "task");
+    assert_eq!(epic.type_, "code");
     assert_eq!(epic.title, "Integrity epic");
 
     let t1 = repo.get_ticket("int-t1").await.unwrap().unwrap();

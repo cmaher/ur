@@ -1382,6 +1382,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".to_string(),
             title: "Test".to_string(),
+            ticket_type: "code".to_string(),
             priority: 0,
             body: "body".to_string(),
         };
@@ -1402,6 +1403,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".to_string(),
             title: "Test".to_string(),
+            ticket_type: "code".to_string(),
             priority: 0,
             body: "body".to_string(),
         };
@@ -1423,6 +1425,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".to_string(),
             title: "Test ticket".to_string(),
+            ticket_type: "code".to_string(),
             priority: 1,
             body: "body text".to_string(),
         };
@@ -1444,6 +1447,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".to_string(),
             title: "<summarize>".to_string(),
+            ticket_type: "code".to_string(),
             priority: 0,
             body: "body".to_string(),
         };

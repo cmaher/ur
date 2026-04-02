@@ -39,7 +39,7 @@ async fn update_child_emits_events_for_all_ancestors() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("gp-1".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Grandparent".into(),
             project: "test".into(),
             ..Default::default()
@@ -50,7 +50,7 @@ async fn update_child_emits_events_for_all_ancestors() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("par-1".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Parent".into(),
             parent_id: Some("gp-1".into()),
             project: "test".into(),
@@ -62,7 +62,7 @@ async fn update_child_emits_events_for_all_ancestors() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("ch-1".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Child".into(),
             parent_id: Some("par-1".into()),
             project: "test".into(),
@@ -109,7 +109,7 @@ async fn insert_child_emits_events_for_ancestors() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("par-2".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Parent".into(),
             project: "test".into(),
             ..Default::default()
@@ -124,7 +124,7 @@ async fn insert_child_emits_events_for_ancestors() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("ch-2".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Child".into(),
             parent_id: Some("par-2".into()),
             project: "test".into(),
@@ -151,7 +151,7 @@ async fn root_ticket_update_emits_single_event() {
     tickets
         .create_ticket(&NewTicket {
             id: Some("root-1".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             title: "Root".into(),
             project: "test".into(),
             ..Default::default()

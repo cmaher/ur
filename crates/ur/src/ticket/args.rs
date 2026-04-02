@@ -14,7 +14,7 @@ pub enum TicketArgs {
         project: Option<String>,
 
         /// Ticket type (task or design)
-        #[arg(long = "type", default_value = "task", value_parser = PossibleValuesParser::new(TicketType::VALID))]
+        #[arg(long = "type", default_value = "code", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: String,
 
         /// Parent ticket ID

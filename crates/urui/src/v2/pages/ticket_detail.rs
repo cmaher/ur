@@ -238,11 +238,11 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         }
         NavMsg::TicketDetailSelect => handle_detail_select(model),
         NavMsg::TicketDetailPriority => handle_detail_priority(model),
+        NavMsg::TicketDetailType => handle_detail_type(model),
         NavMsg::TicketDetailClose => handle_detail_close(model),
         NavMsg::TicketDetailOpen => handle_detail_open(model),
         NavMsg::TicketDetailDispatch => handle_detail_dispatch(model),
         NavMsg::TicketDetailDispatchAll => handle_detail_dispatch_all(model),
-        NavMsg::TicketDetailDesign => handle_detail_design(model),
         NavMsg::TicketDetailRedrive => handle_detail_redrive(model),
         NavMsg::TicketDetailGoto => handle_detail_goto(model),
         NavMsg::TicketDetailToggleClosed => handle_toggle_closed(model),
@@ -315,6 +315,19 @@ fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
+/// Open the type menu for the selected child.
+fn handle_detail_type(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenTypeMenu {
+            ticket_id: ticket.id.clone(),
+            current_type: ticket.ticket_type.clone(),
+        });
+        crate::v2::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Close the selected child, prompting for force close if it has open children.
 fn handle_detail_close(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
@@ -348,14 +361,23 @@ fn handle_detail_open(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Dispatch the selected child.
+/// Dispatch the selected child, branching on ticket type:
+/// design tickets launch a design worker, all others dispatch a code worker.
 fn handle_detail_dispatch(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
-        let msg = Msg::TicketOp(TicketOpMsg::Dispatch {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
+        let msg = if ticket.ticket_type == "design" {
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        } else {
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        };
         crate::v2::update::update(model, msg)
     } else {
         (model, vec![])
@@ -379,20 +401,6 @@ fn handle_detail_dispatch_all(model: Model) -> (Model, Vec<Cmd>) {
         image_id: String::new(),
     });
     crate::v2::update::update(model, msg)
-}
-
-/// Launch a design worker for the selected child.
-fn handle_detail_design(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = selected_child(&model) {
-        let msg = Msg::TicketOp(TicketOpMsg::LaunchDesign {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
-        crate::v2::update::update(model, msg)
-    } else {
-        (model, vec![])
-    }
 }
 
 /// Redrive the selected child's workflow.
@@ -528,7 +536,7 @@ fn build_child_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
 /// Input handler for the ticket detail page.
 ///
 /// Handles ticket-specific actions on children: Dispatch All (A), Create child (C),
-/// Dispatch (D), Open/reopen (O), Priority (P), Design (S), Redrive (V),
+/// Dispatch (D), Open/reopen (O), Priority (P), Redrive (V),
 /// Close (X), activities (a), toggle-closed (c), description (d), goto (g),
 /// refresh (r), plus children table navigation (j/k/h/l/Enter).
 ///
@@ -592,8 +600,8 @@ impl InputHandler for TicketDetailHandler {
                 common: false,
             },
             FooterCommand {
-                key_label: "S".to_string(),
-                description: "Design".to_string(),
+                key_label: "T".to_string(),
+                description: "Type".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -683,7 +691,7 @@ fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketDetailOpen)),
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketDetailPriority)),
-        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketDetailDesign)),
+        KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketDetailType)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketDetailRedrive)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketDetailClose)),
         _ => None,
@@ -846,6 +854,16 @@ mod tests {
     }
 
     #[test]
+    fn handler_captures_shift_t_as_type() {
+        let handler = TicketDetailHandler;
+        let key = make_key(KeyCode::Char('T'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailType)) => {}
+            other => panic!("expected type, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_captures_shift_a_as_dispatch_all() {
         let handler = TicketDetailHandler;
         let key = make_key(KeyCode::Char('A'), KeyModifiers::SHIFT);
@@ -872,6 +890,7 @@ mod tests {
         assert!(cmds.iter().any(|c| c.description == "Dispatch all"));
         assert!(cmds.iter().any(|c| c.description == "Create child"));
         assert!(cmds.iter().any(|c| c.description == "Priority"));
+        assert!(cmds.iter().any(|c| c.description == "Type"));
         assert!(cmds.iter().any(|c| c.description == "Activities"));
         assert!(cmds.iter().any(|c| c.description == "Description"));
         assert!(cmds.iter().any(|c| c.description == "Toggle closed"));

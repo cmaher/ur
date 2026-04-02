@@ -78,10 +78,10 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         }
         NavMsg::TicketTableSelect => handle_select(model),
         NavMsg::TicketListPriority => handle_priority(model),
+        NavMsg::TicketListType => handle_type(model),
         NavMsg::TicketListClose => handle_close(model),
         NavMsg::TicketListOpen => handle_open(model),
         NavMsg::TicketListDispatch => handle_dispatch(model),
-        NavMsg::TicketListDesign => handle_design(model),
         NavMsg::TicketListGoto => handle_goto(model),
         NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
         NavMsg::TicketListEdit => handle_edit(model),
@@ -146,6 +146,19 @@ fn handle_priority(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
+/// Open the type menu for the selected ticket.
+fn handle_type(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
+        let msg = Msg::Overlay(OverlayMsg::OpenTypeMenu {
+            ticket_id: ticket.id.clone(),
+            current_type: ticket.ticket_type.clone(),
+        });
+        crate::v2::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Close the selected ticket, prompting for force close if it has open children.
 fn handle_close(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
@@ -179,28 +192,23 @@ fn handle_open(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Dispatch the selected ticket.
+/// Dispatch the selected ticket, branching on ticket type:
+/// design tickets launch a design worker, all others dispatch a code worker.
 fn handle_dispatch(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::Dispatch {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
-        crate::v2::update::update(model, msg)
-    } else {
-        (model, vec![])
-    }
-}
-
-/// Launch a design worker for the selected ticket.
-fn handle_design(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::LaunchDesign {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
+        let msg = if ticket.ticket_type == "design" {
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        } else {
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        };
         crate::v2::update::update(model, msg)
     } else {
         (model, vec![])
@@ -231,7 +239,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
 /// Input handler for the tickets list page.
 ///
 /// Handles ticket-specific actions: Create (C), Dispatch (D), Open/reopen (O),
-/// Priority (P), Design (S), Close (X), Goto (g),
+/// Priority (P), Close (X), Goto (g),
 /// Refresh (r), Filter (*), Settings (,),
 /// plus TicketTable navigation (j/k/h/l/Enter).
 ///
@@ -293,8 +301,8 @@ impl InputHandler for TicketListHandler {
                 common: false,
             },
             FooterCommand {
-                key_label: "S".to_string(),
-                description: "Design".to_string(),
+                key_label: "T".to_string(),
+                description: "Type".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -377,11 +385,11 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
 
     match key.code {
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketListPriority)),
+        KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketListType)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketListClose)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketListOpen)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketListEdit)),
-        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketListDesign)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketListCreate)),
         _ => None,
     }
@@ -689,6 +697,26 @@ mod tests {
             }
             other => panic!("expected Fetch(Tickets), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handler_captures_shift_t_as_type() {
+        let handler = TicketListHandler;
+        let key = make_key(KeyCode::Char('T'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketListType)) => {}
+            other => panic!("expected ticket list type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn footer_commands_include_type() {
+        let handler = TicketListHandler;
+        let cmds = handler.footer_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| c.description == "Type" && c.key_label == "T")
+        );
     }
 
     // ── Goto targets tests ───────────────────────────────────────────

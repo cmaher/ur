@@ -414,7 +414,7 @@ async fn execute_create_and_show() {
         TicketArgs::Create {
             title: "Test ticket".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 2,
             body: "Body text".into(),
@@ -450,7 +450,7 @@ async fn execute_create_and_list_filtered() {
         TicketArgs::Create {
             title: "Open ticket".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 1,
             body: String::new(),
@@ -472,7 +472,7 @@ async fn execute_create_and_list_filtered() {
         TicketArgs::Create {
             title: "Another open ticket".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 2,
             body: String::new(),
@@ -569,7 +569,7 @@ async fn execute_set_and_delete_meta() {
         TicketArgs::Create {
             title: "Meta test".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -633,7 +633,7 @@ async fn execute_add_and_list_activities() {
         TicketArgs::Create {
             title: "Activity test".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -690,7 +690,7 @@ async fn execute_add_and_remove_block() {
         TicketArgs::Create {
             title: "Blocker".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -705,7 +705,7 @@ async fn execute_add_and_remove_block() {
         TicketArgs::Create {
             title: "Blocked".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -766,7 +766,7 @@ async fn execute_add_and_remove_link() {
         TicketArgs::Create {
             title: "Ticket A".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -781,7 +781,7 @@ async fn execute_add_and_remove_link() {
         TicketArgs::Create {
             title: "Ticket B".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -842,7 +842,7 @@ async fn execute_update_existing_ticket() {
         TicketArgs::Create {
             title: "Original title".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -898,7 +898,7 @@ async fn execute_dispatchable() {
         TicketArgs::Create {
             title: "My Parent".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -919,7 +919,7 @@ async fn execute_dispatchable() {
         TicketArgs::Create {
             title: "Child task".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: Some(epic_id.clone()),
             priority: 1,
             body: String::new(),
@@ -964,7 +964,7 @@ async fn execute_list_activities_empty() {
         TicketArgs::Create {
             title: "No activities".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),
@@ -1044,7 +1044,7 @@ async fn auth_rejection_propagates_error() {
         TicketArgs::Create {
             title: "Should fail".into(),
             project: Some("test".into()),
-            ticket_type: "task".into(),
+            ticket_type: "code".into(),
             parent: None,
             priority: 0,
             body: String::new(),

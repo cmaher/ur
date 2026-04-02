@@ -14,37 +14,37 @@ use super::super::model::TicketTableModel;
 use super::super::msg::{Msg, NavMsg};
 
 /// Column headers for the ticket table — matches v1 layout exactly.
-const HEADERS: [&str; 6] = ["ID", "Status", "P", "Progress", "", "Title"];
+const HEADERS: [&str; 7] = ["ID", "T", "P", "S", "Progress", "", "Title"];
 
 /// Column index of the progress count label.
-const PROGRESS_COUNT_COL: usize = 3;
+const PROGRESS_COUNT_COL: usize = 4;
 /// Column index of the progress bar.
-const PROGRESS_BAR_COL: usize = 4;
+const PROGRESS_BAR_COL: usize = 5;
 
 /// Build the column width constraints for the ticket table.
-/// Matches v1 exactly: ID(12), Status(8), P(8), Progress(8), Bar(10), Title(fill).
+/// ID(12), T(2), P(2), S(2), Progress(8), Bar(10), Title(fill).
 fn table_widths() -> Vec<Constraint> {
     vec![
         Constraint::Length(12),
-        Constraint::Length(8),
-        Constraint::Length(8),
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(2),
         Constraint::Length(8),
         Constraint::Length(10),
         Constraint::Fill(1),
     ]
 }
 
-/// Derive the display label for the Status column from the ticket's state.
+/// Derive the single-character display label for the S (status) column.
 ///
-/// Same logic as v1: dispatched tickets show "Dispatched", closed show
-/// "Closed", everything else shows "Open".
+/// Dispatched tickets show "D", closed show "C", everything else shows "O".
 fn dispatch_label(ticket: &Ticket) -> String {
     if !ticket.dispatch_status.is_empty() {
-        "Dispatched".to_string()
+        "D".to_string()
     } else if ticket.status == "closed" {
-        "Closed".to_string()
+        "C".to_string()
     } else {
-        "Open".to_string()
+        "O".to_string()
     }
 }
 
@@ -65,6 +65,14 @@ pub fn ticket_progress(ticket: &Ticket) -> (u32, u32) {
     }
 }
 
+/// Single-character label for the ticket type column.
+fn type_label(ticket: &Ticket) -> &'static str {
+    match ticket.ticket_type.as_str() {
+        "design" => "D",
+        _ => "C",
+    }
+}
+
 /// Build table row strings from tickets. Progress columns are left empty
 /// because progress bars are rendered directly to the buffer with themed
 /// colors in [`render_progress_bars`].
@@ -74,8 +82,9 @@ fn build_rows(tickets: &[Ticket]) -> Vec<Vec<String>> {
         .map(|t| {
             vec![
                 t.id.clone(),
-                dispatch_label(t),
+                type_label(t).to_string(),
                 t.priority.to_string(),
+                dispatch_label(t),
                 String::new(), // progress count placeholder
                 String::new(), // progress bar placeholder
                 t.title.clone(),
@@ -611,21 +620,21 @@ mod tests {
     #[test]
     fn dispatch_label_open() {
         let t = make_ticket("ur-001", "test");
-        assert_eq!(dispatch_label(&t), "Open");
+        assert_eq!(dispatch_label(&t), "O");
     }
 
     #[test]
     fn dispatch_label_closed() {
         let mut t = make_ticket("ur-001", "test");
         t.status = "closed".to_string();
-        assert_eq!(dispatch_label(&t), "Closed");
+        assert_eq!(dispatch_label(&t), "C");
     }
 
     #[test]
     fn dispatch_label_dispatched() {
         let mut t = make_ticket("ur-001", "test");
         t.dispatch_status = "implementing".to_string();
-        assert_eq!(dispatch_label(&t), "Dispatched");
+        assert_eq!(dispatch_label(&t), "D");
     }
 
     // ── ticket_progress tests ─────────────────────────────────────────
@@ -651,6 +660,28 @@ mod tests {
         assert_eq!(ticket_progress(&t), (3, 5));
     }
 
+    // ── type_label tests ───────────────────────────────────────────────
+
+    #[test]
+    fn type_label_code() {
+        let mut t = make_ticket("ur-001", "test");
+        t.ticket_type = "code".to_string();
+        assert_eq!(type_label(&t), "C");
+    }
+
+    #[test]
+    fn type_label_task_defaults_to_c() {
+        let t = make_ticket("ur-001", "test");
+        assert_eq!(type_label(&t), "C");
+    }
+
+    #[test]
+    fn type_label_design() {
+        let mut t = make_ticket("ur-001", "test");
+        t.ticket_type = "design".to_string();
+        assert_eq!(type_label(&t), "D");
+    }
+
     // ── build_rows tests ──────────────────────────────────────────────
 
     #[test]
@@ -658,12 +689,13 @@ mod tests {
         let tickets = vec![make_ticket("ur-001", "First ticket")];
         let rows = build_rows(&tickets);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].len(), 6);
+        assert_eq!(rows[0].len(), 7);
         assert_eq!(rows[0][0], "ur-001");
-        assert_eq!(rows[0][1], "Open");
+        assert_eq!(rows[0][1], "C");
         assert_eq!(rows[0][2], "2");
-        assert!(rows[0][3].is_empty()); // progress count placeholder
-        assert!(rows[0][4].is_empty()); // progress bar placeholder
-        assert_eq!(rows[0][5], "First ticket");
+        assert_eq!(rows[0][3], "O");
+        assert!(rows[0][4].is_empty()); // progress count placeholder
+        assert!(rows[0][5].is_empty()); // progress bar placeholder
+        assert_eq!(rows[0][6], "First ticket");
     }
 }

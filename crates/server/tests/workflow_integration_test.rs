@@ -360,7 +360,7 @@ async fn seed_ticket_and_worker(
     let ticket = NewTicket {
         id: Some(ticket_id.to_string()),
         project: "ur".to_string(),
-        type_: "task".to_string(),
+        type_: "code".to_string(),
         priority: 2,
         title: "Integration test ticket".to_string(),
         body: String::new(),
