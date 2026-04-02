@@ -1032,7 +1032,7 @@ mod paginated_tests {
     async fn create_test_ticket(repo: &TicketRepo, id: &str, project: &str) {
         repo.create_ticket(&NewTicket {
             id: Some(id.into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 1,
             title: format!("Ticket {id}"),
             project: project.into(),
@@ -1045,7 +1045,7 @@ mod paginated_tests {
     async fn create_child_ticket(repo: &TicketRepo, id: &str, parent_id: &str, project: &str) {
         repo.create_ticket(&NewTicket {
             id: Some(id.into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 1,
             title: format!("Child {id}"),
             project: project.into(),

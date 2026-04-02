@@ -55,7 +55,7 @@ async fn populated_db() -> (TestDb, TicketRepo) {
 async fn seed_epics_and_children(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: Some("epic-1".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Epic One".into(),
@@ -68,7 +68,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("epic-2".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: None,
         title: "Epic Two".into(),
@@ -82,7 +82,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
     // --- Children of epic-1 ---
     repo.create_ticket(&NewTicket {
         id: Some("task-1a".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: Some("epic-1".into()),
         title: "Task 1A".into(),
@@ -95,7 +95,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("task-1b".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: Some("epic-1".into()),
         title: "Task 1B".into(),
@@ -108,7 +108,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("task-1c".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 3,
         parent_id: Some("epic-1".into()),
         title: "Task 1C".into(),
@@ -143,7 +143,7 @@ async fn seed_epics_and_children(repo: &TicketRepo) {
 async fn seed_remaining_tickets(repo: &TicketRepo) {
     repo.create_ticket(&NewTicket {
         id: Some("task-2a".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: Some("epic-2".into()),
         title: "Task 2A".into(),
@@ -156,7 +156,7 @@ async fn seed_remaining_tickets(repo: &TicketRepo) {
 
     repo.create_ticket(&NewTicket {
         id: Some("task-2b".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: Some("epic-2".into()),
         title: "Task 2B".into(),
@@ -241,7 +241,7 @@ async fn create_and_get_ticket() {
     let created = repo
         .create_ticket(&NewTicket {
             id: Some("t-001".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 3,
             parent_id: None,
             title: "Test ticket".into(),
@@ -254,7 +254,7 @@ async fn create_and_get_ticket() {
     assert_eq!(created.id, "t-001");
     assert_eq!(created.status, "open");
     assert_eq!(created.priority, 3);
-    assert_eq!(created.type_, "task");
+    assert_eq!(created.type_, "code");
     assert_eq!(created.title, "Test ticket");
     assert_eq!(created.body, "A body");
     assert!(created.parent_id.is_none());
@@ -284,7 +284,7 @@ async fn create_ticket_with_parent() {
 
     repo.create_ticket(&NewTicket {
         id: Some("parent".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Parent".into(),
@@ -298,7 +298,7 @@ async fn create_ticket_with_parent() {
     let child = repo
         .create_ticket(&NewTicket {
             id: Some("child".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 2,
             parent_id: Some("parent".into()),
             title: "Child".into(),
@@ -323,7 +323,7 @@ async fn update_ticket_partial_fields() {
 
     repo.create_ticket(&NewTicket {
         id: Some("t-upd".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Original".into(),
@@ -369,7 +369,7 @@ async fn update_ticket_clear_parent() {
 
     repo.create_ticket(&NewTicket {
         id: Some("task".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "E".into(),
@@ -382,7 +382,7 @@ async fn update_ticket_clear_parent() {
 
     repo.create_ticket(&NewTicket {
         id: Some("child".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: Some("task".into()),
         title: "C".into(),
@@ -460,7 +460,7 @@ async fn get_ticket_by_id_returns_existing_ticket() {
 
     repo.create_ticket(&NewTicket {
         id: Some("t-byid".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 2,
         parent_id: None,
         title: "By ID test".into(),
@@ -638,7 +638,7 @@ async fn set_and_get_ticket_metadata() {
 
     repo.create_ticket(&NewTicket {
         id: Some("t-meta".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Meta test".into(),
@@ -671,7 +671,7 @@ async fn set_meta_upserts_existing_key() {
 
     repo.create_ticket(&NewTicket {
         id: Some("t-upsert".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Upsert".into(),
@@ -859,7 +859,7 @@ async fn add_activity_returns_generated_fields() {
 
     repo.create_ticket(&NewTicket {
         id: Some("t-act".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Act".into(),
@@ -1043,7 +1043,7 @@ async fn dispatchable_tickets_empty_epic() {
 
     repo.create_ticket(&NewTicket {
         id: Some("empty-epic".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Empty".into(),
@@ -1112,7 +1112,7 @@ async fn epic_all_children_closed_true_for_no_children() {
 
     repo.create_ticket(&NewTicket {
         id: Some("childless".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "No kids".into(),
@@ -1156,7 +1156,7 @@ async fn close_open_children_returns_zero_when_already_closed() {
 
     repo.create_ticket(&NewTicket {
         id: Some("epic-no-kids".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "No kids".into(),
@@ -1589,7 +1589,7 @@ async fn generated_id_matches_base36_pattern() {
     let ticket = repo
         .create_ticket(&NewTicket {
             id: None,
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 1,
             parent_id: None,
             title: "Auto-ID ticket".into(),
@@ -1635,7 +1635,7 @@ async fn explicit_id_used_as_is() {
     let ticket = repo
         .create_ticket(&NewTicket {
             id: Some("custom-explicit-id".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 1,
             parent_id: None,
             title: "Explicit ID".into(),
@@ -1672,7 +1672,7 @@ async fn collision_retry_produces_longer_id() {
         let ticket = repo
             .create_ticket(&NewTicket {
                 id: None,
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 parent_id: None,
                 title: "Collision test".into(),
@@ -1719,7 +1719,7 @@ async fn explicit_duplicate_id_returns_error() {
 
     repo.create_ticket(&NewTicket {
         id: Some("dup-id".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "First".into(),
@@ -1734,7 +1734,7 @@ async fn explicit_duplicate_id_returns_error() {
     let result = repo
         .create_ticket(&NewTicket {
             id: Some("dup-id".into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: 1,
             parent_id: None,
             title: "Second".into(),
@@ -1759,7 +1759,7 @@ async fn project_prefix_respected_in_generated_id() {
         let ticket = repo
             .create_ticket(&NewTicket {
                 id: None,
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 parent_id: None,
                 title: format!("Ticket for {}", project),
@@ -1840,7 +1840,7 @@ async fn get_ticket_by_id_returns_children_counts() {
     // Create a parent ticket
     repo.create_ticket(&NewTicket {
         id: Some("p-parent".into()),
-        type_: "task".into(),
+        type_: "code".into(),
         priority: 1,
         parent_id: None,
         title: "Parent".into(),
@@ -1855,7 +1855,7 @@ async fn get_ticket_by_id_returns_children_counts() {
     for (i, id) in ["p-child1", "p-child2", "p-child3"].iter().enumerate() {
         repo.create_ticket(&NewTicket {
             id: Some((*id).into()),
-            type_: "task".into(),
+            type_: "code".into(),
             priority: i as i32,
             parent_id: Some("p-parent".into()),
             title: format!("Child {}", i + 1),

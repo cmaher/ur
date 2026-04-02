@@ -224,7 +224,7 @@ async fn link_comment_ticket_writes_row() {
         .create_ticket(&NewTicket {
             id: Some(ticket_id.to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 0,
             parent_id: None,
             title: "test ticket".to_string(),
@@ -251,7 +251,7 @@ async fn link_comment_ticket_writes_row() {
         .create_ticket(&NewTicket {
             id: Some("ur-feedback1".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 0,
             parent_id: Some(ticket_id.to_string()),
             title: "feedback ticket".to_string(),
@@ -301,7 +301,7 @@ async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
         .create_ticket(&NewTicket {
             id: Some(ticket_id.to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 0,
             parent_id: None,
             title: "test ticket no repo".to_string(),

@@ -74,27 +74,29 @@ impl fmt::Display for LifecycleStatus {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TicketType {
     #[default]
-    Task,
+    Code,
     Design,
 }
 
 impl TicketType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Task => "task",
+            Self::Code => "code",
             Self::Design => "design",
         }
     }
 
     /// All valid ticket type strings (including aliases).
-    pub const VALID: &[&str] = &["task", "design", "epic"];
+    pub const VALID: &[&str] = &["code", "design", "task", "epic", "c", "d"];
 
     /// Normalize a ticket type string: maps aliases to their canonical form.
     ///
-    /// Currently maps "epic" → "task". All other values pass through unchanged.
+    /// Maps "task" → "code", "epic" → "code", "c" → "code", "d" → "design".
+    /// All other values pass through unchanged.
     pub fn normalize(s: &str) -> String {
         match s {
-            "epic" => "task".to_owned(),
+            "task" | "epic" | "c" => "code".to_owned(),
+            "d" => "design".to_owned(),
             other => other.to_owned(),
         }
     }
@@ -105,8 +107,8 @@ impl FromStr for TicketType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "task" | "epic" => Ok(Self::Task),
-            "design" => Ok(Self::Design),
+            "code" | "task" | "epic" | "c" => Ok(Self::Code),
+            "design" | "d" => Ok(Self::Design),
             _ => Err(format!(
                 "invalid ticket type '{s}': valid types are {}",
                 Self::VALID.join(", ")
@@ -468,7 +470,7 @@ mod tests {
 
     #[test]
     fn ticket_type_roundtrip() {
-        for tt in [TicketType::Task, TicketType::Design] {
+        for tt in [TicketType::Code, TicketType::Design] {
             let s = tt.as_str();
             let parsed: TicketType = s.parse().unwrap();
             assert_eq!(parsed, tt);
@@ -477,19 +479,27 @@ mod tests {
     }
 
     #[test]
-    fn ticket_type_epic_alias() {
-        let result = "epic".parse::<TicketType>();
-        assert!(
-            result.is_ok(),
-            "epic should be accepted as an alias for task"
-        );
-        assert_eq!(result.unwrap(), TicketType::Task);
+    fn ticket_type_aliases() {
+        for alias in ["task", "epic", "c"] {
+            let result = alias.parse::<TicketType>();
+            assert!(
+                result.is_ok(),
+                "'{alias}' should be accepted as alias for code"
+            );
+            assert_eq!(result.unwrap(), TicketType::Code);
+        }
+        let result = "d".parse::<TicketType>();
+        assert!(result.is_ok(), "'d' should be accepted as alias for design");
+        assert_eq!(result.unwrap(), TicketType::Design);
     }
 
     #[test]
-    fn ticket_type_normalize_epic() {
-        assert_eq!(TicketType::normalize("epic"), "task");
-        assert_eq!(TicketType::normalize("task"), "task");
+    fn ticket_type_normalize() {
+        assert_eq!(TicketType::normalize("task"), "code");
+        assert_eq!(TicketType::normalize("epic"), "code");
+        assert_eq!(TicketType::normalize("c"), "code");
+        assert_eq!(TicketType::normalize("code"), "code");
+        assert_eq!(TicketType::normalize("d"), "design");
         assert_eq!(TicketType::normalize("design"), "design");
         assert_eq!(TicketType::normalize("other"), "other");
     }
@@ -508,6 +518,9 @@ mod tests {
 
     #[test]
     fn ticket_type_valid_list() {
-        assert_eq!(TicketType::VALID, &["task", "design", "epic"]);
+        assert_eq!(
+            TicketType::VALID,
+            &["code", "design", "task", "epic", "c", "d"]
+        );
     }
 }

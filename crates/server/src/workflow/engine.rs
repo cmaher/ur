@@ -366,7 +366,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some("ur-test1".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Test ticket".to_string(),
             body: String::new(),
@@ -431,7 +431,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some("ur-test2".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Test ticket".to_string(),
             body: String::new(),
@@ -507,7 +507,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some("ur-ad01".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Awaiting dispatch test".to_string(),
             body: String::new(),
@@ -581,7 +581,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some("ur-ad02".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Dispatch implement test".to_string(),
             body: String::new(),
@@ -692,7 +692,7 @@ mod tests {
         let ticket = NewTicket {
             id: Some("ur-test4".to_string()),
             project: "ur".to_string(),
-            type_: "task".to_string(),
+            type_: "code".to_string(),
             priority: 2,
             title: "Test ticket".to_string(),
             body: String::new(),

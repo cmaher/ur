@@ -77,7 +77,7 @@ impl TicketClient {
             .handler
             .create_ticket(Request::new(CreateTicketRequest {
                 project,
-                ticket_type: "task".to_owned(),
+                ticket_type: "code".to_owned(),
                 status: String::new(),
                 priority: 2,
                 parent_id: Some(parent_id.to_owned()),
@@ -201,7 +201,7 @@ mod tests {
         let parent = ur_db::NewTicket {
             id: Some("ur-parent".to_owned()),
             project: "ur".to_owned(),
-            type_: "task".to_owned(),
+            type_: "code".to_owned(),
             priority: 0,
             parent_id: None,
             title: "Parent ticket".to_owned(),
@@ -246,7 +246,7 @@ mod tests {
         let parent = ur_db::NewTicket {
             id: Some("ur-parent2".to_owned()),
             project: "ur".to_owned(),
-            type_: "task".to_owned(),
+            type_: "code".to_owned(),
             priority: 0,
             parent_id: None,
             title: "Parent".to_owned(),
@@ -291,7 +291,7 @@ mod tests {
         let parent = ur_db::NewTicket {
             id: Some("ur-parent3".to_owned()),
             project: "ur".to_owned(),
-            type_: "task".to_owned(),
+            type_: "code".to_owned(),
             priority: 0,
             parent_id: None,
             title: "Parent".to_owned(),

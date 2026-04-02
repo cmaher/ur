@@ -1237,7 +1237,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-found".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 parent_id: None,
                 title: "Found ticket".into(),
@@ -1289,7 +1289,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-wfhist".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "Workflow history".into(),
                 project: "test".into(),
@@ -1303,7 +1303,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-wfhist-c1".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "Child 1".into(),
                 project: "test".into(),
@@ -1349,7 +1349,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-wflist".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "Workflow list".into(),
                 project: "test".into(),
@@ -1414,7 +1414,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-cancel".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "Cancel me".into(),
                 project: "test".into(),
@@ -1472,7 +1472,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-sig".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "Signal cancel".into(),
                 project: "test".into(),
@@ -1514,7 +1514,7 @@ mod tests {
             .ticket_repo
             .create_ticket(&NewTicket {
                 id: Some("t-noworkmgr".into()),
-                type_: "task".into(),
+                type_: "code".into(),
                 priority: 1,
                 title: "No worker manager".into(),
                 project: "test".into(),
