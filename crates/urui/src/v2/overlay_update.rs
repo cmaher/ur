@@ -776,14 +776,6 @@ fn handle_create_action(
                 image_id: String::new(),
             }
         }
-        CreateAction::Design => {
-            let project_key = pending.project.clone();
-            TicketOpMsg::CreateAndDesign {
-                pending,
-                project_key,
-                image_id: String::new(),
-            }
-        }
         CreateAction::Edit => {
             let content = crate::create_ticket::serialize_to_template(
                 &pending.project,

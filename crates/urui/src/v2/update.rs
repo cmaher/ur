@@ -511,9 +511,6 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
         TicketOpMsg::CreateAndDispatch { pending, .. } => {
             format!("Creating and dispatching in {}...", pending.project)
         }
-        TicketOpMsg::CreateAndDesign { pending, .. } => {
-            format!("Creating with design in {}...", pending.project)
-        }
         TicketOpMsg::LaunchDesign { ticket_id, .. } => {
             format!("Launching design worker for {ticket_id}...")
         }

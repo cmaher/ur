@@ -151,11 +151,6 @@ impl CmdRunner {
                 project_key,
                 image_id,
             } => self.exec_create_and_dispatch(pending, project_key, image_id),
-            TicketOpMsg::CreateAndDesign {
-                pending,
-                project_key,
-                image_id,
-            } => self.exec_create_and_design(pending, project_key, image_id),
             TicketOpMsg::LaunchDesign {
                 ticket_id,
                 project_key,
@@ -268,27 +263,6 @@ impl CmdRunner {
             let preserved = if result.is_err() { Some(pending) } else { None };
             let msg = TicketOpResultMsg::Created {
                 result: result.map(|id| format!("Created and dispatched {id}")),
-                pending: preserved,
-            };
-            let _ = tx.send(Msg::TicketOpResult(msg));
-        });
-    }
-
-    fn exec_create_and_design(
-        &self,
-        pending: super::msg::PendingTicket,
-        project_key: String,
-        image_id: String,
-    ) {
-        let tx = self.msg_tx.clone();
-        let tx2 = tx.clone();
-        let port = self.port;
-        tokio::spawn(async move {
-            debug!(port, project = %pending.project, "v2: creating ticket with design worker");
-            let result = create_and_design(port, &pending, &project_key, &image_id, &tx2).await;
-            let preserved = if result.is_err() { Some(pending) } else { None };
-            let msg = TicketOpResultMsg::Created {
-                result: result.map(|id| format!("Created {id} with design worker")),
                 pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
@@ -899,7 +873,8 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
     Ok(resp.into_inner().id)
 }
 
-/// Create a ticket and dispatch it (create workflow + launch worker).
+/// Create a ticket and dispatch it (type-aware: code tickets get a workflow
+/// dispatch, design tickets get a design worker launch).
 async fn create_and_dispatch(
     port: u16,
     pending: &super::msg::PendingTicket,
@@ -908,26 +883,17 @@ async fn create_and_dispatch(
     tx: &tokio::sync::mpsc::UnboundedSender<Msg>,
 ) -> Result<String, String> {
     let ticket_id = create_ticket(port, pending).await?;
-    let _ = tx.send(Msg::StatusShow(format!(
-        "Launching worker for {ticket_id}..."
-    )));
-    dispatch_ticket(port, &ticket_id, project_key, image_id).await?;
-    Ok(ticket_id)
-}
-
-/// Create a ticket and launch a design worker for it.
-async fn create_and_design(
-    port: u16,
-    pending: &super::msg::PendingTicket,
-    project_key: &str,
-    image_id: &str,
-    tx: &tokio::sync::mpsc::UnboundedSender<Msg>,
-) -> Result<String, String> {
-    let ticket_id = create_ticket(port, pending).await?;
-    let _ = tx.send(Msg::StatusShow(format!(
-        "Launching design worker for {ticket_id}..."
-    )));
-    launch_design_worker(port, &ticket_id, project_key, image_id).await?;
+    if pending.ticket_type == "design" {
+        let _ = tx.send(Msg::StatusShow(format!(
+            "Launching design worker for {ticket_id}..."
+        )));
+        launch_design_worker(port, &ticket_id, project_key, image_id).await?;
+    } else {
+        let _ = tx.send(Msg::StatusShow(format!(
+            "Launching worker for {ticket_id}..."
+        )));
+        dispatch_ticket(port, &ticket_id, project_key, image_id).await?;
+    }
     Ok(ticket_id)
 }
 

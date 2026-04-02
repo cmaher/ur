@@ -180,7 +180,6 @@ pub struct GotoTarget {
 pub enum CreateAction {
     Create,
     Dispatch,
-    Design,
     Edit,
     Abandon,
 }
@@ -406,14 +405,9 @@ pub enum TicketOpMsg {
     SetPriority { ticket_id: String, priority: i64 },
     /// Create a new ticket from a pending ticket template.
     Create { pending: PendingTicket },
-    /// Create a ticket and immediately dispatch it.
+    /// Create a ticket and immediately dispatch it (type-aware: code dispatches
+    /// a workflow, design launches a design worker).
     CreateAndDispatch {
-        pending: PendingTicket,
-        project_key: String,
-        image_id: String,
-    },
-    /// Create a ticket and launch a design worker for it.
-    CreateAndDesign {
         pending: PendingTicket,
         project_key: String,
         image_id: String,
