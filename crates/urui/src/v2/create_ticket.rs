@@ -21,6 +21,7 @@ pub fn start_create_flow(model: Model) -> (Model, Vec<Cmd>) {
         vec![Cmd::SpawnEditor {
             parent_id: None,
             project: None,
+            content: None,
         }],
     )
 }
@@ -53,6 +54,7 @@ pub fn start_create_child_flow(model: Model) -> (Model, Vec<Cmd>) {
         vec![Cmd::SpawnEditor {
             parent_id: Some(parent_id),
             project: project_opt,
+            content: None,
         }],
     )
 }
@@ -70,7 +72,9 @@ mod tests {
         let (_, cmds) = start_create_flow(model);
         assert_eq!(cmds.len(), 1);
         match &cmds[0] {
-            Cmd::SpawnEditor { parent_id, project } => {
+            Cmd::SpawnEditor {
+                parent_id, project, ..
+            } => {
                 assert!(parent_id.is_none());
                 assert!(project.is_none());
             }
@@ -120,7 +124,9 @@ mod tests {
         let (_, cmds) = start_create_child_flow(model);
         assert_eq!(cmds.len(), 1);
         match &cmds[0] {
-            Cmd::SpawnEditor { parent_id, project } => {
+            Cmd::SpawnEditor {
+                parent_id, project, ..
+            } => {
                 assert_eq!(parent_id.as_deref(), Some("ur-abc"));
                 assert_eq!(project.as_deref(), Some("ur"));
             }

@@ -784,6 +784,22 @@ fn handle_create_action(
                 image_id: String::new(),
             }
         }
+        CreateAction::Edit => {
+            let content = crate::create_ticket::serialize_to_template(
+                &pending.project,
+                &pending.title,
+                pending.priority,
+                &pending.body,
+            );
+            return (
+                model,
+                vec![Cmd::SpawnEditor {
+                    parent_id: pending.parent_id,
+                    project: Some(pending.project),
+                    content: Some(content),
+                }],
+            );
+        }
         CreateAction::Abandon => return (model, vec![]),
     };
 

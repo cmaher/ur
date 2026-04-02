@@ -175,12 +175,13 @@ pub struct GotoTarget {
     pub id: String,
 }
 
-/// The four actions available after editing a ticket.
+/// The five actions available after editing a ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateAction {
     Create,
     Dispatch,
     Design,
+    Edit,
     Abandon,
 }
 
@@ -252,6 +253,8 @@ pub enum NavMsg {
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
     TicketListCreate,
+    /// Edit the highlighted ticket in $EDITOR.
+    TicketListEdit,
 
     // ── Ticket detail page messages ────────────────────────────────
     /// Navigate within the ticket detail children table by delta (+1 down, -1 up).
@@ -288,6 +291,8 @@ pub enum NavMsg {
     TicketDetailOpenActivities,
     /// Create a child ticket under the parent.
     TicketDetailCreateChild,
+    /// Edit the parent ticket in $EDITOR.
+    TicketDetailEdit,
 
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).
@@ -426,6 +431,14 @@ pub enum TicketOpMsg {
     Redrive { ticket_id: String },
     /// Open (reopen) a ticket by setting its status to "open".
     Open { ticket_id: String },
+    /// Update a ticket's editable fields (title, priority, body, project).
+    UpdateFields {
+        ticket_id: String,
+        project: String,
+        title: String,
+        priority: i64,
+        body: String,
+    },
 }
 
 /// Ticket operation result messages. Each variant carries the outcome of a
@@ -440,14 +453,19 @@ pub enum TicketOpResultMsg {
     ForceClosed { result: Result<String, String> },
     /// Priority set completed.
     PrioritySet { result: Result<String, String> },
-    /// Ticket created.
-    Created { result: Result<String, String> },
+    /// Ticket created. On error, the PendingTicket is preserved for retry.
+    Created {
+        result: Result<String, String>,
+        pending: Option<PendingTicket>,
+    },
     /// Design worker launched.
     DesignLaunched { result: Result<String, String> },
     /// Redrive completed.
     Redriven { result: Result<String, String> },
     /// Open/reopen completed.
     Opened { result: Result<String, String> },
+    /// Ticket fields updated.
+    Updated { result: Result<String, String> },
 }
 
 /// Flow operation request messages. Each variant carries the parameters needed

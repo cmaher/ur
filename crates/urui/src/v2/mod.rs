@@ -201,23 +201,33 @@ async fn tea_loop(
 
         // Check if any command is SpawnEditor; if so, handle it specially.
         let editor_request = extract_editor_request(&cmds);
+        let edit_ticket_id = extract_edit_ticket_request(&cmds);
         let remaining = filter_non_editor_cmds(cmds);
         cmd_runner.execute_all(remaining);
 
-        if let Some((parent_id, editor_project)) = editor_request {
-            let resolved_project =
-                resolve_editor_project(editor_project, parent_id.as_deref(), &project_filter, port)
-                    .await;
-            reader_paused.store(true, Ordering::Release);
-            let pending = run_editor_flow(terminal, resolved_project, parent_id);
-            reader_paused.store(false, Ordering::Release);
-            let pending = pending?;
-            if let Some(pending) = pending {
-                let open_msg = Msg::Overlay(msg::OverlayMsg::OpenCreateActionMenu { pending });
-                let (new_model, cmds) = update(model, open_msg);
-                model = new_model;
-                cmd_runner.execute_all(cmds);
-            }
+        if let Some(editor_req) = editor_request {
+            model = handle_create_editor_cmd(
+                terminal,
+                model,
+                editor_req,
+                &project_filter,
+                port,
+                &reader_paused,
+                &cmd_runner,
+            )
+            .await?;
+        }
+
+        if let Some(ticket_id) = edit_ticket_id {
+            model = handle_edit_ticket_cmd(
+                terminal,
+                model,
+                &ticket_id,
+                port,
+                &reader_paused,
+                &cmd_runner,
+            )
+            .await;
         }
 
         // Re-render after each update
@@ -227,11 +237,94 @@ async fn tea_loop(
     Ok(())
 }
 
+/// Handle a SpawnEditor command: resolve project, open editor, show create action menu.
+async fn handle_create_editor_cmd(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    model: Model,
+    editor_req: EditorRequest,
+    project_filter: &Option<String>,
+    port: u16,
+    reader_paused: &Arc<AtomicBool>,
+    cmd_runner: &CmdRunner,
+) -> anyhow::Result<Model> {
+    let resolved_project = resolve_editor_project(
+        editor_req.project,
+        editor_req.parent_id.as_deref(),
+        project_filter,
+        port,
+    )
+    .await;
+    reader_paused.store(true, Ordering::Release);
+    let pending = run_editor_flow(
+        terminal,
+        resolved_project,
+        editor_req.parent_id,
+        editor_req.content,
+    );
+    reader_paused.store(false, Ordering::Release);
+    let pending = pending?;
+    if let Some(pending) = pending {
+        let open_msg = Msg::Overlay(msg::OverlayMsg::OpenCreateActionMenu { pending });
+        let (new_model, cmds) = update(model, open_msg);
+        cmd_runner.execute_all(cmds);
+        Ok(new_model)
+    } else {
+        Ok(model)
+    }
+}
+
+/// Handle an EditTicket command: fetch ticket, open editor, submit update or show error.
+async fn handle_edit_ticket_cmd(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    model: Model,
+    ticket_id: &str,
+    port: u16,
+    reader_paused: &Arc<AtomicBool>,
+    cmd_runner: &CmdRunner,
+) -> Model {
+    let edit_result = run_edit_ticket_flow(terminal, reader_paused, port, ticket_id).await;
+    match edit_result {
+        Ok(Some(op_msg)) => {
+            let (new_model, cmds) = update(model, Msg::TicketOp(op_msg));
+            cmd_runner.execute_all(cmds);
+            new_model
+        }
+        Ok(None) => model,
+        Err(e) => {
+            let (new_model, cmds) = update(
+                model,
+                Msg::BannerShow {
+                    message: format!("Edit failed: {e}"),
+                    variant: components::banner::BannerVariant::Error,
+                },
+            );
+            cmd_runner.execute_all(cmds);
+            new_model
+        }
+    }
+}
+
+/// Extracted fields from a `SpawnEditor` command.
+struct EditorRequest {
+    parent_id: Option<String>,
+    project: Option<String>,
+    content: Option<String>,
+}
+
 /// Extract a SpawnEditor request from a list of commands, if present.
-fn extract_editor_request(cmds: &[cmd::Cmd]) -> Option<(Option<String>, Option<String>)> {
+fn extract_editor_request(cmds: &[cmd::Cmd]) -> Option<EditorRequest> {
     for c in cmds {
-        if let cmd::Cmd::SpawnEditor { parent_id, project } = c {
-            return Some((parent_id.clone(), project.clone()));
+        if let cmd::Cmd::SpawnEditor {
+            parent_id,
+            project,
+            content,
+        } = c
+        {
+            return Some(EditorRequest {
+                parent_id: parent_id.clone(),
+                project: project.clone(),
+                content: content.clone(),
+            });
         }
         if let cmd::Cmd::Batch(batch) = c
             && let Some(result) = extract_editor_request(batch)
@@ -242,10 +335,30 @@ fn extract_editor_request(cmds: &[cmd::Cmd]) -> Option<(Option<String>, Option<S
     None
 }
 
-/// Filter out SpawnEditor commands from a list, returning only non-editor commands.
+/// Extract an EditTicket request from a list of commands, if present.
+fn extract_edit_ticket_request(cmds: &[cmd::Cmd]) -> Option<String> {
+    for c in cmds {
+        if let cmd::Cmd::EditTicket { ticket_id } = c {
+            return Some(ticket_id.clone());
+        }
+        if let cmd::Cmd::Batch(batch) = c
+            && let Some(result) = extract_edit_ticket_request(batch)
+        {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Filter out SpawnEditor and EditTicket commands from a list, returning only other commands.
 fn filter_non_editor_cmds(cmds: Vec<cmd::Cmd>) -> Vec<cmd::Cmd> {
     cmds.into_iter()
-        .filter(|c| !matches!(c, cmd::Cmd::SpawnEditor { .. }))
+        .filter(|c| {
+            !matches!(
+                c,
+                cmd::Cmd::SpawnEditor { .. } | cmd::Cmd::EditTicket { .. }
+            )
+        })
         .map(|c| match c {
             cmd::Cmd::Batch(batch) => cmd::Cmd::Batch(filter_non_editor_cmds(batch)),
             other => other,
@@ -303,12 +416,16 @@ async fn fetch_ticket_project(port: u16, ticket_id: &str) -> Result<String, Stri
 /// Run the editor flow: tear down terminal, spawn $EDITOR, parse result, re-init terminal.
 ///
 /// Returns `Some(PendingTicket)` if the user wrote valid content, `None` if cancelled.
+///
+/// When `content` is `Some`, the editor opens with that pre-populated text instead of a
+/// blank template (used by the Edit action to round-trip a PendingTicket through the editor).
 fn run_editor_flow(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     project: String,
     parent_id: Option<String>,
+    content: Option<String>,
 ) -> anyhow::Result<Option<msg::PendingTicket>> {
-    let template = create_ticket_v1::generate_template();
+    let template = content.unwrap_or_else(create_ticket_v1::generate_template);
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!("ur-ticket-{}.md", std::process::id()));
     std::fs::write(&tmp_path, &template)?;
@@ -345,6 +462,113 @@ fn run_editor_flow(
     };
 
     Ok(result)
+}
+
+/// Run the edit-ticket flow: fetch ticket, serialize to template, open $EDITOR, parse, return update op.
+///
+/// Returns `Some(TicketOpMsg::UpdateFields { .. })` if the user saved changes,
+/// `None` if the user quit without saving.
+async fn run_edit_ticket_flow(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    reader_paused: &Arc<AtomicBool>,
+    port: u16,
+    ticket_id: &str,
+) -> anyhow::Result<Option<msg::TicketOpMsg>> {
+    // 1. Fetch the ticket data.
+    let ticket = fetch_ticket_for_edit(port, ticket_id).await?;
+
+    // 2. Serialize to frontmatter template.
+    let content = create_ticket_v1::serialize_to_template(
+        &ticket.project,
+        &ticket.title,
+        ticket.priority,
+        &ticket.body,
+    );
+
+    // 3. Open editor with pre-populated content.
+    reader_paused.store(true, Ordering::Release);
+    let result = run_edit_editor(terminal, &content);
+    reader_paused.store(false, Ordering::Release);
+    let parsed = result?;
+
+    // 4. If user saved, build the update op.
+    Ok(parsed.map(|p| msg::TicketOpMsg::UpdateFields {
+        ticket_id: ticket_id.to_string(),
+        project: if p.project.is_empty() {
+            ticket.project
+        } else {
+            p.project
+        },
+        title: p.title,
+        priority: p.priority,
+        body: p.body,
+    }))
+}
+
+/// Fetch a ticket's fields for editing.
+async fn fetch_ticket_for_edit(
+    port: u16,
+    ticket_id: &str,
+) -> anyhow::Result<create_ticket_v1::PendingTicket> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::GetTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .get_ticket(GetTicketRequest {
+            id: ticket_id.to_string(),
+            activity_author_filter: None,
+        })
+        .await?
+        .into_inner();
+    let ticket = resp
+        .ticket
+        .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+    Ok(create_ticket_v1::PendingTicket {
+        project: ticket.project,
+        title: ticket.title,
+        priority: ticket.priority,
+        body: ticket.body,
+    })
+}
+
+/// Open $EDITOR with content, parse the result.
+///
+/// Returns `Some(PendingTicket)` if the user wrote valid content, `None` if cancelled.
+fn run_edit_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    content: &str,
+) -> anyhow::Result<Option<create_ticket_v1::PendingTicket>> {
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(format!("ur-ticket-edit-{}.md", std::process::id()));
+    std::fs::write(&tmp_path, content)?;
+
+    // Tear down terminal for editor.
+    restore_terminal();
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let status = std::process::Command::new(&editor).arg(&tmp_path).status();
+
+    // Re-initialize terminal regardless of editor outcome.
+    reinit_terminal(terminal)?;
+
+    match status {
+        Ok(exit) if exit.success() => {
+            let new_content = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&tmp_path);
+            // If the content is unchanged, treat as no-op.
+            if new_content == content {
+                return Ok(None);
+            }
+            Ok(create_ticket_v1::parse_ticket_file(&new_content))
+        }
+        _ => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Ok(None)
+        }
+    }
 }
 
 /// Re-initialize the terminal after returning from an external editor.

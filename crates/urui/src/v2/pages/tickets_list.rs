@@ -84,6 +84,7 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         NavMsg::TicketListDesign => handle_design(model),
         NavMsg::TicketListGoto => handle_goto(model),
         NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
+        NavMsg::TicketListEdit => handle_edit(model),
         _ => (model, vec![]),
     }
 }
@@ -206,6 +207,16 @@ fn handle_design(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
+/// Edit the selected ticket in $EDITOR.
+fn handle_edit(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
+        let ticket_id = ticket.id.clone();
+        (model, vec![Cmd::EditTicket { ticket_id }])
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Open the goto menu for the selected ticket.
 fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
@@ -264,6 +275,11 @@ impl InputHandler for TicketListHandler {
             FooterCommand {
                 key_label: "D".to_string(),
                 description: "Dispatch".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "E".to_string(),
+                description: "Edit".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -364,6 +380,7 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketListClose)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketListOpen)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
+        KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketListEdit)),
         KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketListDesign)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketListCreate)),
         _ => None,

@@ -33,10 +33,18 @@ pub enum Cmd {
     PersistTheme { theme_name: String },
     /// Break out of the TEA loop and spawn $EDITOR for ticket creation.
     /// After the editor exits, the TEA loop re-enters with the parsed result.
+    ///
+    /// When `content` is `Some`, the editor opens with that pre-populated text
+    /// instead of a blank template (used by the Edit action in the create menu).
     SpawnEditor {
         parent_id: Option<String>,
         project: Option<String>,
+        content: Option<String>,
     },
+    /// Break out of the TEA loop and spawn $EDITOR for editing an existing ticket.
+    /// The editor opens with the ticket's current fields pre-populated as frontmatter.
+    /// After saving, the update is submitted directly via gRPC (no action menu).
+    EditTicket { ticket_id: String },
 }
 
 /// Data-fetching commands that trigger gRPC calls through the DataManager.
