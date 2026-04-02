@@ -8,15 +8,29 @@
 pub struct PendingTicket {
     pub project: String,
     pub title: String,
+    pub ticket_type: String,
     pub priority: i64,
     pub body: String,
 }
 
 const TITLE_PLACEHOLDER: &str = "<summarize>";
+const DEFAULT_TICKET_TYPE: &str = "code";
+
+/// Normalize a ticket type string: maps aliases to their canonical form.
+///
+/// Maps "task" → "code", "epic" → "code", "c" → "code", "d" → "design".
+/// All other values pass through unchanged.
+pub fn normalize_ticket_type(s: &str) -> String {
+    match s.trim() {
+        "task" | "epic" | "c" => "code".to_owned(),
+        "d" => "design".to_owned(),
+        other => other.to_owned(),
+    }
+}
 
 /// Generate the default template content shown in the editor.
 pub fn generate_template() -> String {
-    format!("title: {TITLE_PLACEHOLDER}\npriority: 0\n---\n\n")
+    format!("title: {TITLE_PLACEHOLDER}\ntype: {DEFAULT_TICKET_TYPE}\npriority: 0\n---\n\n")
 }
 
 /// Serialize ticket fields into the frontmatter markdown format used by the editor.
@@ -24,13 +38,19 @@ pub fn generate_template() -> String {
 /// This is the inverse of [`parse_ticket_file`]: given the individual fields, it
 /// produces the same `title: …\npriority: …\n---\n…` format that the editor
 /// template uses.
-pub fn serialize_to_template(project: &str, title: &str, priority: i64, body: &str) -> String {
+pub fn serialize_to_template(
+    project: &str,
+    title: &str,
+    ticket_type: &str,
+    priority: i64,
+    body: &str,
+) -> String {
     let _ = project; // reserved for future use in the template
     let trimmed_body = body.trim();
     if trimmed_body.is_empty() {
-        format!("title: {title}\npriority: {priority}\n---\n\n")
+        format!("title: {title}\ntype: {ticket_type}\npriority: {priority}\n---\n\n")
     } else {
-        format!("title: {title}\npriority: {priority}\n---\n{trimmed_body}\n")
+        format!("title: {title}\ntype: {ticket_type}\npriority: {priority}\n---\n{trimmed_body}\n")
     }
 }
 
@@ -64,11 +84,14 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
     };
 
     let mut title = String::new();
+    let mut ticket_type = DEFAULT_TICKET_TYPE.to_owned();
     let mut priority: i64 = 0;
 
     for line in front_matter.lines() {
         if let Some(val) = line.strip_prefix("title:") {
             title = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("type:") {
+            ticket_type = normalize_ticket_type(val);
         } else if let Some(val) = line.strip_prefix("priority:")
             && let Ok(p) = val.trim().parse::<i64>()
         {
@@ -79,6 +102,7 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
     Some(PendingTicket {
         project: String::new(),
         title,
+        ticket_type,
         priority,
         body,
     })
@@ -90,12 +114,39 @@ mod tests {
 
     #[test]
     fn valid_parse() {
-        let content = "title: Fix the bug\npriority: 2\n---\nThis is the body.\n";
+        let content = "title: Fix the bug\ntype: code\npriority: 2\n---\nThis is the body.\n";
         let ticket = parse_ticket_file(content).unwrap();
         assert_eq!(ticket.title, "Fix the bug");
+        assert_eq!(ticket.ticket_type, "code");
         assert_eq!(ticket.priority, 2);
         assert_eq!(ticket.body, "This is the body.");
         assert_eq!(ticket.project, "");
+    }
+
+    #[test]
+    fn missing_type_defaults_to_code() {
+        let content = "title: No type\npriority: 1\n---\nBody.\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.ticket_type, "code");
+    }
+
+    #[test]
+    fn type_aliases_normalize() {
+        for (alias, expected) in [
+            ("c", "code"),
+            ("task", "code"),
+            ("epic", "code"),
+            ("code", "code"),
+            ("d", "design"),
+            ("design", "design"),
+        ] {
+            let content = format!("title: test\ntype: {alias}\npriority: 0\n---\n\n");
+            let ticket = parse_ticket_file(&content).unwrap();
+            assert_eq!(
+                ticket.ticket_type, expected,
+                "alias '{alias}' should normalize to '{expected}'"
+            );
+        }
     }
 
     #[test]
@@ -149,51 +200,54 @@ mod tests {
     #[test]
     fn template_has_expected_format() {
         let t = generate_template();
-        assert_eq!(t, "title: <summarize>\npriority: 0\n---\n\n");
+        assert_eq!(t, "title: <summarize>\ntype: code\npriority: 0\n---\n\n");
     }
 
     #[test]
     fn serialize_basic() {
-        let output = serialize_to_template("ur", "Fix the bug", 2, "This is the body.");
+        let output = serialize_to_template("ur", "Fix the bug", "code", 2, "This is the body.");
         assert_eq!(
             output,
-            "title: Fix the bug\npriority: 2\n---\nThis is the body.\n"
+            "title: Fix the bug\ntype: code\npriority: 2\n---\nThis is the body.\n"
         );
     }
 
     #[test]
     fn serialize_empty_body() {
-        let output = serialize_to_template("ur", "A title", 0, "");
-        assert_eq!(output, "title: A title\npriority: 0\n---\n\n");
+        let output = serialize_to_template("ur", "A title", "code", 0, "");
+        assert_eq!(output, "title: A title\ntype: code\npriority: 0\n---\n\n");
     }
 
     #[test]
     fn serialize_whitespace_only_body() {
-        let output = serialize_to_template("ur", "A title", 1, "   \n  ");
-        assert_eq!(output, "title: A title\npriority: 1\n---\n\n");
+        let output = serialize_to_template("ur", "A title", "code", 1, "   \n  ");
+        assert_eq!(output, "title: A title\ntype: code\npriority: 1\n---\n\n");
     }
 
     #[test]
     fn round_trip_basic() {
         let project = "ur";
         let title = "Fix the bug";
+        let ticket_type = "code";
         let priority = 2;
         let body = "This is the body.";
 
-        let serialized = serialize_to_template(project, title, priority, body);
+        let serialized = serialize_to_template(project, title, ticket_type, priority, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, title);
+        assert_eq!(parsed.ticket_type, ticket_type);
         assert_eq!(parsed.priority, priority);
         assert_eq!(parsed.body, body);
     }
 
     #[test]
     fn round_trip_empty_body() {
-        let serialized = serialize_to_template("proj", "Empty body ticket", 0, "");
+        let serialized = serialize_to_template("proj", "Empty body ticket", "design", 0, "");
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Empty body ticket");
+        assert_eq!(parsed.ticket_type, "design");
         assert_eq!(parsed.priority, 0);
         assert_eq!(parsed.body, "");
     }
@@ -201,7 +255,7 @@ mod tests {
     #[test]
     fn round_trip_special_characters() {
         let body = "Some **markdown** with `code`\n\n---\n\nAnother section after delimiter";
-        let serialized = serialize_to_template("ur", "Special chars", 3, body);
+        let serialized = serialize_to_template("ur", "Special chars", "code", 3, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Special chars");
@@ -213,7 +267,7 @@ mod tests {
     #[test]
     fn round_trip_multiline_body() {
         let body = "Line 1\nLine 2\nLine 3";
-        let serialized = serialize_to_template("ur", "Multi-line", 1, body);
+        let serialized = serialize_to_template("ur", "Multi-line", "code", 1, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Multi-line");
@@ -223,10 +277,11 @@ mod tests {
 
     #[test]
     fn round_trip_negative_priority() {
-        let serialized = serialize_to_template("ur", "Negative prio", -5, "body text");
+        let serialized = serialize_to_template("ur", "Negative prio", "design", -5, "body text");
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Negative prio");
+        assert_eq!(parsed.ticket_type, "design");
         assert_eq!(parsed.priority, -5);
         assert_eq!(parsed.body, "body text");
     }

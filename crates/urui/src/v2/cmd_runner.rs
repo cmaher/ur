@@ -884,7 +884,7 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
     let resp = client
         .create_ticket(CreateTicketRequest {
             project: pending.project.clone(),
-            ticket_type: "task".to_owned(),
+            ticket_type: pending.ticket_type.clone(),
             status: String::new(),
             priority: pending.priority,
             parent_id: pending.parent_id.clone(),

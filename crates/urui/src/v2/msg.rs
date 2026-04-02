@@ -199,6 +199,7 @@ pub enum SettingsDirection {
 pub struct PendingTicket {
     pub project: String,
     pub title: String,
+    pub ticket_type: String,
     pub priority: i64,
     pub body: String,
     /// Optional parent ticket ID for child ticket creation.

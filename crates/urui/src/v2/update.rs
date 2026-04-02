@@ -1576,6 +1576,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test ticket".into(),
+                    ticket_type: "code".into(),
                     priority: 0,
                     body: String::new(),
                     parent_id: None,
@@ -1799,6 +1800,7 @@ mod tests {
         let pending = PendingTicket {
             project: "ur".into(),
             title: "Test ticket".into(),
+            ticket_type: "code".into(),
             priority: 0,
             body: "Some body".into(),
             parent_id: None,

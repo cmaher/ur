@@ -788,6 +788,7 @@ fn handle_create_action(
             let content = crate::create_ticket::serialize_to_template(
                 &pending.project,
                 &pending.title,
+                &pending.ticket_type,
                 pending.priority,
                 &pending.body,
             );
@@ -1093,6 +1094,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
@@ -1114,6 +1116,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
@@ -1139,6 +1142,7 @@ mod tests {
                 pending: PendingTicket {
                     project: "ur".into(),
                     title: "Test".into(),
+                    ticket_type: "code".into(),
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
