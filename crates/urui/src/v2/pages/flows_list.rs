@@ -531,6 +531,11 @@ impl InputHandler for FlowListHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "Space".to_string(),
+                description: "Details".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: true,
@@ -560,7 +565,7 @@ fn handle_table_key(code: KeyCode) -> Option<Msg> {
         KeyCode::Char('j') | KeyCode::Down => Some(Msg::Nav(NavMsg::FlowsNavigate { delta: 1 })),
         KeyCode::Char('h') | KeyCode::Left => Some(Msg::Nav(NavMsg::FlowsPageLeft)),
         KeyCode::Char('l') | KeyCode::Right => Some(Msg::Nav(NavMsg::FlowsPageRight)),
-        KeyCode::Enter => Some(Msg::Nav(NavMsg::FlowsSelect)),
+        KeyCode::Char(' ') | KeyCode::Enter => Some(Msg::Nav(NavMsg::FlowsSelect)),
         KeyCode::Char('r') => Some(Msg::Nav(NavMsg::FlowsRefresh)),
         KeyCode::Char('g') => Some(Msg::Nav(NavMsg::FlowsGoto)),
         _ => None,
@@ -847,6 +852,15 @@ mod tests {
     }
 
     #[test]
+    fn handler_space_captures_select() {
+        let handler = FlowListHandler;
+        match handler.handle_key(plain_key(KeyCode::Char(' '))) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowsSelect)) => {}
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_enter_captures_select() {
         let handler = FlowListHandler;
         match handler.handle_key(plain_key(KeyCode::Enter)) {
@@ -893,6 +907,10 @@ mod tests {
         assert!(cmds.iter().any(|c| c.description == "Move to Verify"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));
         assert!(cmds.iter().any(|c| c.description == "Refresh"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.key_label == "Space" && c.description == "Details")
+        );
     }
 
     #[test]
