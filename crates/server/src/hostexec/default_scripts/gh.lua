@@ -1,15 +1,15 @@
 -- crates/server/src/hostexec/default_scripts/gh.lua
--- Default gh argument transform: allow read-only operations and collaborative
--- actions (commenting, PR editing), block destructive operations.
--- Destructive operations (PR create, merge, close, delete) are workflow-only
--- via remote_repo through builderd or dedicated handlers.
+-- Default gh argument transform: allow read-only operations, collaborative
+-- actions (commenting, PR editing), and PR creation. Block destructive
+-- operations. Destructive operations (PR merge, close, delete) are
+-- workflow-only via remote_repo through builderd or dedicated handlers.
 
 -- Allowed subcommand pairs: top-level command -> set of allowed subcommands
 local allowed_subcommands = {
     ["pr"]  = {
         ["view"] = true, ["checks"] = true, ["list"] = true,
         ["status"] = true, ["diff"] = true,
-        ["comment"] = true, ["edit"] = true,
+        ["comment"] = true, ["edit"] = true, ["create"] = true,
     },
     ["run"] = { ["view"] = true, ["list"] = true },
     ["api"] = true,  -- special: method + endpoint validation below

@@ -118,7 +118,7 @@ Parallel work:
 
 VCS:
 - Use `git add <files> && git commit -m "message"` when done — do NOT switch branches
-- Do NOT push — the workflow system handles pushing automatically after you stop
+- The parent agent manages branching and pushing
 
 --- VERIFICATION HOOKS ---
 Do NOT run any verification commands unless specified in this section.
