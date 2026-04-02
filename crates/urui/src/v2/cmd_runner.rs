@@ -244,8 +244,10 @@ impl CmdRunner {
         tokio::spawn(async move {
             debug!(port, project = %pending.project, "v2: creating ticket");
             let result = create_ticket(port, &pending).await;
+            let preserved = if result.is_err() { Some(pending) } else { None };
             let msg = TicketOpResultMsg::Created {
                 result: result.map(|id| format!("Created {id}")),
+                pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -263,8 +265,10 @@ impl CmdRunner {
         tokio::spawn(async move {
             debug!(port, project = %pending.project, "v2: creating and dispatching ticket");
             let result = create_and_dispatch(port, &pending, &project_key, &image_id, &tx2).await;
+            let preserved = if result.is_err() { Some(pending) } else { None };
             let msg = TicketOpResultMsg::Created {
                 result: result.map(|id| format!("Created and dispatched {id}")),
+                pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -282,8 +286,10 @@ impl CmdRunner {
         tokio::spawn(async move {
             debug!(port, project = %pending.project, "v2: creating ticket with design worker");
             let result = create_and_design(port, &pending, &project_key, &image_id, &tx2).await;
+            let preserved = if result.is_err() { Some(pending) } else { None };
             let msg = TicketOpResultMsg::Created {
                 result: result.map(|id| format!("Created {id} with design worker")),
+                pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });

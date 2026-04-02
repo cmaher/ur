@@ -7,8 +7,8 @@ use super::model::{
     TicketDetailData, TicketDetailModel, TicketListData, TicketTableModel, WorkerListData,
 };
 use super::msg::{
-    DataMsg, FlowOpMsg, FlowOpResultMsg, Msg, NavMsg, TicketOpMsg, TicketOpResultMsg, UiEventItem,
-    WorkerOpMsg, WorkerOpResultMsg,
+    DataMsg, FlowOpMsg, FlowOpResultMsg, Msg, NavMsg, OverlayMsg, TicketOpMsg, TicketOpResultMsg,
+    UiEventItem, WorkerOpMsg, WorkerOpResultMsg,
 };
 use super::navigation::TabId;
 
@@ -542,16 +542,16 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
 
     let (model, _) = update(model, Msg::StatusClear);
 
-    let (result, silent_on_success) = match result_msg {
-        TicketOpResultMsg::Dispatched { result } => (result, false),
-        TicketOpResultMsg::Closed { result } => (result, false),
-        TicketOpResultMsg::ForceClosed { result } => (result, true),
-        TicketOpResultMsg::PrioritySet { result } => (result, true),
-        TicketOpResultMsg::Created { result } => (result, false),
-        TicketOpResultMsg::DesignLaunched { result } => (result, false),
-        TicketOpResultMsg::Redriven { result } => (result, false),
-        TicketOpResultMsg::Opened { result } => (result, false),
-        TicketOpResultMsg::Updated { result } => (result, false),
+    let (result, silent_on_success, pending) = match result_msg {
+        TicketOpResultMsg::Dispatched { result } => (result, false, None),
+        TicketOpResultMsg::Closed { result } => (result, false, None),
+        TicketOpResultMsg::ForceClosed { result } => (result, true, None),
+        TicketOpResultMsg::PrioritySet { result } => (result, true, None),
+        TicketOpResultMsg::Created { result, pending } => (result, false, pending),
+        TicketOpResultMsg::DesignLaunched { result } => (result, false, None),
+        TicketOpResultMsg::Redriven { result } => (result, false, None),
+        TicketOpResultMsg::Opened { result } => (result, false, None),
+        TicketOpResultMsg::Updated { result } => (result, false, None),
     };
 
     match result {
@@ -568,13 +568,25 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
                 )
             }
         }
-        Err(message) => update(
-            model,
-            Msg::BannerShow {
-                message,
-                variant: BannerVariant::Error,
-            },
-        ),
+        Err(message) => {
+            let (model, mut cmds) = update(
+                model,
+                Msg::BannerShow {
+                    message,
+                    variant: BannerVariant::Error,
+                },
+            );
+            if let Some(pending) = pending {
+                let (model, overlay_cmds) = update(
+                    model,
+                    Msg::Overlay(OverlayMsg::OpenCreateActionMenu { pending }),
+                );
+                cmds.extend(overlay_cmds);
+                (model, cmds)
+            } else {
+                (model, cmds)
+            }
+        }
     }
 }
 
@@ -1768,6 +1780,7 @@ mod tests {
             model,
             Msg::TicketOpResult(TicketOpResultMsg::Created {
                 result: Ok("Created ur-new".into()),
+                pending: None,
             }),
         );
         assert!(new_model.banner.is_some());
@@ -1775,6 +1788,59 @@ mod tests {
             new_model.banner.as_ref().unwrap().variant,
             BannerVariant::Success
         );
+    }
+
+    #[test]
+    fn ticket_op_result_created_error_shows_banner_and_action_menu() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::model::ActiveOverlay;
+        use crate::v2::msg::{PendingTicket, TicketOpResultMsg};
+        let model = Model::initial();
+        let pending = PendingTicket {
+            project: "ur".into(),
+            title: "Test ticket".into(),
+            priority: 0,
+            body: "Some body".into(),
+            parent_id: None,
+        };
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Created {
+                result: Err("connection refused".into()),
+                pending: Some(pending),
+            }),
+        );
+        // Error banner is shown
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+        // Create action menu is re-opened with the preserved pending ticket
+        assert!(matches!(
+            new_model.active_overlay,
+            Some(ActiveOverlay::CreateActionMenu { .. })
+        ));
+    }
+
+    #[test]
+    fn ticket_op_result_created_error_without_pending_shows_only_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::v2::msg::TicketOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::TicketOpResult(TicketOpResultMsg::Created {
+                result: Err("connection refused".into()),
+                pending: None,
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+        assert!(new_model.active_overlay.is_none());
     }
 
     #[test]

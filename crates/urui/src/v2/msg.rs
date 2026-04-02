@@ -453,8 +453,11 @@ pub enum TicketOpResultMsg {
     ForceClosed { result: Result<String, String> },
     /// Priority set completed.
     PrioritySet { result: Result<String, String> },
-    /// Ticket created.
-    Created { result: Result<String, String> },
+    /// Ticket created. On error, the PendingTicket is preserved for retry.
+    Created {
+        result: Result<String, String>,
+        pending: Option<PendingTicket>,
+    },
     /// Design worker launched.
     DesignLaunched { result: Result<String, String> },
     /// Redrive completed.
