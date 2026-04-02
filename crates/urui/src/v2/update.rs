@@ -130,7 +130,6 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListClose
             | NavMsg::TicketListOpen
             | NavMsg::TicketListDispatch
-            | NavMsg::TicketListDesign
             | NavMsg::TicketListGoto
             | NavMsg::TicketListCreate
             | NavMsg::TicketListEdit
@@ -152,7 +151,6 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketDetailOpen
             | NavMsg::TicketDetailDispatch
             | NavMsg::TicketDetailDispatchAll
-            | NavMsg::TicketDetailDesign
             | NavMsg::TicketDetailRedrive
             | NavMsg::TicketDetailGoto
             | NavMsg::TicketDetailToggleClosed

@@ -246,10 +246,8 @@ pub enum NavMsg {
     TicketListClose,
     /// Re-open the selected ticket in the list.
     TicketListOpen,
-    /// Dispatch the selected ticket in the list.
+    /// Dispatch the selected ticket in the list (type-aware: code or design).
     TicketListDispatch,
-    /// Launch a design worker for the selected ticket.
-    TicketListDesign,
     /// Open the goto menu for the selected ticket.
     TicketListGoto,
     /// Create a new ticket (opens the create ticket flow).
@@ -274,12 +272,10 @@ pub enum NavMsg {
     TicketDetailClose,
     /// Reopen the selected child in the detail.
     TicketDetailOpen,
-    /// Dispatch the selected child in the detail.
+    /// Dispatch the selected child in the detail (type-aware: code or design).
     TicketDetailDispatch,
     /// Dispatch all (the parent ticket itself).
     TicketDetailDispatchAll,
-    /// Launch a design worker for the selected child.
-    TicketDetailDesign,
     /// Redrive the selected child's workflow.
     TicketDetailRedrive,
     /// Open the goto menu for the selected child.

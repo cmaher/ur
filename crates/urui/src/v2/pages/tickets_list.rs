@@ -81,7 +81,6 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         NavMsg::TicketListClose => handle_close(model),
         NavMsg::TicketListOpen => handle_open(model),
         NavMsg::TicketListDispatch => handle_dispatch(model),
-        NavMsg::TicketListDesign => handle_design(model),
         NavMsg::TicketListGoto => handle_goto(model),
         NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
         NavMsg::TicketListEdit => handle_edit(model),
@@ -179,28 +178,23 @@ fn handle_open(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Dispatch the selected ticket.
+/// Dispatch the selected ticket, branching on ticket type:
+/// design tickets launch a design worker, all others dispatch a code worker.
 fn handle_dispatch(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::Dispatch {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
-        crate::v2::update::update(model, msg)
-    } else {
-        (model, vec![])
-    }
-}
-
-/// Launch a design worker for the selected ticket.
-fn handle_design(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = Msg::TicketOp(TicketOpMsg::LaunchDesign {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
+        let msg = if ticket.ticket_type == "design" {
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        } else {
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        };
         crate::v2::update::update(model, msg)
     } else {
         (model, vec![])
@@ -231,7 +225,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
 /// Input handler for the tickets list page.
 ///
 /// Handles ticket-specific actions: Create (C), Dispatch (D), Open/reopen (O),
-/// Priority (P), Design (S), Close (X), Goto (g),
+/// Priority (P), Close (X), Goto (g),
 /// Refresh (r), Filter (*), Settings (,),
 /// plus TicketTable navigation (j/k/h/l/Enter).
 ///
@@ -290,11 +284,6 @@ impl InputHandler for TicketListHandler {
             FooterCommand {
                 key_label: "P".to_string(),
                 description: "Priority".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "S".to_string(),
-                description: "Design".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -381,7 +370,6 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketListOpen)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketListEdit)),
-        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketListDesign)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketListCreate)),
         _ => None,
     }

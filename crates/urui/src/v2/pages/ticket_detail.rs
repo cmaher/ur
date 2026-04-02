@@ -242,7 +242,6 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         NavMsg::TicketDetailOpen => handle_detail_open(model),
         NavMsg::TicketDetailDispatch => handle_detail_dispatch(model),
         NavMsg::TicketDetailDispatchAll => handle_detail_dispatch_all(model),
-        NavMsg::TicketDetailDesign => handle_detail_design(model),
         NavMsg::TicketDetailRedrive => handle_detail_redrive(model),
         NavMsg::TicketDetailGoto => handle_detail_goto(model),
         NavMsg::TicketDetailToggleClosed => handle_toggle_closed(model),
@@ -348,14 +347,23 @@ fn handle_detail_open(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Dispatch the selected child.
+/// Dispatch the selected child, branching on ticket type:
+/// design tickets launch a design worker, all others dispatch a code worker.
 fn handle_detail_dispatch(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
-        let msg = Msg::TicketOp(TicketOpMsg::Dispatch {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
+        let msg = if ticket.ticket_type == "design" {
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        } else {
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        };
         crate::v2::update::update(model, msg)
     } else {
         (model, vec![])
@@ -379,20 +387,6 @@ fn handle_detail_dispatch_all(model: Model) -> (Model, Vec<Cmd>) {
         image_id: String::new(),
     });
     crate::v2::update::update(model, msg)
-}
-
-/// Launch a design worker for the selected child.
-fn handle_detail_design(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = selected_child(&model) {
-        let msg = Msg::TicketOp(TicketOpMsg::LaunchDesign {
-            ticket_id: ticket.id.clone(),
-            project_key: ticket.project.clone(),
-            image_id: String::new(),
-        });
-        crate::v2::update::update(model, msg)
-    } else {
-        (model, vec![])
-    }
 }
 
 /// Redrive the selected child's workflow.
@@ -528,7 +522,7 @@ fn build_child_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
 /// Input handler for the ticket detail page.
 ///
 /// Handles ticket-specific actions on children: Dispatch All (A), Create child (C),
-/// Dispatch (D), Open/reopen (O), Priority (P), Design (S), Redrive (V),
+/// Dispatch (D), Open/reopen (O), Priority (P), Redrive (V),
 /// Close (X), activities (a), toggle-closed (c), description (d), goto (g),
 /// refresh (r), plus children table navigation (j/k/h/l/Enter).
 ///
@@ -589,11 +583,6 @@ impl InputHandler for TicketDetailHandler {
             FooterCommand {
                 key_label: "P".to_string(),
                 description: "Priority".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "S".to_string(),
-                description: "Design".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -683,7 +672,6 @@ fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketDetailOpen)),
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketDetailPriority)),
-        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::TicketDetailDesign)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketDetailRedrive)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketDetailClose)),
         _ => None,
