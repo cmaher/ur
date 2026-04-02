@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::msg::{Msg, NavMsg};
+use super::msg::{Msg, NavMsg, OverlayMsg};
 use super::navigation::TabId;
 
 /// A command displayed in the footer bar, collected from active input handlers.
@@ -154,6 +154,11 @@ impl InputHandler for GlobalHandler {
                 KeyCode::Char('w') => {
                     return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Workers)));
                 }
+                KeyCode::Char(',') => {
+                    return InputResult::Capture(Msg::Overlay(OverlayMsg::OpenSettings {
+                        custom_theme_names: vec![],
+                    }));
+                }
                 _ => {}
             }
         }
@@ -185,6 +190,11 @@ impl InputHandler for GlobalHandler {
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Back".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: ",".to_string(),
+                description: "Settings".to_string(),
                 common: true,
             },
         ]
