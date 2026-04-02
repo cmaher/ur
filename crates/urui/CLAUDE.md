@@ -29,7 +29,8 @@ Footer commands returned by `footer_commands()` must follow a consistent orderin
 
 1. **Capital-letter shortcuts** (Shift+key) in alphabetical order (A, C, D, O, P, S, V, X, …)
 2. **Lowercase-letter shortcuts** in alphabetical order (a, d, f, …)
-3. **Non-letter keys** (Space, Enter, `*`, etc.)
+3. **Space** (always before other non-letter keys)
+4. **Non-letter keys** (Enter, `*`, etc.)
 
 The right side (`common: true`) contains navigation/system commands and is not subject to this ordering.
 

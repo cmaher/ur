@@ -240,7 +240,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
 ///
 /// Handles ticket-specific actions: Create (C), Dispatch (D), Open/reopen (O),
 /// Priority (P), Close (X), Goto (g),
-/// Refresh (r), Filter (*), Settings (,),
+/// Refresh (r), Filter (*),
 /// plus TicketTable navigation (j/k/h/l/Enter).
 ///
 /// This is a root page handler: it is not pushed onto the input stack but
@@ -332,11 +332,6 @@ impl InputHandler for TicketListHandler {
                 description: "Filter".to_string(),
                 common: false,
             },
-            FooterCommand {
-                key_label: ",".to_string(),
-                description: "Settings".to_string(),
-                common: false,
-            },
             // Common (right side)
             FooterCommand {
                 key_label: "j/k".to_string(),
@@ -401,9 +396,6 @@ fn handle_action_key(code: KeyCode) -> Option<Msg> {
         KeyCode::Char('r') => Some(Msg::Nav(NavMsg::TicketListRefresh)),
         KeyCode::Char('g') => Some(Msg::Nav(NavMsg::TicketListGoto)),
         KeyCode::Char('*') => Some(Msg::Overlay(OverlayMsg::OpenFilterMenu)),
-        KeyCode::Char(',') => Some(Msg::Overlay(OverlayMsg::OpenSettings {
-            custom_theme_names: vec![],
-        })),
         _ => None,
     }
 }

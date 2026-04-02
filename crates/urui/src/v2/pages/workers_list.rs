@@ -9,7 +9,7 @@ use crate::context::TuiContext;
 use crate::v2::cmd::{Cmd, FetchCmd};
 use crate::v2::input::{FooterCommand, InputHandler, InputResult};
 use crate::v2::model::{LoadState, Model, WORKER_PAGE_SIZE, WorkerListData, WorkerListModel};
-use crate::v2::msg::{GotoTarget, Msg, NavMsg, OverlayMsg};
+use crate::v2::msg::{GotoTarget, Msg, NavMsg};
 use crate::widgets::ThemedTable;
 
 use ur_rpc::proto::core::WorkerSummary;
@@ -340,11 +340,6 @@ impl InputHandler for WorkerListHandler {
             }
             (KeyCode::Char('g'), KeyModifiers::NONE) => {
                 InputResult::Capture(Msg::Nav(NavMsg::WorkersGoto))
-            }
-            (KeyCode::Char('s'), KeyModifiers::SHIFT) => {
-                InputResult::Capture(Msg::Overlay(OverlayMsg::OpenSettings {
-                    custom_theme_names: vec![],
-                }))
             }
             _ => InputResult::Bubble,
         }

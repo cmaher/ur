@@ -29,7 +29,8 @@ fn classify_key(label: &str) -> (u8, String) {
     match first_char {
         Some(c) if c.is_ascii_uppercase() && label.len() == 1 => (0, label.to_lowercase()),
         Some(c) if c.is_ascii_lowercase() && label.len() == 1 => (1, label.to_string()),
-        _ => (2, label.to_lowercase()),
+        _ if label == "Space" => (2, label.to_lowercase()),
+        _ => (3, label.to_lowercase()),
     }
 }
 
@@ -200,8 +201,8 @@ mod tests {
         stack.push(Box::new(GlobalHandler));
 
         let commands = stack.footer_commands();
-        // GlobalHandler provides Ctrl+C, Tab, Esc - all common
-        assert!(commands.len() >= 3);
+        // GlobalHandler provides Q, q, Tab, t/f/w, Esc, Settings - all common
+        assert!(commands.len() >= 4);
         assert!(commands.iter().all(|c| c.common));
     }
 
@@ -228,14 +229,14 @@ mod tests {
         stack.push(Box::new(PageHandler));
 
         let commands = stack.footer_commands();
-        // Global (5 common: Q, q, Tab, t/f/w, Esc) + Page (2 non-common)
-        assert_eq!(commands.len(), 7);
+        // Global (6 common: Q, q, Tab, t/f/w, Esc, Settings) + Page (2 non-common)
+        assert_eq!(commands.len(), 8);
 
         let non_common: Vec<&FooterCommand> = commands.iter().filter(|c| !c.common).collect();
         assert_eq!(non_common.len(), 2);
 
         let common: Vec<&FooterCommand> = commands.iter().filter(|c| c.common).collect();
-        assert_eq!(common.len(), 5);
+        assert_eq!(common.len(), 6);
     }
 
     #[test]
@@ -281,10 +282,12 @@ mod tests {
         // Lowercase single char = category 1
         assert_eq!(classify_key("a").0, 1);
         assert_eq!(classify_key("z").0, 1);
-        // Multi-char or non-letter = category 2
-        assert_eq!(classify_key("Tab").0, 2);
-        assert_eq!(classify_key("Ctrl+C").0, 2);
-        assert_eq!(classify_key("Enter").0, 2);
+        // Space = category 2 (before other non-letter keys)
+        assert_eq!(classify_key("Space").0, 2);
+        // Multi-char or non-letter = category 3
+        assert_eq!(classify_key("Tab").0, 3);
+        assert_eq!(classify_key("Ctrl+C").0, 3);
+        assert_eq!(classify_key("Enter").0, 3);
     }
 
     #[test]
