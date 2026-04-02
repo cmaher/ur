@@ -33,7 +33,6 @@ Editor spawning (`SpawnEditor`, `EditTicket`) breaks out of the TEA loop tempora
 - `cmd.rs` — `Cmd` enum (side effects) and `FetchCmd` (gRPC fetch variants)
 - `cmd_runner.rs` — Executes `Cmd` values, spawns async tasks, sends results as `Msg`
 - `msg.rs` — `Msg` enum, `NavMsg`, `OverlayMsg`, `DataMsg`, operation request/result enums
-- `component.rs` — `Component` trait (init/teardown/update/render lifecycle for navigation pages)
 - `input.rs` — `InputStack` and `InputHandler` trait (focus stack for key event dispatch)
 - `navigation.rs` — `NavigationModel`, `TabId`, `PageId` (tab switching, page stack)
 - `context.rs` — `TuiContext` (theme, keymap, project list, config — read-only rendering context)
