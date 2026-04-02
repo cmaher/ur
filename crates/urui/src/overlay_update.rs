@@ -888,8 +888,8 @@ fn handle_create_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v2::model::Model;
-    use crate::v2::msg::{GotoTarget, OverlayMsg, PendingTicket, SettingsDirection};
+    use crate::model::Model;
+    use crate::msg::{GotoTarget, OverlayMsg, PendingTicket, SettingsDirection};
 
     #[test]
     fn consumed_is_noop() {

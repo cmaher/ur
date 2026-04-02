@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::v2::navigation::{NavigationModel, TabId};
+use crate::navigation::{NavigationModel, TabId};
 
 /// Render a tab bar header into the given area.
 ///

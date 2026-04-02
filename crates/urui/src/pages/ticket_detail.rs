@@ -6,13 +6,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 
+use crate::cmd::{Cmd, FetchCmd};
+use crate::components::ticket_table::render_ticket_table;
 use crate::context::TuiContext;
-use crate::v2::cmd::{Cmd, FetchCmd};
-use crate::v2::components::ticket_table::render_ticket_table;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{LoadState, Model, TicketDetailData};
-use crate::v2::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
-use crate::v2::navigation::PageId;
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{LoadState, Model, TicketDetailData};
+use crate::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
+use crate::navigation::PageId;
 use crate::widgets::MiniProgressBar;
 
 /// Render the ticket detail page into the given content area.
@@ -122,7 +122,7 @@ fn render_ticket_header(
     Paragraph::new(line).render(text_area, buf);
 
     // Render the progress bar on the right
-    let (completed, total) = crate::v2::components::ticket_table::ticket_progress(ticket);
+    let (completed, total) = crate::components::ticket_table::ticket_progress(ticket);
     let bar = MiniProgressBar { completed, total };
     let bar_area = Rect {
         x: area.x + header_text_width + 1,
@@ -292,7 +292,7 @@ fn handle_detail_select(mut model: Model) -> (Model, Vec<Cmd>) {
         let page = PageId::TicketDetail { ticket_id };
         let mut nav = std::mem::replace(
             &mut model.navigation_model,
-            crate::v2::navigation::NavigationModel::initial(),
+            crate::navigation::NavigationModel::initial(),
         );
         let cmds = nav.push(page, &mut model);
         model.navigation_model = nav;
@@ -309,7 +309,7 @@ fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
             ticket_id: ticket.id.clone(),
             current_priority: ticket.priority,
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -322,7 +322,7 @@ fn handle_detail_type(model: Model) -> (Model, Vec<Cmd>) {
             ticket_id: ticket.id.clone(),
             current_type: ticket.ticket_type.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -337,12 +337,12 @@ fn handle_detail_close(model: Model) -> (Model, Vec<Cmd>) {
                 ticket_id: ticket.id.clone(),
                 open_children,
             });
-            crate::v2::update::update(model, msg)
+            crate::update::update(model, msg)
         } else {
             let msg = Msg::TicketOp(TicketOpMsg::Close {
                 ticket_id: ticket.id.clone(),
             });
-            crate::v2::update::update(model, msg)
+            crate::update::update(model, msg)
         }
     } else {
         (model, vec![])
@@ -354,7 +354,7 @@ fn handle_detail_open(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
         let ticket_id = ticket.id.clone();
         let msg = Msg::StatusShow(format!("Reopening {ticket_id}..."));
-        let (model, _) = crate::v2::update::update(model, msg);
+        let (model, _) = crate::update::update(model, msg);
         (model, vec![Cmd::TicketOp(TicketOpMsg::Close { ticket_id })])
     } else {
         (model, vec![])
@@ -378,7 +378,7 @@ fn handle_detail_dispatch(model: Model) -> (Model, Vec<Cmd>) {
                 image_id: String::new(),
             })
         };
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -400,7 +400,7 @@ fn handle_detail_dispatch_all(model: Model) -> (Model, Vec<Cmd>) {
         project_key,
         image_id: String::new(),
     });
-    crate::v2::update::update(model, msg)
+    crate::update::update(model, msg)
 }
 
 /// Redrive the selected child's workflow.
@@ -409,7 +409,7 @@ fn handle_detail_redrive(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::TicketOp(TicketOpMsg::Redrive {
             ticket_id: ticket.id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -420,7 +420,7 @@ fn handle_detail_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = selected_child(&model) {
         let targets = build_child_goto_targets(&ticket.id);
         let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -453,7 +453,7 @@ fn handle_open_description(mut model: Model) -> (Model, Vec<Cmd>) {
     if let Some(page) = page {
         let mut nav = std::mem::replace(
             &mut model.navigation_model,
-            crate::v2::navigation::NavigationModel::initial(),
+            crate::navigation::NavigationModel::initial(),
         );
         let cmds = nav.push(page, &mut model);
         model.navigation_model = nav;
@@ -480,7 +480,7 @@ fn handle_open_activities(mut model: Model) -> (Model, Vec<Cmd>) {
     if let Some(page) = page {
         let mut nav = std::mem::replace(
             &mut model.navigation_model,
-            crate::v2::navigation::NavigationModel::initial(),
+            crate::navigation::NavigationModel::initial(),
         );
         let cmds = nav.push(page, &mut model);
         model.navigation_model = nav;
@@ -501,7 +501,7 @@ fn handle_edit_parent(model: Model) -> (Model, Vec<Cmd>) {
 
 /// Open the project input overlay for creating a child ticket.
 fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
-    crate::v2::create_ticket::start_create_child_flow(model)
+    crate::create_ticket::start_create_child_flow(model)
 }
 
 /// Get the currently selected child ticket, if any.
@@ -750,7 +750,7 @@ mod tests {
     }
 
     fn model_with_detail() -> Model {
-        use crate::v2::model::{TicketDetailData, TicketDetailModel, TicketTableModel};
+        use crate::model::{TicketDetailData, TicketDetailModel, TicketTableModel};
 
         let children = vec![
             make_ticket("ur-child-1", "Child 1"),

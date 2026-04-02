@@ -9,11 +9,11 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
+use crate::cmd::Cmd;
 use crate::context::TuiContext;
-use crate::v2::cmd::Cmd;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{FlowDetailModel, Model};
-use crate::v2::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{FlowDetailModel, Model};
+use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
 use crate::widgets::ThemedTable;
 
 /// Initialize the flow detail model from the currently loaded flow list data.
@@ -249,7 +249,7 @@ fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::FlowOp(FlowOpMsg::Cancel {
             ticket_id: detail.ticket_id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -261,7 +261,7 @@ fn handle_redrive(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::TicketOp(TicketOpMsg::Redrive {
             ticket_id: detail.ticket_id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -272,7 +272,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ref detail) = model.flow_detail {
         let targets = build_flow_detail_goto_targets(&detail.ticket_id);
         let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn init_flow_detail_sets_model() {
-        use crate::v2::model::{FlowListData, LoadState};
+        use crate::model::{FlowListData, LoadState};
         let mut model = Model::initial();
         let wf = make_workflow("implementing");
         model.flow_list.data = LoadState::Loaded(FlowListData {
@@ -597,9 +597,9 @@ mod tests {
 
     #[test]
     fn init_flow_detail_not_found() {
-        use crate::v2::model::LoadState;
+        use crate::model::LoadState;
         let mut model = Model::initial();
-        model.flow_list.data = LoadState::Loaded(crate::v2::model::FlowListData {
+        model.flow_list.data = LoadState::Loaded(crate::model::FlowListData {
             workflows: vec![],
             total_count: 0,
         });

@@ -6,9 +6,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::BannerModel;
-use crate::v2::msg::Msg;
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::BannerModel;
+use crate::msg::Msg;
 
 /// Render a single-line banner notification into the given area.
 ///
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn banner_handler_in_stack_captures_enter_before_global() {
-        use crate::v2::input::{GlobalHandler, InputStack};
+        use crate::input::{GlobalHandler, InputStack};
 
         let mut stack = InputStack::default();
         stack.push(Box::new(GlobalHandler));
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn banner_handler_in_stack_bubbles_ctrl_c_to_global() {
-        use crate::v2::input::{GlobalHandler, InputStack};
+        use crate::input::{GlobalHandler, InputStack};
 
         let mut stack = InputStack::default();
         stack.push(Box::new(GlobalHandler));

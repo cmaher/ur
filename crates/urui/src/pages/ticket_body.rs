@@ -10,9 +10,9 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 
 use crate::context::TuiContext;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::Model;
-use crate::v2::msg::{Msg, NavMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::Model;
+use crate::msg::{Msg, NavMsg};
 
 /// Render the ticket body page into the given content area.
 ///

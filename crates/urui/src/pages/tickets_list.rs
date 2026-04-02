@@ -5,13 +5,13 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
+use crate::cmd::{Cmd, FetchCmd};
+use crate::components::ticket_table::render_ticket_table;
 use crate::context::TuiContext;
-use crate::v2::cmd::{Cmd, FetchCmd};
-use crate::v2::components::ticket_table::render_ticket_table;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{LoadState, Model, TicketListData};
-use crate::v2::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
-use crate::v2::navigation::PageId;
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{LoadState, Model, TicketListData};
+use crate::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
+use crate::navigation::PageId;
 
 /// Render the tickets list page into the given content area.
 ///
@@ -83,7 +83,7 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         NavMsg::TicketListOpen => handle_open(model),
         NavMsg::TicketListDispatch => handle_dispatch(model),
         NavMsg::TicketListGoto => handle_goto(model),
-        NavMsg::TicketListCreate => crate::v2::create_ticket::start_create_flow(model),
+        NavMsg::TicketListCreate => crate::create_ticket::start_create_flow(model),
         NavMsg::TicketListEdit => handle_edit(model),
         _ => (model, vec![]),
     }
@@ -123,7 +123,7 @@ fn handle_select(mut model: Model) -> (Model, Vec<Cmd>) {
         let page = PageId::TicketDetail { ticket_id };
         let mut nav = std::mem::replace(
             &mut model.navigation_model,
-            crate::v2::navigation::NavigationModel::initial(),
+            crate::navigation::NavigationModel::initial(),
         );
         let cmds = nav.push(page, &mut model);
         model.navigation_model = nav;
@@ -140,7 +140,7 @@ fn handle_priority(model: Model) -> (Model, Vec<Cmd>) {
             ticket_id: ticket.id.clone(),
             current_priority: ticket.priority,
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -153,7 +153,7 @@ fn handle_type(model: Model) -> (Model, Vec<Cmd>) {
             ticket_id: ticket.id.clone(),
             current_type: ticket.ticket_type.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -168,12 +168,12 @@ fn handle_close(model: Model) -> (Model, Vec<Cmd>) {
                 ticket_id: ticket.id.clone(),
                 open_children,
             });
-            crate::v2::update::update(model, msg)
+            crate::update::update(model, msg)
         } else {
             let msg = Msg::TicketOp(TicketOpMsg::Close {
                 ticket_id: ticket.id.clone(),
             });
-            crate::v2::update::update(model, msg)
+            crate::update::update(model, msg)
         }
     } else {
         (model, vec![])
@@ -186,7 +186,7 @@ fn handle_open(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::TicketOp(TicketOpMsg::Open {
             ticket_id: ticket.id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -209,7 +209,7 @@ fn handle_dispatch(model: Model) -> (Model, Vec<Cmd>) {
                 image_id: String::new(),
             })
         };
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -230,7 +230,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ticket) = model.ticket_list.table.selected_ticket() {
         let targets = build_ticket_goto_targets(&ticket.id);
         let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }

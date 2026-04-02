@@ -8,9 +8,9 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{ActiveOverlay, FilterCategory, Model, TicketFilters};
-use crate::v2::msg::{Msg, OverlayMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{ActiveOverlay, FilterCategory, Model, TicketFilters};
+use crate::msg::{Msg, OverlayMsg};
 
 /// All filter categories in display order.
 pub const CATEGORIES: &[FilterCategory] = &[

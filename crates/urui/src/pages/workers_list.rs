@@ -5,11 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
+use crate::cmd::{Cmd, FetchCmd};
 use crate::context::TuiContext;
-use crate::v2::cmd::{Cmd, FetchCmd};
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{LoadState, Model, WORKER_PAGE_SIZE, WorkerListData, WorkerListModel};
-use crate::v2::msg::{GotoTarget, Msg, NavMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{LoadState, Model, WORKER_PAGE_SIZE, WorkerListData, WorkerListModel};
+use crate::msg::{GotoTarget, Msg, NavMsg};
 use crate::widgets::ThemedTable;
 
 use ur_rpc::proto::core::WorkerSummary;
@@ -240,7 +240,7 @@ fn handle_goto(model: &mut Model) {
         },
     ];
 
-    model.active_overlay = Some(crate::v2::model::ActiveOverlay::GotoMenu { targets, cursor: 0 });
+    model.active_overlay = Some(crate::model::ActiveOverlay::GotoMenu { targets, cursor: 0 });
 }
 
 /// Handle a WorkerStopped result. On error, show an error banner and re-fetch.
@@ -256,7 +256,7 @@ pub fn handle_worker_stopped(
                 model,
                 Msg::BannerShow {
                     message: format!("Killed {worker_id}"),
-                    variant: crate::v2::components::banner::BannerVariant::Success,
+                    variant: crate::components::banner::BannerVariant::Success,
                 },
             );
             cmds.push(Cmd::Fetch(FetchCmd::Workers));
@@ -268,7 +268,7 @@ pub fn handle_worker_stopped(
                 model,
                 Msg::BannerShow {
                     message: format!("Kill failed: {e}"),
-                    variant: crate::v2::components::banner::BannerVariant::Error,
+                    variant: crate::components::banner::BannerVariant::Error,
                 },
             );
             cmds.push(Cmd::Fetch(FetchCmd::Workers));

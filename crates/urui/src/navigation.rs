@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn switch_tab_no_fetch_when_already_loaded() {
-        use crate::v2::model::{FlowListData, LoadState};
+        use crate::model::{FlowListData, LoadState};
         let mut nav = NavigationModel::initial();
         let mut model = Model::initial();
         // Simulate that Flows data was already loaded.
@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn switch_tab_refetches_invalidated_data() {
-        use crate::v2::model::{FlowListData, LoadState};
+        use crate::model::{FlowListData, LoadState};
         let mut nav = NavigationModel::initial();
         let mut model = Model::initial();
         // Simulate loaded then invalidated (back to NotLoaded).

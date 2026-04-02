@@ -1078,7 +1078,7 @@ mod tests {
 
     #[test]
     fn nav_tab_switch_changes_active_tab() {
-        use crate::v2::navigation::TabId;
+        use crate::navigation::TabId;
         let model = Model::initial();
         let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::TabSwitch(TabId::Flows)));
         assert_eq!(new_model.navigation_model.active_tab, TabId::Flows);
@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn nav_tab_next_cycles_tab() {
-        use crate::v2::navigation::TabId;
+        use crate::navigation::TabId;
         let model = Model::initial();
         assert_eq!(model.navigation_model.active_tab, TabId::Tickets);
         let (new_model, _cmds) = update(model, Msg::Nav(NavMsg::TabNext));
@@ -1095,7 +1095,7 @@ mod tests {
 
     #[test]
     fn nav_push_adds_page() {
-        use crate::v2::navigation::PageId;
+        use crate::navigation::PageId;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn nav_pop_removes_page() {
-        use crate::v2::navigation::PageId;
+        use crate::navigation::PageId;
         let model = Model::initial();
         // First push a detail page
         let (model, _) = update(
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn nav_goto_pushes_if_not_current() {
-        use crate::v2::navigation::PageId;
+        use crate::navigation::PageId;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1141,7 +1141,7 @@ mod tests {
 
     #[test]
     fn nav_goto_same_page_is_noop() {
-        use crate::v2::navigation::PageId;
+        use crate::navigation::PageId;
         let model = Model::initial();
         let (new_model, cmds) = update(model, Msg::Nav(NavMsg::Goto(PageId::TicketList)));
         assert_eq!(new_model.navigation_model.active_stack_depth(), 1);
@@ -1498,7 +1498,7 @@ mod tests {
 
     #[test]
     fn ticket_op_dispatch_sets_status_and_produces_cmd() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1515,7 +1515,7 @@ mod tests {
 
     #[test]
     fn ticket_op_close_sets_status_and_produces_cmd() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1530,7 +1530,7 @@ mod tests {
 
     #[test]
     fn ticket_op_force_close_sets_status() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1552,7 +1552,7 @@ mod tests {
 
     #[test]
     fn ticket_op_set_priority_sets_status() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1568,7 +1568,7 @@ mod tests {
 
     #[test]
     fn ticket_op_create_sets_status() {
-        use crate::v2::msg::{PendingTicket, TicketOpMsg};
+        use crate::msg::{PendingTicket, TicketOpMsg};
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn ticket_op_launch_design_sets_status() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1614,7 +1614,7 @@ mod tests {
 
     #[test]
     fn ticket_op_redrive_sets_status() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1629,7 +1629,7 @@ mod tests {
 
     #[test]
     fn ticket_op_dispatch_all_sets_status() {
-        use crate::v2::msg::TicketOpMsg;
+        use crate::msg::TicketOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1656,7 +1656,7 @@ mod tests {
     #[test]
     fn ticket_op_result_dispatched_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1674,7 +1674,7 @@ mod tests {
     #[test]
     fn ticket_op_result_dispatched_error_shows_error_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1692,7 +1692,7 @@ mod tests {
     #[test]
     fn ticket_op_result_closed_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1709,7 +1709,7 @@ mod tests {
 
     #[test]
     fn ticket_op_result_force_closed_success_is_silent() {
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1725,7 +1725,7 @@ mod tests {
     #[test]
     fn ticket_op_result_force_closed_error_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1742,7 +1742,7 @@ mod tests {
 
     #[test]
     fn ticket_op_result_priority_set_success_is_silent() {
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1757,7 +1757,7 @@ mod tests {
     #[test]
     fn ticket_op_result_priority_set_error_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn ticket_op_result_created_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1794,8 +1794,8 @@ mod tests {
     #[test]
     fn ticket_op_result_created_error_shows_banner_and_action_menu() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::model::ActiveOverlay;
-        use crate::v2::msg::{PendingTicket, TicketOpResultMsg};
+        use crate::model::ActiveOverlay;
+        use crate::msg::{PendingTicket, TicketOpResultMsg};
         let model = Model::initial();
         let pending = PendingTicket {
             project: "ur".into(),
@@ -1828,7 +1828,7 @@ mod tests {
     #[test]
     fn ticket_op_result_created_error_without_pending_shows_only_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1848,7 +1848,7 @@ mod tests {
     #[test]
     fn ticket_op_result_design_launched_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1866,7 +1866,7 @@ mod tests {
     #[test]
     fn ticket_op_result_redriven_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1883,7 +1883,7 @@ mod tests {
 
     #[test]
     fn ticket_op_result_clears_status_before_banner() {
-        use crate::v2::msg::TicketOpResultMsg;
+        use crate::msg::TicketOpResultMsg;
         // Set a status first, then handle a result.
         let model = Model::initial();
         let (model, _) = update(model, Msg::StatusShow("In progress...".into()));
@@ -1902,7 +1902,7 @@ mod tests {
 
     #[test]
     fn flow_op_cancel_sets_status_and_cmd() {
-        use crate::v2::msg::FlowOpMsg;
+        use crate::msg::FlowOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1925,7 +1925,7 @@ mod tests {
     #[test]
     fn flow_op_result_cancelled_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::FlowOpResultMsg;
+        use crate::msg::FlowOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1943,7 +1943,7 @@ mod tests {
     #[test]
     fn flow_op_result_cancelled_error_shows_error_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::FlowOpResultMsg;
+        use crate::msg::FlowOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -1960,7 +1960,7 @@ mod tests {
 
     #[test]
     fn flow_op_result_clears_status_before_banner() {
-        use crate::v2::msg::FlowOpResultMsg;
+        use crate::msg::FlowOpResultMsg;
         let model = Model::initial();
         let (model, _) = update(model, Msg::StatusShow("Cancelling...".into()));
         assert!(model.status.is_some());
@@ -1978,7 +1978,7 @@ mod tests {
 
     #[test]
     fn worker_op_kill_sets_status_and_cmd() {
-        use crate::v2::msg::WorkerOpMsg;
+        use crate::msg::WorkerOpMsg;
         let model = Model::initial();
         let (new_model, cmds) = update(
             model,
@@ -1994,7 +1994,7 @@ mod tests {
     #[test]
     fn worker_op_result_killed_success_shows_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::WorkerOpResultMsg;
+        use crate::msg::WorkerOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -2012,7 +2012,7 @@ mod tests {
     #[test]
     fn worker_op_result_killed_error_shows_error_banner() {
         use super::super::components::banner::BannerVariant;
-        use crate::v2::msg::WorkerOpResultMsg;
+        use crate::msg::WorkerOpResultMsg;
         let model = Model::initial();
         let (new_model, _) = update(
             model,
@@ -2029,7 +2029,7 @@ mod tests {
 
     #[test]
     fn worker_op_result_clears_status_before_banner() {
-        use crate::v2::msg::WorkerOpResultMsg;
+        use crate::msg::WorkerOpResultMsg;
         let model = Model::initial();
         let (model, _) = update(model, Msg::StatusShow("Killing worker...".into()));
         assert!(model.status.is_some());

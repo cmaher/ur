@@ -9,9 +9,9 @@ use crate::context::TuiContext;
 use crate::theme;
 
 use super::overlay::render_overlay;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{ActiveOverlay, Model, SettingsLevel};
-use crate::v2::msg::{Msg, OverlayMsg, SettingsDirection};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{ActiveOverlay, Model, SettingsLevel};
+use crate::msg::{Msg, OverlayMsg, SettingsDirection};
 
 /// daisyUI theme classification: built-in themes known to be light.
 const LIGHT_THEMES: &[&str] = &[

@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::v2::model::StatusModel;
+use crate::model::StatusModel;
 
 /// Render a single-line status message into the given area.
 ///

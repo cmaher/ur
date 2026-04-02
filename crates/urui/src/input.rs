@@ -210,7 +210,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     use super::*;
-    use crate::v2::navigation::TabId;
+    use crate::navigation::TabId;
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {

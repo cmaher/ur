@@ -5,11 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+use crate::cmd::{Cmd, FetchCmd};
 use crate::context::TuiContext;
-use crate::v2::cmd::{Cmd, FetchCmd};
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{LoadState, Model, TicketActivitiesData};
-use crate::v2::msg::{Msg, NavMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{LoadState, Model, TicketActivitiesData};
+use crate::msg::{Msg, NavMsg};
 use crate::widgets::ThemedTable;
 
 /// Render the ticket activities page into the given content area.

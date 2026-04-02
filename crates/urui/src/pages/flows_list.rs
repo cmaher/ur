@@ -9,12 +9,12 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
+use crate::cmd::{Cmd, FetchCmd};
 use crate::context::TuiContext;
-use crate::v2::cmd::{Cmd, FetchCmd};
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{FLOW_PAGE_SIZE, FlowListData, FlowListModel, LoadState, Model};
-use crate::v2::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg};
-use crate::v2::navigation::PageId;
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{FLOW_PAGE_SIZE, FlowListData, FlowListModel, LoadState, Model};
+use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg};
+use crate::navigation::PageId;
 use crate::widgets::{MiniProgressBar, ThemedTable};
 
 /// Column index of the progress count label in the table.
@@ -419,7 +419,7 @@ fn handle_select(mut model: Model) -> (Model, Vec<Cmd>) {
         let page = PageId::FlowDetail { ticket_id };
         let mut nav = std::mem::replace(
             &mut model.navigation_model,
-            crate::v2::navigation::NavigationModel::initial(),
+            crate::navigation::NavigationModel::initial(),
         );
         let cmds = nav.push(page, &mut model);
         model.navigation_model = nav;
@@ -435,7 +435,7 @@ fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::FlowOp(FlowOpMsg::Cancel {
             ticket_id: wf.ticket_id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -444,10 +444,10 @@ fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
 /// Redrive the selected flow's workflow.
 fn handle_redrive(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(wf) = selected_workflow(&model) {
-        let msg = Msg::TicketOp(crate::v2::msg::TicketOpMsg::Redrive {
+        let msg = Msg::TicketOp(crate::msg::TicketOpMsg::Redrive {
             ticket_id: wf.ticket_id.clone(),
         });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }
@@ -458,7 +458,7 @@ fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(wf) = selected_workflow(&model) {
         let targets = build_flow_goto_targets(&wf.ticket_id);
         let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
-        crate::v2::update::update(model, msg)
+        crate::update::update(model, msg)
     } else {
         (model, vec![])
     }

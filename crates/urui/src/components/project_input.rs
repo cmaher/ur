@@ -8,9 +8,9 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{ActiveOverlay, Model};
-use crate::v2::msg::{Msg, OverlayMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{ActiveOverlay, Model};
+use crate::msg::{Msg, OverlayMsg};
 
 /// Modal input handler for the project input overlay.
 ///

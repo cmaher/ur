@@ -8,9 +8,9 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::v2::input::{FooterCommand, InputHandler, InputResult};
-use crate::v2::model::{ActiveOverlay, Model};
-use crate::v2::msg::{CreateAction, Msg, OverlayMsg};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{ActiveOverlay, Model};
+use crate::msg::{CreateAction, Msg, OverlayMsg};
 
 /// The actions and their display labels.
 const ACTIONS: &[(CreateAction, &str)] = &[
@@ -102,7 +102,7 @@ fn render_summary_lines(
     inner: Rect,
     buf: &mut Buffer,
     style: Style,
-    pending: &crate::v2::msg::PendingTicket,
+    pending: &crate::msg::PendingTicket,
 ) {
     let summary_lines = [
         format!(" Project:  {}", pending.project),

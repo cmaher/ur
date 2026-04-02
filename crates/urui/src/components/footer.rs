@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::v2::input::FooterCommand;
+use crate::input::FooterCommand;
 
 /// Sort footer commands following the project convention:
 /// 1. Capital-letter shortcuts (Shift+key) in alphabetical order
@@ -119,9 +119,9 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::{GlobalHandler, InputHandler, InputStack};
     use crate::keymap::Keymap;
     use crate::theme::Theme;
-    use crate::v2::input::{GlobalHandler, InputHandler, InputStack};
     use ur_config::TuiConfig;
 
     fn make_ctx() -> TuiContext {
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn footer_collects_from_multiple_handlers() {
-        use crate::v2::input::InputResult;
+        use crate::input::InputResult;
         use crossterm::event::KeyEvent;
 
         struct PageHandler;
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn footer_updates_when_handler_pushed_and_popped() {
-        use crate::v2::input::InputResult;
+        use crate::input::InputResult;
         use crossterm::event::KeyEvent;
 
         struct OverlayHandler;
