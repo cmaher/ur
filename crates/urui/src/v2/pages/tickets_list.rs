@@ -78,6 +78,7 @@ pub fn handle_ticket_table_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec
         }
         NavMsg::TicketTableSelect => handle_select(model),
         NavMsg::TicketListPriority => handle_priority(model),
+        NavMsg::TicketListType => handle_type(model),
         NavMsg::TicketListClose => handle_close(model),
         NavMsg::TicketListOpen => handle_open(model),
         NavMsg::TicketListDispatch => handle_dispatch(model),
@@ -138,6 +139,19 @@ fn handle_priority(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::Overlay(OverlayMsg::OpenPriorityPicker {
             ticket_id: ticket.id.clone(),
             current_priority: ticket.priority,
+        });
+        crate::v2::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the type menu for the selected ticket.
+fn handle_type(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
+        let msg = Msg::Overlay(OverlayMsg::OpenTypeMenu {
+            ticket_id: ticket.id.clone(),
+            current_type: ticket.ticket_type.clone(),
         });
         crate::v2::update::update(model, msg)
     } else {
@@ -287,6 +301,11 @@ impl InputHandler for TicketListHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "T".to_string(),
+                description: "Type".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "X".to_string(),
                 description: "Close".to_string(),
                 common: false,
@@ -366,6 +385,7 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
 
     match key.code {
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketListPriority)),
+        KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketListType)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketListClose)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketListOpen)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketListDispatch)),
@@ -677,6 +697,26 @@ mod tests {
             }
             other => panic!("expected Fetch(Tickets), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handler_captures_shift_t_as_type() {
+        let handler = TicketListHandler;
+        let key = make_key(KeyCode::Char('T'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketListType)) => {}
+            other => panic!("expected ticket list type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn footer_commands_include_type() {
+        let handler = TicketListHandler;
+        let cmds = handler.footer_commands();
+        assert!(
+            cmds.iter()
+                .any(|c| c.description == "Type" && c.key_label == "T")
+        );
     }
 
     // ── Goto targets tests ───────────────────────────────────────────

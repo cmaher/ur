@@ -145,6 +145,10 @@ impl CmdRunner {
                 ticket_id,
                 priority,
             } => self.exec_set_priority(ticket_id, priority),
+            TicketOpMsg::SetType {
+                ticket_id,
+                ticket_type,
+            } => self.exec_set_type(ticket_id, ticket_type),
             TicketOpMsg::Create { pending } => self.exec_create(pending),
             TicketOpMsg::CreateAndDispatch {
                 pending,
@@ -228,6 +232,19 @@ impl CmdRunner {
             let result = update_ticket_priority(port, &ticket_id, priority).await;
             let msg = TicketOpResultMsg::PrioritySet {
                 result: result.map(|()| format!("Priority set to P{priority} for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_set_type(&self, ticket_id: String, ticket_type: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, %ticket_type, "v2: setting ticket type");
+            let result = update_ticket_type(port, &ticket_id, &ticket_type).await;
+            let msg = TicketOpResultMsg::TypeSet {
+                result: result.map(|()| format!("Type set to {ticket_type} for {ticket_id}")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -805,6 +822,32 @@ async fn update_ticket_priority(port: u16, ticket_id: &str, priority: i64) -> Re
             body: None,
             force: false,
             ticket_type: None,
+            parent_id: None,
+            branch: None,
+            project: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Update a ticket's type.
+async fn update_ticket_type(port: u16, ticket_id: &str, ticket_type: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::UpdateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: None,
+            status: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: Some(ticket_type.to_owned()),
             parent_id: None,
             branch: None,
             project: None,

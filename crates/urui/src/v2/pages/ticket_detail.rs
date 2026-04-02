@@ -238,6 +238,7 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         }
         NavMsg::TicketDetailSelect => handle_detail_select(model),
         NavMsg::TicketDetailPriority => handle_detail_priority(model),
+        NavMsg::TicketDetailType => handle_detail_type(model),
         NavMsg::TicketDetailClose => handle_detail_close(model),
         NavMsg::TicketDetailOpen => handle_detail_open(model),
         NavMsg::TicketDetailDispatch => handle_detail_dispatch(model),
@@ -307,6 +308,19 @@ fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
         let msg = Msg::Overlay(OverlayMsg::OpenPriorityPicker {
             ticket_id: ticket.id.clone(),
             current_priority: ticket.priority,
+        });
+        crate::v2::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the type menu for the selected child.
+fn handle_detail_type(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenTypeMenu {
+            ticket_id: ticket.id.clone(),
+            current_type: ticket.ticket_type.clone(),
         });
         crate::v2::update::update(model, msg)
     } else {
@@ -586,6 +600,11 @@ impl InputHandler for TicketDetailHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "T".to_string(),
+                description: "Type".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "V".to_string(),
                 description: "Redrive".to_string(),
                 common: false,
@@ -672,6 +691,7 @@ fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),
         KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketDetailOpen)),
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketDetailPriority)),
+        KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketDetailType)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketDetailRedrive)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketDetailClose)),
         _ => None,
@@ -834,6 +854,16 @@ mod tests {
     }
 
     #[test]
+    fn handler_captures_shift_t_as_type() {
+        let handler = TicketDetailHandler;
+        let key = make_key(KeyCode::Char('T'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailType)) => {}
+            other => panic!("expected type, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_captures_shift_a_as_dispatch_all() {
         let handler = TicketDetailHandler;
         let key = make_key(KeyCode::Char('A'), KeyModifiers::SHIFT);
@@ -860,6 +890,7 @@ mod tests {
         assert!(cmds.iter().any(|c| c.description == "Dispatch all"));
         assert!(cmds.iter().any(|c| c.description == "Create child"));
         assert!(cmds.iter().any(|c| c.description == "Priority"));
+        assert!(cmds.iter().any(|c| c.description == "Type"));
         assert!(cmds.iter().any(|c| c.description == "Activities"));
         assert!(cmds.iter().any(|c| c.description == "Description"));
         assert!(cmds.iter().any(|c| c.description == "Toggle closed"));

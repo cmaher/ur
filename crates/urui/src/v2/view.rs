@@ -17,6 +17,7 @@ use super::components::project_input::render_project_input;
 use super::components::settings_overlay::render_settings_overlay;
 use super::components::status::render_status;
 use super::components::title_input::render_title_input;
+use super::components::type_menu::render_type_menu;
 use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::flow_detail::render_flow_detail;
@@ -132,6 +133,9 @@ fn render_active_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: 
         None => {}
         Some(ActiveOverlay::PriorityPicker { .. }) => {
             render_priority_picker(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::TypeMenu { .. }) => {
+            render_type_menu(area, buf, ctx, model);
         }
         Some(ActiveOverlay::FilterMenu { .. }) => {
             render_filter_menu(area, buf, ctx, model);

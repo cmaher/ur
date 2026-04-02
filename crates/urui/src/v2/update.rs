@@ -507,6 +507,10 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
             ticket_id,
             priority,
         } => format!("Setting P{priority} on {ticket_id}..."),
+        TicketOpMsg::SetType {
+            ticket_id,
+            ticket_type,
+        } => format!("Setting type to {ticket_type} on {ticket_id}..."),
         TicketOpMsg::Create { pending } => format!("Creating ticket in {}...", pending.project),
         TicketOpMsg::CreateAndDispatch { pending, .. } => {
             format!("Creating and dispatching in {}...", pending.project)
@@ -542,6 +546,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::Closed { result } => (result, false, None),
         TicketOpResultMsg::ForceClosed { result } => (result, true, None),
         TicketOpResultMsg::PrioritySet { result } => (result, true, None),
+        TicketOpResultMsg::TypeSet { result } => (result, true, None),
         TicketOpResultMsg::Created { result, pending } => (result, false, pending),
         TicketOpResultMsg::DesignLaunched { result } => (result, false, None),
         TicketOpResultMsg::Redriven { result } => (result, false, None),

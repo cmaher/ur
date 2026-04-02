@@ -77,6 +77,26 @@ pub enum OverlayMsg {
     /// The user cancelled the priority picker.
     PriorityCancelled,
 
+    /// Open the type menu overlay for the given ticket, starting at
+    /// the ticket's current type.
+    OpenTypeMenu {
+        ticket_id: String,
+        current_type: String,
+    },
+    /// The user selected a type in the menu.
+    TypeSelected {
+        ticket_id: String,
+        ticket_type: String,
+    },
+    /// Navigate the type menu cursor by delta (+1 down, -1 up).
+    TypeMenuNavigate { delta: i32 },
+    /// Confirm the currently highlighted type.
+    TypeMenuConfirm,
+    /// Quick-select a type by index (0 or 1).
+    TypeMenuQuickSelect { index: usize },
+    /// The user cancelled the type menu.
+    TypeMenuCancelled,
+
     /// Open the filter menu overlay.
     OpenFilterMenu,
     /// Navigate the filter menu cursor.
@@ -241,6 +261,8 @@ pub enum NavMsg {
     TicketListRefresh,
     /// Open the priority picker for the selected ticket in the list.
     TicketListPriority,
+    /// Open the type menu for the selected ticket in the list.
+    TicketListType,
     /// Close the selected ticket in the list.
     TicketListClose,
     /// Re-open the selected ticket in the list.
@@ -267,6 +289,8 @@ pub enum NavMsg {
     TicketDetailRefresh,
     /// Open the priority picker for the selected child in the detail.
     TicketDetailPriority,
+    /// Open the type menu for the selected child in the detail.
+    TicketDetailType,
     /// Close the selected child in the detail.
     TicketDetailClose,
     /// Reopen the selected child in the detail.
@@ -403,6 +427,11 @@ pub enum TicketOpMsg {
     ForceClose { ticket_id: String },
     /// Set a ticket's priority.
     SetPriority { ticket_id: String, priority: i64 },
+    /// Set a ticket's type.
+    SetType {
+        ticket_id: String,
+        ticket_type: String,
+    },
     /// Create a new ticket from a pending ticket template.
     Create { pending: PendingTicket },
     /// Create a ticket and immediately dispatch it (type-aware: code dispatches
@@ -444,6 +473,8 @@ pub enum TicketOpResultMsg {
     ForceClosed { result: Result<String, String> },
     /// Priority set completed.
     PrioritySet { result: Result<String, String> },
+    /// Type set completed.
+    TypeSet { result: Result<String, String> },
     /// Ticket created. On error, the PendingTicket is preserved for retry.
     Created {
         result: Result<String, String>,
