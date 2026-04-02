@@ -768,6 +768,7 @@ fn apply_detail_result(
 
 /// Build a batch of fetch commands to refresh all page data.
 /// Called on `NavPop` or explicit refresh to re-fetch potentially stale data.
+#[cfg(test)]
 pub fn refresh_all_cmd() -> Cmd {
     Cmd::batch(vec![
         Cmd::Fetch(FetchCmd::Tickets {

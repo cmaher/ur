@@ -37,16 +37,6 @@ const LIGHT_THEMES: &[&str] = &[
     "acid",
 ];
 
-/// Column index in the theme picker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ThemeColumn {
-    Light,
-    Dark,
-    Custom,
-}
-
-const COLUMNS: &[ThemeColumn] = &[ThemeColumn::Light, ThemeColumn::Dark, ThemeColumn::Custom];
-
 /// Classify a built-in theme as light or dark.
 fn is_light_theme(name: &str) -> bool {
     LIGHT_THEMES.contains(&name)

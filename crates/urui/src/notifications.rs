@@ -54,7 +54,6 @@ pub struct NotificationModel {
     config: NotificationConfig,
     desktop_available: bool,
     previous_states: HashMap<String, TrackedFlowState>,
-    icon_path: Option<PathBuf>,
 }
 
 impl NotificationModel {
@@ -66,13 +65,10 @@ impl NotificationModel {
             debug!("terminal-notifier not found on PATH; desktop notifications disabled");
         }
 
-        let icon_path = resolve_icon_path();
-
         Self {
             config,
             desktop_available,
             previous_states: HashMap::new(),
-            icon_path,
         }
     }
 
@@ -229,13 +225,6 @@ fn check_terminal_notifier_available() -> bool {
         .is_ok()
 }
 
-/// Look for an icon file at a well-known location.
-fn resolve_icon_path() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let path = PathBuf::from(home).join(".ur").join("icon.png");
-    if path.exists() { Some(path) } else { None }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,7 +262,6 @@ mod tests {
             config,
             desktop_available: false,
             previous_states: HashMap::new(),
-            icon_path: None,
         }
     }
 
@@ -404,7 +392,6 @@ mod tests {
             config: make_config(true, true),
             desktop_available: true,
             previous_states: HashMap::new(),
-            icon_path: None,
         };
         let flow_v1 = make_flow("ur-d1", lifecycle::IMPLEMENTING, false);
         model.seed_flows(&[flow_v1]);
@@ -423,7 +410,6 @@ mod tests {
             config: make_config(true, true),
             desktop_available: true,
             previous_states: HashMap::new(),
-            icon_path: None,
         };
         let flow_v1 = make_flow("ur-d2", lifecycle::IMPLEMENTING, false);
         model.seed_flows(&[flow_v1]);
