@@ -72,6 +72,7 @@ impl MiniProgressBar {
     }
 
     /// Render the count label ("N/M") into the given area.
+    #[allow(dead_code)]
     pub fn render_label(
         &self,
         area: Rect,

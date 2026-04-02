@@ -1,21 +1,5 @@
-mod banner;
-pub mod create_action_menu;
-pub mod filter_menu;
-mod footer;
-pub mod force_close_confirm;
-pub mod goto_menu;
-pub mod header;
-pub mod overlay;
-pub mod priority_picker;
-pub mod progress_bar;
-pub mod project_input;
-pub mod settings_overlay;
-mod status_header;
+mod progress_bar;
 mod table;
 
-pub use banner::render_banner;
-pub use footer::render_footer;
-pub use header::render_header;
 pub use progress_bar::MiniProgressBar;
-pub use status_header::render_status_header;
 pub use table::ThemedTable;

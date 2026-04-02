@@ -3,7 +3,13 @@ use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ur_config::KeymapOverrides;
 
-use crate::page::TabId;
+/// Tab identifier for tab-switching actions in the keymap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabId {
+    Tickets,
+    Flows,
+    Workers,
+}
 
 /// Semantic actions resolved from raw key events.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -55,6 +55,7 @@ pub fn serialize_to_template(
 }
 
 /// Returns `true` if the title is the placeholder or empty.
+#[allow(dead_code)]
 pub fn is_title_placeholder(title: &str) -> bool {
     let trimmed = title.trim();
     trimmed.is_empty() || trimmed == TITLE_PLACEHOLDER
