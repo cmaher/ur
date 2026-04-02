@@ -17,6 +17,7 @@ const ACTIONS: &[(CreateAction, &str)] = &[
     (CreateAction::Create, "Create"),
     (CreateAction::Dispatch, "Create & Dispatch"),
     (CreateAction::Design, "Create as Design"),
+    (CreateAction::Edit, "Edit"),
     (CreateAction::Abandon, "Abandon"),
 ];
 
@@ -37,7 +38,7 @@ impl InputHandler for CreateActionMenuHandler {
                 Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: -1 })
             }
             KeyCode::Enter => Msg::Overlay(OverlayMsg::CreateActionConfirm),
-            KeyCode::Char(c) if ('1'..='4').contains(&c) => {
+            KeyCode::Char(c) if ('1'..='5').contains(&c) => {
                 let index = (c as u8 - b'1') as usize;
                 Msg::Overlay(OverlayMsg::CreateActionQuickSelect { index })
             }
@@ -59,7 +60,7 @@ impl InputHandler for CreateActionMenuHandler {
                 common: false,
             },
             FooterCommand {
-                key_label: "1-4".to_string(),
+                key_label: "1-5".to_string(),
                 description: "Quick select".to_string(),
                 common: false,
             },
@@ -83,8 +84,8 @@ pub fn render_create_action_menu(area: Rect, buf: &mut Buffer, ctx: &TuiContext,
         _ => return,
     };
 
-    // 3 lines for summary + 1 blank + 4 options + 2 borders
-    let height = 10u16;
+    // 3 lines for summary + 1 blank + 5 options + 2 borders
+    let height = 11u16;
     let width = 50u16;
     let inner = render_overlay(area, buf, ctx, " Create Ticket ", width, height);
 
@@ -220,6 +221,17 @@ mod tests {
     }
 
     #[test]
+    fn handler_quick_select_5() {
+        let handler = CreateActionMenuHandler;
+        match handler.handle_key(key(KeyCode::Char('5'))) {
+            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionQuickSelect {
+                index: 4,
+            })) => {}
+            other => panic!("expected QuickSelect(4), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_unknown_consumed() {
         let handler = CreateActionMenuHandler;
         match handler.handle_key(key(KeyCode::Char('x'))) {
@@ -231,7 +243,8 @@ mod tests {
     #[test]
     fn action_at_valid() {
         assert_eq!(action_at(0), Some(CreateAction::Create));
-        assert_eq!(action_at(3), Some(CreateAction::Abandon));
+        assert_eq!(action_at(3), Some(CreateAction::Edit));
+        assert_eq!(action_at(4), Some(CreateAction::Abandon));
     }
 
     #[test]

@@ -175,12 +175,13 @@ pub struct GotoTarget {
     pub id: String,
 }
 
-/// The four actions available after editing a ticket.
+/// The five actions available after editing a ticket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateAction {
     Create,
     Dispatch,
     Design,
+    Edit,
     Abandon,
 }
 

@@ -204,12 +204,21 @@ async fn tea_loop(
         let remaining = filter_non_editor_cmds(cmds);
         cmd_runner.execute_all(remaining);
 
-        if let Some((parent_id, editor_project)) = editor_request {
-            let resolved_project =
-                resolve_editor_project(editor_project, parent_id.as_deref(), &project_filter, port)
-                    .await;
+        if let Some(editor_req) = editor_request {
+            let resolved_project = resolve_editor_project(
+                editor_req.project,
+                editor_req.parent_id.as_deref(),
+                &project_filter,
+                port,
+            )
+            .await;
             reader_paused.store(true, Ordering::Release);
-            let pending = run_editor_flow(terminal, resolved_project, parent_id);
+            let pending = run_editor_flow(
+                terminal,
+                resolved_project,
+                editor_req.parent_id,
+                editor_req.content,
+            );
             reader_paused.store(false, Ordering::Release);
             let pending = pending?;
             if let Some(pending) = pending {
@@ -227,11 +236,27 @@ async fn tea_loop(
     Ok(())
 }
 
+/// Extracted fields from a `SpawnEditor` command.
+struct EditorRequest {
+    parent_id: Option<String>,
+    project: Option<String>,
+    content: Option<String>,
+}
+
 /// Extract a SpawnEditor request from a list of commands, if present.
-fn extract_editor_request(cmds: &[cmd::Cmd]) -> Option<(Option<String>, Option<String>)> {
+fn extract_editor_request(cmds: &[cmd::Cmd]) -> Option<EditorRequest> {
     for c in cmds {
-        if let cmd::Cmd::SpawnEditor { parent_id, project } = c {
-            return Some((parent_id.clone(), project.clone()));
+        if let cmd::Cmd::SpawnEditor {
+            parent_id,
+            project,
+            content,
+        } = c
+        {
+            return Some(EditorRequest {
+                parent_id: parent_id.clone(),
+                project: project.clone(),
+                content: content.clone(),
+            });
         }
         if let cmd::Cmd::Batch(batch) = c
             && let Some(result) = extract_editor_request(batch)
@@ -303,12 +328,16 @@ async fn fetch_ticket_project(port: u16, ticket_id: &str) -> Result<String, Stri
 /// Run the editor flow: tear down terminal, spawn $EDITOR, parse result, re-init terminal.
 ///
 /// Returns `Some(PendingTicket)` if the user wrote valid content, `None` if cancelled.
+///
+/// When `content` is `Some`, the editor opens with that pre-populated text instead of a
+/// blank template (used by the Edit action to round-trip a PendingTicket through the editor).
 fn run_editor_flow(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     project: String,
     parent_id: Option<String>,
+    content: Option<String>,
 ) -> anyhow::Result<Option<msg::PendingTicket>> {
-    let template = create_ticket_v1::generate_template();
+    let template = content.unwrap_or_else(|| create_ticket_v1::generate_template());
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!("ur-ticket-{}.md", std::process::id()));
     std::fs::write(&tmp_path, &template)?;

@@ -33,9 +33,13 @@ pub enum Cmd {
     PersistTheme { theme_name: String },
     /// Break out of the TEA loop and spawn $EDITOR for ticket creation.
     /// After the editor exits, the TEA loop re-enters with the parsed result.
+    ///
+    /// When `content` is `Some`, the editor opens with that pre-populated text
+    /// instead of a blank template (used by the Edit action in the create menu).
     SpawnEditor {
         parent_id: Option<String>,
         project: Option<String>,
+        content: Option<String>,
     },
 }
 
