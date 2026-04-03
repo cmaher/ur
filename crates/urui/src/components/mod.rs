@@ -10,6 +10,7 @@ pub mod overlay;
 pub mod priority_picker;
 pub mod progress_bar;
 pub mod project_input;
+pub mod scrollable_markdown;
 pub mod settings_overlay;
 pub mod status;
 pub mod table;
