@@ -1,6 +1,5 @@
 use std::cell::Cell;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -10,9 +9,8 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 
 use crate::context::TuiContext;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::MarkdownScrollHandler;
 use crate::model::Model;
-use crate::msg::{Msg, NavMsg};
 
 /// Render the ticket body page into the given content area.
 ///
@@ -176,55 +174,22 @@ pub fn init_body_model(model: &mut Model, ticket_id: String, title: String, body
     });
 }
 
-/// Input handler for the ticket body page.
+/// Create the input handler for the ticket body page.
 ///
-/// Handles scroll navigation (j/k, arrow keys) and page scroll (h/l).
+/// Uses the shared `MarkdownScrollHandler` for scroll navigation
+/// (j/k/↓/↑ for lines, h/l/←/→/Ctrl+f/Ctrl+b for pages).
 /// Back is handled by the GlobalHandler's Esc.
-pub struct TicketBodyHandler;
-
-impl InputHandler for TicketBodyHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
-                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollDown))
-            }
-            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
-                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollUp))
-            }
-            (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) => {
-                InputResult::Capture(Msg::Nav(NavMsg::BodyPageDown))
-            }
-            (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, KeyModifiers::NONE) => {
-                InputResult::Capture(Msg::Nav(NavMsg::BodyPageUp))
-            }
-            _ => InputResult::Bubble,
-        }
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Scroll".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "h/l".to_string(),
-                description: "Page".to_string(),
-                common: true,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "ticket_body"
+pub fn ticket_body_handler() -> MarkdownScrollHandler {
+    MarkdownScrollHandler {
+        handler_name: "ticket_body",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEventKind, KeyEventState};
+    use crate::input::{InputHandler, InputResult};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent {
@@ -359,35 +324,35 @@ mod tests {
 
     #[test]
     fn handler_j_captures_scroll_down() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         let key = make_key(KeyCode::Char('j'), KeyModifiers::NONE);
         assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
     fn handler_k_captures_scroll_up() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
         assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
     fn handler_l_captures_page_down() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         let key = make_key(KeyCode::Char('l'), KeyModifiers::NONE);
         assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
     fn handler_unknown_bubbles() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         let key = make_key(KeyCode::Char('z'), KeyModifiers::NONE);
         assert!(matches!(handler.handle_key(key), InputResult::Bubble));
     }
 
     #[test]
     fn handler_footer_has_scroll_and_page() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         let commands = handler.footer_commands();
         assert!(commands.iter().any(|c| c.description == "Scroll"));
         assert!(commands.iter().any(|c| c.description == "Page"));
@@ -395,7 +360,7 @@ mod tests {
 
     #[test]
     fn handler_name() {
-        let handler = TicketBodyHandler;
+        let handler = ticket_body_handler();
         assert_eq!(handler.name(), "ticket_body");
     }
 }

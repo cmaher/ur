@@ -117,6 +117,66 @@ impl InputStack {
     }
 }
 
+/// Reusable scroll handler for markdown/body views.
+///
+/// Provides less-like scrolling behavior for any page that displays scrollable
+/// content. Emits `NavMsg::BodyScroll*` / `NavMsg::BodyPage*` messages.
+///
+/// Key bindings:
+/// - `j` / `↓` — scroll down one line
+/// - `k` / `↑` — scroll up one line
+/// - `l` / `→` — page down
+/// - `h` / `←` — page up
+/// - `Ctrl+f` — page down (alias for `l`)
+/// - `Ctrl+b` — page up (alias for `h`)
+pub struct MarkdownScrollHandler {
+    /// Display name for the handler (used in the input stack debug output).
+    pub handler_name: &'static str,
+}
+
+impl InputHandler for MarkdownScrollHandler {
+    fn handle_key(&self, key: KeyEvent) -> InputResult {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollDown))
+            }
+            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollUp))
+            }
+            (KeyCode::Char('l'), KeyModifiers::NONE)
+            | (KeyCode::Right, KeyModifiers::NONE)
+            | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyPageDown))
+            }
+            (KeyCode::Char('h'), KeyModifiers::NONE)
+            | (KeyCode::Left, KeyModifiers::NONE)
+            | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyPageUp))
+            }
+            _ => InputResult::Bubble,
+        }
+    }
+
+    fn footer_commands(&self) -> Vec<FooterCommand> {
+        vec![
+            FooterCommand {
+                key_label: "j/k".to_string(),
+                description: "Scroll".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: "h/l".to_string(),
+                description: "Page".to_string(),
+                common: true,
+            },
+        ]
+    }
+
+    fn name(&self) -> &str {
+        self.handler_name
+    }
+}
+
 /// Global input handler that is always at the bottom of the stack.
 ///
 /// Handles application-wide shortcuts:
@@ -498,5 +558,130 @@ mod tests {
         stack.push(Box::new(GlobalHandler));
         let debug = format!("{stack:?}");
         assert!(debug.contains("global"));
+    }
+
+    // ── MarkdownScrollHandler tests ───────────────────────────────────
+
+    #[test]
+    fn markdown_scroll_j_captures_scroll_down() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyScrollDown)) => {}
+            other => panic!("expected BodyScrollDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_k_captures_scroll_up() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyScrollUp)) => {}
+            other => panic!("expected BodyScrollUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_down_arrow_captures_scroll_down() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Down, KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyScrollDown)) => {}
+            other => panic!("expected BodyScrollDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_up_arrow_captures_scroll_up() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Up, KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyScrollUp)) => {}
+            other => panic!("expected BodyScrollUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_l_captures_page_down() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyPageDown)) => {}
+            other => panic!("expected BodyPageDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_h_captures_page_up() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyPageUp)) => {}
+            other => panic!("expected BodyPageUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_ctrl_f_captures_page_down() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyPageDown)) => {}
+            other => panic!("expected BodyPageDown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_ctrl_b_captures_page_up() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::BodyPageUp)) => {}
+            other => panic!("expected BodyPageUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn markdown_scroll_unknown_bubbles() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let key = make_key(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert!(matches!(handler.handle_key(key), InputResult::Bubble));
+    }
+
+    #[test]
+    fn markdown_scroll_footer_commands() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "test",
+        };
+        let commands = handler.footer_commands();
+        assert!(commands.iter().any(|c| c.description == "Scroll"));
+        assert!(commands.iter().any(|c| c.description == "Page"));
+    }
+
+    #[test]
+    fn markdown_scroll_handler_name() {
+        let handler = MarkdownScrollHandler {
+            handler_name: "my_page",
+        };
+        assert_eq!(handler.name(), "my_page");
     }
 }

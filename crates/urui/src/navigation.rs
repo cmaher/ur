@@ -218,7 +218,7 @@ fn is_tab_data_not_loaded(tab: TabId, model: &Model) -> bool {
 /// data fetches) is handled here. Each page type maps to specific setup.
 fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
     use super::pages::ticket_activities::{TicketActivitiesHandler, start_activities_fetch};
-    use super::pages::ticket_body::{TicketBodyHandler, init_body_model};
+    use super::pages::ticket_body::{init_body_model, ticket_body_handler};
     use super::update::{
         start_flow_list_fetch, start_ticket_detail_fetch, start_ticket_list_fetch,
         start_worker_list_fetch,
@@ -246,7 +246,7 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
             title,
             body,
         } => {
-            model.input_stack.push(Box::new(TicketBodyHandler));
+            model.input_stack.push(Box::new(ticket_body_handler()));
             init_body_model(model, ticket_id.clone(), title.clone(), body.clone());
             vec![]
         }
@@ -278,7 +278,7 @@ fn teardown_page(page: &PageId, model: &mut Model) -> usize {
         }
         PageId::TicketBody { .. } => {
             model.ticket_body = None;
-            1 // TicketBodyHandler
+            1 // MarkdownScrollHandler (ticket_body)
         }
         PageId::FlowDetail { .. } => {
             model.flow_detail = None;
