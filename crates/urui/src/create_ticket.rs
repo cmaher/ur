@@ -179,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_type_defaults_to_code() {
+    fn missing_type_defaults_to_design() {
         let content = "title: No type\npriority: 1\n---\nBody.\n";
         let ticket = parse_ticket_file(content).unwrap();
-        assert_eq!(ticket.ticket_type, "code");
+        assert_eq!(ticket.ticket_type, "design");
     }
 
     #[test]
