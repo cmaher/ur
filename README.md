@@ -6,6 +6,66 @@ Ur ADE coordinates containerized Claude Code workers via gRPC, managing the full
 
 > **Warning:** Ur ADE is under active development and highly unstable. APIs, configuration formats, and behavior may change without notice.
 
+## Prerequisites
+
+### Container Runtime
+
+Ur requires Docker with Compose support. On macOS, [OrbStack](https://orbstack.dev/) is recommended as a lightweight, fast alternative to Docker Desktop.
+
+### Build Dependencies
+
+
+```sh
+# Instructions are for macos but should work on Linux and WSL with alternative installation commands
+
+# Install mise (https://mise.jdx.dev/):
+brew install mise
+
+# Install terminal-notifier for notifications (Mac OS only)
+brew install terminal-notifier
+
+# Install github cli (https://github.com/cli/cli?tab=readme-ov-file)
+brew install gh
+
+# Install all project tools (Rust, protoc, zig, cargo-make, etc.)
+mise install
+```
+
+## Getting Started
+
+```sh
+# clone
+git clone https://github.com/cmaher/ur.git
+cd ur
+
+# Build and install the ur CLI + container images
+# installs binaries to ~/.local/bin
+cargo make install
+
+# Initialize the config directory (~/.ur/) with default ur.toml, squid allowlist, etc.
+ur init
+
+# Add a project (auto-detects repo URL from the git remote)
+cd /path/to/your/project
+ur project add . --image ur-worker
+
+# Start the server (launches containers and host process)
+ur server start
+
+# Open the TUI
+urui
+```
+
+Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifies a git repository and container configuration. Key options:
+
+- **`container.image`** — Container image for workers (e.g. `"ur-worker"`, `"ur-worker-rust"`)
+- **`container.mounts`** — Additional volume mounts for the container
+- **`git_hooks_dir`** — Template path to git hook scripts run during verification (e.g. `"%PROJECT%/.ur/git-hooks"`)
+- **`skill_hooks_dir`** — Template path to skill hook snippets copied to `~/.claude/skill-hooks/` at container startup (e.g. `"%PROJECT%/.ur/skill-hooks"`)
+- **`workflow_hooks_dir`** — Template path to workflow hook scripts for lifecycle automation
+
+Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
+
 ## How It Works
 
 ```
@@ -70,55 +130,6 @@ Review and merge the results:
 1. When the workflow completes, a PR is created automatically — tickets show as `in_review` on the **Flows** page during this step
 2. Review the PR on GitHub
 3. Use `ur approve` to approve or `ur respond` to request changes — workers will address feedback and update the PR
-
-## Prerequisites
-
-### Container Runtime
-
-Ur requires Docker with Compose support. On macOS, [OrbStack](https://orbstack.dev/) is recommended as a lightweight, fast alternative to Docker Desktop.
-
-### Build Dependencies
-
-All project dependencies are managed via [mise](https://mise.jdx.dev/):
-
-```sh
-# Install mise (macOS)
-brew install mise
-
-# Install all project tools (Rust, protoc, zig, cargo-make, etc.)
-mise install
-```
-
-Required tooling (installed by mise): `rust`, `protoc`, `zig`, `cargo-make`, `cargo-zigbuild`, `cargo-audit`
-
-## Getting Started
-
-```sh
-# Build and install the ur CLI + container images
-cargo make install
-
-# Initialize the config directory (~/.ur/) with default ur.toml, squid allowlist, etc.
-ur init
-
-# Add a project (auto-detects repo URL from the git remote)
-ur project add /path/to/your/repo --image ur-worker
-
-# Start the server (launches Docker Compose, builderd, Squid proxy)
-ur server start
-
-# Open the TUI
-urui
-```
-
-Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifies a git repository and container configuration. Key options:
-
-- **`container.image`** — Container image for workers (e.g. `"ur-worker"`, `"ur-worker-rust"`)
-- **`container.mounts`** — Additional volume mounts for the container
-- **`git_hooks_dir`** — Template path to git hook scripts run during verification (e.g. `"%PROJECT%/.ur/git-hooks"`)
-- **`skill_hooks_dir`** — Template path to skill hook snippets copied to `~/.claude/skill-hooks/` at container startup (e.g. `"%PROJECT%/.ur/skill-hooks"`)
-- **`workflow_hooks_dir`** — Template path to workflow hook scripts for lifecycle automation
-
-Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
 
 ## Development
 
