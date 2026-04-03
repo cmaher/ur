@@ -246,10 +246,10 @@ mod tests {
                     .unwrap_or(' ')
             })
             .collect();
-        // GlobalHandler provides Q Quit, Tab, Esc
+        // GlobalHandler provides only "?" Commands as common footer
         assert!(
-            last_row.contains("Quit"),
-            "footer should show Quit command, got: {last_row}"
+            last_row.contains("Commands"),
+            "footer should show ? Commands hint, got: {last_row}"
         );
     }
 }
