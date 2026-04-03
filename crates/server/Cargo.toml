@@ -8,8 +8,6 @@ anyhow = "1"
 chrono = "0.4"
 container = { path = "../container" }
 futures = "0.3"
-fastembed = { version = "4", default-features = false, features = ["ort-load-dynamic", "hf-hub"] }
-qdrant-client = "1"
 clap = { workspace = true }
 prost = { workspace = true }
 rand = "0.9"
@@ -27,7 +25,6 @@ ur_db = { path = "../ur_db" }
 mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
-rag = { path = "../rag" }
 remote_repo = { path = "../remote_repo" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error", "retry"] }
 ur_utils = { path = "../ur_utils" }

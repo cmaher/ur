@@ -11,7 +11,6 @@ pub mod log_cleanup;
 pub mod logging;
 pub mod pool;
 pub mod proxy;
-pub mod rag;
 pub mod run_opts_builder;
 pub mod strategy;
 pub mod stream;

@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use container::NetworkManager;
+
 use ur_db::{
     DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo,
     WorkflowRepo,
@@ -45,49 +46,6 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
         cfg.workspace.clone()
     };
     (host_workspace, local_workspace)
-}
-
-fn init_rag_handler(cfg: &Config) -> ur_server::rag::RagServiceHandler {
-    let model = rag::model::model_info(&cfg.rag.embedding_model).unwrap_or_else(|| {
-        let supported = ur_config::supported_model_names().join(", ");
-        panic!(
-            "unknown embedding model '{}' — supported models: {supported}",
-            cfg.rag.embedding_model,
-        );
-    });
-
-    let qdrant_url = format!(
-        "http://{}:{}",
-        cfg.rag.qdrant_hostname,
-        ur_config::DEFAULT_QDRANT_PORT,
-    );
-    info!(qdrant_url = %qdrant_url, "connecting to Qdrant");
-
-    let qdrant = Arc::new(
-        qdrant_client::Qdrant::from_url(&qdrant_url)
-            .build()
-            .expect("failed to create Qdrant client"),
-    );
-
-    let embedding_model = Arc::new(
-        fastembed::TextEmbedding::try_new(
-            fastembed::InitOptions::new(model.fastembed_model.clone())
-                .with_show_download_progress(false),
-        )
-        .expect("failed to load embedding model — run `ur rag model download`"),
-    );
-
-    let rag_manager = rag::RagManager::new(
-        qdrant,
-        embedding_model,
-        model.download.vector_size,
-        cfg.rag.embedding_model.clone(),
-    );
-
-    ur_server::rag::RagServiceHandler {
-        rag_manager,
-        config_dir: cfg.config_dir.clone(),
-    }
 }
 
 async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
@@ -201,8 +159,6 @@ async fn init_and_serve(
         ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
             .expect("failed to load hostexec config");
 
-    let rag_handler = init_rag_handler(cfg);
-
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
     let workflow_repo = WorkflowRepo::new(db.pool().clone());
@@ -241,7 +197,6 @@ async fn init_and_serve(
         cfg.network.worker_prefix.clone(),
         cfg.projects.clone(),
         grpc_handler,
-        rag_handler,
         ticket_handler,
         worker_manager,
         worker_repo,
@@ -358,7 +313,6 @@ async fn serve_grpc_servers(
     network_prefix: String,
     projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
     grpc_handler: ur_server::grpc::CoreServiceHandler,
-    rag_handler: ur_server::rag::RagServiceHandler,
     mut ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
@@ -388,12 +342,8 @@ async fn serve_grpc_servers(
     ticket_handler.transition_tx = Some(wf.transition_tx.clone());
     ticket_handler.cancel_tx = Some(wf.cancel_tx);
 
-    let host_server = ur_server::grpc_server::serve_grpc(
-        host_addr,
-        grpc_handler,
-        rag_handler.clone(),
-        ticket_handler.clone(),
-    );
+    let host_server =
+        ur_server::grpc_server::serve_grpc(host_addr, grpc_handler, ticket_handler.clone());
 
     let remote_repo_handler = {
         let retry_channel =
@@ -418,7 +368,6 @@ async fn serve_grpc_servers(
         hostexec_config,
         builderd_addr,
         host_workspace,
-        rag_handler,
         worker_ticket_handler,
         remote_repo_handler,
         wf.transition_tx,
