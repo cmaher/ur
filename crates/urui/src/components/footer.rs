@@ -79,7 +79,8 @@ fn build_spans(
 /// non-common commands by the project convention (capitals first, then
 /// lowercase, then non-letter keys), and renders them:
 /// - Left side: page-specific commands (common=false)
-/// - Right side: common/global commands (common=true), hidden if no space
+/// - Far right: "?" Commands hint (always visible)
+/// - Right side: remaining common/global commands, shown if they fit
 pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &[FooterCommand]) {
     let theme = &ctx.theme;
 
@@ -93,10 +94,19 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
     sort_commands(&mut left_cmds);
     let left_refs: Vec<&FooterCommand> = left_cmds.iter().collect();
 
-    let right_refs: Vec<&FooterCommand> = commands.iter().filter(|c| c.common).collect();
+    // Separate the "?" command from other common commands — it's always shown.
+    let help_cmd: Vec<&FooterCommand> = commands
+        .iter()
+        .filter(|c| c.common && c.key_label == "?")
+        .collect();
+    let other_right_refs: Vec<&FooterCommand> = commands
+        .iter()
+        .filter(|c| c.common && c.key_label != "?")
+        .collect();
 
     let left_width = commands_width(&left_refs);
-    let right_width = commands_width(&right_refs);
+    let help_width = commands_width(&help_cmd);
+    let other_right_width = commands_width(&other_right_refs);
 
     // Always render left commands
     if !left_refs.is_empty() {
@@ -105,12 +115,43 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
         line.render(area, buf);
     }
 
-    // Render right commands only if they fit (with 2-char gap from left)
     let gap = if left_refs.is_empty() { 0u16 } else { 2u16 };
-    if !right_refs.is_empty() && left_width + gap + right_width <= area.width {
-        let right_x = area.x + area.width - right_width;
-        let right_area = Rect::new(right_x, area.y, right_width, 1);
-        let spans = build_spans(&right_refs, theme.primary_content, theme.neutral_content);
+
+    // Always render "?" right-aligned if it fits on its own
+    if !help_cmd.is_empty() && left_width + gap + help_width <= area.width {
+        // Check if the other common commands also fit (with separator before "?")
+        let separator = if other_right_refs.is_empty() {
+            0u16
+        } else {
+            2u16
+        };
+        let full_right_width = other_right_width + separator + help_width;
+        if !other_right_refs.is_empty() && left_width + gap + full_right_width <= area.width {
+            // All common commands fit — render them all together
+            let mut all_right: Vec<&FooterCommand> = other_right_refs;
+            all_right.extend(&help_cmd);
+            let right_x = area.x + area.width - full_right_width;
+            let right_area = Rect::new(right_x, area.y, full_right_width, 1);
+            let spans = build_spans(&all_right, theme.primary_content, theme.neutral_content);
+            let line = Line::from(spans);
+            line.render(right_area, buf);
+        } else {
+            // Only "?" fits — render just the help hint
+            let right_x = area.x + area.width - help_width;
+            let right_area = Rect::new(right_x, area.y, help_width, 1);
+            let spans = build_spans(&help_cmd, theme.primary_content, theme.neutral_content);
+            let line = Line::from(spans);
+            line.render(right_area, buf);
+        }
+    } else if !other_right_refs.is_empty() && left_width + gap + other_right_width <= area.width {
+        // No "?" command but other common commands fit
+        let right_x = area.x + area.width - other_right_width;
+        let right_area = Rect::new(right_x, area.y, other_right_width, 1);
+        let spans = build_spans(
+            &other_right_refs,
+            theme.primary_content,
+            theme.neutral_content,
+        );
         let line = Line::from(spans);
         line.render(right_area, buf);
     }
