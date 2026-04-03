@@ -678,12 +678,11 @@ fn handle_detail_table_key(code: KeyCode) -> Option<Msg> {
     }
 }
 
-/// Handle Shift+letter operation keys for ticket detail actions.
+/// Handle uppercase letter operation keys for ticket detail actions.
+///
+/// Matches uppercase characters directly without requiring the SHIFT modifier,
+/// since some terminals send uppercase chars without setting the SHIFT flag.
 fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
-    if !key.modifiers.contains(KeyModifiers::SHIFT) {
-        return None;
-    }
-
     match key.code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::TicketDetailDispatchAll)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketDetailCreateChild)),

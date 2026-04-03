@@ -372,12 +372,11 @@ fn handle_table_key(code: KeyCode) -> Option<Msg> {
     }
 }
 
-/// Handle Shift+letter operation keys for ticket actions.
+/// Handle uppercase letter operation keys for ticket actions.
+///
+/// Matches uppercase characters directly without requiring the SHIFT modifier,
+/// since some terminals send uppercase chars without setting the SHIFT flag.
 fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
-    if !key.modifiers.contains(KeyModifiers::SHIFT) {
-        return None;
-    }
-
     match key.code {
         KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketListPriority)),
         KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketListType)),
