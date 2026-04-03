@@ -1,5 +1,6 @@
 use std::cell::Cell;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -9,77 +10,44 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_markdown::{MarkdownColors, render_markdown};
 
 use crate::context::TuiContext;
-use crate::data::DataPayload;
-use crate::keymap::{Action, Keymap};
-use crate::page::FooterCommand;
-use crate::screen::{Screen, ScreenResult};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::Model;
+use crate::msg::{Msg, NavMsg};
 
-/// Full-screen scrollable markdown viewer for a ticket's body text.
+/// Render the ticket body page into the given content area.
 ///
-/// Pushed onto the Tickets tab stack when "b" is pressed from `TicketDetailScreen`.
-/// Body text and ticket ID/title are passed in at construction — no RPCs needed.
-///
-/// Layout:
-///   1. Header (Length(1)): ticket ID + title (dimmed label style)
-///   2. Body pane (Min(1)): scrollable markdown content rendered via ur_markdown
-pub struct TicketBodyScreen {
-    ticket_id: String,
-    title: String,
-    body: String,
-    /// Current vertical scroll offset (lines from the top).
-    scroll_offset: usize,
-    /// Height of the body pane from the last render, used for page scrolling.
-    ///
-    /// Updated via interior mutability during `render` (which takes `&self`).
-    /// Seeded at construction so that page-scroll actions before the first
-    /// render produce a reasonable result.
-    last_body_height: Cell<usize>,
-    /// Rendered line count from the last render, used to clamp NavigateDown.
-    last_total_lines: Cell<usize>,
+/// Shows a header with ticket ID and title, and a scrollable markdown body.
+/// Body data is passed in at construction time (no async fetch needed).
+pub fn render_ticket_body(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+    let Some(ref body_model) = model.ticket_body else {
+        render_message(area, buf, ctx, "No body data");
+        return;
+    };
+
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // header
+        Constraint::Min(1),    // body
+    ])
+    .split(area);
+
+    render_header(
+        &body_model.ticket_id,
+        &body_model.title,
+        chunks[0],
+        buf,
+        ctx,
+    );
+    render_body_pane(body_model, chunks[1], buf, ctx);
 }
 
-impl TicketBodyScreen {
-    /// Create a new body viewer for the given ticket.
-    ///
-    /// - `ticket_id` — Shown in the header alongside the title.
-    /// - `title`     — Ticket title shown in the header.
-    /// - `body`      — Raw markdown body text to render.
-    pub fn new(ticket_id: String, title: String, body: String) -> Self {
-        Self {
-            ticket_id,
-            title,
-            body,
-            scroll_offset: 0,
-            last_body_height: Cell::new(20),
-            last_total_lines: Cell::new(0),
-        }
-    }
-
-    /// Returns the current scroll offset.
-    pub fn scroll_offset(&self) -> usize {
-        self.scroll_offset
-    }
-
-    /// Scroll down by `delta` lines, clamped so the last content line stays visible.
-    fn scroll_down(&mut self, delta: usize, content_lines: usize, visible_height: usize) {
-        let max_offset = content_lines.saturating_sub(visible_height);
-        self.scroll_offset = (self.scroll_offset + delta).min(max_offset);
-    }
-
-    /// Scroll up by `delta` lines, clamped to zero.
-    fn scroll_up(&mut self, delta: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(delta);
-    }
-}
-
-/// Build `MarkdownColors` from the TUI theme.
-fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
-    MarkdownColors {
-        text: ctx.theme.base_content,
-        heading: ctx.theme.accent,
-        code: ctx.theme.warning,
-        dim: ctx.theme.neutral_content,
-    }
+/// Render a simple message.
+fn render_message(area: Rect, buf: &mut Buffer, ctx: &TuiContext, msg: &str) {
+    let style = Style::default()
+        .fg(ctx.theme.base_content)
+        .bg(ctx.theme.base_100);
+    Paragraph::new(Line::raw(msg))
+        .style(style)
+        .render(area, buf);
 }
 
 /// Render the header line: ticket ID (accented) + title (dim).
@@ -95,7 +63,7 @@ fn render_header(ticket_id: &str, title: &str, area: Rect, buf: &mut Buffer, ctx
         .max(1);
     let title_truncated = if title.chars().count() > title_budget {
         let s: String = title.chars().take(title_budget.saturating_sub(1)).collect();
-        format!("{s}…")
+        format!("{s}...")
     } else {
         title.to_string()
     };
@@ -109,20 +77,35 @@ fn render_header(ticket_id: &str, title: &str, area: Rect, buf: &mut Buffer, ctx
     Paragraph::new(line).render(area, buf);
 }
 
-/// Render the scrollable body pane and update height/line-count cells.
-fn render_body_pane(screen: &TicketBodyScreen, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+/// Build `MarkdownColors` from the TUI theme.
+fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
+    MarkdownColors {
+        text: ctx.theme.base_content,
+        heading: ctx.theme.accent,
+        code: ctx.theme.warning,
+        dim: ctx.theme.neutral_content,
+    }
+}
+
+/// Render the scrollable body pane and update cached metrics.
+fn render_body_pane(
+    body_model: &super::super::model::TicketBodyModel,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+) {
     let colors = markdown_colors(ctx);
-    let all_lines = render_markdown(&screen.body, area.width as usize, &colors);
+    let all_lines = render_markdown(&body_model.body, area.width as usize, &colors);
     let visible_height = area.height as usize;
     let total = all_lines.len();
 
-    // Update cached metrics for use by the next handle_action call.
-    screen.last_body_height.set(visible_height.max(1));
-    screen.last_total_lines.set(total);
+    // Update cached metrics for use by the next scroll action.
+    body_model.last_body_height.set(visible_height.max(1));
+    body_model.last_total_lines.set(total);
 
     // Clamp scroll offset to valid range.
     let max_offset = total.saturating_sub(visible_height);
-    let offset = screen.scroll_offset.min(max_offset);
+    let offset = body_model.scroll_offset.min(max_offset);
 
     let visible: Vec<Line<'static>> = all_lines
         .into_iter()
@@ -134,286 +117,285 @@ fn render_body_pane(screen: &TicketBodyScreen, area: Rect, buf: &mut Buffer, ctx
     Paragraph::new(visible).style(bg_style).render(area, buf);
 }
 
-impl Screen for TicketBodyScreen {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match action {
-            Action::Back => ScreenResult::Pop,
-            Action::Quit => ScreenResult::Quit,
-            Action::NavigateDown => {
-                // j / Down: scroll one line forward.
-                let total = self.last_total_lines.get();
-                let height = self.last_body_height.get().max(1);
-                self.scroll_down(1, total, height);
-                ScreenResult::Consumed
+/// Handle scroll-down for the body page.
+pub fn body_scroll_down(model: &mut Model, delta: usize) {
+    let Some(ref mut body_model) = model.ticket_body else {
+        return;
+    };
+    let total = body_model.last_total_lines.get();
+    let height = body_model.last_body_height.get().max(1);
+    let max_offset = total.saturating_sub(height);
+    body_model.scroll_offset = (body_model.scroll_offset + delta).min(max_offset);
+}
+
+/// Handle scroll-up for the body page.
+pub fn body_scroll_up(model: &mut Model, delta: usize) {
+    let Some(ref mut body_model) = model.ticket_body else {
+        return;
+    };
+    body_model.scroll_offset = body_model.scroll_offset.saturating_sub(delta);
+}
+
+/// Handle page-down for the body page.
+pub fn body_page_down(model: &mut Model) {
+    let Some(ref body_model) = model.ticket_body else {
+        return;
+    };
+    let page = body_model.last_body_height.get().max(1);
+    let total = body_model.last_total_lines.get();
+    let max_offset = total.saturating_sub(page);
+    let new_offset = (body_model.scroll_offset + page).min(max_offset);
+    // Re-borrow mutably to update
+    if let Some(ref mut bm) = model.ticket_body {
+        bm.scroll_offset = new_offset;
+    }
+}
+
+/// Handle page-up for the body page.
+pub fn body_page_up(model: &mut Model) {
+    let Some(ref body_model) = model.ticket_body else {
+        return;
+    };
+    let page = body_model.last_body_height.get().max(1);
+    let new_offset = body_model.scroll_offset.saturating_sub(page);
+    if let Some(ref mut bm) = model.ticket_body {
+        bm.scroll_offset = new_offset;
+    }
+}
+
+/// Initialize the body model for a ticket. No async fetch needed since body text
+/// is passed in directly.
+pub fn init_body_model(model: &mut Model, ticket_id: String, title: String, body: String) {
+    model.ticket_body = Some(super::super::model::TicketBodyModel {
+        ticket_id,
+        title,
+        body,
+        scroll_offset: 0,
+        last_body_height: Cell::new(20),
+        last_total_lines: Cell::new(0),
+    });
+}
+
+/// Input handler for the ticket body page.
+///
+/// Handles scroll navigation (j/k, arrow keys) and page scroll (h/l).
+/// Back is handled by the GlobalHandler's Esc.
+pub struct TicketBodyHandler;
+
+impl InputHandler for TicketBodyHandler {
+    fn handle_key(&self, key: KeyEvent) -> InputResult {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollDown))
             }
-            Action::NavigateUp => {
-                // k / Up: scroll one line backward.
-                self.scroll_up(1);
-                ScreenResult::Consumed
+            (KeyCode::Char('k'), KeyModifiers::NONE) | (KeyCode::Up, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyScrollUp))
             }
-            Action::PageRight => {
-                // Ctrl-F: page forward by one full pane height.
-                let page = self.last_body_height.get().max(1);
-                let total = self.last_total_lines.get();
-                self.scroll_down(page, total, page);
-                ScreenResult::Consumed
+            (KeyCode::Char('l'), KeyModifiers::NONE) | (KeyCode::Right, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyPageDown))
             }
-            Action::PageLeft => {
-                // Ctrl-B: page backward by one full pane height.
-                let page = self.last_body_height.get().max(1);
-                self.scroll_up(page);
-                ScreenResult::Consumed
+            (KeyCode::Char('h'), KeyModifiers::NONE) | (KeyCode::Left, KeyModifiers::NONE) => {
+                InputResult::Capture(Msg::Nav(NavMsg::BodyPageUp))
             }
-            _ => ScreenResult::Ignored,
+            _ => InputResult::Bubble,
         }
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        let chunks = Layout::vertical([
-            Constraint::Length(1), // header
-            Constraint::Min(1),    // body
-        ])
-        .split(area);
-
-        render_header(&self.ticket_id, &self.title, chunks[0], buf, ctx);
-        render_body_pane(self, chunks[1], buf, ctx);
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
+    fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: keymap.combined_label(&Action::PageLeft, &Action::PageRight),
-                description: "Page".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.combined_label(&Action::NavigateUp, &Action::NavigateDown),
+                key_label: "j/k".to_string(),
                 description: "Scroll".to_string(),
                 common: true,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::Back),
-                description: "Back".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::Quit),
-                description: "Quit".to_string(),
+                key_label: "h/l".to_string(),
+                description: "Page".to_string(),
                 common: true,
             },
         ]
     }
 
-    fn on_data(&mut self, _payload: &DataPayload) {}
-
-    fn needs_data(&self) -> bool {
-        false
+    fn name(&self) -> &str {
+        "ticket_body"
     }
-
-    fn mark_stale(&mut self) {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
 
-    fn make_screen(body: &str) -> TicketBodyScreen {
-        TicketBodyScreen::new(
+    fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    // ── init_body_model ────────────────────────────────────────────────
+
+    #[test]
+    fn init_creates_body_model() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
             "ur-test".to_string(),
-            "Test Ticket".to_string(),
-            body.to_string(),
-        )
+            "Title".to_string(),
+            "Body text".to_string(),
+        );
+        assert!(model.ticket_body.is_some());
+        let bm = model.ticket_body.as_ref().unwrap();
+        assert_eq!(bm.ticket_id, "ur-test");
+        assert_eq!(bm.title, "Title");
+        assert_eq!(bm.body, "Body text");
+        assert_eq!(bm.scroll_offset, 0);
     }
 
-    // ── scroll_offset initialization ───────────────────────────────────────
+    // ── scroll functions ───────────────────────────────────────────────
 
     #[test]
-    fn new_screen_starts_at_zero_offset() {
-        let screen = make_screen("hello");
-        assert_eq!(screen.scroll_offset(), 0);
+    fn scroll_down_increments_offset() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+        model.ticket_body.as_ref().unwrap().last_total_lines.set(50);
+        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+
+        body_scroll_down(&mut model, 3);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 3);
     }
 
-    // ── scroll_up clamping ─────────────────────────────────────────────────
-
     #[test]
-    fn scroll_up_does_not_underflow() {
-        let mut screen = make_screen("line one\nline two\n");
-        screen.scroll_up(5);
-        assert_eq!(screen.scroll_offset(), 0);
+    fn scroll_down_clamps_to_max() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+        model.ticket_body.as_ref().unwrap().last_total_lines.set(5);
+        model.ticket_body.as_ref().unwrap().last_body_height.set(3);
+
+        body_scroll_down(&mut model, 100);
+        // max_offset = 5 - 3 = 2
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 2);
     }
 
     #[test]
     fn scroll_up_decrements_offset() {
-        let mut screen = make_screen("line one\n");
-        screen.scroll_offset = 10;
-        screen.scroll_up(3);
-        assert_eq!(screen.scroll_offset(), 7);
-    }
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+        model.ticket_body.as_mut().unwrap().scroll_offset = 5;
 
-    // ── scroll_down clamping ───────────────────────────────────────────────
-
-    #[test]
-    fn scroll_down_clamps_to_max_offset() {
-        let mut screen = make_screen("a\nb\nc\n");
-        // content_lines=3, visible_height=2 → max_offset=1
-        screen.scroll_down(100, 3, 2);
-        assert_eq!(screen.scroll_offset(), 1);
+        body_scroll_up(&mut model, 2);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 3);
     }
 
     #[test]
-    fn scroll_down_stops_at_last_visible_line() {
-        let mut screen = make_screen("a\n");
-        // content_lines=1, visible_height=1 → max_offset=0
-        screen.scroll_down(10, 1, 1);
-        assert_eq!(screen.scroll_offset(), 0);
+    fn scroll_up_clamps_to_zero() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+
+        body_scroll_up(&mut model, 10);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 0);
     }
 
     #[test]
-    fn scroll_down_increments_offset() {
-        let mut screen = make_screen("a\nb\nc\nd\ne\n");
-        // content_lines=5, visible_height=2 → max_offset=3
-        screen.scroll_down(2, 5, 2);
-        assert_eq!(screen.scroll_offset(), 2);
+    fn page_down_scrolls_by_height() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+        model
+            .ticket_body
+            .as_ref()
+            .unwrap()
+            .last_total_lines
+            .set(100);
+        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+
+        body_page_down(&mut model);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 10);
     }
 
     #[test]
-    fn scroll_down_does_not_overflow_past_end() {
-        let mut screen = make_screen("a\nb\n");
-        // content_lines=2, visible_height=2 → max_offset=0; any delta stays at 0
-        screen.scroll_down(5, 2, 2);
-        assert_eq!(screen.scroll_offset(), 0);
+    fn page_up_scrolls_by_height() {
+        let mut model = Model::initial();
+        init_body_model(
+            &mut model,
+            "ur-test".to_string(),
+            "T".to_string(),
+            "body".to_string(),
+        );
+        model.ticket_body.as_mut().unwrap().scroll_offset = 15;
+        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+
+        body_page_up(&mut model);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 5);
     }
 
-    // ── action handling ────────────────────────────────────────────────────
+    // ── input handler ──────────────────────────────────────────────────
 
     #[test]
-    fn back_action_returns_pop() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::Back),
-            ScreenResult::Pop
-        ));
-    }
-
-    #[test]
-    fn quit_action_returns_quit() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::Quit),
-            ScreenResult::Quit
-        ));
+    fn handler_j_captures_scroll_down() {
+        let handler = TicketBodyHandler;
+        let key = make_key(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
-    fn navigate_down_returns_consumed() {
-        let mut screen = make_screen("a\nb\nc\n");
-        assert!(matches!(
-            screen.handle_action(Action::NavigateDown),
-            ScreenResult::Consumed
-        ));
+    fn handler_k_captures_scroll_up() {
+        let handler = TicketBodyHandler;
+        let key = make_key(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
-    fn navigate_up_returns_consumed() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::NavigateUp),
-            ScreenResult::Consumed
-        ));
+    fn handler_l_captures_page_down() {
+        let handler = TicketBodyHandler;
+        let key = make_key(KeyCode::Char('l'), KeyModifiers::NONE);
+        assert!(matches!(handler.handle_key(key), InputResult::Capture(_)));
     }
 
     #[test]
-    fn page_right_returns_consumed() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::PageRight),
-            ScreenResult::Consumed
-        ));
+    fn handler_unknown_bubbles() {
+        let handler = TicketBodyHandler;
+        let key = make_key(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert!(matches!(handler.handle_key(key), InputResult::Bubble));
     }
 
     #[test]
-    fn page_left_returns_consumed() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::PageLeft),
-            ScreenResult::Consumed
-        ));
+    fn handler_footer_has_scroll_and_page() {
+        let handler = TicketBodyHandler;
+        let commands = handler.footer_commands();
+        assert!(commands.iter().any(|c| c.description == "Scroll"));
+        assert!(commands.iter().any(|c| c.description == "Page"));
     }
 
     #[test]
-    fn unhandled_action_returns_ignored() {
-        let mut screen = make_screen("body");
-        assert!(matches!(
-            screen.handle_action(Action::Refresh),
-            ScreenResult::Ignored
-        ));
-    }
-
-    // ── navigate_up clamping via action ───────────────────────────────────
-
-    #[test]
-    fn navigate_up_at_zero_stays_zero() {
-        let mut screen = make_screen("body");
-        assert_eq!(screen.scroll_offset(), 0);
-        screen.handle_action(Action::NavigateUp);
-        assert_eq!(screen.scroll_offset(), 0);
-    }
-
-    // ── page scroll clamping via last_total_lines ──────────────────────────
-
-    #[test]
-    fn page_right_clamps_to_content() {
-        let mut screen = make_screen("a\nb\nc\n");
-        // Seed: 3 total lines, body height 2 → max_offset = 1
-        screen.last_total_lines.set(3);
-        screen.last_body_height.set(2);
-
-        screen.handle_action(Action::PageRight);
-        // scroll_down(2, 3, 2) → max_offset = 3-2 = 1
-        assert_eq!(screen.scroll_offset(), 1);
-    }
-
-    #[test]
-    fn page_left_clamps_to_zero() {
-        let mut screen = make_screen("a\nb\nc\n");
-        screen.last_body_height.set(5);
-        // Even with large page, should not go below 0
-        screen.handle_action(Action::PageLeft);
-        assert_eq!(screen.scroll_offset(), 0);
-    }
-
-    // ── needs_data / mark_stale ────────────────────────────────────────────
-
-    #[test]
-    fn needs_data_is_false() {
-        let screen = make_screen("body");
-        assert!(!screen.needs_data());
-    }
-
-    #[test]
-    fn mark_stale_is_noop() {
-        let mut screen = make_screen("body");
-        screen.mark_stale();
-        assert!(!screen.needs_data());
-    }
-
-    // ── footer_commands ────────────────────────────────────────────────────
-
-    #[test]
-    fn footer_has_back_and_quit() {
-        let screen = make_screen("body");
-        let keymap = Keymap::default();
-        let cmds = screen.footer_commands(&keymap);
-        assert!(cmds.iter().any(|c| c.description == "Back"));
-        assert!(cmds.iter().any(|c| c.description == "Quit"));
-    }
-
-    #[test]
-    fn footer_has_page_and_scroll() {
-        let screen = make_screen("body");
-        let keymap = Keymap::default();
-        let cmds = screen.footer_commands(&keymap);
-        assert!(cmds.iter().any(|c| c.description == "Page"));
-        assert!(cmds.iter().any(|c| c.description == "Scroll"));
+    fn handler_name() {
+        let handler = TicketBodyHandler;
+        assert_eq!(handler.name(), "ticket_body");
     }
 }

@@ -1,444 +1,88 @@
-use std::time::Instant;
-
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
-
-use tracing::debug;
 use ur_markdown::{MarkdownColors, render_markdown};
-use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
 
-use crate::pages::{TicketActivitiesScreen, TicketBodyScreen};
-
+use crate::cmd::{Cmd, FetchCmd};
+use crate::components::MiniProgressBar;
+use crate::components::ticket_table::render_ticket_table;
 use crate::context::TuiContext;
-use crate::data::{ActionResult, DataPayload};
-use crate::keymap::{Action, Keymap};
-use crate::page::{Banner, BannerVariant, FooterCommand, StatusMessage};
-use crate::pages::tickets::{build_ticket_goto_targets, goto_target_to_screen_result};
-use crate::screen::{Screen, ScreenResult};
-use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState};
-use crate::widgets::priority_picker::{PriorityPickerResult, PriorityPickerState};
-use crate::widgets::{MiniProgressBar, ThemedTable};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{LoadState, Model, TicketDetailData};
+use crate::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
+use crate::navigation::PageId;
 
-/// Active overlay on the ticket detail page.
-enum Overlay {
-    GotoMenu(GotoMenuState),
-    PriorityPicker(PriorityPickerState),
-}
-
-/// Result from handling an overlay key event on the detail page.
-pub enum DetailOverlayAction {
-    /// No action needed by the caller.
-    None,
-    /// User selected a priority for the given ticket.
-    SetPriority { ticket_id: String, priority: i64 },
-    /// Navigate to a screen (from goto menu).
-    Screen(ScreenResult),
-}
-
-/// Internal data-lifecycle state for ticket detail.
-#[derive(Debug, Clone)]
-enum DataState {
-    /// Waiting for detail data.
-    Loading,
-    /// Data fetched successfully. `detail` is boxed to reduce enum size.
-    Loaded {
-        detail: Box<GetTicketResponse>,
-        children: Vec<Ticket>,
-        total_children: i32,
-    },
-    /// Fetch failed with this message.
-    Error(String),
-}
-
-/// Screen showing the detail view for a single ticket.
+/// Render the ticket detail page into the given content area.
 ///
-/// Pushed onto the Tickets tab stack when `Action::Select` fires on a ticket.
-/// Layout:
-///   1. Header line (1 row): ID, title (truncated), status, progress bar.
-///   2. Body preview (5 rows): first 4 lines of markdown-styled body, "..." if truncated.
-///   3. Child table (min 3 rows): ThemedTable with same columns as the tickets list.
-pub struct TicketDetailScreen {
-    /// ID of the ticket being shown.
-    ticket_id: String,
-    /// Project the ticket belongs to (for create-child pre-fill).
-    project: String,
-    data_state: DataState,
-    /// Selected row in the child table.
-    selected_row: usize,
-    /// Current page within the child table (server-side pagination).
-    current_page: usize,
-    page_size: usize,
-    active_banner: Option<Banner>,
-    active_status: Option<StatusMessage>,
-    /// Active overlay state.
-    overlay: Option<Overlay>,
-    /// When false (default), closed children are hidden from the child list.
-    show_closed: bool,
-}
+/// Layout: header (1 line) + body preview (5 lines) + children table (fill).
+pub fn render_ticket_detail(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+    let Some(ref detail_model) = model.ticket_detail else {
+        render_message(area, buf, ctx, "No ticket selected");
+        return;
+    };
 
-impl TicketDetailScreen {
-    /// Create a new detail screen for the given ticket ID and project.
-    pub fn new(ticket_id: String, project: String) -> Self {
-        Self {
-            ticket_id,
-            project,
-            data_state: DataState::Loading,
-            selected_row: 0,
-            current_page: 0,
-            page_size: 20,
-            active_banner: None,
-            active_status: None,
-            overlay: None,
-            show_closed: false,
+    match &detail_model.data {
+        LoadState::NotLoaded | LoadState::Loading => {
+            render_message(area, buf, ctx, "Loading...");
         }
-    }
-
-    /// Returns the ticket ID this screen is displaying.
-    pub fn ticket_id(&self) -> &str {
-        &self.ticket_id
-    }
-
-    /// Returns the project key for this ticket.
-    pub fn project(&self) -> &str {
-        &self.project
-    }
-
-    /// Returns the pagination offset for child fetching.
-    pub fn child_offset(&self) -> i32 {
-        (self.current_page * self.page_size) as i32
-    }
-
-    /// Returns the page size for child fetching.
-    pub fn child_page_size(&self) -> i32 {
-        self.page_size as i32
-    }
-
-    /// Returns a status filter for child fetching: excludes closed unless toggled.
-    pub fn child_status_filter(&self) -> Option<String> {
-        if self.show_closed {
-            None
-        } else {
-            Some("open,in_progress".to_string())
+        LoadState::Error(msg) => {
+            render_message(area, buf, ctx, &format!("Error: {msg}"));
         }
-    }
-
-    /// Update page size based on available area, reserving header (1) + preview (5).
-    pub fn update_child_page_size(&mut self, area_height: u16) {
-        let chrome = 3u16; // table header + borders
-        let reserved = 6u16; // header line + body preview
-        let available = area_height.saturating_sub(reserved + chrome) as usize;
-        if available > 0 && available != self.page_size {
-            self.page_size = available;
-            self.current_page = 0;
-            self.selected_row = 0;
-            self.mark_stale();
+        LoadState::Loaded(data) => {
+            render_loaded_detail(area, buf, ctx, model, data);
         }
-    }
-
-    /// Handle action result for banners.
-    pub fn on_action_result(&mut self, result: &ActionResult) {
-        self.active_status = None;
-        match &result.result {
-            Ok(msg) => {
-                if !result.silent_on_success {
-                    self.active_banner = Some(Banner {
-                        message: msg.clone(),
-                        variant: BannerVariant::Success,
-                        created_at: Instant::now(),
-                    });
-                }
-            }
-            Err(msg) => {
-                self.active_banner = Some(Banner {
-                    message: msg.clone(),
-                    variant: BannerVariant::Error,
-                    created_at: Instant::now(),
-                });
-            }
-        }
-    }
-
-    fn total_pages(&self) -> usize {
-        let total = match &self.data_state {
-            DataState::Loaded { total_children, .. } => *total_children as usize,
-            _ => 0,
-        };
-        if total == 0 || self.page_size == 0 {
-            return 1;
-        }
-        total.div_ceil(self.page_size)
-    }
-
-    fn visible_children(&self) -> &[Ticket] {
-        match &self.data_state {
-            DataState::Loaded { children, .. } => children,
-            _ => &[],
-        }
-    }
-
-    fn selected_child(&self) -> Option<&Ticket> {
-        self.visible_children().get(self.selected_row)
-    }
-
-    /// Returns the ticket ID of the currently selected child row.
-    pub fn selected_child_id(&self) -> Option<String> {
-        self.selected_child().map(|t| t.id.clone())
-    }
-
-    fn navigate_up(&mut self) {
-        if self.selected_row > 0 {
-            self.selected_row -= 1;
-        }
-    }
-
-    fn navigate_down(&mut self) {
-        let count = self.visible_children().len();
-        if count > 0 && self.selected_row < count - 1 {
-            self.selected_row += 1;
-        }
-    }
-
-    fn page_left(&mut self) {
-        if self.current_page > 0 {
-            self.current_page -= 1;
-            self.selected_row = 0;
-            self.mark_stale();
-        }
-    }
-
-    fn page_right(&mut self) {
-        if self.current_page + 1 < self.total_pages() {
-            self.current_page += 1;
-            self.selected_row = 0;
-            self.mark_stale();
-        }
-    }
-
-    fn clamp_selection(&mut self) {
-        let count = self.visible_children().len();
-        if count == 0 {
-            self.selected_row = 0;
-        } else if self.selected_row >= count {
-            self.selected_row = count.saturating_sub(1);
-        }
-    }
-
-    fn dispatch_label(ticket: &Ticket) -> String {
-        if !ticket.dispatch_status.is_empty() {
-            "Dispatched".to_string()
-        } else if ticket.status == "closed" {
-            "Closed".to_string()
-        } else {
-            "Open".to_string()
-        }
-    }
-
-    fn ticket_progress(ticket: &Ticket) -> (u32, u32) {
-        if ticket.children_total > 0 {
-            (
-                ticket.children_completed as u32,
-                ticket.children_total as u32,
-            )
-        } else if ticket.status == "closed" {
-            (1, 1)
-        } else {
-            (0, 1)
-        }
-    }
-
-    /// Returns true if an overlay is currently active.
-    pub fn has_overlay(&self) -> bool {
-        self.overlay.is_some()
-    }
-
-    /// Close any active overlay.
-    pub fn close_overlay(&mut self) {
-        self.overlay = None;
-    }
-
-    /// Handle a raw key event when an overlay is active.
-    /// Returns a `DetailOverlayAction` indicating what the caller should do.
-    pub fn handle_overlay_key(&mut self, key: crossterm::event::KeyEvent) -> DetailOverlayAction {
-        match self.overlay {
-            Some(Overlay::GotoMenu(ref mut menu)) => match menu.handle_key(key) {
-                GotoMenuResult::Selected(target) => {
-                    self.overlay = None;
-                    DetailOverlayAction::Screen(goto_target_to_screen_result(&target))
-                }
-                GotoMenuResult::Close => {
-                    self.overlay = None;
-                    DetailOverlayAction::None
-                }
-                GotoMenuResult::Consumed => DetailOverlayAction::None,
-            },
-            Some(Overlay::PriorityPicker(ref mut picker)) => match picker.handle_key(key) {
-                PriorityPickerResult::Consumed => DetailOverlayAction::None,
-                PriorityPickerResult::Close => {
-                    self.overlay = None;
-                    DetailOverlayAction::None
-                }
-                PriorityPickerResult::Selected(priority) => {
-                    let ticket_id = self.selected_child_id();
-                    self.overlay = None;
-                    match ticket_id {
-                        Some(id) => DetailOverlayAction::SetPriority {
-                            ticket_id: id,
-                            priority,
-                        },
-                        None => DetailOverlayAction::None,
-                    }
-                }
-            },
-            None => DetailOverlayAction::None,
-        }
-    }
-
-    /// Push a `TicketBodyScreen` if the ticket data is loaded, otherwise consume.
-    fn push_body_screen(&self) -> ScreenResult {
-        let DataState::Loaded { detail, .. } = &self.data_state else {
-            return ScreenResult::Consumed;
-        };
-        let Some(ticket) = &detail.ticket else {
-            return ScreenResult::Consumed;
-        };
-        let body_screen =
-            TicketBodyScreen::new(ticket.id.clone(), ticket.title.clone(), ticket.body.clone());
-        ScreenResult::Push(Box::new(body_screen))
-    }
-
-    /// Push a `TicketActivitiesScreen` if the ticket data is loaded, otherwise consume.
-    fn push_activities_screen(&self) -> ScreenResult {
-        let DataState::Loaded { detail, .. } = &self.data_state else {
-            return ScreenResult::Consumed;
-        };
-        let Some(ticket) = &detail.ticket else {
-            return ScreenResult::Consumed;
-        };
-        let activities_screen =
-            TicketActivitiesScreen::new(ticket.id.clone(), ticket.title.clone());
-        ScreenResult::Push(Box::new(activities_screen))
-    }
-
-    fn build_child_rows(&self) -> Vec<Vec<String>> {
-        self.visible_children()
-            .iter()
-            .map(|t| {
-                vec![
-                    t.id.clone(),
-                    Self::dispatch_label(t),
-                    t.priority.to_string(),
-                    String::new(), // progress count placeholder
-                    String::new(), // progress bar placeholder
-                    t.title.clone(),
-                ]
-            })
-            .collect()
-    }
-
-    fn render_message(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext, msg: &str) {
-        let style = Style::default()
-            .fg(ctx.theme.base_content)
-            .bg(ctx.theme.base_100);
-        Paragraph::new(Line::raw(msg))
-            .style(style)
-            .render(area, buf);
     }
 }
 
-/// Column index of the progress count label in the child table.
-const CHILD_PROGRESS_COUNT_COL: usize = 3;
-/// Column index of the progress bar in the child table.
-const CHILD_PROGRESS_BAR_COL: usize = 4;
-
-/// Render mini progress bars over the child table placeholders.
-fn render_child_progress_bars(
-    screen: &TicketDetailScreen,
+/// Render a loaded ticket detail with header, body preview, and children table.
+fn render_loaded_detail(
     area: Rect,
     buf: &mut Buffer,
     ctx: &TuiContext,
-    widths: &[Constraint],
-    scroll_offset: usize,
+    model: &Model,
+    data: &TicketDetailData,
 ) {
-    use ratatui::layout::Layout;
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // header line
+        Constraint::Length(5), // body preview (4 lines + 1 for "...")
+        Constraint::Min(3),    // children table
+    ])
+    .split(area);
 
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-
-    let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
-    let bar_area = col_areas.get(CHILD_PROGRESS_BAR_COL);
-    let count_area = col_areas.get(CHILD_PROGRESS_COUNT_COL);
-
-    if bar_area.is_none() && count_area.is_none() {
-        return;
+    if let Some(ticket) = &data.detail.ticket {
+        render_ticket_header(ticket, chunks[0], buf, ctx);
+        render_body_preview(&ticket.body, chunks[1], buf, ctx);
+    } else {
+        let ticket_id = &model
+            .ticket_detail
+            .as_ref()
+            .map_or("unknown", |d| &d.ticket_id);
+        render_message(chunks[0], buf, ctx, ticket_id);
     }
 
-    let data_start_y = inner.y + 1;
-    let children = screen.visible_children();
-
-    for (i, ticket) in children.iter().enumerate().skip(scroll_offset) {
-        let row_y = data_start_y + (i - scroll_offset) as u16;
-        if row_y >= inner.y + inner.height {
-            break;
-        }
-
-        let (completed, total) = TicketDetailScreen::ticket_progress(ticket);
-        let is_selected = i == screen.selected_row;
-        let row_bg = if is_selected {
-            ctx.theme.primary
-        } else if i % 2 == 0 {
-            ctx.theme.base_100
+    // Render children table using the TicketTable component
+    if let Some(ref detail_model) = model.ticket_detail {
+        if detail_model.children_table.tickets.is_empty()
+            && !detail_model.data.is_loading()
+            && detail_model.data.is_loaded()
+        {
+            render_message(chunks[2], buf, ctx, "No children");
         } else {
-            ctx.theme.base_200
-        };
-        let row_fg = if is_selected {
-            ctx.theme.primary_content
-        } else {
-            ctx.theme.base_content
-        };
-
-        let bar = MiniProgressBar { completed, total };
-
-        if let Some(ba) = bar_area {
-            let cell = Rect {
-                x: ba.x,
-                y: row_y,
-                width: ba.width,
-                height: 1,
-            };
-            bar.render_bar(cell, buf, &ctx.theme, row_bg);
-        }
-
-        if let Some(ca) = count_area {
-            let cell = Rect {
-                x: ca.x,
-                y: row_y,
-                width: ca.width,
-                height: 1,
-            };
-            bar.render_label_styled(cell, buf, row_fg, row_bg);
+            render_ticket_table(&detail_model.children_table, chunks[2], buf, ctx);
         }
     }
 }
 
-/// Build `MarkdownColors` from the TUI theme.
-fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
-    MarkdownColors {
-        text: ctx.theme.base_content,
-        heading: ctx.theme.accent,
-        code: ctx.theme.warning,
-        dim: ctx.theme.neutral_content,
-    }
-}
-
-/// Render the header line: ID, title (truncated), status label, progress bar.
-fn render_ticket_header(ticket: &Ticket, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+/// Render the ticket header: ID, title (truncated), status, and progress bar.
+fn render_ticket_header(
+    ticket: &ur_rpc::proto::ticket::Ticket,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+) {
     let id_style = Style::default().fg(ctx.theme.accent);
     let title_style = Style::default().fg(ctx.theme.base_content);
     let status_style = Style::default().fg(ctx.theme.neutral_content);
@@ -460,16 +104,7 @@ fn render_ticket_header(ticket: &Ticket, area: Rect, buf: &mut Buffer, ctx: &Tui
     let title_budget = (header_text_width as usize)
         .saturating_sub(id_part.len() + status_part.len())
         .max(1);
-    let title_truncated = if ticket.title.chars().count() > title_budget {
-        let s: String = ticket
-            .title
-            .chars()
-            .take(title_budget.saturating_sub(1))
-            .collect();
-        format!("{s}…")
-    } else {
-        ticket.title.clone()
-    };
+    let title_truncated = truncate_title(&ticket.title, title_budget);
 
     let spans = vec![
         Span::styled(id_part, id_style),
@@ -486,20 +121,8 @@ fn render_ticket_header(ticket: &Ticket, area: Rect, buf: &mut Buffer, ctx: &Tui
     };
     Paragraph::new(line).render(text_area, buf);
 
-    // Render the progress bar on the right.
-    let (completed, total) = {
-        if ticket.children_total > 0 {
-            (
-                ticket.children_completed as u32,
-                ticket.children_total as u32,
-            )
-        } else if ticket.status == "closed" {
-            (1, 1)
-        } else {
-            (0, 1)
-        }
-    };
-
+    // Render the progress bar on the right
+    let (completed, total) = crate::components::ticket_table::ticket_progress(ticket);
     let bar = MiniProgressBar { completed, total };
     let bar_area = Rect {
         x: area.x + header_text_width + 1,
@@ -508,6 +131,16 @@ fn render_ticket_header(ticket: &Ticket, area: Rect, buf: &mut Buffer, ctx: &Tui
         height: 1,
     };
     bar.render_bar(bar_area, buf, &ctx.theme, ctx.theme.base_100);
+}
+
+/// Truncate a title to fit within the given budget.
+fn truncate_title(title: &str, budget: usize) -> String {
+    if title.chars().count() > budget {
+        let s: String = title.chars().take(budget.saturating_sub(1)).collect();
+        format!("{s}\u{2026}")
+    } else {
+        title.to_string()
+    }
 }
 
 /// Render the body preview: up to 4 rendered markdown lines, with "..." if truncated.
@@ -519,372 +152,595 @@ fn render_body_preview(body: &str, area: Rect, buf: &mut Buffer, ctx: &TuiContex
     let truncated = all_lines.len() > MAX_LINES;
     let preview_lines: Vec<Line<'static>> = all_lines.into_iter().take(MAX_LINES).collect();
 
-    let mut display_lines = preview_lines;
-    if truncated {
-        display_lines.push(Line::from(Span::styled(
-            "...",
-            Style::default().fg(ctx.theme.neutral_content),
-        )));
-    }
+    let style = Style::default()
+        .fg(ctx.theme.base_content)
+        .bg(ctx.theme.base_100);
+    Paragraph::new(preview_lines).style(style).render(area, buf);
 
-    let bg_style = Style::default().bg(ctx.theme.base_200);
-    let para = Paragraph::new(display_lines).style(bg_style);
-    para.render(area, buf);
+    if truncated && area.height > MAX_LINES as u16 {
+        let dots_y = area.y + MAX_LINES as u16;
+        let dots_style = Style::default()
+            .fg(ctx.theme.neutral_content)
+            .bg(ctx.theme.base_100);
+        Paragraph::new(Line::raw("...")).style(dots_style).render(
+            Rect {
+                x: area.x,
+                y: dots_y,
+                width: area.width,
+                height: 1,
+            },
+            buf,
+        );
+    }
 }
 
-/// Render the child table with navigation.
-fn render_child_table(screen: &TicketDetailScreen, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-    let total_children = match &screen.data_state {
-        DataState::Loaded { total_children, .. } => *total_children,
-        _ => 0,
-    };
+/// Build `MarkdownColors` from the TUI theme.
+fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
+    MarkdownColors {
+        text: ctx.theme.base_content,
+        heading: ctx.theme.accent,
+        code: ctx.theme.warning,
+        dim: ctx.theme.secondary,
+    }
+}
 
-    let rows = screen.build_child_rows();
-    let page_info = if total_children > 0 {
-        Some(format!(
-            " Page {}/{} ({} children) ",
-            screen.current_page + 1,
-            screen.total_pages(),
-            total_children,
-        ))
-    } else {
+/// Render a centered message for loading/error/empty states.
+fn render_message(area: Rect, buf: &mut Buffer, ctx: &TuiContext, msg: &str) {
+    let style = Style::default()
+        .fg(ctx.theme.base_content)
+        .bg(ctx.theme.base_100);
+    Paragraph::new(Line::raw(msg))
+        .style(style)
+        .render(area, buf);
+}
+
+/// Handle ticket detail navigation messages.
+///
+/// Delegates navigation (up/down/page) to the children TicketTableModel,
+/// issues fetch commands when pagination changes, and pushes nested
+/// TicketDetail on selection.
+pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    match nav_msg {
+        NavMsg::TicketDetailNavigate { delta } => {
+            if let Some(ref mut detail) = model.ticket_detail {
+                if delta > 0 {
+                    detail.children_table.navigate_down();
+                } else {
+                    detail.children_table.navigate_up();
+                }
+            }
+            (model, vec![])
+        }
+        NavMsg::TicketDetailPageRight => {
+            if let Some(ref mut detail) = model.ticket_detail
+                && detail.children_table.page_right()
+            {
+                let cmd = build_detail_fetch_cmd(&model);
+                return (model, vec![cmd]);
+            }
+            (model, vec![])
+        }
+        NavMsg::TicketDetailPageLeft => {
+            if let Some(ref mut detail) = model.ticket_detail
+                && detail.children_table.page_left()
+            {
+                let cmd = build_detail_fetch_cmd(&model);
+                return (model, vec![cmd]);
+            }
+            (model, vec![])
+        }
+        NavMsg::TicketDetailRefresh => {
+            if let Some(ref mut detail) = model.ticket_detail {
+                detail.data = LoadState::Loading;
+            }
+            let cmd = build_detail_fetch_cmd(&model);
+            (model, vec![cmd])
+        }
+        NavMsg::TicketDetailSelect => handle_detail_select(model),
+        NavMsg::TicketDetailPriority => handle_detail_priority(model),
+        NavMsg::TicketDetailType => handle_detail_type(model),
+        NavMsg::TicketDetailClose => handle_detail_close(model),
+        NavMsg::TicketDetailOpen => handle_detail_open(model),
+        NavMsg::TicketDetailDispatch => handle_detail_dispatch(model),
+        NavMsg::TicketDetailDispatchAll => handle_detail_dispatch_all(model),
+        NavMsg::TicketDetailRedrive => handle_detail_redrive(model),
+        NavMsg::TicketDetailGoto => handle_detail_goto(model),
+        NavMsg::TicketDetailToggleClosed => handle_toggle_closed(model),
+        NavMsg::TicketDetailOpenDescription => handle_open_description(model),
+        NavMsg::TicketDetailOpenActivities => handle_open_activities(model),
+        NavMsg::TicketDetailCreateChild => handle_create_child(model),
+        NavMsg::TicketDetailEdit => handle_edit_parent(model),
+        _ => (model, vec![]),
+    }
+}
+
+/// Build a fetch command for the ticket detail using the current children
+/// table pagination and filter state.
+pub fn build_detail_fetch_cmd(model: &Model) -> Cmd {
+    let Some(ref detail) = model.ticket_detail else {
+        return Cmd::None;
+    };
+    let table = &detail.children_table;
+    let child_status_filter = if detail.show_closed {
         None
+    } else {
+        Some("open,in_progress".to_string())
     };
-
-    let widths = vec![
-        Constraint::Length(12),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(10),
-        Constraint::Fill(1),
-    ];
-    let table = ThemedTable {
-        headers: vec!["ID", "Status", "P", "Progress", "", "Title"],
-        rows,
-        selected: Some(screen.selected_row),
-        widths: widths.clone(),
-        page_info,
-    };
-    let scroll_offset = table.render(area, buf, ctx);
-
-    render_child_progress_bars(screen, area, buf, ctx, &widths, scroll_offset);
+    Cmd::batch(vec![
+        Cmd::Fetch(FetchCmd::TicketDetail {
+            ticket_id: detail.ticket_id.clone(),
+            child_page_size: Some(table.page_size as i32),
+            child_offset: Some((table.current_page * table.page_size) as i32),
+            child_status_filter,
+        }),
+        Cmd::Fetch(FetchCmd::Activities {
+            ticket_id: detail.ticket_id.clone(),
+            author_filter: None,
+        }),
+    ])
 }
 
-impl Screen for TicketDetailScreen {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match action {
-            Action::Back => ScreenResult::Pop,
-            Action::Quit => ScreenResult::Quit,
-            Action::NavigateUp => {
-                self.navigate_up();
-                ScreenResult::Consumed
-            }
-            Action::NavigateDown => {
-                self.navigate_down();
-                ScreenResult::Consumed
-            }
-            Action::PageLeft => {
-                self.page_left();
-                ScreenResult::Consumed
-            }
-            Action::PageRight => {
-                self.page_right();
-                ScreenResult::Consumed
-            }
-            Action::Refresh => {
-                self.mark_stale();
-                self.active_status = Some(StatusMessage {
-                    text: "Refreshing...".to_string(),
-                    dismissable: true,
-                });
-                ScreenResult::Consumed
-            }
-            // d → push TicketBodyScreen with the loaded ticket's body.
-            Action::OpenDescription => self.push_body_screen(),
-            // a → push TicketActivitiesScreen.
-            Action::OpenActivities => self.push_activities_screen(),
-            // Space → drill down into selected child
-            Action::Select => {
-                if let Some(child) = self.selected_child() {
-                    let child_id = child.id.clone();
-                    let child_project = child.project.clone();
-                    let child_screen = TicketDetailScreen::new(child_id, child_project);
-                    ScreenResult::Push(Box::new(child_screen))
-                } else {
-                    ScreenResult::Consumed
-                }
-            }
-            Action::Goto => {
-                if let Some(child_id) = self.selected_child_id() {
-                    self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(
-                        build_ticket_goto_targets(&child_id),
-                    )));
-                }
-                ScreenResult::Consumed
-            }
-            Action::SetPriority => {
-                if let Some(child) = self.selected_child() {
-                    self.overlay = Some(Overlay::PriorityPicker(PriorityPickerState::new(
-                        child.priority,
-                    )));
-                }
-                ScreenResult::Consumed
-            }
-            // Ticket commands on selected child (handled by app via dispatch; we just consume)
-            Action::Dispatch
-            | Action::DispatchAll
-            | Action::LaunchDesign
-            | Action::CloseTicket
-            | Action::CancelFlow
-            | Action::CreateTicket => ScreenResult::Consumed,
-            Action::Filter => {
-                self.show_closed = !self.show_closed;
-                self.current_page = 0;
-                self.selected_row = 0;
-                self.mark_stale();
-                ScreenResult::Consumed
-            }
-            _ => ScreenResult::Ignored,
+/// Push a nested TicketDetail for the selected child.
+fn handle_detail_select(mut model: Model) -> (Model, Vec<Cmd>) {
+    let child_id = model
+        .ticket_detail
+        .as_ref()
+        .and_then(|d| d.children_table.selected_ticket())
+        .map(|t| t.id.clone());
+
+    if let Some(ticket_id) = child_id {
+        let page = PageId::TicketDetail { ticket_id };
+        let mut nav = std::mem::replace(
+            &mut model.navigation_model,
+            crate::navigation::NavigationModel::initial(),
+        );
+        let cmds = nav.push(page, &mut model);
+        model.navigation_model = nav;
+        (model, cmds)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the priority picker for the selected child.
+fn handle_detail_priority(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenPriorityPicker {
+            ticket_id: ticket.id.clone(),
+            current_priority: ticket.priority,
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the type menu for the selected child.
+fn handle_detail_type(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenTypeMenu {
+            ticket_id: ticket.id.clone(),
+            current_type: ticket.ticket_type.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Close the selected child, prompting for force close if it has open children.
+fn handle_detail_close(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let open_children = ticket.children_total - ticket.children_completed;
+        if open_children > 0 {
+            let msg = Msg::Overlay(OverlayMsg::OpenForceCloseConfirm {
+                ticket_id: ticket.id.clone(),
+                open_children,
+            });
+            crate::update::update(model, msg)
+        } else {
+            let msg = Msg::TicketOp(TicketOpMsg::Close {
+                ticket_id: ticket.id.clone(),
+            });
+            crate::update::update(model, msg)
         }
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Reopen the selected child.
+fn handle_detail_open(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let ticket_id = ticket.id.clone();
+        let msg = Msg::StatusShow(format!("Reopening {ticket_id}..."));
+        let (model, _) = crate::update::update(model, msg);
+        (model, vec![Cmd::TicketOp(TicketOpMsg::Close { ticket_id })])
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Dispatch the selected child, branching on ticket type:
+/// design tickets launch a design worker, all others dispatch a code worker.
+fn handle_detail_dispatch(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = if ticket.ticket_type == "design" {
+            Msg::TicketOp(TicketOpMsg::LaunchDesign {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        } else {
+            Msg::TicketOp(TicketOpMsg::Dispatch {
+                ticket_id: ticket.id.clone(),
+                project_key: ticket.project.clone(),
+                image_id: String::new(),
+            })
+        };
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Dispatch the parent ticket itself (dispatch all).
+fn handle_detail_dispatch_all(model: Model) -> (Model, Vec<Cmd>) {
+    let Some(ref detail) = model.ticket_detail else {
+        return (model, vec![]);
+    };
+    let ticket_id = detail.ticket_id.clone();
+    let project_key = detail
+        .data
+        .data()
+        .and_then(|d| d.detail.ticket.as_ref())
+        .map_or(String::new(), |t| t.project.clone());
+    let msg = Msg::TicketOp(TicketOpMsg::DispatchAll {
+        ticket_id,
+        project_key,
+        image_id: String::new(),
+    });
+    crate::update::update(model, msg)
+}
+
+/// Redrive the selected child's workflow.
+fn handle_detail_redrive(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::TicketOp(TicketOpMsg::Redrive {
+            ticket_id: ticket.id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the goto menu for the selected child.
+fn handle_detail_goto(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let targets = build_child_goto_targets(&ticket.id);
+        let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Toggle show/hide closed children filter.
+fn handle_toggle_closed(mut model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref mut detail) = model.ticket_detail {
+        detail.show_closed = !detail.show_closed;
+        detail.children_table.current_page = 0;
+        detail.children_table.selected_row = 0;
+        detail.data = LoadState::Loading;
+    }
+    let cmd = build_detail_fetch_cmd(&model);
+    (model, vec![cmd])
+}
+
+/// Open the description (body) of the parent ticket.
+fn handle_open_description(mut model: Model) -> (Model, Vec<Cmd>) {
+    let page = model.ticket_detail.as_ref().and_then(|d| {
+        d.data.data().and_then(|data| {
+            data.detail.ticket.as_ref().map(|t| PageId::TicketBody {
+                ticket_id: t.id.clone(),
+                title: t.title.clone(),
+                body: t.body.clone(),
+            })
+        })
+    });
+
+    if let Some(page) = page {
+        let mut nav = std::mem::replace(
+            &mut model.navigation_model,
+            crate::navigation::NavigationModel::initial(),
+        );
+        let cmds = nav.push(page, &mut model);
+        model.navigation_model = nav;
+        (model, cmds)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the activities page for the parent ticket.
+fn handle_open_activities(mut model: Model) -> (Model, Vec<Cmd>) {
+    let page = model.ticket_detail.as_ref().and_then(|d| {
+        d.data.data().and_then(|data| {
+            data.detail
+                .ticket
+                .as_ref()
+                .map(|t| PageId::TicketActivities {
+                    ticket_id: t.id.clone(),
+                    ticket_title: t.title.clone(),
+                })
+        })
+    });
+
+    if let Some(page) = page {
+        let mut nav = std::mem::replace(
+            &mut model.navigation_model,
+            crate::navigation::NavigationModel::initial(),
+        );
+        let cmds = nav.push(page, &mut model);
+        model.navigation_model = nav;
+        (model, cmds)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Edit the parent ticket in $EDITOR.
+fn handle_edit_parent(model: Model) -> (Model, Vec<Cmd>) {
+    let Some(ref detail) = model.ticket_detail else {
+        return (model, vec![]);
+    };
+    let ticket_id = detail.ticket_id.clone();
+    (model, vec![Cmd::EditTicket { ticket_id }])
+}
+
+/// Open the project input overlay for creating a child ticket.
+fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
+    crate::create_ticket::start_create_child_flow(model)
+}
+
+/// Get the currently selected child ticket, if any.
+fn selected_child(model: &Model) -> Option<ur_rpc::proto::ticket::Ticket> {
+    model
+        .ticket_detail
+        .as_ref()
+        .and_then(|d| d.children_table.selected_ticket().cloned())
+}
+
+/// Build goto targets for a child ticket.
+fn build_child_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
+    vec![
+        GotoTarget {
+            label: "Ticket Detail".to_string(),
+            screen: "ticket".to_string(),
+            id: ticket_id.to_string(),
+        },
+        GotoTarget {
+            label: "Flow Details".to_string(),
+            screen: "flow".to_string(),
+            id: ticket_id.to_string(),
+        },
+        GotoTarget {
+            label: "Worker".to_string(),
+            screen: "worker".to_string(),
+            id: ticket_id.to_string(),
+        },
+    ]
+}
+
+/// Input handler for the ticket detail page.
+///
+/// Handles ticket-specific actions on children: Dispatch All (A), Create child (C),
+/// Dispatch (D), Open/reopen (O), Priority (P), Redrive (V),
+/// Close (X), activities (a), toggle-closed (c), description (d), goto (g),
+/// refresh (r), plus children table navigation (j/k/h/l/Enter).
+///
+/// This is a root page handler dispatched directly from `dispatch_root_page_key`.
+pub struct TicketDetailHandler;
+
+impl InputHandler for TicketDetailHandler {
+    fn handle_key(&self, key: KeyEvent) -> InputResult {
+        // Children table navigation keys (no modifiers)
+        if key.modifiers == KeyModifiers::NONE
+            && let Some(msg) = handle_detail_table_key(key.code)
+        {
+            return InputResult::Capture(msg);
+        }
+
+        // Shift+letter operation keys
+        if let Some(msg) = handle_detail_operation_key(key) {
+            return InputResult::Capture(msg);
+        }
+
+        // Lowercase action keys
+        if key.modifiers == KeyModifiers::NONE
+            && let Some(msg) = handle_detail_action_key(key.code)
+        {
+            return InputResult::Capture(msg);
+        }
+
+        InputResult::Bubble
     }
 
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        let chunks = Layout::vertical([
-            Constraint::Length(1), // header line
-            Constraint::Length(5), // body preview (4 lines + 1 for "...")
-            Constraint::Min(3),    // child table
-        ])
-        .split(area);
-
-        match &self.data_state {
-            DataState::Loading => {
-                self.render_message(area, buf, ctx, "Loading...");
-            }
-            DataState::Error(msg) => {
-                self.render_message(area, buf, ctx, &format!("Error: {msg}"));
-            }
-            DataState::Loaded { detail, .. } => {
-                if let Some(ticket) = &detail.ticket {
-                    render_ticket_header(ticket, chunks[0], buf, ctx);
-                    render_body_preview(&ticket.body, chunks[1], buf, ctx);
-                } else {
-                    self.render_message(chunks[0], buf, ctx, &self.ticket_id);
-                }
-                render_child_table(self, chunks[2], buf, ctx);
-            }
-        }
-
-        // Render overlay on top if active.
-        match &self.overlay {
-            Some(Overlay::GotoMenu(menu)) => menu.render(area, buf, ctx),
-            Some(Overlay::PriorityPicker(picker)) => picker.render(area, buf, ctx),
-            None => {}
-        }
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        match &self.overlay {
-            Some(Overlay::GotoMenu(menu)) => return menu.footer_commands(),
-            Some(Overlay::PriorityPicker(picker)) => return picker.footer_commands(),
-            None => {}
-        }
+    fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
-                key_label: keymap.label_for(&Action::DispatchAll),
+                key_label: "A".to_string(),
                 description: "Dispatch all".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::CreateTicket),
+                key_label: "C".to_string(),
                 description: "Create child".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::Dispatch),
+                key_label: "D".to_string(),
                 description: "Dispatch".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::SetPriority),
+                key_label: "E".to_string(),
+                description: "Edit".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "O".to_string(),
+                description: "Open".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "P".to_string(),
                 description: "Priority".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::LaunchDesign),
-                description: "Design".to_string(),
+                key_label: "T".to_string(),
+                description: "Type".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::CloseTicket),
+                key_label: "V".to_string(),
+                description: "Redrive".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "X".to_string(),
                 description: "Close".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::OpenActivities),
+                key_label: "a".to_string(),
                 description: "Activities".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::OpenDescription),
+                key_label: "d".to_string(),
                 description: "Description".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::Filter),
-                description: if self.show_closed {
-                    "Hide closed"
-                } else {
-                    "Show closed"
-                }
-                .to_string(),
+                key_label: "c".to_string(),
+                description: "Toggle closed".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::Goto),
+                key_label: "g".to_string(),
                 description: "Goto".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::Select),
-                description: "Open child".to_string(),
                 common: false,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::NavigateDown),
-                description: "Down".to_string(),
+                key_label: "r".to_string(),
+                description: "Refresh".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "j/k".to_string(),
+                description: "Navigate".to_string(),
                 common: true,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::NavigateUp),
-                description: "Up".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.combined_label(&Action::PageLeft, &Action::PageRight),
+                key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
             },
             FooterCommand {
-                key_label: keymap.label_for(&Action::Refresh),
-                description: "Refresh".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::Back),
-                description: "Back".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: keymap.label_for(&Action::Quit),
-                description: "Quit".to_string(),
+                key_label: "Enter".to_string(),
+                description: "Select".to_string(),
                 common: true,
             },
         ]
     }
 
-    fn on_data(&mut self, payload: &DataPayload) {
-        let DataPayload::TicketDetail(boxed) = payload else {
-            return;
-        };
-        match boxed.as_ref() {
-            Ok((detail, children, total)) => {
-                debug!(
-                    ticket_id = %self.ticket_id,
-                    children_count = children.len(),
-                    total_children = total,
-                    "ticket_detail: Loading -> Loaded"
-                );
-                self.active_status = None;
-                self.data_state = DataState::Loaded {
-                    detail: Box::new(detail.clone()),
-                    children: children.clone(),
-                    total_children: *total,
-                };
-                self.clamp_selection();
-            }
-            Err(msg) => {
-                debug!(
-                    ticket_id = %self.ticket_id,
-                    error = %msg,
-                    "ticket_detail: Loading -> Error"
-                );
-                self.active_status = None;
-                self.data_state = DataState::Error(msg.clone());
-            }
+    fn name(&self) -> &str {
+        "ticket_detail"
+    }
+}
+
+/// Handle children table navigation keys (no modifiers).
+fn handle_detail_table_key(code: KeyCode) -> Option<Msg> {
+    match code {
+        KeyCode::Char('k') | KeyCode::Up => {
+            Some(Msg::Nav(NavMsg::TicketDetailNavigate { delta: -1 }))
         }
-    }
-
-    fn needs_data(&self) -> bool {
-        matches!(self.data_state, DataState::Loading)
-    }
-
-    fn mark_stale(&mut self) {
-        debug!(ticket_id = %self.ticket_id, "ticket_detail: mark_stale");
-        self.data_state = DataState::Loading;
-    }
-
-    fn banner(&self) -> Option<&Banner> {
-        self.active_banner.as_ref()
-    }
-
-    fn dismiss_banner(&mut self) {
-        self.active_banner = None;
-    }
-
-    fn tick_banner(&mut self) {
-        if let Some(ref banner) = self.active_banner
-            && banner.is_expired()
-        {
-            self.active_banner = None;
+        KeyCode::Char('j') | KeyCode::Down => {
+            Some(Msg::Nav(NavMsg::TicketDetailNavigate { delta: 1 }))
         }
+        KeyCode::Char('h') | KeyCode::Left => Some(Msg::Nav(NavMsg::TicketDetailPageLeft)),
+        KeyCode::Char('l') | KeyCode::Right => Some(Msg::Nav(NavMsg::TicketDetailPageRight)),
+        KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketDetailSelect)),
+        _ => None,
+    }
+}
+
+/// Handle Shift+letter operation keys for ticket detail actions.
+fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
+    if !key.modifiers.contains(KeyModifiers::SHIFT) {
+        return None;
     }
 
-    fn status(&self) -> Option<&StatusMessage> {
-        self.active_status.as_ref()
+    match key.code {
+        KeyCode::Char('A') => Some(Msg::Nav(NavMsg::TicketDetailDispatchAll)),
+        KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketDetailCreateChild)),
+        KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketDetailDispatch)),
+        KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),
+        KeyCode::Char('O') => Some(Msg::Nav(NavMsg::TicketDetailOpen)),
+        KeyCode::Char('P') => Some(Msg::Nav(NavMsg::TicketDetailPriority)),
+        KeyCode::Char('T') => Some(Msg::Nav(NavMsg::TicketDetailType)),
+        KeyCode::Char('V') => Some(Msg::Nav(NavMsg::TicketDetailRedrive)),
+        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::TicketDetailClose)),
+        _ => None,
     }
+}
 
-    fn set_status(&mut self, text: String) {
-        self.active_status = Some(StatusMessage {
-            text,
-            dismissable: true,
-        });
-    }
-
-    fn dismiss_status(&mut self) {
-        self.active_status = None;
-    }
-
-    fn clear_status(&mut self) {
-        self.active_status = None;
-    }
-
-    fn as_any_ticket_detail(&self) -> Option<&crate::pages::TicketDetailScreen> {
-        Some(self)
-    }
-
-    fn as_any_ticket_detail_mut(&mut self) -> Option<&mut crate::pages::TicketDetailScreen> {
-        Some(self)
+/// Handle lowercase action keys for ticket detail.
+fn handle_detail_action_key(code: KeyCode) -> Option<Msg> {
+    match code {
+        KeyCode::Char('a') => Some(Msg::Nav(NavMsg::TicketDetailOpenActivities)),
+        KeyCode::Char('d') => Some(Msg::Nav(NavMsg::TicketDetailOpenDescription)),
+        KeyCode::Char('c') => Some(Msg::Nav(NavMsg::TicketDetailToggleClosed)),
+        KeyCode::Char('g') => Some(Msg::Nav(NavMsg::TicketDetailGoto)),
+        KeyCode::Char('r') => Some(Msg::Nav(NavMsg::TicketDetailRefresh)),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ur_rpc::proto::ticket::GetTicketResponse;
+    use crossterm::event::{KeyEventKind, KeyEventState};
+    use ur_rpc::proto::ticket::{GetTicketResponse, Ticket};
 
-    fn make_ticket(id: &str, project: &str, status: &str) -> Ticket {
+    fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    fn plain_key(code: KeyCode) -> KeyEvent {
+        make_key(code, KeyModifiers::NONE)
+    }
+
+    fn make_ticket(id: &str, title: &str) -> Ticket {
         Ticket {
             id: id.to_string(),
             ticket_type: "task".to_string(),
-            status: status.to_string(),
+            status: "open".to_string(),
             priority: 2,
             parent_id: String::new(),
-            title: format!("Ticket {id}"),
+            title: title.to_string(),
             body: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
-            project: project.to_string(),
+            project: "test".to_string(),
             branch: String::new(),
             depth: 0,
             children_total: 0,
@@ -893,386 +749,296 @@ mod tests {
         }
     }
 
-    fn make_detail_response(ticket: Ticket) -> GetTicketResponse {
-        GetTicketResponse {
-            ticket: Some(ticket),
-            metadata: vec![],
-            activities: vec![],
+    fn model_with_detail() -> Model {
+        use crate::model::{TicketDetailData, TicketDetailModel, TicketTableModel};
+
+        let children = vec![
+            make_ticket("ur-child-1", "Child 1"),
+            make_ticket("ur-child-2", "Child 2"),
+        ];
+        let mut table = TicketTableModel::empty();
+        table.tickets = children.clone();
+        table.total_count = 2;
+
+        let mut model = Model::initial();
+        model.ticket_detail = Some(TicketDetailModel {
+            ticket_id: "ur-parent".to_string(),
+            data: LoadState::Loaded(TicketDetailData {
+                detail: GetTicketResponse {
+                    ticket: Some(make_ticket("ur-parent", "Parent ticket")),
+                    ..Default::default()
+                },
+                children: children.clone(),
+                total_children: 2,
+            }),
+            activities: LoadState::NotLoaded,
+            children_table: table,
+            show_closed: false,
+        });
+        model
+    }
+
+    // ── Handler key tests ────────────────────────────────────────────
+
+    #[test]
+    fn handler_captures_j_as_navigate_down() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('j'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailNavigate { delta: 1 })) => {}
+            other => panic!("expected navigate down, got {other:?}"),
         }
     }
 
     #[test]
-    fn new_screen_needs_data() {
-        let screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        assert!(screen.needs_data());
-        assert_eq!(screen.ticket_id(), "ur-abc");
-        assert_eq!(screen.project(), "ur");
+    fn handler_captures_k_as_navigate_up() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('k'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailNavigate { delta: -1 })) => {}
+            other => panic!("expected navigate up, got {other:?}"),
+        }
     }
 
     #[test]
-    fn on_data_ticket_detail_ok() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket.clone());
-        let children = vec![make_ticket("ur-child1", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 1,
-        )))));
-        assert!(!screen.needs_data());
-        assert_eq!(screen.visible_children().len(), 1);
+    fn handler_captures_enter_as_select() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Enter)) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailSelect)) => {}
+            other => panic!("expected select, got {other:?}"),
+        }
     }
 
     #[test]
-    fn on_data_ticket_detail_error() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Err(
-            "rpc failed".into()
-        ))));
-        assert!(!screen.needs_data());
-        assert!(matches!(screen.data_state, DataState::Error(_)));
+    fn handler_captures_c_as_toggle_closed() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('c'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailToggleClosed)) => {}
+            other => panic!("expected toggle closed, got {other:?}"),
+        }
     }
 
     #[test]
-    fn on_data_ignores_other_payloads() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        screen.on_data(&DataPayload::Tickets(Ok((vec![], 0))));
-        assert!(screen.needs_data()); // still loading
-    }
-
-    #[test]
-    fn back_action_returns_pop() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+    fn handler_bubbles_f_key() {
+        let handler = TicketDetailHandler;
         assert!(matches!(
-            screen.handle_action(Action::Back),
-            ScreenResult::Pop
+            handler.handle_key(plain_key(KeyCode::Char('f'))),
+            InputResult::Bubble
         ));
     }
 
     #[test]
-    fn quit_action_returns_quit() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
+    fn handler_captures_a_as_activities() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('a'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailOpenActivities)) => {}
+            other => panic!("expected open activities, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_captures_d_as_description() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('d'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailOpenDescription)) => {}
+            other => panic!("expected open description, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_captures_shift_p_as_priority() {
+        let handler = TicketDetailHandler;
+        let key = make_key(KeyCode::Char('P'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailPriority)) => {}
+            other => panic!("expected priority, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_captures_shift_t_as_type() {
+        let handler = TicketDetailHandler;
+        let key = make_key(KeyCode::Char('T'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailType)) => {}
+            other => panic!("expected type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_captures_shift_a_as_dispatch_all() {
+        let handler = TicketDetailHandler;
+        let key = make_key(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailDispatchAll)) => {}
+            other => panic!("expected dispatch all, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_bubbles_unrecognized() {
+        let handler = TicketDetailHandler;
         assert!(matches!(
-            screen.handle_action(Action::Quit),
-            ScreenResult::Quit
+            handler.handle_key(plain_key(KeyCode::Char('z'))),
+            InputResult::Bubble
         ));
     }
 
     #[test]
-    fn navigate_up_down() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children: Vec<Ticket> = (0..3)
-            .map(|i| make_ticket(&format!("ur-c{i}"), "ur", "open"))
-            .collect();
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 3,
-        )))));
-
-        assert_eq!(screen.selected_row, 0);
-        screen.handle_action(Action::NavigateDown);
-        assert_eq!(screen.selected_row, 1);
-        screen.handle_action(Action::NavigateUp);
-        assert_eq!(screen.selected_row, 0);
-        screen.handle_action(Action::NavigateUp);
-        assert_eq!(screen.selected_row, 0); // no underflow
-    }
-
-    #[test]
-    fn navigate_down_does_not_overflow() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![
-            make_ticket("ur-c0", "ur", "open"),
-            make_ticket("ur-c1", "ur", "open"),
-        ];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 2,
-        )))));
-
-        screen.handle_action(Action::NavigateDown);
-        screen.handle_action(Action::NavigateDown);
-        screen.handle_action(Action::NavigateDown);
-        assert_eq!(screen.selected_row, 1); // clamped at last
-    }
-
-    #[test]
-    fn select_with_child_pushes_detail_screen() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![make_ticket("ur-child1", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 1,
-        )))));
-
-        let result = screen.handle_action(Action::Select);
-        assert!(matches!(result, ScreenResult::Push(_)));
-    }
-
-    #[test]
-    fn select_with_no_children_consumed() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![],
-            0,
-        )))));
-
-        let result = screen.handle_action(Action::Select);
-        assert!(matches!(result, ScreenResult::Consumed));
-    }
-
-    #[test]
-    fn refresh_marks_stale() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![],
-            0,
-        )))));
-        assert!(!screen.needs_data());
-
-        screen.handle_action(Action::Refresh);
-        assert!(screen.needs_data());
-    }
-
-    #[test]
-    fn footer_commands_not_empty() {
-        let screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let keymap = Keymap::default();
-        let cmds = screen.footer_commands(&keymap);
+    fn handler_has_footer_commands() {
+        let handler = TicketDetailHandler;
+        let cmds = handler.footer_commands();
         assert!(!cmds.is_empty());
-        // Must contain Back
-        assert!(cmds.iter().any(|c| c.description == "Back"));
-    }
-
-    #[test]
-    fn selected_child_id_returns_correct_id() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![
-            make_ticket("ur-c0", "ur", "open"),
-            make_ticket("ur-c1", "ur", "open"),
-        ];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 2,
-        )))));
-
-        assert_eq!(screen.selected_child_id(), Some("ur-c0".to_string()));
-        screen.handle_action(Action::NavigateDown);
-        assert_eq!(screen.selected_child_id(), Some("ur-c1".to_string()));
-    }
-
-    #[test]
-    fn pagination_page_right_and_left() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        screen.page_size = 2;
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![
-            make_ticket("ur-c0", "ur", "open"),
-            make_ticket("ur-c1", "ur", "open"),
-        ];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 5,
-        )))));
-
-        assert_eq!(screen.current_page, 0);
-        screen.handle_action(Action::PageRight);
-        assert_eq!(screen.current_page, 1);
-        assert!(screen.needs_data());
-
-        // Can't go before first page
-        screen.handle_action(Action::PageLeft);
-        assert_eq!(screen.current_page, 0);
-    }
-
-    #[test]
-    fn filter_toggles_show_closed() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        // Default: closed hidden
-        assert!(!screen.show_closed);
-        assert_eq!(
-            screen.child_status_filter(),
-            Some("open,in_progress".to_string())
-        );
-
-        // Toggle to show closed
-        screen.handle_action(Action::Filter);
-        assert!(screen.show_closed);
-        assert_eq!(screen.child_status_filter(), None);
-        assert!(screen.needs_data()); // marked stale
-
-        // Load data, then toggle back
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![],
-            0,
-        )))));
-        screen.handle_action(Action::Filter);
-        assert!(!screen.show_closed);
-        assert_eq!(
-            screen.child_status_filter(),
-            Some("open,in_progress".to_string())
-        );
-    }
-
-    #[test]
-    fn filter_toggle_resets_pagination() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        screen.page_size = 2;
-        screen.current_page = 3;
-        screen.selected_row = 1;
-
-        screen.handle_action(Action::Filter);
-        assert_eq!(screen.current_page, 0);
-        assert_eq!(screen.selected_row, 0);
-    }
-
-    #[test]
-    fn footer_shows_closed_toggle_label() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let keymap = Keymap::default();
-
-        let cmds = screen.footer_commands(&keymap);
-        assert!(cmds.iter().any(|c| c.description == "Show closed"));
-
-        screen.show_closed = true;
-        let cmds = screen.footer_commands(&keymap);
-        assert!(cmds.iter().any(|c| c.description == "Hide closed"));
-    }
-
-    #[test]
-    fn dispatch_label_reflects_status() {
-        let mut t = make_ticket("ur-x", "ur", "open");
-        assert_eq!(TicketDetailScreen::dispatch_label(&t), "Open");
-        t.status = "closed".to_string();
-        assert_eq!(TicketDetailScreen::dispatch_label(&t), "Closed");
-        t.dispatch_status = "implementing".to_string();
-        assert_eq!(TicketDetailScreen::dispatch_label(&t), "Dispatched");
-    }
-
-    #[test]
-    fn set_priority_opens_overlay_with_child_selected() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let mut child = make_ticket("ur-c0", "ur", "open");
-        child.priority = 3;
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![child],
-            1,
-        )))));
-
-        assert!(!screen.has_overlay());
-        screen.handle_action(Action::SetPriority);
-        assert!(screen.has_overlay());
-    }
-
-    #[test]
-    fn set_priority_no_op_without_children() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![],
-            0,
-        )))));
-
-        screen.handle_action(Action::SetPriority);
-        assert!(!screen.has_overlay());
-    }
-
-    #[test]
-    fn priority_overlay_select_returns_set_priority_action() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let mut child = make_ticket("ur-c0", "ur", "open");
-        child.priority = 3;
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail,
-            vec![child],
-            1,
-        )))));
-
-        screen.handle_action(Action::SetPriority);
-        assert!(screen.has_overlay());
-
-        // Press '1' to select priority 1 (High)
-        let key = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
-        let result = screen.handle_overlay_key(key);
-        assert!(!screen.has_overlay());
-        assert!(matches!(
-            result,
-            DetailOverlayAction::SetPriority {
-                ticket_id,
-                priority: 1,
-            } if ticket_id == "ur-c0"
-        ));
-    }
-
-    #[test]
-    fn priority_overlay_esc_closes() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![make_ticket("ur-c0", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 1,
-        )))));
-
-        screen.handle_action(Action::SetPriority);
-        assert!(screen.has_overlay());
-
-        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let result = screen.handle_overlay_key(key);
-        assert!(!screen.has_overlay());
-        assert!(matches!(result, DetailOverlayAction::None));
-    }
-
-    #[test]
-    fn footer_shows_priority_command() {
-        let screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let keymap = Keymap::default();
-        let cmds = screen.footer_commands(&keymap);
+        assert!(cmds.iter().any(|c| c.description == "Dispatch all"));
+        assert!(cmds.iter().any(|c| c.description == "Create child"));
         assert!(cmds.iter().any(|c| c.description == "Priority"));
+        assert!(cmds.iter().any(|c| c.description == "Type"));
+        assert!(cmds.iter().any(|c| c.description == "Activities"));
+        assert!(cmds.iter().any(|c| c.description == "Description"));
+        assert!(cmds.iter().any(|c| c.description == "Toggle closed"));
     }
 
     #[test]
-    fn footer_shows_overlay_commands_when_priority_picker_active() {
-        let mut screen = TicketDetailScreen::new("ur-abc".to_string(), "ur".to_string());
-        let ticket = make_ticket("ur-abc", "ur", "open");
-        let detail = make_detail_response(ticket);
-        let children = vec![make_ticket("ur-c0", "ur", "open")];
-        screen.on_data(&DataPayload::TicketDetail(Box::new(Ok((
-            detail, children, 1,
-        )))));
+    fn handler_name() {
+        let handler = TicketDetailHandler;
+        assert_eq!(handler.name(), "ticket_detail");
+    }
 
-        let keymap = Keymap::default();
-        // Before overlay: should have normal commands including Priority
-        let cmds = screen.footer_commands(&keymap);
-        assert!(cmds.iter().any(|c| c.description == "Priority"));
+    // ── Navigation handler tests ─────────────────────────────────────
 
-        // Open priority picker
-        screen.handle_action(Action::SetPriority);
-        let cmds = screen.footer_commands(&keymap);
-        // Now should show overlay commands, not the normal ones
-        assert!(!cmds.iter().any(|c| c.description == "Priority"));
+    #[test]
+    fn navigate_down_increments_selection() {
+        let model = model_with_detail();
+        let (new_model, cmds) =
+            handle_ticket_detail_nav(model, NavMsg::TicketDetailNavigate { delta: 1 });
+        assert_eq!(
+            new_model.ticket_detail.unwrap().children_table.selected_row,
+            1
+        );
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn navigate_up_at_zero_stays() {
+        let model = model_with_detail();
+        let (new_model, cmds) =
+            handle_ticket_detail_nav(model, NavMsg::TicketDetailNavigate { delta: -1 });
+        assert_eq!(
+            new_model.ticket_detail.unwrap().children_table.selected_row,
+            0
+        );
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn select_pushes_nested_detail() {
+        let model = model_with_detail();
+        let (new_model, cmds) = handle_ticket_detail_nav(model, NavMsg::TicketDetailSelect);
+        assert_eq!(
+            new_model.navigation_model.current_page(),
+            &PageId::TicketDetail {
+                ticket_id: "ur-child-1".to_string()
+            }
+        );
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn toggle_closed_flips_flag() {
+        let model = model_with_detail();
+        assert!(!model.ticket_detail.as_ref().unwrap().show_closed);
+        let (new_model, cmds) = handle_ticket_detail_nav(model, NavMsg::TicketDetailToggleClosed);
+        assert!(new_model.ticket_detail.as_ref().unwrap().show_closed);
+        assert!(!cmds.is_empty()); // should issue a re-fetch
+    }
+
+    #[test]
+    fn toggle_closed_resets_pagination() {
+        let mut model = model_with_detail();
+        model
+            .ticket_detail
+            .as_mut()
+            .unwrap()
+            .children_table
+            .current_page = 2;
+        model
+            .ticket_detail
+            .as_mut()
+            .unwrap()
+            .children_table
+            .selected_row = 3;
+        let (new_model, _) = handle_ticket_detail_nav(model, NavMsg::TicketDetailToggleClosed);
+        let detail = new_model.ticket_detail.unwrap();
+        assert_eq!(detail.children_table.current_page, 0);
+        assert_eq!(detail.children_table.selected_row, 0);
+    }
+
+    #[test]
+    fn build_detail_fetch_cmd_includes_status_filter() {
+        let model = model_with_detail();
+        let cmd = build_detail_fetch_cmd(&model);
+        match cmd {
+            Cmd::Batch(cmds) => {
+                let has_detail_fetch = cmds.iter().any(|c| {
+                    matches!(
+                        c,
+                        Cmd::Fetch(FetchCmd::TicketDetail {
+                            child_status_filter: Some(_),
+                            ..
+                        })
+                    )
+                });
+                assert!(has_detail_fetch, "should include status filter");
+            }
+            _ => panic!("expected Batch, got {cmd:?}"),
+        }
+    }
+
+    #[test]
+    fn build_detail_fetch_cmd_no_filter_when_show_closed() {
+        let mut model = model_with_detail();
+        model.ticket_detail.as_mut().unwrap().show_closed = true;
+        let cmd = build_detail_fetch_cmd(&model);
+        match cmd {
+            Cmd::Batch(cmds) => {
+                let has_no_filter = cmds.iter().any(|c| {
+                    matches!(
+                        c,
+                        Cmd::Fetch(FetchCmd::TicketDetail {
+                            child_status_filter: None,
+                            ..
+                        })
+                    )
+                });
+                assert!(
+                    has_no_filter,
+                    "should have no status filter when show_closed"
+                );
+            }
+            _ => panic!("expected Batch, got {cmd:?}"),
+        }
+    }
+
+    // ── Truncate title tests ─────────────────────────────────────────
+
+    #[test]
+    fn truncate_title_short_unchanged() {
+        assert_eq!(truncate_title("Hello", 10), "Hello");
+    }
+
+    #[test]
+    fn truncate_title_long_gets_ellipsis() {
+        let result = truncate_title("Very long title here", 10);
+        assert!(result.ends_with('\u{2026}'));
+        assert!(result.chars().count() <= 10);
+    }
+
+    // ── Goto targets tests ───────────────────────────────────────────
+
+    #[test]
+    fn child_goto_targets_include_standard_options() {
+        let targets = build_child_goto_targets("ur-abc");
+        assert_eq!(targets.len(), 3);
+        assert!(targets.iter().any(|t| t.label == "Ticket Detail"));
+        assert!(targets.iter().any(|t| t.label == "Flow Details"));
+        assert!(targets.iter().any(|t| t.label == "Worker"));
     }
 }

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -9,122 +9,47 @@ use ratatui::widgets::{Paragraph, Widget};
 use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
+use crate::cmd::Cmd;
+use crate::components::ThemedTable;
 use crate::context::TuiContext;
-use crate::data::DataPayload;
-use crate::keymap::{Action, Keymap};
-use crate::page::{FooterCommand, TabId};
-use crate::screen::{Screen, ScreenResult};
-use crate::widgets::ThemedTable;
-use crate::widgets::goto_menu::{GotoMenuResult, GotoMenuState, GotoTarget};
+use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::model::{FlowDetailModel, Model};
+use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
 
-/// Active overlay on the flow detail screen.
-enum Overlay {
-    GotoMenu(GotoMenuState),
-}
-
-/// Result from handling an overlay key event on the flow detail screen.
-pub enum OverlayAction {
-    /// No action needed by the caller.
-    None,
-    /// Navigate to another tab for the given ticket.
-    Goto {
-        tab: TabId,
-        ticket_id: String,
-        push_detail: bool,
-    },
-}
-
-/// Screen showing the full detail view for a single workflow.
+/// Initialize the flow detail model from the currently loaded flow list data.
 ///
-/// Pushed onto the Flows tab stack when the user selects a workflow in
-/// `FlowsListScreen`. Pressing Back/Escape pops back to the list.
-pub struct FlowDetailScreen {
-    workflow: WorkflowInfo,
-    overlay: Option<Overlay>,
-}
-
-impl FlowDetailScreen {
-    pub fn new(workflow: WorkflowInfo) -> Self {
-        Self {
-            workflow,
-            overlay: None,
-        }
-    }
-
-    /// Handle a raw key event when the overlay is active.
-    /// Returns an `OverlayAction` indicating what the caller should do.
-    pub fn handle_overlay_key(&mut self, key: KeyEvent) -> OverlayAction {
-        match self.overlay {
-            Some(Overlay::GotoMenu(ref mut menu)) => {
-                let result = menu.handle_key(key);
-                match result {
-                    GotoMenuResult::Consumed => OverlayAction::None,
-                    GotoMenuResult::Close => {
-                        self.overlay = None;
-                        OverlayAction::None
-                    }
-                    GotoMenuResult::Selected(target) => {
-                        self.overlay = None;
-                        goto_target_to_action(target)
-                    }
-                }
-            }
-            None => OverlayAction::None,
-        }
-    }
-
-    /// Returns true if an overlay is currently active.
-    pub fn has_overlay(&self) -> bool {
-        self.overlay.is_some()
-    }
-
-    /// Close any active overlay.
-    pub fn close_overlay(&mut self) {
-        self.overlay = None;
+/// Finds the workflow by ticket_id in the flow list data and populates the
+/// flow detail model. If the workflow is not found, the model is not set.
+pub fn init_flow_detail(model: &mut Model, ticket_id: String) {
+    if let Some(data) = model.flow_list.data.data()
+        && let Some(wf) = data.workflows.iter().find(|w| w.ticket_id == ticket_id)
+    {
+        model.flow_detail = Some(FlowDetailModel {
+            ticket_id: ticket_id.clone(),
+            workflow: wf.clone(),
+        });
     }
 }
 
-impl Screen for FlowDetailScreen {
-    fn handle_action(&mut self, action: Action) -> ScreenResult {
-        match action {
-            Action::Back => ScreenResult::Pop,
-            Action::Goto => {
-                let targets = build_flow_goto_targets(&self.workflow.ticket_id);
-                self.overlay = Some(Overlay::GotoMenu(GotoMenuState::new(targets)));
-                ScreenResult::Consumed
-            }
-            Action::Quit => ScreenResult::Quit,
-            _ => ScreenResult::Consumed,
+/// Render the flow detail page into the given content area.
+pub fn render_flow_detail(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+    match &model.flow_detail {
+        Some(detail) => {
+            render_flow_detail_content(&detail.workflow, area, buf, ctx);
+        }
+        None => {
+            let style = Style::default()
+                .fg(ctx.theme.base_content)
+                .bg(ctx.theme.base_100);
+            Paragraph::new(Line::raw("Flow not found"))
+                .style(style)
+                .render(area, buf);
         }
     }
-
-    fn render(&self, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
-        render_flow_detail(&self.workflow, area, buf, ctx);
-
-        // Render overlay on top
-        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
-            menu.render(area, buf, ctx);
-        }
-    }
-
-    fn footer_commands(&self, keymap: &Keymap) -> Vec<FooterCommand> {
-        if let Some(Overlay::GotoMenu(ref menu)) = self.overlay {
-            return menu.footer_commands();
-        }
-        detail_footer_commands(keymap)
-    }
-
-    fn on_data(&mut self, _payload: &DataPayload) {}
-
-    fn needs_data(&self) -> bool {
-        false
-    }
-
-    fn mark_stale(&mut self) {}
 }
 
 /// Render the full detail view for a single workflow.
-pub fn render_flow_detail(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+fn render_flow_detail_content(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
     let chunks =
         Layout::vertical([Constraint::Length(field_line_count()), Constraint::Min(3)]).split(area);
 
@@ -222,12 +147,26 @@ fn format_duration_hhmmss(duration: chrono::Duration) -> String {
     format!("{hours:02}:{minutes:02}:{seconds:02}")
 }
 
+/// Parse an RFC3339 timestamp string into a DateTime<Utc>.
+fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Format a timestamp string for display.
+fn format_timestamp(ts: &str) -> String {
+    match parse_rfc3339(ts) {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => ts.to_string(),
+    }
+}
+
 /// Render the history table with Event, Timestamp, and Duration columns.
 fn render_history_table(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
     let now = Utc::now();
     let terminal = is_terminal_status(&wf.status);
-
-    let rows: Vec<Vec<String>> = build_history_rows(wf, now, terminal);
+    let rows = build_history_rows(wf, now, terminal);
 
     let widths = vec![
         Constraint::Length(25), // Event
@@ -270,10 +209,6 @@ fn build_history_rows(wf: &WorkflowInfo, now: DateTime<Utc>, terminal: bool) -> 
 }
 
 /// Compute the duration string for a history event at position `idx`.
-///
-/// For events that have a successor, duration = next.created_at - this.created_at.
-/// For the last event in a non-terminal workflow, duration = now - this.created_at (live elapsed).
-/// For the last event in a terminal workflow, duration is shown as "-".
 fn compute_event_duration(
     history: &[ur_rpc::proto::ticket::WorkflowHistoryEvent],
     idx: usize,
@@ -283,67 +218,68 @@ fn compute_event_duration(
     let current_ts = parse_rfc3339(&history[idx].created_at);
 
     if idx + 1 < history.len() {
-        // Duration to the next event
         let next_ts = parse_rfc3339(&history[idx + 1].created_at);
         match (current_ts, next_ts) {
             (Some(cur), Some(nxt)) => format_duration_hhmmss(nxt - cur),
             _ => "-".to_string(),
         }
     } else if !terminal {
-        // Last event, non-terminal: show live elapsed
         match current_ts {
             Some(cur) => format_duration_hhmmss(now - cur),
             None => "-".to_string(),
         }
     } else {
-        // Last event, terminal: no live duration
         "-".to_string()
     }
 }
 
-/// Parse an RFC3339 timestamp string into a DateTime<Utc>.
-fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
-}
-
-/// Format a timestamp string for display. Shows the original if parseable, otherwise as-is.
-fn format_timestamp(ts: &str) -> String {
-    match parse_rfc3339(ts) {
-        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-        None => ts.to_string(),
+/// Handle flow detail navigation messages.
+pub fn handle_flow_detail_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    match nav_msg {
+        NavMsg::FlowDetailCancel => handle_cancel(model),
+        NavMsg::FlowDetailRedrive => handle_redrive(model),
+        NavMsg::FlowDetailGoto => handle_goto(model),
+        _ => (model, vec![]),
     }
 }
 
-/// Returns the footer commands for the detail view.
-pub fn detail_footer_commands(keymap: &Keymap) -> Vec<FooterCommand> {
-    vec![
-        FooterCommand {
-            key_label: keymap.label_for(&Action::Redrive),
-            description: "Redrive".to_string(),
-            common: false,
-        },
-        FooterCommand {
-            key_label: keymap.label_for(&Action::Goto),
-            description: "Goto".to_string(),
-            common: true,
-        },
-        FooterCommand {
-            key_label: keymap.label_for(&Action::Back),
-            description: "Back".to_string(),
-            common: true,
-        },
-        FooterCommand {
-            key_label: keymap.label_for(&Action::Quit),
-            description: "Quit".to_string(),
-            common: true,
-        },
-    ]
+/// Cancel the workflow shown in flow detail.
+fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref detail) = model.flow_detail {
+        let msg = Msg::FlowOp(FlowOpMsg::Cancel {
+            ticket_id: detail.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
 }
 
-/// Build goto targets for a flow with the given ticket ID.
-fn build_flow_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
+/// Redrive the workflow shown in flow detail.
+fn handle_redrive(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref detail) = model.flow_detail {
+        let msg = Msg::TicketOp(TicketOpMsg::Redrive {
+            ticket_id: detail.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Open the goto menu from flow detail.
+fn handle_goto(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref detail) = model.flow_detail {
+        let targets = build_flow_detail_goto_targets(&detail.ticket_id);
+        let msg = Msg::Overlay(OverlayMsg::OpenGotoMenu { targets });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Build goto targets for a flow detail view.
+fn build_flow_detail_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
     vec![
         GotoTarget {
             label: "Ticket Details".to_string(),
@@ -358,36 +294,88 @@ fn build_flow_goto_targets(ticket_id: &str) -> Vec<GotoTarget> {
     ]
 }
 
-/// Convert a selected GotoTarget into an OverlayAction.
-fn goto_target_to_action(target: GotoTarget) -> OverlayAction {
-    match target.screen.as_str() {
-        "ticket" => OverlayAction::Goto {
-            tab: TabId::Tickets,
-            ticket_id: target.id,
-            push_detail: true,
-        },
-        "worker" => OverlayAction::Goto {
-            tab: TabId::Workers,
-            ticket_id: target.id,
-            push_detail: false,
-        },
-        _ => OverlayAction::None,
+/// Input handler for the flow detail page.
+pub struct FlowDetailHandler;
+
+impl InputHandler for FlowDetailHandler {
+    fn handle_key(&self, key: KeyEvent) -> InputResult {
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(msg) = handle_shift_key(key.code)
+        {
+            return InputResult::Capture(msg);
+        }
+
+        if key.modifiers == KeyModifiers::NONE
+            && let Some(msg) = handle_plain_key(key.code)
+        {
+            return InputResult::Capture(msg);
+        }
+
+        InputResult::Bubble
+    }
+
+    fn footer_commands(&self) -> Vec<FooterCommand> {
+        vec![
+            FooterCommand {
+                key_label: "V".to_string(),
+                description: "Redrive".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "X".to_string(),
+                description: "Cancel".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "g".to_string(),
+                description: "Goto".to_string(),
+                common: false,
+            },
+        ]
+    }
+
+    fn name(&self) -> &str {
+        "flow_detail"
+    }
+}
+
+/// Handle Shift+letter keys on the flow detail page.
+fn handle_shift_key(code: KeyCode) -> Option<Msg> {
+    match code {
+        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowDetailCancel)),
+        KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowDetailRedrive)),
+        _ => None,
+    }
+}
+
+/// Handle plain keys on the flow detail page.
+fn handle_plain_key(code: KeyCode) -> Option<Msg> {
+    match code {
+        KeyCode::Char('g') => Some(Msg::Nav(NavMsg::FlowDetailGoto)),
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEventKind, KeyEventState};
     use ur_rpc::proto::ticket::WorkflowHistoryEvent;
 
-    fn make_event(event: &str, created_at: &str) -> WorkflowHistoryEvent {
-        WorkflowHistoryEvent {
-            event: event.into(),
-            created_at: created_at.into(),
+    fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
         }
     }
 
-    fn make_workflow(history: Vec<WorkflowHistoryEvent>, status: &str) -> WorkflowInfo {
+    fn plain_key(code: KeyCode) -> KeyEvent {
+        make_key(code, KeyModifiers::NONE)
+    }
+
+    fn make_workflow(status: &str) -> WorkflowInfo {
         WorkflowInfo {
             id: "wf-123".into(),
             ticket_id: "ur-abc".into(),
@@ -399,11 +387,20 @@ mod tests {
             feedback_mode: "auto".into(),
             created_at: "2026-03-22T10:00:00+00:00".into(),
             pr_url: "https://github.com/org/repo/pull/42".into(),
-            history,
+            history: vec![],
             ticket_children_open: 3,
             ticket_children_closed: 7,
         }
     }
+
+    fn make_event(event: &str, created_at: &str) -> WorkflowHistoryEvent {
+        WorkflowHistoryEvent {
+            event: event.into(),
+            created_at: created_at.into(),
+        }
+    }
+
+    // ── format_duration ─────────────────────────────────────────────
 
     #[test]
     fn format_duration_basic() {
@@ -423,6 +420,8 @@ mod tests {
         assert_eq!(format_duration_hhmmss(d), "00:00:00");
     }
 
+    // ── format_timestamp ────────────────────────────────────────────
+
     #[test]
     fn format_timestamp_valid() {
         let ts = "2026-03-22T10:30:00+00:00";
@@ -434,6 +433,25 @@ mod tests {
         let ts = "not-a-date";
         assert_eq!(format_timestamp(ts), "not-a-date");
     }
+
+    // ── is_terminal_status ──────────────────────────────────────────
+
+    #[test]
+    fn done_is_terminal() {
+        assert!(is_terminal_status("done"));
+    }
+
+    #[test]
+    fn cancelled_is_terminal() {
+        assert!(is_terminal_status("cancelled"));
+    }
+
+    #[test]
+    fn implementing_is_not_terminal() {
+        assert!(!is_terminal_status("implementing"));
+    }
+
+    // ── compute_event_duration ──────────────────────────────────────
 
     #[test]
     fn duration_between_consecutive_events() {
@@ -467,17 +485,18 @@ mod tests {
         assert_eq!(dur, "00:05:00");
     }
 
+    // ── build_history_rows ──────────────────────────────────────────
+
     #[test]
     fn build_history_rows_reverses_order() {
-        let history = vec![
+        let mut wf = make_workflow("done");
+        wf.history = vec![
             make_event("started", "2026-03-22T10:00:00+00:00"),
             make_event("implementing", "2026-03-22T11:00:00+00:00"),
             make_event("done", "2026-03-22T12:00:00+00:00"),
         ];
-        let wf = make_workflow(history, "done");
         let now = Utc::now();
         let rows = build_history_rows(&wf, now, true);
-        // Newest first
         assert_eq!(rows[0][0], "done");
         assert_eq!(rows[1][0], "implementing");
         assert_eq!(rows[2][0], "started");
@@ -485,35 +504,107 @@ mod tests {
 
     #[test]
     fn build_history_rows_empty() {
-        let wf = make_workflow(vec![], "open");
+        let wf = make_workflow("open");
         let now = Utc::now();
         let rows = build_history_rows(&wf, now, false);
         assert!(rows.is_empty());
     }
 
+    // ── input handler ───────────────────────────────────────────────
+
     #[test]
-    fn detail_footer_has_back_and_quit() {
-        let keymap = Keymap::default();
-        let cmds = detail_footer_commands(&keymap);
-        assert_eq!(cmds.len(), 4);
-        assert_eq!(cmds[0].description, "Redrive");
-        assert_eq!(cmds[1].description, "Goto");
-        assert_eq!(cmds[2].description, "Back");
-        assert_eq!(cmds[3].description, "Quit");
+    fn handler_shift_x_captures_cancel() {
+        let handler = FlowDetailHandler;
+        let key = make_key(KeyCode::Char('X'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowDetailCancel)) => {}
+            other => panic!("expected cancel, got {other:?}"),
+        }
     }
 
     #[test]
-    fn is_terminal_done() {
-        assert!(is_terminal_status("done"));
+    fn handler_shift_v_captures_redrive() {
+        let handler = FlowDetailHandler;
+        let key = make_key(KeyCode::Char('V'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowDetailRedrive)) => {}
+            other => panic!("expected redrive, got {other:?}"),
+        }
     }
 
     #[test]
-    fn is_terminal_cancelled() {
-        assert!(is_terminal_status("cancelled"));
+    fn handler_g_captures_goto() {
+        let handler = FlowDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char('g'))) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowDetailGoto)) => {}
+            other => panic!("expected goto, got {other:?}"),
+        }
     }
 
     #[test]
-    fn is_not_terminal_implementing() {
-        assert!(!is_terminal_status("implementing"));
+    fn handler_bubbles_unrecognized() {
+        let handler = FlowDetailHandler;
+        assert!(matches!(
+            handler.handle_key(plain_key(KeyCode::Char('z'))),
+            InputResult::Bubble
+        ));
+    }
+
+    #[test]
+    fn handler_footer_has_expected_commands() {
+        let handler = FlowDetailHandler;
+        let cmds = handler.footer_commands();
+        assert_eq!(cmds.len(), 3);
+        assert!(cmds.iter().any(|c| c.description == "Redrive"));
+        assert!(cmds.iter().any(|c| c.description == "Cancel"));
+        assert!(cmds.iter().any(|c| c.description == "Goto"));
+    }
+
+    #[test]
+    fn handler_name() {
+        let handler = FlowDetailHandler;
+        assert_eq!(handler.name(), "flow_detail");
+    }
+
+    // ── goto targets ────────────────────────────────────────────────
+
+    #[test]
+    fn goto_targets_include_standard_options() {
+        let targets = build_flow_detail_goto_targets("ur-abc");
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().any(|t| t.label == "Ticket Details"));
+        assert!(targets.iter().any(|t| t.label == "Worker"));
+    }
+
+    // ── init_flow_detail ────────────────────────────────────────────
+
+    #[test]
+    fn init_flow_detail_sets_model() {
+        use crate::model::{FlowListData, LoadState};
+        let mut model = Model::initial();
+        let wf = make_workflow("implementing");
+        model.flow_list.data = LoadState::Loaded(FlowListData {
+            workflows: vec![wf.clone()],
+            total_count: 1,
+        });
+
+        init_flow_detail(&mut model, "ur-abc".to_string());
+
+        let detail = model.flow_detail.as_ref().unwrap();
+        assert_eq!(detail.ticket_id, "ur-abc");
+        assert_eq!(detail.workflow.id, "wf-123");
+    }
+
+    #[test]
+    fn init_flow_detail_not_found() {
+        use crate::model::LoadState;
+        let mut model = Model::initial();
+        model.flow_list.data = LoadState::Loaded(crate::model::FlowListData {
+            workflows: vec![],
+            total_count: 0,
+        });
+
+        init_flow_detail(&mut model, "ur-missing".to_string());
+        assert!(model.flow_detail.is_none());
     }
 }
