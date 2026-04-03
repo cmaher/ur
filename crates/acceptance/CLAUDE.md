@@ -10,7 +10,7 @@ End-to-end acceptance tests that exercise the full stack: server, container life
 
 ## Test architecture
 
-`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repo, RAG docs, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers on failure before re-raising.
+`e2e_all` is the sole `#[test]` entry point. It creates one shared `TestEnv` (temp config dir, bare repo, `ur start`), runs all scenarios sequentially as plain helper functions, then tears down. Each scenario gets a `&TestEnv` reference and uses its own ticket IDs and container names. Scenarios use `catch_unwind` to force-remove their worker containers on failure before re-raising.
 
 ## Design principle
 
