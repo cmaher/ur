@@ -1,11 +1,17 @@
 use std::path::PathBuf;
 
-use tracing::{info, warn};
+use tracing::info;
 
 const GIT_HOOKS_DIR_ENV: &str = "UR_GIT_HOOKS_DIR";
+const DEFAULT_GIT_HOOKS: &str = "/workspace/ur-hooks/git";
 const WORKSPACE_GIT_HOOKS: &str = "/workspace/.git/hooks";
 
 /// Manages copying git hooks from a source directory into the workspace .git/hooks.
+///
+/// Source resolution order:
+/// 1. `UR_GIT_HOOKS_DIR` env var (set by server from `git_hooks_dir` config)
+/// 2. `/workspace/ur-hooks/git` (convention-based default)
+/// 3. No-op if neither exists
 #[derive(Clone)]
 pub struct InitGitHooksManager;
 
@@ -13,18 +19,12 @@ impl InitGitHooksManager {
     pub async fn run(&self) -> Result<(), std::io::Error> {
         let source_dir = match std::env::var(GIT_HOOKS_DIR_ENV) {
             Ok(val) if !val.trim().is_empty() => PathBuf::from(val),
-            _ => {
-                return Ok(());
-            }
+            _ => PathBuf::from(DEFAULT_GIT_HOOKS),
         };
 
         info!(source = %source_dir.display(), "initializing git hooks");
 
         if !source_dir.exists() {
-            warn!(
-                path = %source_dir.display(),
-                "git hooks source directory does not exist, skipping"
-            );
             return Ok(());
         }
 

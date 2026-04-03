@@ -89,7 +89,8 @@ impl RunOptsBuilder {
 
     /// Add git hooks volume mount and env var based on project configuration.
     ///
-    /// - If `git_hooks_dir` is `None`, this is a no-op.
+    /// - If `git_hooks_dir` is `None`, defaults to `%PROJECT%/ur-hooks/git` (convention path),
+    ///   setting `UR_GIT_HOOKS_DIR=/workspace/ur-hooks/git` with no volume mount.
     /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a volume mount
     ///   from the host path to `/var/ur/git-hooks` and sets `UR_GIT_HOOKS_DIR=/var/ur/git-hooks`.
     /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
@@ -99,9 +100,8 @@ impl RunOptsBuilder {
         git_hooks_dir: &Option<String>,
         host_config_dir: &Path,
     ) -> Result<Self, String> {
-        let Some(template) = git_hooks_dir.as_deref() else {
-            return Ok(self);
-        };
+        let default_template = "%PROJECT%/ur-hooks/git".to_string();
+        let template = git_hooks_dir.as_deref().unwrap_or(&default_template);
 
         let resolved = resolve_template_path(template, host_config_dir)
             .map_err(|e| format!("failed to resolve git_hooks_dir: {e}"))?;
@@ -496,14 +496,16 @@ mod tests {
     }
 
     #[test]
-    fn add_git_hooks_none_is_noop() {
+    fn add_git_hooks_none_defaults_to_convention_path() {
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_git_hooks(&None, Path::new("/unused"))
             .unwrap()
             .build();
 
         assert!(opts.volumes.is_empty());
-        assert!(opts.env_vars.is_empty());
+        assert_eq!(opts.env_vars.len(), 1);
+        assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
+        assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/git");
     }
 
     #[test]
