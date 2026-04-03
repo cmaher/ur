@@ -351,26 +351,31 @@ impl InputHandler for WorkerListHandler {
                 key_label: "X".to_string(),
                 description: "Kill".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "g".to_string(),
                 description: "Goto".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Scroll".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
                 common: true,
+                pinned: false,
             },
         ]
     }

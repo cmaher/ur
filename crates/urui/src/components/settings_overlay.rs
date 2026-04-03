@@ -79,21 +79,25 @@ impl InputHandler for SettingsOverlayHandler {
                 key_label: "h/l".to_string(),
                 description: "Column".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Apply".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Back/Close".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

@@ -207,11 +207,13 @@ impl InputHandler for TicketBodyHandler {
                 key_label: "j/k".to_string(),
                 description: "Scroll".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
+                pinned: false,
             },
         ]
     }

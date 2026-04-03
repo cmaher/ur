@@ -37,11 +37,13 @@ impl InputHandler for ForceCloseConfirmHandler {
                 key_label: "1/y".to_string(),
                 description: "Yes".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "2/n".to_string(),
                 description: "No".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

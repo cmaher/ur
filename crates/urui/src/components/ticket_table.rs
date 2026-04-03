@@ -254,16 +254,19 @@ impl InputHandler for TicketTableHandler {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Enter".to_string(),
                 description: "Select".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

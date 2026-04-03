@@ -279,74 +279,88 @@ impl InputHandler for TicketListHandler {
                 key_label: "C".to_string(),
                 description: "Create".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "D".to_string(),
                 description: "Dispatch".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "E".to_string(),
                 description: "Edit".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "O".to_string(),
                 description: "Open".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "P".to_string(),
                 description: "Priority".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "T".to_string(),
                 description: "Type".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "X".to_string(),
                 description: "Close".to_string(),
                 common: false,
+                pinned: false,
             },
             // Lowercase alphabetical
             FooterCommand {
                 key_label: "g".to_string(),
                 description: "Goto".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
                 common: false,
+                pinned: false,
             },
             // Symbols
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Details".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "*".to_string(),
                 description: "Filter".to_string(),
                 common: false,
+                pinned: false,
             },
             // Common (right side)
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Enter".to_string(),
                 description: "Select".to_string(),
                 common: true,
+                pinned: false,
             },
         ]
     }

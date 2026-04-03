@@ -55,21 +55,25 @@ impl InputHandler for PriorityPickerHandler {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "0-4".to_string(),
                 description: "Quick set".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Confirm".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Close".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

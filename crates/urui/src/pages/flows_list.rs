@@ -514,41 +514,49 @@ impl InputHandler for FlowListHandler {
                 key_label: "V".to_string(),
                 description: "Move to Verify".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "X".to_string(),
                 description: "Cancel".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "g".to_string(),
                 description: "Goto".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Details".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Enter".to_string(),
                 description: "Select".to_string(),
                 common: true,
+                pinned: false,
             },
         ]
     }

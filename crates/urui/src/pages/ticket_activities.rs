@@ -358,21 +358,25 @@ impl InputHandler for TicketActivitiesHandler {
                 key_label: "f".to_string(),
                 description: "Filter author".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Scroll".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "h/l".to_string(),
                 description: "Page".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "r".to_string(),
                 description: "Refresh".to_string(),
                 common: true,
+                pinned: false,
             },
         ]
     }

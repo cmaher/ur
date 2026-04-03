@@ -52,21 +52,25 @@ impl InputHandler for CreateActionMenuHandler {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Enter".to_string(),
                 description: "Confirm".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "1-4".to_string(),
                 description: "Quick select".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Abandon".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

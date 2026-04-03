@@ -12,6 +12,9 @@ pub struct FooterCommand {
     pub description: String,
     /// Whether this is a common command (rendered on the right side).
     pub common: bool,
+    /// Pinned commands are always rendered on the right, even when other
+    /// common commands are hidden due to insufficient width.
+    pub pinned: bool,
 }
 
 /// Result of an input handler processing a key event.
@@ -171,31 +174,37 @@ impl InputHandler for GlobalHandler {
                 key_label: "Q".to_string(),
                 description: "Quit".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "q".to_string(),
                 description: "Back".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Tab".to_string(),
                 description: "Switch tab".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "t/f/w".to_string(),
                 description: "Tabs".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Back".to_string(),
                 common: true,
+                pinned: false,
             },
             FooterCommand {
                 key_label: ",".to_string(),
                 description: "Settings".to_string(),
                 common: true,
+                pinned: true,
             },
         ]
     }
@@ -241,6 +250,7 @@ mod tests {
                 key_label: format!("{:?}", self.capture_code),
                 description: format!("{} action", self.handler_name),
                 common: false,
+                pinned: false,
             }]
         }
 

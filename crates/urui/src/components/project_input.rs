@@ -36,11 +36,13 @@ impl InputHandler for ProjectInputHandler {
                 key_label: "Enter".to_string(),
                 description: "Submit".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Cancel".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

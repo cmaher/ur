@@ -87,15 +87,22 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
     let bg_style = Style::default().bg(theme.neutral).fg(theme.neutral_content);
     buf.set_style(area, bg_style);
 
-    // Split into left (non-common) and right (common) groups.
+    // Split into three groups:
+    // - Left (non-common): page-specific commands, always rendered
+    // - Pinned right: always rendered on the far right (e.g. Settings)
+    // - Regular right (common, non-pinned): only rendered if they fit
     let mut left_cmds: Vec<FooterCommand> =
         commands.iter().filter(|c| !c.common).cloned().collect();
     sort_commands(&mut left_cmds);
     let left_refs: Vec<&FooterCommand> = left_cmds.iter().collect();
 
-    let right_refs: Vec<&FooterCommand> = commands.iter().filter(|c| c.common).collect();
+    let pinned_refs: Vec<&FooterCommand> =
+        commands.iter().filter(|c| c.common && c.pinned).collect();
+    let right_refs: Vec<&FooterCommand> =
+        commands.iter().filter(|c| c.common && !c.pinned).collect();
 
     let left_width = commands_width(&left_refs);
+    let pinned_width = commands_width(&pinned_refs);
     let right_width = commands_width(&right_refs);
 
     // Always render left commands
@@ -105,10 +112,21 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, ctx: &TuiContext, commands: &
         line.render(area, buf);
     }
 
-    // Render right commands only if they fit (with 2-char gap from left)
-    let gap = if left_refs.is_empty() { 0u16 } else { 2u16 };
-    if !right_refs.is_empty() && left_width + gap + right_width <= area.width {
-        let right_x = area.x + area.width - right_width;
+    // Always render pinned commands on the far right
+    if !pinned_refs.is_empty() && pinned_width <= area.width {
+        let pinned_x = area.x + area.width - pinned_width;
+        let pinned_area = Rect::new(pinned_x, area.y, pinned_width, 1);
+        let spans = build_spans(&pinned_refs, theme.primary_content, theme.neutral_content);
+        let line = Line::from(spans);
+        line.render(pinned_area, buf);
+    }
+
+    // Render regular right commands only if they fit between left and pinned
+    let gap_left = if left_refs.is_empty() { 0u16 } else { 2u16 };
+    let gap_pinned = if pinned_refs.is_empty() { 0u16 } else { 2u16 };
+    let total_right = right_width + gap_pinned + pinned_width;
+    if !right_refs.is_empty() && left_width + gap_left + total_right <= area.width {
+        let right_x = area.x + area.width - total_right;
         let right_area = Rect::new(right_x, area.y, right_width, 1);
         let spans = build_spans(&right_refs, theme.primary_content, theme.neutral_content);
         let line = Line::from(spans);
@@ -144,6 +162,7 @@ mod tests {
             key_label: key.to_string(),
             description: desc.to_string(),
             common,
+            pinned: false,
         }
     }
 
@@ -308,5 +327,47 @@ mod tests {
         let c2 = cmd("Tab", "Switch", false);
         // c1: 1+1+4 = 6, c2: 3+1+6 = 10, separator: 2
         assert_eq!(commands_width(&[&c1, &c2]), 18);
+    }
+
+    #[test]
+    fn pinned_commands_render_when_regular_right_hidden() {
+        let ctx = make_ctx();
+        // Narrow terminal: left commands take most of the space.
+        // Pinned should still render; regular right should not.
+        let left = cmd("C", "Create", false);
+        let right = cmd("Tab", "Switch tab", true);
+        let pinned = FooterCommand {
+            key_label: ",".to_string(),
+            description: "Settings".to_string(),
+            common: true,
+            pinned: true,
+        };
+        // left: 1+1+6=8, right: 3+1+10=14, pinned: 1+1+8=10
+        // total needed for all: 8 + 2(gap) + 14 + 2(gap) + 10 = 36
+        // Use width 22 so pinned fits (8+2+10=20) but all-three don't (36)
+        let area = Rect::new(0, 0, 22, 1);
+        let mut buf = Buffer::empty(area);
+        render_footer(area, &mut buf, &ctx, &[left, right, pinned]);
+
+        let row: String = (0..22)
+            .map(|x| {
+                buf.cell((x, 0))
+                    .unwrap()
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' ')
+            })
+            .collect();
+        // Pinned "Settings" should appear on the right
+        assert!(
+            row.contains("Settings"),
+            "pinned command should render, got: {row}"
+        );
+        // Regular right "Switch tab" should NOT appear (no room)
+        assert!(
+            !row.contains("Switch tab"),
+            "regular right should be hidden, got: {row}"
+        );
     }
 }

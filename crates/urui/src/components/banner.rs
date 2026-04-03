@@ -57,6 +57,7 @@ impl InputHandler for BannerHandler {
             key_label: "Enter/Esc".to_string(),
             description: "Dismiss".to_string(),
             common: false,
+            pinned: false,
         }]
     }
 

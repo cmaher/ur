@@ -53,16 +53,19 @@ impl InputHandler for FilterMenuHandler {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Space".to_string(),
                 description: "Toggle".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "Esc".to_string(),
                 description: "Close".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }

@@ -320,16 +320,19 @@ impl InputHandler for FlowDetailHandler {
                 key_label: "V".to_string(),
                 description: "Redrive".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "X".to_string(),
                 description: "Cancel".to_string(),
                 common: false,
+                pinned: false,
             },
             FooterCommand {
                 key_label: "g".to_string(),
                 description: "Goto".to_string(),
                 common: false,
+                pinned: false,
             },
         ]
     }
