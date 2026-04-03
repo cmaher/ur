@@ -451,11 +451,12 @@ pub enum TicketOpMsg {
     Redrive { ticket_id: String },
     /// Open (reopen) a ticket by setting its status to "open".
     Open { ticket_id: String },
-    /// Update a ticket's editable fields (title, priority, body, project).
+    /// Update a ticket's editable fields (title, priority, body, project, type).
     UpdateFields {
         ticket_id: String,
         project: String,
         title: String,
+        ticket_type: String,
         priority: i64,
         body: String,
     },

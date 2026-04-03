@@ -513,6 +513,7 @@ async fn run_edit_ticket_flow(
             p.project
         },
         title: p.title,
+        ticket_type: p.ticket_type,
         priority: p.priority,
         body: p.body,
     }))
