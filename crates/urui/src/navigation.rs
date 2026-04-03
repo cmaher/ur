@@ -296,7 +296,8 @@ fn teardown_page(page: &PageId, model: &mut Model) -> usize {
             0 // FlowDetailHandler dispatched from root, not pushed
         }
         PageId::HelpPage => {
-            model.help_page = None;
+            model.help_page.scroll_offset = 0;
+            model.help_page.last_total_lines.set(0);
             1 // MarkdownScrollHandler (help_page)
         }
         _ => 0,

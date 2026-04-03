@@ -345,12 +345,10 @@ fn handle_body_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
         body_page_down, body_page_up, body_scroll_down, body_scroll_up,
     };
 
-    if model.help_page.is_some()
-        && matches!(
-            model.navigation_model.current_page(),
-            super::navigation::PageId::HelpPage
-        )
-    {
+    if matches!(
+        model.navigation_model.current_page(),
+        super::navigation::PageId::HelpPage
+    ) {
         match nav_msg {
             NavMsg::BodyScrollDown => help_scroll_down(&mut model, 1),
             NavMsg::BodyScrollUp => help_scroll_up(&mut model, 1),
