@@ -166,9 +166,10 @@ impl CmdRunner {
                 ticket_id,
                 project,
                 title,
+                ticket_type,
                 priority,
                 body,
-            } => self.exec_update_fields(ticket_id, project, title, priority, body),
+            } => self.exec_update_fields(ticket_id, project, title, ticket_type, priority, body),
         }
     }
 
@@ -317,6 +318,7 @@ impl CmdRunner {
         ticket_id: String,
         project: String,
         title: String,
+        ticket_type: String,
         priority: i64,
         body: String,
     ) {
@@ -324,8 +326,16 @@ impl CmdRunner {
         let port = self.port;
         tokio::spawn(async move {
             debug!(port, %ticket_id, "v2: updating ticket fields");
-            let result =
-                update_ticket_fields(port, &ticket_id, &project, &title, priority, &body).await;
+            let result = update_ticket_fields(
+                port,
+                &ticket_id,
+                &project,
+                &title,
+                &ticket_type,
+                priority,
+                &body,
+            )
+            .await;
             let msg = TicketOpResultMsg::Updated {
                 result: result.map(|()| format!("Updated {ticket_id}")),
             };
@@ -857,12 +867,13 @@ async fn update_ticket_type(port: u16, ticket_id: &str, ticket_type: &str) -> Re
     Ok(())
 }
 
-/// Update a ticket's editable fields (project, title, priority, body).
+/// Update a ticket's editable fields (project, title, type, priority, body).
 async fn update_ticket_fields(
     port: u16,
     ticket_id: &str,
     project: &str,
     title: &str,
+    ticket_type: &str,
     priority: i64,
     body: &str,
 ) -> Result<(), String> {
@@ -880,7 +891,7 @@ async fn update_ticket_fields(
             title: Some(title.to_owned()),
             body: Some(body.to_owned()),
             force: false,
-            ticket_type: None,
+            ticket_type: Some(ticket_type.to_owned()),
             parent_id: None,
             branch: None,
             project: Some(project.to_owned()),
