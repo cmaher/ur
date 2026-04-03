@@ -13,8 +13,8 @@ use super::super::input::{FooterCommand, InputHandler, InputResult};
 use super::super::model::TicketTableModel;
 use super::super::msg::{Msg, NavMsg};
 
-/// Column headers for the ticket table — matches v1 layout exactly.
-const HEADERS: [&str; 7] = ["ID", "T", "P", "S", "Progress", "", "Title"];
+/// Column headers for the ticket table.
+const HEADERS: [&str; 7] = ["ID", "Type", "P", "Status", "Progress", "", "Title"];
 
 /// Column index of the progress count label.
 const PROGRESS_COUNT_COL: usize = 4;
@@ -22,29 +22,29 @@ const PROGRESS_COUNT_COL: usize = 4;
 const PROGRESS_BAR_COL: usize = 5;
 
 /// Build the column width constraints for the ticket table.
-/// ID(12), T(2), P(2), S(2), Progress(8), Bar(10), Title(fill).
+/// ID(12), Type(6), P(3), Status(8), Progress(8), Bar(10), Title(fill).
 fn table_widths() -> Vec<Constraint> {
     vec![
         Constraint::Length(12),
-        Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Length(2),
+        Constraint::Length(6),
+        Constraint::Length(3),
+        Constraint::Length(8),
         Constraint::Length(8),
         Constraint::Length(10),
         Constraint::Fill(1),
     ]
 }
 
-/// Derive the single-character display label for the S (status) column.
+/// Derive the display label for the Status column.
 ///
-/// Dispatched tickets show "D", closed show "C", everything else shows "O".
+/// Dispatched tickets show "Disp", closed show "Clsd", everything else shows "Open".
 fn dispatch_label(ticket: &Ticket) -> String {
     if !ticket.dispatch_status.is_empty() {
-        "D".to_string()
+        "Disp".to_string()
     } else if ticket.status == "closed" {
-        "C".to_string()
+        "Clsd".to_string()
     } else {
-        "O".to_string()
+        "Open".to_string()
     }
 }
 
@@ -65,11 +65,11 @@ pub fn ticket_progress(ticket: &Ticket) -> (u32, u32) {
     }
 }
 
-/// Single-character label for the ticket type column.
+/// Label for the ticket type column.
 fn type_label(ticket: &Ticket) -> &'static str {
     match ticket.ticket_type.as_str() {
-        "design" => "D",
-        _ => "C",
+        "design" => "Dsgn",
+        _ => "Code",
     }
 }
 
@@ -620,21 +620,21 @@ mod tests {
     #[test]
     fn dispatch_label_open() {
         let t = make_ticket("ur-001", "test");
-        assert_eq!(dispatch_label(&t), "O");
+        assert_eq!(dispatch_label(&t), "Open");
     }
 
     #[test]
     fn dispatch_label_closed() {
         let mut t = make_ticket("ur-001", "test");
         t.status = "closed".to_string();
-        assert_eq!(dispatch_label(&t), "C");
+        assert_eq!(dispatch_label(&t), "Clsd");
     }
 
     #[test]
     fn dispatch_label_dispatched() {
         let mut t = make_ticket("ur-001", "test");
         t.dispatch_status = "implementing".to_string();
-        assert_eq!(dispatch_label(&t), "D");
+        assert_eq!(dispatch_label(&t), "Disp");
     }
 
     // ── ticket_progress tests ─────────────────────────────────────────
@@ -666,20 +666,20 @@ mod tests {
     fn type_label_code() {
         let mut t = make_ticket("ur-001", "test");
         t.ticket_type = "code".to_string();
-        assert_eq!(type_label(&t), "C");
+        assert_eq!(type_label(&t), "Code");
     }
 
     #[test]
-    fn type_label_task_defaults_to_c() {
+    fn type_label_task_defaults_to_code() {
         let t = make_ticket("ur-001", "test");
-        assert_eq!(type_label(&t), "C");
+        assert_eq!(type_label(&t), "Code");
     }
 
     #[test]
     fn type_label_design() {
         let mut t = make_ticket("ur-001", "test");
         t.ticket_type = "design".to_string();
-        assert_eq!(type_label(&t), "D");
+        assert_eq!(type_label(&t), "Dsgn");
     }
 
     // ── build_rows tests ──────────────────────────────────────────────
@@ -691,9 +691,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 7);
         assert_eq!(rows[0][0], "ur-001");
-        assert_eq!(rows[0][1], "C");
+        assert_eq!(rows[0][1], "Code");
         assert_eq!(rows[0][2], "2");
-        assert_eq!(rows[0][3], "O");
+        assert_eq!(rows[0][3], "Open");
         assert!(rows[0][4].is_empty()); // progress count placeholder
         assert!(rows[0][5].is_empty()); // progress bar placeholder
         assert_eq!(rows[0][6], "First ticket");
