@@ -12,6 +12,7 @@ use super::components::filter_menu::{
 };
 use super::components::force_close_confirm::ForceCloseConfirmHandler;
 use super::components::goto_menu::{GotoMenuHandler, resolve_goto_target};
+use super::components::help_overlay::HelpOverlayHandler;
 use super::components::priority_picker::{
     PriorityPickerHandler, cursor_to_priority, priority_count, priority_to_cursor,
 };
@@ -97,6 +98,9 @@ pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
         | OverlayMsg::SettingsActivate
         | OverlayMsg::ThemeSelected(_)
         | OverlayMsg::SettingsClosed => handle_settings_overlay(model, msg),
+
+        // === Help Overlay ===
+        OverlayMsg::OpenHelp | OverlayMsg::HelpClosed => handle_help_overlay(model, msg),
     }
 }
 
@@ -586,6 +590,22 @@ fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd
             (model, vec![cmd])
         }
         OverlayMsg::SettingsClosed => {
+            close_overlay(&mut model);
+            (model, vec![])
+        }
+        _ => (model, vec![]),
+    }
+}
+
+/// Handle help overlay messages.
+fn handle_help_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
+        OverlayMsg::OpenHelp => {
+            model.active_overlay = Some(ActiveOverlay::Help);
+            model.input_stack.push(Box::new(HelpOverlayHandler));
+            (model, vec![])
+        }
+        OverlayMsg::HelpClosed => {
             close_overlay(&mut model);
             (model, vec![])
         }

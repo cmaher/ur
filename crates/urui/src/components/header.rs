@@ -13,6 +13,26 @@ use crate::navigation::{NavigationModel, TabId};
 /// `primary` bg / `primary_content` fg; inactive tabs use
 /// `base_200` bg / `base_content` fg. Reuses v1 theme colors and
 /// visual style.
+/// Build the display text for a tab label.
+///
+/// Most tabs use their first letter as the shortcut (e.g. "(t)ickets").
+/// The Help tab uses "~" as its shortcut: "(~) help".
+fn tab_display_text(tab: TabId) -> String {
+    if tab == TabId::Help {
+        return " (~) help  ".to_string();
+    }
+    let label = tab.label();
+    let shortcut = label
+        .chars()
+        .next()
+        .unwrap_or(' ')
+        .to_lowercase()
+        .next()
+        .unwrap_or(' ');
+    let rest = &label[label.chars().next().map(|c| c.len_utf8()).unwrap_or(0)..];
+    format!(" ({}){}  ", shortcut, rest.to_lowercase())
+}
+
 pub fn render_header(area: Rect, buf: &mut Buffer, ctx: &TuiContext, nav: &NavigationModel) {
     let theme = &ctx.theme;
 
@@ -23,16 +43,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, ctx: &TuiContext, nav: &Navig
     let mut spans: Vec<Span> = TabId::all()
         .iter()
         .map(|&tab| {
-            let label = tab.label();
-            let shortcut = label
-                .chars()
-                .next()
-                .unwrap_or(' ')
-                .to_lowercase()
-                .next()
-                .unwrap_or(' ');
-            let rest = &label[label.chars().next().map(|c| c.len_utf8()).unwrap_or(0)..];
-            let text = format!(" ({}){}  ", shortcut, rest.to_lowercase());
+            let text = tab_display_text(tab);
             let style = if tab == nav.active_tab {
                 Style::default().bg(theme.primary).fg(theme.primary_content)
             } else {

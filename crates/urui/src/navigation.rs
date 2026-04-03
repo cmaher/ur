@@ -9,12 +9,13 @@ pub enum TabId {
     Tickets,
     Flows,
     Workers,
+    Help,
 }
 
 impl TabId {
     /// Returns all tab variants in display order.
     pub fn all() -> &'static [TabId] {
-        &[TabId::Tickets, TabId::Flows, TabId::Workers]
+        &[TabId::Tickets, TabId::Flows, TabId::Workers, TabId::Help]
     }
 
     /// Returns the next tab in display order, wrapping around.
@@ -22,7 +23,8 @@ impl TabId {
         match self {
             TabId::Tickets => TabId::Flows,
             TabId::Flows => TabId::Workers,
-            TabId::Workers => TabId::Tickets,
+            TabId::Workers => TabId::Help,
+            TabId::Help => TabId::Tickets,
         }
     }
 
@@ -32,6 +34,7 @@ impl TabId {
             TabId::Tickets => "Tickets",
             TabId::Flows => "Flows",
             TabId::Workers => "Workers",
+            TabId::Help => "Help",
         }
     }
 }
@@ -63,6 +66,8 @@ pub enum PageId {
     FlowDetail { ticket_id: String },
     /// The root workers list page.
     WorkerList,
+    /// The root help page (static markdown content).
+    HelpPage,
 }
 
 /// Navigation state: tracks the active tab and per-tab page stacks.
@@ -85,6 +90,7 @@ impl NavigationModel {
         tab_stacks.insert(TabId::Tickets, vec![PageId::TicketList]);
         tab_stacks.insert(TabId::Flows, vec![PageId::FlowList]);
         tab_stacks.insert(TabId::Workers, vec![PageId::WorkerList]);
+        tab_stacks.insert(TabId::Help, vec![PageId::HelpPage]);
         Self {
             active_tab: TabId::Tickets,
             tab_stacks,
@@ -209,6 +215,7 @@ fn is_tab_data_not_loaded(tab: TabId, model: &Model) -> bool {
         TabId::Tickets => matches!(model.ticket_list.data, super::model::LoadState::NotLoaded),
         TabId::Flows => matches!(model.flow_list.data, super::model::LoadState::NotLoaded),
         TabId::Workers => matches!(model.worker_list.data, super::model::LoadState::NotLoaded),
+        TabId::Help => false, // static content, always available
     }
 }
 
@@ -218,7 +225,7 @@ fn is_tab_data_not_loaded(tab: TabId, model: &Model) -> bool {
 /// data fetches) is handled here. Each page type maps to specific setup.
 fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
     use super::pages::ticket_activities::{TicketActivitiesHandler, start_activities_fetch};
-    use super::pages::ticket_body::{TicketBodyHandler, init_body_model};
+    use super::pages::ticket_body::{init_body_model, ticket_body_handler};
     use super::update::{
         start_flow_list_fetch, start_ticket_detail_fetch, start_ticket_list_fetch,
         start_worker_list_fetch,
@@ -246,7 +253,7 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
             title,
             body,
         } => {
-            model.input_stack.push(Box::new(TicketBodyHandler));
+            model.input_stack.push(Box::new(ticket_body_handler()));
             init_body_model(model, ticket_id.clone(), title.clone(), body.clone());
             vec![]
         }
@@ -261,6 +268,10 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
         PageId::WorkerList => {
             let cmd = start_worker_list_fetch(model);
             vec![cmd]
+        }
+        PageId::HelpPage => {
+            super::pages::help_page::init_help_page(model);
+            vec![]
         }
     }
 }
@@ -278,11 +289,15 @@ fn teardown_page(page: &PageId, model: &mut Model) -> usize {
         }
         PageId::TicketBody { .. } => {
             model.ticket_body = None;
-            1 // TicketBodyHandler
+            1 // MarkdownScrollHandler (ticket_body)
         }
         PageId::FlowDetail { .. } => {
             model.flow_detail = None;
             0 // FlowDetailHandler dispatched from root, not pushed
+        }
+        PageId::HelpPage => {
+            model.help_page = None;
+            1 // MarkdownScrollHandler (help_page)
         }
         _ => 0,
     }
@@ -385,7 +400,8 @@ mod tests {
     fn tab_next_cycles() {
         assert_eq!(TabId::Tickets.next(), TabId::Flows);
         assert_eq!(TabId::Flows.next(), TabId::Workers);
-        assert_eq!(TabId::Workers.next(), TabId::Tickets);
+        assert_eq!(TabId::Workers.next(), TabId::Help);
+        assert_eq!(TabId::Help.next(), TabId::Tickets);
     }
 
     #[test]
@@ -393,6 +409,7 @@ mod tests {
         assert_eq!(TabId::Tickets.label(), "Tickets");
         assert_eq!(TabId::Flows.label(), "Flows");
         assert_eq!(TabId::Workers.label(), "Workers");
+        assert_eq!(TabId::Help.label(), "Help");
     }
 
     #[test]

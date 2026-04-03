@@ -5,6 +5,7 @@ pub mod footer;
 pub mod force_close_confirm;
 pub mod goto_menu;
 pub mod header;
+pub mod help_overlay;
 pub mod overlay;
 pub mod priority_picker;
 pub mod progress_bar;

@@ -170,6 +170,11 @@ pub enum OverlayMsg {
     /// The user cancelled title input.
     TitleInputCancelled,
 
+    /// Open the help (commands) overlay.
+    OpenHelp,
+    /// The help overlay was closed.
+    HelpClosed,
+
     /// Open the settings overlay.
     OpenSettings { custom_theme_names: Vec<String> },
     /// Esc was pressed in the settings overlay (back or close depending on level).
