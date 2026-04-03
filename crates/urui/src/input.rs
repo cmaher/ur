@@ -214,6 +214,9 @@ impl InputHandler for GlobalHandler {
                 KeyCode::Char('w') => {
                     return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Workers)));
                 }
+                KeyCode::Char('~') => {
+                    return InputResult::Capture(Msg::Nav(NavMsg::TabSwitch(TabId::Help)));
+                }
                 KeyCode::Char(',') => {
                     return InputResult::Capture(Msg::Overlay(OverlayMsg::OpenSettings {
                         custom_theme_names: vec![],

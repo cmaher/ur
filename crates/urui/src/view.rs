@@ -23,6 +23,7 @@ use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::flow_detail::render_flow_detail;
 use super::pages::flows_list::render_flows_list;
+use super::pages::help_page::render_help_page;
 use super::pages::ticket_activities::render_ticket_activities;
 use super::pages::ticket_body::render_ticket_body;
 use super::pages::ticket_detail::render_ticket_detail;
@@ -97,6 +98,7 @@ fn root_page_footer_commands(model: &Model) -> Vec<super::input::FooterCommand> 
         PageId::FlowList => FlowListHandler.footer_commands(),
         PageId::FlowDetail { .. } => FlowDetailHandler.footer_commands(),
         PageId::WorkerList => WorkerListHandler.footer_commands(),
+        PageId::HelpPage => vec![],
         _ => vec![],
     }
 }
@@ -124,6 +126,9 @@ fn render_page_content(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &M
         }
         PageId::FlowDetail { .. } => {
             render_flow_detail(area, buf, ctx, model);
+        }
+        PageId::HelpPage => {
+            render_help_page(area, buf, ctx, model);
         }
     }
 }

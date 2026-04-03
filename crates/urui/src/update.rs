@@ -336,18 +336,34 @@ fn activities_total_pages(am: &super::model::TicketActivitiesModel) -> usize {
     }
 }
 
-/// Handle navigation messages specific to the body page.
+/// Handle navigation messages specific to the body/help pages.
 fn handle_body_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    use super::pages::help_page::{help_page_down, help_page_up, help_scroll_down, help_scroll_up};
     use super::pages::ticket_body::{
         body_page_down, body_page_up, body_scroll_down, body_scroll_up,
     };
 
-    match nav_msg {
-        NavMsg::BodyScrollDown => body_scroll_down(&mut model, 1),
-        NavMsg::BodyScrollUp => body_scroll_up(&mut model, 1),
-        NavMsg::BodyPageDown => body_page_down(&mut model),
-        NavMsg::BodyPageUp => body_page_up(&mut model),
-        _ => {}
+    if model.help_page.is_some()
+        && matches!(
+            model.navigation_model.current_page(),
+            super::navigation::PageId::HelpPage
+        )
+    {
+        match nav_msg {
+            NavMsg::BodyScrollDown => help_scroll_down(&mut model, 1),
+            NavMsg::BodyScrollUp => help_scroll_up(&mut model, 1),
+            NavMsg::BodyPageDown => help_page_down(&mut model),
+            NavMsg::BodyPageUp => help_page_up(&mut model),
+            _ => {}
+        }
+    } else {
+        match nav_msg {
+            NavMsg::BodyScrollDown => body_scroll_down(&mut model, 1),
+            NavMsg::BodyScrollUp => body_scroll_up(&mut model, 1),
+            NavMsg::BodyPageDown => body_page_down(&mut model),
+            NavMsg::BodyPageUp => body_page_up(&mut model),
+            _ => {}
+        }
     }
     (model, vec![])
 }
@@ -443,6 +459,7 @@ fn fetch_cmd_for_tab(tab: TabId, model: &Model) -> Cmd {
             offset: None,
         }),
         TabId::Workers => Cmd::Fetch(FetchCmd::Workers),
+        TabId::Help => Cmd::None, // static content, no fetch needed
     }
 }
 
@@ -452,6 +469,7 @@ fn invalidate_tab(tab: TabId, model: &mut Model) {
         TabId::Tickets => model.ticket_list.data = LoadState::NotLoaded,
         TabId::Flows => model.flow_list.data = LoadState::NotLoaded,
         TabId::Workers => model.worker_list.data = LoadState::NotLoaded,
+        TabId::Help => {} // static content, nothing to invalidate
     }
 }
 

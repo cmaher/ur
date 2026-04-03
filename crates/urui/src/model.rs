@@ -382,6 +382,15 @@ pub struct WorkerListModel {
     pub current_page: usize,
 }
 
+/// Sub-model for the help page (static markdown content viewer).
+#[derive(Debug, Clone)]
+pub struct HelpPageModel {
+    /// Current vertical scroll offset (lines from the top).
+    pub scroll_offset: usize,
+    /// Rendered line count from the last render, used to clamp scroll.
+    pub last_total_lines: std::cell::Cell<usize>,
+}
+
 /// Which overlay is currently active, if any.
 #[derive(Debug, Clone)]
 pub enum ActiveOverlay {
@@ -507,6 +516,8 @@ pub struct Model {
     pub ticket_activities: Option<TicketActivitiesModel>,
     /// Sub-model for the ticket body page (set when viewing body).
     pub ticket_body: Option<TicketBodyModel>,
+    /// Sub-model for the help page (set when the Help tab is active).
+    pub help_page: Option<HelpPageModel>,
     /// Notification tracking model for workflow state transitions.
     pub notifications: NotificationModel,
     /// When set, the tea loop should swap the theme on ctx before the next render.
@@ -548,6 +559,7 @@ impl Model {
             ticket_filters: TicketFilters::default(),
             ticket_activities: None,
             ticket_body: None,
+            help_page: None,
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
             pending_theme_swap: None,
             custom_theme_names: vec![],
