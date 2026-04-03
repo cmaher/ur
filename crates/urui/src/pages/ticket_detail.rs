@@ -673,7 +673,7 @@ fn handle_detail_table_key(code: KeyCode) -> Option<Msg> {
         }
         KeyCode::Char('h') | KeyCode::Left => Some(Msg::Nav(NavMsg::TicketDetailPageLeft)),
         KeyCode::Char('l') | KeyCode::Right => Some(Msg::Nav(NavMsg::TicketDetailPageRight)),
-        KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketDetailSelect)),
+        KeyCode::Char(' ') | KeyCode::Enter => Some(Msg::Nav(NavMsg::TicketDetailSelect)),
         _ => None,
     }
 }
@@ -801,6 +801,15 @@ mod tests {
     fn handler_captures_enter_as_select() {
         let handler = TicketDetailHandler;
         match handler.handle_key(plain_key(KeyCode::Enter)) {
+            InputResult::Capture(Msg::Nav(NavMsg::TicketDetailSelect)) => {}
+            other => panic!("expected select, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_captures_space_as_select() {
+        let handler = TicketDetailHandler;
+        match handler.handle_key(plain_key(KeyCode::Char(' '))) {
             InputResult::Capture(Msg::Nav(NavMsg::TicketDetailSelect)) => {}
             other => panic!("expected select, got {other:?}"),
         }
