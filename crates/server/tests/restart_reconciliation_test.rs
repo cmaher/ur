@@ -51,11 +51,6 @@ async fn make_components_with_db(
         },
         network: network_config.clone(),
         hostexec: ur_config::HostExecConfig::default(),
-        rag: ur_config::RagConfig {
-            qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
-            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
-            docs: ur_config::RagDocsConfig::default(),
-        },
         backup: ur_config::BackupConfig {
             path: None,
             interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,

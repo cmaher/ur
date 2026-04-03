@@ -79,18 +79,6 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
     let backup_dir = config_dir.join("backups");
     init_dir(&backup_dir, output)?;
 
-    let rag_dir = config_dir.join("rag");
-    init_dir(&rag_dir, output)?;
-
-    let rag_docs_dir = rag_dir.join("docs");
-    init_dir(&rag_docs_dir, output)?;
-
-    let rag_docs_rust_dir = rag_docs_dir.join("rust");
-    init_dir(&rag_docs_rust_dir, output)?;
-
-    let rag_qdrant_dir = rag_dir.join("qdrant");
-    init_dir(&rag_qdrant_dir, output)?;
-
     let should_force_config = flags.force || flags.force_config;
     let should_force_squid = flags.force || flags.force_squid;
 
@@ -205,10 +193,6 @@ mod tests {
         assert!(tmp.path().join("squid").is_dir());
         assert!(tmp.path().join("hostexec").is_dir());
         assert!(tmp.path().join("hostexec/example.lua").exists());
-        assert!(tmp.path().join("rag").is_dir());
-        assert!(tmp.path().join("rag/docs").is_dir());
-        assert!(tmp.path().join("rag/docs/rust").is_dir());
-        assert!(tmp.path().join("rag/qdrant").is_dir());
         assert!(tmp.path().join("logs").is_dir());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());

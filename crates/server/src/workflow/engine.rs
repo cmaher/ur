@@ -274,11 +274,6 @@ mod tests {
                 worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
             hostexec: ur_config::HostExecConfig::default(),
-            rag: ur_config::RagConfig {
-                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.into(),
-                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.into(),
-                docs: ur_config::RagDocsConfig::default(),
-            },
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,

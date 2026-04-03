@@ -269,67 +269,6 @@ pub const DEFAULT_WORKER_PREFIX: &str = "ur-worker-";
 /// Default maximum number of cached repo clones per project.
 pub const DEFAULT_POOL_LIMIT: u32 = 10;
 
-/// Default hostname for the Qdrant vector database on the Docker network.
-pub const DEFAULT_QDRANT_HOSTNAME: &str = "ur-qdrant";
-
-/// Default gRPC port for Qdrant.
-pub const DEFAULT_QDRANT_PORT: u16 = 6334;
-
-/// Default embedding model name for RAG.
-pub const DEFAULT_EMBEDDING_MODEL: &str = "all-MiniLM-L6-v2";
-
-/// HuggingFace download metadata for a supported embedding model.
-///
-/// Contains only the information needed to download model files — no fastembed
-/// or other heavy dependencies. Used by the CLI (`ur rag model download`) and
-/// the install script logic.
-pub struct ModelDownloadInfo {
-    /// HuggingFace org (e.g. "Qdrant").
-    pub hf_org: &'static str,
-    /// HuggingFace repo name (e.g. "all-MiniLM-L6-v2-onnx").
-    pub hf_repo: &'static str,
-    /// Git commit hash for the snapshot.
-    pub hf_commit: &'static str,
-    /// Files to download from HuggingFace.
-    pub hf_files: &'static [&'static str],
-    /// Vector dimensionality (e.g. 384 for MiniLM).
-    pub vector_size: u64,
-}
-
-const MINI_LM_FILES: &[&str] = &[
-    "model.onnx",
-    "tokenizer.json",
-    "config.json",
-    "special_tokens_map.json",
-    "tokenizer_config.json",
-];
-
-static SUPPORTED_MODELS: &[(&str, ModelDownloadInfo)] = &[(
-    "all-MiniLM-L6-v2",
-    ModelDownloadInfo {
-        hf_org: "Qdrant",
-        hf_repo: "all-MiniLM-L6-v2-onnx",
-        hf_commit: "5f1b8cd78bc4fb444dd171e59b18f3a3af89a079",
-        hf_files: MINI_LM_FILES,
-        vector_size: 384,
-    },
-)];
-
-/// Look up model download info by config name (e.g. "all-MiniLM-L6-v2").
-///
-/// Returns `None` for unknown model names.
-pub fn model_download_info(name: &str) -> Option<&'static ModelDownloadInfo> {
-    SUPPORTED_MODELS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, info)| info)
-}
-
-/// List all supported model names.
-pub fn supported_model_names() -> Vec<&'static str> {
-    SUPPORTED_MODELS.iter().map(|(n, _)| *n).collect()
-}
-
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
@@ -358,7 +297,6 @@ struct RawConfig {
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
     hostexec: Option<RawHostExecConfig>,
-    rag: Option<RawRagConfig>,
     backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
     logs_dir: Option<PathBuf>,
@@ -465,21 +403,6 @@ struct RawNetworkConfig {
     worker_name: Option<String>,
     server_hostname: Option<String>,
     worker_prefix: Option<String>,
-}
-
-/// Raw TOML representation for the `[rag]` section.
-#[derive(Debug, Deserialize)]
-struct RawRagConfig {
-    qdrant_hostname: Option<String>,
-    embedding_model: Option<String>,
-    docs: Option<RawRagDocsConfig>,
-}
-
-/// Raw TOML representation for the `[rag.docs]` section.
-#[derive(Debug, Deserialize)]
-struct RawRagDocsConfig {
-    #[serde(default)]
-    exclude: Vec<String>,
 }
 
 /// Raw TOML representation for the `[backup]` section.
@@ -841,25 +764,6 @@ pub struct NetworkConfig {
     pub worker_prefix: String,
 }
 
-/// RAG (Retrieval-Augmented Generation) configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RagConfig {
-    /// Hostname containers use to reach Qdrant via Docker DNS (default: "ur-qdrant").
-    pub qdrant_hostname: String,
-    /// Embedding model name (default: "all-MiniLM-L6-v2").
-    pub embedding_model: String,
-    /// Documentation generation settings.
-    pub docs: RagDocsConfig,
-}
-
-/// Configuration for RAG documentation generation (`[rag.docs]`).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RagDocsConfig {
-    /// Direct dependency crate names to exclude from generated docs.
-    /// Useful for filtering out noisy deps that add bulk without value.
-    pub exclude: Vec<String>,
-}
-
 /// Backup configuration for periodic database snapshots.
 ///
 /// When `path` is `None`, periodic backup is disabled.
@@ -1013,8 +917,6 @@ pub struct Config {
     pub network: NetworkConfig,
     /// Global hostexec command configuration (from `[hostexec]` section).
     pub hostexec: HostExecConfig,
-    /// RAG system settings (Qdrant vector database).
-    pub rag: RagConfig,
     /// Periodic backup settings for the database.
     pub backup: BackupConfig,
     /// Server runtime settings (container command, polling intervals, etc.).
@@ -1085,7 +987,6 @@ impl Config {
             None => HostExecConfig::default(),
         };
 
-        let rag = resolve_rag(raw.rag);
         let backup = resolve_backup(raw.backup);
         let server = resolve_server(raw.server);
         let tui = resolve_tui(raw.tui);
@@ -1114,7 +1015,6 @@ impl Config {
             proxy,
             network,
             hostexec,
-            rag,
             backup,
             server,
             tui,
@@ -1335,28 +1235,6 @@ fn resolve_network(raw: Option<RawNetworkConfig>) -> NetworkConfig {
             worker_name: DEFAULT_WORKER_NETWORK_NAME.to_string(),
             server_hostname: DEFAULT_SERVER_HOSTNAME.to_string(),
             worker_prefix: DEFAULT_WORKER_PREFIX.to_string(),
-        },
-    }
-}
-
-fn resolve_rag(raw: Option<RawRagConfig>) -> RagConfig {
-    match raw {
-        Some(r) => RagConfig {
-            qdrant_hostname: r
-                .qdrant_hostname
-                .unwrap_or_else(|| DEFAULT_QDRANT_HOSTNAME.to_string()),
-            embedding_model: r
-                .embedding_model
-                .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string()),
-            docs: r
-                .docs
-                .map(|d| RagDocsConfig { exclude: d.exclude })
-                .unwrap_or_default(),
-        },
-        None => RagConfig {
-            qdrant_hostname: DEFAULT_QDRANT_HOSTNAME.to_string(),
-            embedding_model: DEFAULT_EMBEDDING_MODEL.to_string(),
-            docs: RagDocsConfig::default(),
         },
     }
 }
@@ -1721,34 +1599,6 @@ mod tests {
         assert_eq!(cfg.network.worker_name, "custom-workers");
         assert_eq!(cfg.network.server_hostname, "my-server");
         assert_eq!(cfg.network.worker_prefix, "test-worker-");
-    }
-
-    #[test]
-    fn rag_defaults_when_section_absent() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
-    }
-
-    #[test]
-    fn rag_defaults_when_present_but_empty() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.qdrant_hostname, DEFAULT_QDRANT_HOSTNAME);
-    }
-
-    #[test]
-    fn rag_reads_custom_qdrant_hostname() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            "[rag]\nqdrant_hostname = \"my-qdrant\"\n",
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.qdrant_hostname, "my-qdrant");
     }
 
     #[test]
@@ -2267,70 +2117,6 @@ mounts = ["/opt/tools:/workspace/.tools:foo"]
         assert!(msg.contains("mounts[0]"), "{msg}");
         assert!(msg.contains("invalid mount suffix"), "{msg}");
         assert!(msg.contains(":foo"), "{msg}");
-    }
-
-    #[test]
-    fn rag_embedding_model_defaults_when_absent() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
-    }
-
-    #[test]
-    fn rag_reads_custom_embedding_model() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            "[rag]\nembedding_model = \"custom-model\"\n",
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.embedding_model, "custom-model");
-    }
-
-    #[test]
-    fn rag_embedding_model_defaults_when_rag_section_empty() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.embedding_model, DEFAULT_EMBEDDING_MODEL);
-    }
-
-    #[test]
-    fn rag_docs_exclude_defaults_to_empty() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.rag.docs.exclude.is_empty());
-    }
-
-    #[test]
-    fn rag_docs_exclude_defaults_when_rag_section_empty() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[rag]\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.rag.docs.exclude.is_empty());
-    }
-
-    #[test]
-    fn rag_docs_exclude_reads_values() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            "[rag.docs]\nexclude = [\"tokio\", \"serde\"]\n",
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.rag.docs.exclude, vec!["tokio", "serde"]);
-    }
-
-    #[test]
-    fn rag_docs_section_empty_exclude_defaults() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[rag.docs]\n").unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(cfg.rag.docs.exclude.is_empty());
     }
 
     #[test]

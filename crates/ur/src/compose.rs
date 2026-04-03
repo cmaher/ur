@@ -177,7 +177,6 @@ impl ComposeManager {
 struct ComposeParams {
     server_container_name: String,
     squid_container_name: String,
-    qdrant_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
     /// Host-side backup path, if configured. Mounted at `/backup` in the server container.
@@ -193,13 +192,11 @@ struct ComposeParams {
 pub fn generate_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
-    rag: &ur_config::RagConfig,
     backup: &ur_config::BackupConfig,
 ) -> String {
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
-        qdrant_container_name: rag.qdrant_hostname.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
         backup_path: if backup.enabled {
@@ -214,8 +211,6 @@ pub fn generate_compose(
     write_header(&mut out);
     writeln!(out, "services:").unwrap();
     write_squid_service(&mut out, &params);
-    writeln!(out).unwrap();
-    write_qdrant_service(&mut out, &params);
     writeln!(out).unwrap();
     write_server_service(&mut out, &params);
     writeln!(out).unwrap();
@@ -249,21 +244,6 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    restart: unless-stopped").unwrap();
 }
 
-fn write_qdrant_service(out: &mut String, params: &ComposeParams) {
-    writeln!(out, "  ur-qdrant:").unwrap();
-    writeln!(out, "    image: qdrant/qdrant").unwrap();
-    writeln!(out, "    container_name: {}", params.qdrant_container_name).unwrap();
-    writeln!(out, "    volumes:").unwrap();
-    writeln!(
-        out,
-        "      - ${{UR_CONFIG:-~/.ur}}/rag/qdrant:/qdrant/storage"
-    )
-    .unwrap();
-    writeln!(out, "    networks:").unwrap();
-    writeln!(out, "      - infra").unwrap();
-    writeln!(out, "    restart: unless-stopped").unwrap();
-}
-
 fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-server:").unwrap();
     writeln!(out, "    image: ur-server:latest").unwrap();
@@ -275,7 +255,6 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      - /var/run/docker.sock:/var/run/docker.sock").unwrap();
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
     writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
-    writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}/fastembed:/fastembed:ro").unwrap();
     if let Some(backup_path) = &params.backup_path {
         writeln!(
             out,
@@ -296,7 +275,6 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_HOST_WORKSPACE=${{UR_WORKSPACE:-${{HOME}}/.ur/workspace}}"
     )
     .unwrap();
-    writeln!(out, "      - FASTEMBED_CACHE_DIR=/fastembed").unwrap();
     writeln!(
         out,
         "      - UR_HOST_LOGS_DIR=${{UR_LOGS_DIR:-${{HOME}}/.ur/logs}}"
@@ -391,8 +369,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         config.logs_dir.to_string_lossy().into_owned(),
     ));
 
-    let compose_content =
-        generate_compose(&config.network, &config.proxy, &config.rag, &config.backup);
+    let compose_content = generate_compose(&config.network, &config.proxy, &config.backup);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -433,11 +410,6 @@ mod tests {
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
-            rag: ur_config::RagConfig {
-                qdrant_hostname: ur_config::DEFAULT_QDRANT_HOSTNAME.to_string(),
-                embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
-                docs: ur_config::RagDocsConfig::default(),
-            },
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -498,28 +470,21 @@ mod tests {
             hostname: "test-squid".to_string(),
             allowlist: vec![],
         };
-        let rag = ur_config::RagConfig {
-            qdrant_hostname: "test-qdrant".to_string(),
-            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
-            docs: ur_config::RagDocsConfig::default(),
-        };
         let backup = ur_config::BackupConfig {
             path: None,
             interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
             enabled: true,
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         };
-        let generated = generate_compose(&network, &proxy, &rag, &backup);
+        let generated = generate_compose(&network, &proxy, &backup);
 
-        // Verify all three services are present
+        // Verify services are present
         assert!(generated.contains("  ur-squid:"));
-        assert!(generated.contains("  ur-qdrant:"));
         assert!(generated.contains("  ur-server:"));
 
         // Verify container names
         assert!(generated.contains("container_name: test-server"));
         assert!(generated.contains("container_name: test-squid"));
-        assert!(generated.contains("container_name: test-qdrant"));
 
         // Verify network names
         assert!(generated.contains("name: test-net"));
@@ -541,9 +506,6 @@ mod tests {
         // Verify squid volume
         assert!(generated.contains("allowlist.txt:/etc/squid/allowlist.txt:ro"));
 
-        // Verify qdrant volume
-        assert!(generated.contains("rag/qdrant:/qdrant/storage"));
-
         // Verify networks section
         assert!(generated.contains("networks:"));
         assert!(generated.contains("driver: bridge"));
@@ -561,18 +523,13 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let rag = ur_config::RagConfig {
-            qdrant_hostname: "ur-qdrant".to_string(),
-            embedding_model: ur_config::DEFAULT_EMBEDDING_MODEL.to_string(),
-            docs: ur_config::RagDocsConfig::default(),
-        };
         let backup = ur_config::BackupConfig {
             path: None,
             interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
             enabled: true,
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         };
-        let generated = generate_compose(&network, &proxy, &rag, &backup);
+        let generated = generate_compose(&network, &proxy, &backup);
 
         // Verify top-level structure: starts with comment, then services, then networks
         assert!(generated.starts_with("# Auto-generated"));
