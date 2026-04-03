@@ -232,43 +232,11 @@ impl InputHandler for GlobalHandler {
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "Q".to_string(),
-                description: "Quit".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "q".to_string(),
-                description: "Back".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "Tab".to_string(),
-                description: "Switch tab".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "t/f/w".to_string(),
-                description: "Tabs".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Back".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: ",".to_string(),
-                description: "Settings".to_string(),
-                common: true,
-            },
-            FooterCommand {
-                key_label: "?".to_string(),
-                description: "Commands".to_string(),
-                common: true,
-            },
-        ]
+        vec![FooterCommand {
+            key_label: "?".to_string(),
+            description: "Commands".to_string(),
+            common: true,
+        }]
     }
 
     fn name(&self) -> &str {
@@ -488,17 +456,12 @@ mod tests {
     fn global_handler_footer_commands() {
         let handler = GlobalHandler;
         let commands = handler.footer_commands();
-        assert!(commands.len() >= 5);
+        assert_eq!(commands.len(), 1);
         assert!(commands.iter().all(|c| c.common));
         assert!(
             commands
                 .iter()
-                .any(|c| c.key_label == "q" && c.description == "Back")
-        );
-        assert!(
-            commands
-                .iter()
-                .any(|c| c.key_label == "t/f/w" && c.description == "Tabs")
+                .any(|c| c.key_label == "?" && c.description == "Commands")
         );
     }
 
