@@ -219,6 +219,9 @@ impl InputHandler for GlobalHandler {
                         custom_theme_names: vec![],
                     }));
                 }
+                KeyCode::Char('?') => {
+                    return InputResult::Capture(Msg::Overlay(OverlayMsg::OpenHelp));
+                }
                 _ => {}
             }
         }
@@ -255,6 +258,11 @@ impl InputHandler for GlobalHandler {
             FooterCommand {
                 key_label: ",".to_string(),
                 description: "Settings".to_string(),
+                common: true,
+            },
+            FooterCommand {
+                key_label: "?".to_string(),
+                description: "Commands".to_string(),
                 common: true,
             },
         ]

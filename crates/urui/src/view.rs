@@ -12,6 +12,7 @@ use super::components::footer::render_footer;
 use super::components::force_close_confirm::render_force_close_confirm;
 use super::components::goto_menu::render_goto_menu;
 use super::components::header::render_header;
+use super::components::help_overlay::render_help_overlay;
 use super::components::priority_picker::render_priority_picker;
 use super::components::project_input::render_project_input;
 use super::components::settings_overlay::render_settings_overlay;
@@ -157,6 +158,9 @@ fn render_active_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: 
         }
         Some(ActiveOverlay::Settings { .. }) => {
             render_settings_overlay(area, buf, ctx, model);
+        }
+        Some(ActiveOverlay::Help) => {
+            render_help_overlay(area, buf, ctx, model);
         }
     }
 }

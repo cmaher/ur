@@ -424,6 +424,8 @@ pub enum ActiveOverlay {
         dark_themes: Vec<String>,
         custom_themes: Vec<String>,
     },
+    /// Help overlay (keybinding quick-reference card).
+    Help,
 }
 
 /// The filter categories available in the filter menu.
