@@ -133,6 +133,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketListGoto
             | NavMsg::TicketListCreate
             | NavMsg::TicketListEdit
+            | NavMsg::TicketListType
     ) {
         return Some(super::pages::tickets_list::handle_ticket_table_nav(
             model, nav_msg,
@@ -158,6 +159,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::TicketDetailOpenActivities
             | NavMsg::TicketDetailCreateChild
             | NavMsg::TicketDetailEdit
+            | NavMsg::TicketDetailType
     ) {
         return Some(super::pages::ticket_detail::handle_ticket_detail_nav(
             model, nav_msg,
