@@ -568,91 +568,8 @@ impl InputHandler for TicketDetailHandler {
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "A".to_string(),
-                description: "Dispatch all".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "C".to_string(),
-                description: "Create child".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "D".to_string(),
-                description: "Dispatch".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "E".to_string(),
-                description: "Edit".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "O".to_string(),
-                description: "Open".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "P".to_string(),
-                description: "Priority".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "T".to_string(),
-                description: "Type".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "V".to_string(),
-                description: "Redrive".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "X".to_string(),
-                description: "Close".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "a".to_string(),
-                description: "Activities".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "d".to_string(),
-                description: "Description".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "c".to_string(),
-                description: "Toggle closed".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "g".to_string(),
-                description: "Goto".to_string(),
-                common: false,
-                pinned: false,
-            },
-            FooterCommand {
-                key_label: "r".to_string(),
-                description: "Refresh".to_string(),
-                common: false,
-                pinned: false,
-            },
+        let mut cmds = ticket_detail_action_commands();
+        cmds.extend([
             FooterCommand {
                 key_label: "j/k".to_string(),
                 description: "Navigate".to_string(),
@@ -671,12 +588,103 @@ impl InputHandler for TicketDetailHandler {
                 common: true,
                 pinned: false,
             },
-        ]
+        ]);
+        cmds
     }
 
     fn name(&self) -> &str {
         "ticket_detail"
     }
+}
+
+/// Ticket detail action commands (non-common, non-navigation).
+fn ticket_detail_action_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "A".to_string(),
+            description: "Dispatch all".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "C".to_string(),
+            description: "Create child".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "D".to_string(),
+            description: "Dispatch".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "E".to_string(),
+            description: "Edit".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "O".to_string(),
+            description: "Open".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "P".to_string(),
+            description: "Priority".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "T".to_string(),
+            description: "Type".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "V".to_string(),
+            description: "Redrive".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "X".to_string(),
+            description: "Close".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "a".to_string(),
+            description: "Activities".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "d".to_string(),
+            description: "Description".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "c".to_string(),
+            description: "Toggle closed".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "g".to_string(),
+            description: "Goto".to_string(),
+            common: false,
+            pinned: false,
+        },
+        FooterCommand {
+            key_label: "r".to_string(),
+            description: "Refresh".to_string(),
+            common: false,
+            pinned: false,
+        },
+    ]
 }
 
 /// Handle children table navigation keys (no modifiers).
