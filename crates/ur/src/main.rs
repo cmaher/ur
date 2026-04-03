@@ -11,7 +11,6 @@ mod logging;
 mod output;
 mod project;
 mod proxy;
-mod rag;
 mod ticket;
 mod tui;
 
@@ -80,11 +79,6 @@ enum Commands {
         #[command(subcommand)]
         command: ProxyCommands,
     },
-    /// RAG documentation and search
-    Rag {
-        #[command(subcommand)]
-        command: RagCommands,
-    },
     /// Manage the ur-server lifecycle
     Server {
         #[command(subcommand)]
@@ -151,40 +145,6 @@ enum ProjectCommands {
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum RagCommands {
-    /// Generate Rust documentation for RAG indexing
-    Docs,
-    /// Index generated docs into the vector store
-    Index {
-        /// Language to index (default: rust)
-        #[arg(long, default_value = "rust")]
-        language: String,
-    },
-    /// Manage embedding models
-    Model {
-        #[command(subcommand)]
-        command: ModelCommands,
-    },
-    /// Search indexed documentation
-    Search {
-        /// Search query
-        query: String,
-        /// Language to search (default: rust)
-        #[arg(long, default_value = "rust")]
-        language: String,
-        /// Number of results to return (default: 5)
-        #[arg(long, default_value = "5")]
-        top_k: u32,
-    },
-}
-
-#[derive(Subcommand)]
-enum ModelCommands {
-    /// Download the configured embedding model to the local cache
-    Download,
 }
 
 #[derive(Subcommand)]
@@ -1296,30 +1256,6 @@ fn handle_proxy(
     Ok(())
 }
 
-async fn handle_rag(
-    command: RagCommands,
-    port: u16,
-    config: &ur_config::Config,
-    output: &OutputManager,
-) -> Result<()> {
-    match command {
-        RagCommands::Docs => rag::generate_docs(config, output)?,
-        RagCommands::Index { language } => rag::index(port, &language, output).await?,
-        RagCommands::Model { command } => match command {
-            ModelCommands::Download => rag::download_model(config, output)?,
-        },
-        RagCommands::Search {
-            query,
-            language,
-            top_k,
-        } => {
-            input::reject_control_chars(&query, "query")?;
-            rag::search(port, &query, &language, top_k, output).await?
-        }
-    }
-    Ok(())
-}
-
 async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     // Init bypasses config loading — it creates the config files.
     if let Commands::Init {
@@ -1366,7 +1302,6 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
         Commands::Init { .. } => unreachable!(),
         Commands::Project { command } => handle_project(command, &config, output)?,
         Commands::Proxy { command } => handle_proxy(command, &config, output)?,
-        Commands::Rag { command } => handle_rag(command, port, &config, output).await?,
         Commands::Server { command } => match command {
             ServerCommands::Redeploy { component } => {
                 redeploy_component(&component, &config, &compose, output)?;
