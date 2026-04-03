@@ -516,8 +516,8 @@ pub struct Model {
     pub ticket_activities: Option<TicketActivitiesModel>,
     /// Sub-model for the ticket body page (set when viewing body).
     pub ticket_body: Option<TicketBodyModel>,
-    /// Sub-model for the help page (set when the Help tab is active).
-    pub help_page: Option<HelpPageModel>,
+    /// Sub-model for the help page. Always initialized because help content is static.
+    pub help_page: HelpPageModel,
     /// Notification tracking model for workflow state transitions.
     pub notifications: NotificationModel,
     /// When set, the tea loop should swap the theme on ctx before the next render.
@@ -559,7 +559,10 @@ impl Model {
             ticket_filters: TicketFilters::default(),
             ticket_activities: None,
             ticket_body: None,
-            help_page: None,
+            help_page: HelpPageModel {
+                scroll_offset: 0,
+                last_total_lines: Cell::new(0),
+            },
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
             pending_theme_swap: None,
             custom_theme_names: vec![],
