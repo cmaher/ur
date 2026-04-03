@@ -5,7 +5,6 @@ members = [
     "crates/container",
     "crates/builderd",
     "crates/local_repo",
-    "crates/rag",
     "crates/remote_repo",
     "crates/ur",
     "crates/ur_config",

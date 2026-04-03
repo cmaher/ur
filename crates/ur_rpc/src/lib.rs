@@ -39,10 +39,6 @@ pub mod proto {
             builder_daemon_service_client::BuilderDaemonServiceClient<tonic::transport::Channel>;
     }
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
-    pub mod rag {
-        tonic::include_proto!("ur.rag");
-    }
-    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub mod ticket {
         tonic::include_proto!("ur.ticket");
     }

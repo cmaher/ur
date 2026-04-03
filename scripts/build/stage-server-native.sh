@@ -6,7 +6,6 @@ set -euo pipefail
 ulimit -n 65536 2>/dev/null || true
 
 # Build ur-server binary for linux-gnu (Debian) and stage for Dockerfile (for Linux CI).
-# Uses gnu target (not musl) because fastembed/ort requires dlopen for ONNX runtime.
 # Uses cargo-zigbuild (available via mise).
 
 ARCH=$(uname -m)

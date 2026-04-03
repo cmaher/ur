@@ -92,14 +92,6 @@ impl OutputManager {
             }
         }
     }
-
-    /// Emit a single NDJSON line (for streaming output in JSON mode).
-    /// In text mode this is a no-op — caller handles text.
-    pub fn print_ndjson<T: Serialize>(&self, data: &T) {
-        if self.format == OutputFormat::Json {
-            println!("{}", serde_json::to_string(data).unwrap());
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -270,19 +262,6 @@ pub struct ContainerKilled {
 #[derive(Serialize)]
 pub struct WorkerDir {
     pub path: String,
-}
-
-#[derive(Serialize)]
-pub struct RagIndexProgress {
-    pub name: String,
-    pub files: u32,
-    pub chunks: u32,
-}
-
-#[derive(Serialize)]
-pub struct RagIndexComplete {
-    pub total_files: u32,
-    pub total_chunks: u32,
 }
 
 /// Resolve output format before clap parsing (for error formatting).

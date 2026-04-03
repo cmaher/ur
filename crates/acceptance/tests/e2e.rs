@@ -4,7 +4,7 @@
 //! collisions between concurrent tests and to reduce total test runtime.
 //!
 //! The `e2e_all` test is the sole `#[test]` entry point. It:
-//!   1. Sets up one shared `TestEnv` (config dir, bare repo, RAG docs, `ur start`)
+//!   1. Sets up one shared `TestEnv` (config dir, bare repo, `ur start`)
 //!   2. Calls each scenario sequentially as plain helper functions
 //!   3. Tears down the server once at the end
 //!
@@ -196,7 +196,6 @@ struct TestNames {
     worker_network: String,
     server_hostname: String,
     worker_prefix: String,
-    qdrant_hostname: String,
 }
 
 /// Build test names with a unique prefix derived from the run ID.
@@ -209,7 +208,6 @@ fn test_names(label: &str) -> TestNames {
         worker_network: format!("ur-{id}-{label}-workers"),
         server_hostname: format!("ur-{id}-{label}-server"),
         worker_prefix: format!("ur-{id}-{label}-worker-"),
-        qdrant_hostname: format!("ur-{id}-{label}-qdrant"),
     }
 }
 
@@ -284,8 +282,6 @@ fn write_test_config(
          server_hostname = \"{server}\"\n\
          worker_prefix = \"{worker_prefix}\"\n\
          \n\
-         [rag]\n\
-         qdrant_hostname = \"{qdrant}\"\n\
          {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
@@ -294,7 +290,6 @@ fn write_test_config(
         worker_network = names.worker_network,
         server = names.server_hostname,
         worker_prefix = names.worker_prefix,
-        qdrant = names.qdrant_hostname,
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
 }
@@ -473,26 +468,6 @@ fn e2e_all() {
     // Create bare repo BEFORE writing config (config references it)
     let bare_repo = create_bare_repo(&config_path);
 
-    // Create RAG docs directory and test documents
-    let rag_docs_dir = config_path.join("rag").join("docs").join("rust");
-    std::fs::create_dir_all(&rag_docs_dir).expect("failed to create rag docs dir");
-    std::fs::write(
-        rag_docs_dir.join("container.md"),
-        "# Container Management\n\n\
-         The container module manages Docker containers for workers.\n\
-         It handles lifecycle operations: create, start, stop, and remove.\n\
-         Each worker gets its own isolated container with mounted workspace.\n",
-    )
-    .expect("failed to write test doc");
-    std::fs::write(
-        rag_docs_dir.join("grpc.md"),
-        "# gRPC Server\n\n\
-         The gRPC server listens on TCP port 42069 for requests from the CLI\n\
-         and from worker containers. It routes commands to the appropriate\n\
-         handler: process management, git operations, or RAG search.\n",
-    )
-    .expect("failed to write test doc");
-
     // Write config with the pool project
     // Create a second bare repo for the rust-image project
     let rust_repos_dir = config_path.join("rust-repos");
@@ -591,7 +566,6 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_workspace_mount(&env);
         scenario_pool_launch(&env);
         scenario_design_mode_pool_launch(&env);
-        scenario_rag_search(&env);
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
@@ -994,64 +968,6 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
         force_remove_container(&env.runtime, &container_name_2);
         std::panic::resume_unwind(e);
     }
-}
-
-/// RAG index and search.
-fn scenario_rag_search(env: &TestEnv) {
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
-    // No worker containers in this scenario — just CLI commands against the server.
-
-    // ---- ur rag index — index test docs into Qdrant ----
-    let index_output = run_cmd(&env.ur, &["rag", "index", "--language", "rust"], &env_slice);
-    assert!(
-        index_output.status.success(),
-        "ur rag index failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&index_output.stdout),
-        String::from_utf8_lossy(&index_output.stderr),
-    );
-
-    let index_stdout = String::from_utf8_lossy(&index_output.stdout);
-    assert!(
-        index_stdout.contains("Indexed") && index_stdout.contains("chunks"),
-        "ur rag index should report indexed chunks.\nGot: {index_stdout}"
-    );
-
-    // ---- ur rag search — search indexed docs ----
-    let search_output = run_cmd(
-        &env.ur,
-        &[
-            "rag",
-            "search",
-            "container management",
-            "--language",
-            "rust",
-        ],
-        &env_slice,
-    );
-    assert!(
-        search_output.status.success(),
-        "ur rag search failed.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&search_output.stdout),
-        String::from_utf8_lossy(&search_output.stderr),
-    );
-
-    let search_stdout = String::from_utf8_lossy(&search_output.stdout);
-    // Search should return results (not "No results found")
-    assert!(
-        !search_stdout.contains("No results found"),
-        "ur rag search should return results after indexing.\nGot: {search_stdout}"
-    );
-    // Results should contain the expected format fields
-    assert!(
-        search_stdout.contains("Result") && search_stdout.contains("score:"),
-        "ur rag search output should contain Result and score fields.\nGot: {search_stdout}"
-    );
-    assert!(
-        search_stdout.contains("Source:"),
-        "ur rag search output should contain Source field.\nGot: {search_stdout}"
-    );
 }
 
 /// Launching without `-p` (no project) should fail with a clear error message.

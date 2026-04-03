@@ -25,7 +25,6 @@ ur start
     ├── docker compose down (pre-cleanup of stale state)
     └── docker compose up -d --wait
         ├── ur-squid (forward proxy, infra + workers networks)
-        ├── ur-qdrant (vector DB, infra network)
         └── ur-server (gRPC server, infra + workers networks)
             └── Connects to builderd via UR_BUILDERD_ADDR
 ```
@@ -58,7 +57,7 @@ when using a custom `server_port`.
 ## Compose Generation
 
 `generate_compose()` in `crates/ur/src/compose.rs` builds YAML programmatically from
-`ur.toml` config (network names, container names, proxy hostname, qdrant hostname).
+`ur.toml` config (network names, container names, proxy hostname).
 No static template — the compose file is generated fresh on every `ur start`.
 
 Environment variables passed to `docker compose`:
@@ -79,8 +78,7 @@ Host (macOS)
 └── Docker
     ├── infra network (bridge)
     │   ├── ur-server [:42069] ← gRPC from CLI + workers
-    │   ├── ur-squid [:3128] ← HTTP proxy for workers
-    │   └── ur-qdrant [:6334] ← vector DB for RAG
+    │   └── ur-squid [:3128] ← HTTP proxy for workers
     │
     └── workers network (bridge, internal)
         ├── ur-server (also on this network)

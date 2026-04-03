@@ -44,7 +44,6 @@ pub const COMMENT_NOT_FOUND: &str = "COMMENT_NOT_FOUND";
 pub const DOMAIN_CORE: &str = "ur.core";
 pub const DOMAIN_TICKET: &str = "ur.ticket";
 pub const DOMAIN_HOSTEXEC: &str = "ur.hostexec";
-pub const DOMAIN_RAG: &str = "ur.rag";
 pub const DOMAIN_BUILDER: &str = "ur.builder";
 pub const DOMAIN_REMOTE_REPO: &str = "ur.remote_repo";
 
