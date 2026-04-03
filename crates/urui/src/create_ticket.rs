@@ -14,7 +14,7 @@ pub struct PendingTicket {
 }
 
 const TITLE_PLACEHOLDER: &str = "<summarize>";
-const DEFAULT_TICKET_TYPE: &str = "code";
+const DEFAULT_TICKET_TYPE: &str = "design";
 
 /// Normalize a ticket type string: maps aliases to their canonical form.
 ///
@@ -179,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_type_defaults_to_code() {
+    fn missing_type_defaults_to_design() {
         let content = "title: No type\npriority: 1\n---\nBody.\n";
         let ticket = parse_ticket_file(content).unwrap();
-        assert_eq!(ticket.ticket_type, "code");
+        assert_eq!(ticket.ticket_type, "design");
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn template_has_expected_format() {
         let t = generate_template();
-        assert_eq!(t, "title: <summarize>\ntype: code\npriority: 0\n---\n\n");
+        assert_eq!(t, "title: <summarize>\ntype: design\npriority: 0\n---\n\n");
     }
 
     #[test]
