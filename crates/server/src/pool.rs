@@ -284,9 +284,13 @@ impl RepoPoolManager {
         // On Linux, directories created inside the server container (which runs
         // as root) would be root-owned on the host bind mount, causing permission
         // errors when builderd (host user) tries to git clone into them.
+        //
+        // Use a relative path for the mkdir arg because builderd only resolves
+        // %WORKSPACE% in working_dir, not in args.
         let builderd_workspace = self.to_builderd_path(&self.host_workspace);
+        let relative_parent = format!("pool/{project_key}");
         self.builderd_client
-            .exec_check("mkdir", &["-p", &builderd_parent], &builderd_workspace)
+            .exec_check("mkdir", &["-p", &relative_parent], &builderd_workspace)
             .await
             .map_err(|e| format!("failed to create pool directory via builderd: {e}"))?;
 
