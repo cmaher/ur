@@ -26,9 +26,6 @@ brew install terminal-notifier
 
 # Install github cli (https://github.com/cli/cli?tab=readme-ov-file)
 brew install gh
-
-# Install all project tools (Rust, protoc, zig, cargo-make, etc.)
-mise install
 ```
 
 ## Getting Started
@@ -37,6 +34,10 @@ mise install
 # clone
 git clone https://github.com/cmaher/ur.git
 cd ur
+
+# Install all project tools (Rust, protoc, zig, cargo-make, etc.)
+mise trust
+mise install
 
 # Build and install the ur CLI + container images
 # installs binaries to ~/.local/bin
