@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "stable", profile = "default" }
+rust = { version = "stable", profile = "default", targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] }
 zig = "0.15.2"
 protoc = "latest"
 "cargo:cargo-make" = "0.37"

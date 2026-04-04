@@ -261,6 +261,24 @@ fn start_server(
 ) -> Result<()> {
     info!("starting server");
 
+    // Seed credentials from host Claude Code before starting anything so
+    // they're available for bind-mounting into worker containers.
+    let cred_mgr = credential::CredentialManager;
+    if let Err(e) = cred_mgr.ensure_credentials() {
+        debug!(error = %e, "credential seeding failed");
+    }
+    let has_credentials = credential::CredentialManager::host_credentials_path()
+        .ok()
+        .and_then(|p| std::fs::metadata(&p).ok())
+        .is_some_and(|m| m.len() > 10);
+    if !has_credentials {
+        warn!("no shared credentials found");
+        if !output.is_json() {
+            println!();
+            println!("No shared credentials found. Log in to Claude Code on this machine first.");
+        }
+    }
+
     match builderd::start_builderd(config, output) {
         Ok(()) => info!("builderd started"),
         Err(e) => {
@@ -279,20 +297,6 @@ fn start_server(
 
     info!("server started successfully");
     output.print_text("server started");
-
-    // Check if shared credentials exist; if not, hint about Keychain seeding.
-    let has_credentials = credential::CredentialManager::host_credentials_path()
-        .ok()
-        .and_then(|p| std::fs::metadata(&p).ok())
-        .is_some_and(|m| m.len() > 0);
-    if !has_credentials {
-        warn!("no shared credentials found");
-        if !output.is_json() {
-            println!();
-            println!("No shared credentials found. Log in to Claude Code on this machine first.");
-            println!("Credentials will be seeded from the macOS Keychain on first process launch.");
-        }
-    }
 
     Ok(())
 }
@@ -724,7 +728,7 @@ async fn process_launch(
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching worker process");
 
-    // Refresh credentials from macOS Keychain and ensure config exists
+    // Refresh credentials from host Claude Code and ensure config exists
     let cred_mgr = credential::CredentialManager;
     cred_mgr.ensure_credentials()?;
     debug!(ticket_id, "credentials ensured");

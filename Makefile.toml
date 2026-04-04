@@ -40,7 +40,7 @@ command = "cargo"
 args = ["audit"]
 
 [tasks.stage-workercmd]
-description = "Cross-compile workercmd binaries for linux-gnu and stage for Dockerfile (requires zig + cargo-zigbuild)"
+description = "Build workercmd binaries and stage for Dockerfile (cross-compiles on macOS, native on Linux)"
 script_runner = "@shell"
 script = ["scripts/build/stage-workercmd.sh"]
 
@@ -50,22 +50,22 @@ script_runner = "@shell"
 script = ["scripts/build/stage-workercmd-native.sh"]
 
 [tasks.stage-server]
-description = "Cross-compile ur-server binary for linux-musl (Alpine) and stage for Dockerfile (requires zig + cargo-zigbuild)"
+description = "Build ur-server binary and stage for Dockerfile (cross-compiles on macOS, native on Linux)"
 script_runner = "@shell"
 script = ["scripts/build/stage-server.sh"]
 
 [tasks.stage-server-native]
-description = "Build ur-server binary for linux-musl (Alpine) and stage for Dockerfile (for Linux CI, requires zig + cargo-zigbuild)"
+description = "Build ur-server binary natively and stage for Dockerfile (for Linux CI)"
 script_runner = "@shell"
 script = ["scripts/build/stage-server-native.sh"]
 
 [tasks.stage-builderd]
-description = "Cross-compile builderd binary for linux-gnu (aarch64) and stage for container build context (requires zig + cargo-zigbuild)"
+description = "Build builderd binary and stage for container build context (cross-compiles on macOS, native on Linux)"
 script_runner = "@shell"
 script = ["scripts/build/stage-builderd.sh"]
 
 [tasks.stage-builderd-native]
-description = "Build builderd binary for linux-gnu (aarch64) and stage for container build context (for Linux CI, requires zig + cargo-zigbuild)"
+description = "Build builderd binary natively and stage for container build context (for Linux CI)"
 script_runner = "@shell"
 script = ["scripts/build/stage-builderd-native.sh"]
 

@@ -5,12 +5,14 @@ How `ur process launch` starts a worker container with Claude Code credentials.
 ## Credential Flow
 
 ```
-macOS Keychain ("Claude Code-credentials")
+macOS: Keychain ("Claude Code-credentials")
+Linux: ~/.claude/.credentials.json
     │
     ▼
 ur CLI: CredentialManager.ensure_credentials()        [crates/ur/src/credential.rs]
     │   if ~/.ur/claude/.credentials.json missing:
-    │     runs: security find-generic-password -s "Claude Code-credentials" -w
+    │     macOS: runs: security find-generic-password -s "Claude Code-credentials" -w
+    │     Linux: reads ~/.claude/.credentials.json directly
     │     writes result to ~/.ur/claude/.credentials.json
     │   (no-op if file already exists — containers own their session after seeding)
     │
@@ -34,7 +36,7 @@ Container: Claude Code reads ~/.claude/.credentials.json
 - `~/.claude/.credentials.json` — OAuth tokens (bind-mounted from host, shared across all containers)
 - `~/.claude.json` — App config with `hasCompletedOnboarding` and project trust (baked into image)
 
-**Session ownership:** Credentials are seeded once from the macOS Keychain. After that, containers own their token lifecycle — refreshes write back to the shared mount without touching the host Keychain. This avoids token rotation conflicts between host and container Claude Code sessions.
+**Session ownership:** Credentials are seeded once from the host Claude Code installation (macOS Keychain or Linux credentials file). After that, containers own their token lifecycle — refreshes write back to the shared mount without touching the host credentials. This avoids token rotation conflicts between host and container Claude Code sessions.
 
 ## Process Launch Sequence
 
@@ -44,7 +46,8 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 1. CLI (host)
    ├── -f flag? → kill_container() (docker stop + rm)
    ├── CredentialManager.ensure_credentials()
-   │   └── seed from Keychain if ~/.ur/claude/.credentials.json missing
+   │   └── seed from host Claude Code if ~/.ur/claude/.credentials.json missing
+   │       (macOS: Keychain, Linux: ~/.claude/.credentials.json)
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
    └── client.worker_launch(WorkerLaunchRequest { ... })
 
@@ -121,4 +124,4 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 ## Manual Credential Management
 
 - `ur worker save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
-- Delete `~/.ur/claude/.credentials.json` to force re-seeding from Keychain on next launch.
+- Delete `~/.ur/claude/.credentials.json` to force re-seeding from host credentials on next launch.

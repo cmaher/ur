@@ -66,7 +66,7 @@ theme = "aqua"
 
 There are two primary integration points for hooks. By default, the `ur-hooks`  directory in your project will be used:
 
-* `ur-hooks/git` -- git hooks that are copied into your cahced repos
+* `ur-hooks/git` -- git hooks that are copied into your cached repos
     * The "pre-push" hook is very useful for ensuring that the host runs verifications before pushing. If this hook fails, the worker will automatically fix issues.
 * `ur-hooks/skills/<skill>` -- markdown snippets that get loaded into the various skills that drive the flows. Only Implement is currently supported:
     * `implement/after-ticket-claim.md` -- After a ticket is claimed, but before work is commenced
