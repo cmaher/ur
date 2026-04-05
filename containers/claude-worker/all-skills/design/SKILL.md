@@ -121,6 +121,7 @@ digraph brainstorming {
 - Create a new parent ticket with the full design document as the body: `ur ticket create "Title" --body "..." --output json`
 - The design document should include architecture, components, data flow, error handling, testing strategy, and all decisions made during brainstorming
 - If invoked on a design ticket, add a link between the design ticket and the new parent: `ur ticket add-link <design-ticket-id> <parent-id> --output json`
+- Register the parent ticket with workerd so `/dispatch` knows which ticket to use: `workertools workflow set-ticket <parent-id>`
 
 **Creating child tickets:**
 
