@@ -468,21 +468,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tempfile::TempDir;
     use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db_test::TestDb;
 
-    async fn setup_test_db() -> (TempDir, TicketRepo, WorkflowRepo, WorkerRepo) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let db = DatabaseManager::open(&db_path.to_string_lossy())
-            .await
-            .expect("open test db");
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(db.pool().clone());
-        let worker_repo = WorkerRepo::new(db.pool().clone());
-        (tmp, repo, workflow_repo, worker_repo)
+    async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
+        let test_db = TestDb::new().await;
+        let pool = test_db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool.clone());
+        let worker_repo = WorkerRepo::new(pool);
+        (test_db, repo, workflow_repo, worker_repo)
     }
 
     fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
@@ -659,7 +656,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_processes_request_and_cleans_intent() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-coord1").await;
 
         let call_count = Arc::new(AtomicU32::new(0));
@@ -702,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_recovers_intents_on_startup() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-recov1").await;
 
         // Pre-create an intent to simulate crash recovery.
@@ -737,7 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_skips_stalled_workflow_on_recovery() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-stall1").await;
 
         // Pre-create a workflow and mark it stalled.
@@ -801,7 +798,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_processes_pending_after_first_handler_completes() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-pend1").await;
 
         let dispatch_count = Arc::new(AtomicU32::new(0));
@@ -864,7 +861,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_stalls_workflow_on_handler_failure() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-fail1").await;
 
         // Create a workflow row so set_workflow_stalled has something to update.
@@ -924,7 +921,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_intent_preserves_intents_for_other_statuses() {
-        let (_tmp, repo, workflow_repo, _worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, _worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-race1").await;
 
         // Simulate the race: two intents exist for the same ticket but different statuses.

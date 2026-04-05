@@ -17,31 +17,11 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
-/// Build test components backed by the given database pool.
-/// Returns (WorkerManager, WorkerRepo, CoreServiceHandler).
-async fn make_components_with_db(
-    dir: &Path,
-    db: &ur_db::DatabaseManager,
-) -> (
-    ur_server::WorkerManager,
-    ur_db::WorkerRepo,
-    ur_server::grpc::CoreServiceHandler,
-) {
-    let workspace = dir.join("workspace");
-    std::fs::create_dir_all(&workspace).unwrap();
-
-    let network_config = ur_config::NetworkConfig {
-        name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
-        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
-        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
-    };
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
-    let config = ur_config::Config {
+fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
+    ur_config::Config {
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
-        workspace: workspace.clone(),
+        workspace: workspace.to_path_buf(),
         server_port: ur_config::DEFAULT_SERVER_PORT,
         builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
         compose_file: dir.join("docker-compose.yml"),
@@ -49,7 +29,7 @@ async fn make_components_with_db(
             hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
             allowlist: vec![],
         },
-        network: network_config.clone(),
+        network: test_network_config(),
         hostexec: ur_config::HostExecConfig::default(),
         db: ur_config::DatabaseConfig {
             host: ur_config::DEFAULT_DB_HOST.to_string(),
@@ -78,7 +58,35 @@ async fn make_components_with_db(
         },
         projects: HashMap::new(),
         tui: ur_config::TuiConfig::default(),
-    };
+    }
+}
+
+fn test_network_config() -> ur_config::NetworkConfig {
+    ur_config::NetworkConfig {
+        name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
+        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
+        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
+    }
+}
+
+/// Build test components backed by the given database pool.
+/// Returns (WorkerManager, WorkerRepo, CoreServiceHandler).
+async fn make_components_with_db(
+    dir: &Path,
+    db: &ur_db::DatabaseManager,
+) -> (
+    ur_server::WorkerManager,
+    ur_db::WorkerRepo,
+    ur_server::grpc::CoreServiceHandler,
+) {
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let network_config = test_network_config();
+    let network_manager =
+        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
+    let config = test_config(dir, &workspace);
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let graph_manager = ur_db::GraphManager::new(db.pool().clone());
     let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);

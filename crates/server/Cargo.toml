@@ -38,6 +38,7 @@ container = { path = "../container" }
 futures = "0.3"
 local_repo = { path = "../local_repo" }
 tempfile = "3"
+ur_db_test = { path = "../ur_db_test" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 
 [lints]

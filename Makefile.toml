@@ -129,6 +129,42 @@ description = "Install git hooks (pre-commit formats, pre-push runs CI + accepta
 script_runner = "@shell"
 script = ["cp ur-hooks/git/* .git/hooks/"]
 
+[tasks."test:init"]
+description = "Start ci-postgres container for tests (port 5433)"
+script_runner = "@shell"
+script = ["""
+if docker inspect ci-postgres >/dev/null 2>&1; then
+    echo "ci-postgres already exists"
+    docker start ci-postgres 2>/dev/null || true
+else
+    docker run -d --name ci-postgres \
+        -e POSTGRES_USER=ur \
+        -e POSTGRES_PASSWORD=ur \
+        -e POSTGRES_DB=postgres \
+        -p 5433:5432 \
+        postgres:17
+fi
+echo "Waiting for ci-postgres to be ready..."
+for i in $(seq 1 30); do
+    if docker exec ci-postgres pg_isready -U ur >/dev/null 2>&1; then
+        echo "ci-postgres is ready on localhost:5433"
+        exit 0
+    fi
+    sleep 1
+done
+echo "ci-postgres failed to become ready"
+exit 1
+"""]
+
+[tasks."test:clean"]
+description = "Stop and remove ci-postgres container"
+script_runner = "@shell"
+script = ["""
+docker stop ci-postgres 2>/dev/null || true
+docker rm ci-postgres 2>/dev/null || true
+echo "ci-postgres removed"
+"""]
+
 [tasks.ci]
 description = "Run all CI checks"
 dependencies = ["fmt", "clippy", "build", "test"]

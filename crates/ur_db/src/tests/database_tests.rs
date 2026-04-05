@@ -1,18 +1,14 @@
-use crate::database::DatabaseManager;
+use crate::tests::TestDb;
 
 #[tokio::test]
 async fn open_creates_database_and_runs_migrations() {
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://ur:ur@localhost:5432/ur_test".to_string());
-    let manager = DatabaseManager::open(&db_url)
-        .await
-        .expect("should open database");
+    let test_db = TestDb::new().await;
 
     // Verify tables exist by querying information_schema
     let tables: Vec<(String,)> = sqlx::query_as(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name NOT LIKE '_sqlx%' ORDER BY table_name",
     )
-    .fetch_all(manager.pool())
+    .fetch_all(test_db.db().pool())
     .await
     .expect("should query tables");
 
@@ -21,4 +17,6 @@ async fn open_creates_database_and_runs_migrations() {
     assert!(table_names.contains(&"edge"), "missing edge table");
     assert!(table_names.contains(&"meta"), "missing meta table");
     assert!(table_names.contains(&"activity"), "missing activity table");
+
+    test_db.cleanup().await;
 }
