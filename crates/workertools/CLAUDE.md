@@ -12,6 +12,8 @@ Installed at `/usr/local/bin/workertools` in worker containers.
 - Connects to ur-server via `$UR_SERVER_ADDR`
 - Auth headers (`ur-worker-id`, `ur-worker-secret`) injected via tonic interceptor for all subcommands
 - Exits with remote exit code
+- `workertools workflow set-ticket <id>` — sets the ticket ID on workerd for dispatch (design mode only)
+- `workertools workflow dispatch` — dispatches the previously set ticket to the server for workflow creation (design mode only)
 - Ticket management is handled via `ur ticket` through host-exec (not a direct workertools subcommand)
 
 Hidden aliases for backwards compatibility:
