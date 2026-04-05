@@ -78,6 +78,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
             ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
         },
         projects: std::collections::HashMap::new(),
+        plugins: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
     };
     (config, network_config)
@@ -128,6 +129,7 @@ async fn make_grpc_handler(
         ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
+        std::sync::Arc::new(plugins::ServerRegistry::new()),
     );
     let handler = ur_server::grpc::CoreServiceHandler {
         worker_manager,

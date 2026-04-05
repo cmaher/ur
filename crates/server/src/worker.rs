@@ -16,6 +16,8 @@ use crate::RepoPoolManager;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
+use std::sync::Arc;
+
 /// Unique identifier for a running worker, format: `{process_id}-{4 random [a-z0-9]}`.
 ///
 /// The random suffix prevents collisions when the same process_id is reused
@@ -266,6 +268,8 @@ pub struct WorkerManager {
     worker_port: u16,
     prompt_modes: PromptModesConfig,
     worker_repo: WorkerRepo,
+    /// Server plugin registry for applying plugin-contributed worker config.
+    server_registry: Arc<plugins::ServerRegistry>,
 }
 
 impl WorkerManager {
@@ -281,6 +285,7 @@ impl WorkerManager {
         worker_port: u16,
         prompt_modes: PromptModesConfig,
         worker_repo: WorkerRepo,
+        server_registry: Arc<plugins::ServerRegistry>,
     ) -> Self {
         Self {
             workspace,
@@ -293,6 +298,7 @@ impl WorkerManager {
             worker_port,
             prompt_modes,
             worker_repo,
+            server_registry,
         }
     }
 
@@ -478,6 +484,15 @@ impl WorkerManager {
             &self.host_config_dir,
         );
 
+        // Apply plugin-contributed worker configuration (volumes, env vars)
+        let mut plugin_worker_config = plugins::WorkerConfig {
+            volumes: Vec::new(),
+            env_vars: Vec::new(),
+        };
+        self.server_registry
+            .apply_worker_config(&mut plugin_worker_config)
+            .map_err(|e| format!("plugin modify_worker failed: {e}"))?;
+
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
@@ -501,6 +516,7 @@ impl WorkerManager {
         )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)
+        .add_plugin_config(&plugin_worker_config)
         .build();
 
         // Run the container on the shared Docker network
@@ -833,6 +849,7 @@ mod tests {
                 ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
             },
             projects: std::collections::HashMap::new(),
+            plugins: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
         }
     }
@@ -888,6 +905,7 @@ mod tests {
             ur_config::DEFAULT_SERVER_PORT + 1,
             PromptModesConfig::default(),
             worker_repo,
+            std::sync::Arc::new(plugins::ServerRegistry::new()),
         );
         (mgr, workspace, test_db)
     }
