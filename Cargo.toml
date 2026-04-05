@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/acceptance",
+    "crates/compose",
     "crates/container",
     "crates/builderd",
     "crates/local_repo",
@@ -24,6 +25,7 @@ members = [
     "tools/sqlite-to-pg",
 ]
 default-members = [
+    "crates/compose",
     "crates/container",
     "crates/builderd",
     "crates/local_repo",
