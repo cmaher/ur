@@ -1610,6 +1610,7 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
         );
 
         // ---- Add the project via `ur project add` (triggers ReloadProjects RPC) ----
+        let image_ref = format!("ur-worker:{}", &*IMAGE_TAG);
         let add_output = run_cmd(
             &env.ur,
             &[
@@ -1617,7 +1618,7 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
                 "add",
                 clone_dir.to_str().unwrap(),
                 "--image",
-                "ur-worker",
+                &image_ref,
                 "--key",
                 project_key,
             ],
