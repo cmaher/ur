@@ -68,7 +68,6 @@ fn load_prompt_modes(cfg: &Config) -> anyhow::Result<PromptModesConfig> {
 }
 
 fn init_backup(
-    db: &DatabaseManager,
     cfg: &Config,
 ) -> anyhow::Result<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)> {
     let mut backup_config = cfg.db.backup.clone();
@@ -76,7 +75,11 @@ fn init_backup(
         backup_config.path = Some(std::path::PathBuf::from(container_path));
     }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let snapshot_manager = SnapshotManager::new(db.pool().clone());
+    let snapshot_manager = SnapshotManager::new(
+        cfg.server.container_command.clone(),
+        ur_config::DEFAULT_DB_HOST.to_string(),
+        cfg.db.name.clone(),
+    );
     let backup_task_manager = BackupTaskManager::new(snapshot_manager, backup_config);
     let backup_handle = backup_task_manager
         .spawn(shutdown_rx)
@@ -426,7 +429,7 @@ async fn main() -> anyhow::Result<()> {
 
     let prompt_modes = load_prompt_modes(&cfg)?;
     let db = init_database(&cfg).await?;
-    let (shutdown_tx, backup_handle) = init_backup(&db, &cfg)?;
+    let (shutdown_tx, backup_handle) = init_backup(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 

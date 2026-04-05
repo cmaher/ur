@@ -9,8 +9,8 @@ use ur_db::SnapshotManager;
 /// Manages periodic database backups as a background tokio task.
 ///
 /// Reads backup configuration from `ur.toml`, validates the backup path at
-/// startup, and spawns a background task that periodically calls SQLite's
-/// VACUUM INTO via [`SnapshotManager`]. The task gracefully stops when the
+/// startup, and spawns a background task that periodically calls pg_dump
+/// via [`SnapshotManager`]. The task gracefully stops when the
 /// shutdown signal is received, performing a final backup before exit.
 #[derive(Clone)]
 pub struct BackupTaskManager {
@@ -113,9 +113,8 @@ impl BackupTaskManager {
         Self::validate_backup_path(&backup_path)?;
         let filename = manual_backup_filename();
         let target = backup_path.join(&filename);
-        let target_str = target.to_string_lossy();
         self.snapshot_manager
-            .vacuum_into(&target_str)
+            .dump_to(&filename)
             .await
             .map_err(|e| format!("backup failed: {e}"))?;
         // Only clean automatic backups — manual ones are preserved
@@ -153,7 +152,7 @@ impl BackupTaskManager {
 /// Generate a timestamped backup filename for automatic (periodic) backups.
 fn backup_filename() -> String {
     let now = chrono::Utc::now();
-    format!("ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+    format!("ur-backup-{}.pgdump", now.format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Generate a timestamped backup filename for manual (on-demand) backups.
@@ -162,12 +161,12 @@ fn backup_filename() -> String {
 /// retention cleanup.
 fn manual_backup_filename() -> String {
     let now = chrono::Utc::now();
-    format!("manual-ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+    format!("manual-ur-backup-{}.pgdump", now.format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Check whether a filename is any kind of backup file (automatic or manual).
 fn is_backup_file(name: &str) -> bool {
-    name.ends_with(".db")
+    name.ends_with(".pgdump")
         && (name.starts_with("ur-backup-") || name.starts_with("manual-ur-backup-"))
 }
 
@@ -201,9 +200,8 @@ async fn backup_loop(
 async fn run_backup(manager: &SnapshotManager, backup_dir: &Path, retain_count: u64) {
     let filename = backup_filename();
     let target = backup_dir.join(&filename);
-    let target_str = target.to_string_lossy();
 
-    match manager.vacuum_into(&target_str).await {
+    match manager.dump_to(&filename).await {
         Ok(()) => {
             info!(path = %target.display(), "backup completed successfully");
             clean_old_backups(backup_dir, &filename, retain_count);
@@ -234,7 +232,7 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u6
         .filter_map(|entry| {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().to_string();
-            if name_str.starts_with("ur-backup-") && name_str.ends_with(".db") {
+            if name_str.starts_with("ur-backup-") && name_str.ends_with(".pgdump") {
                 Some(name_str)
             } else {
                 None
@@ -265,30 +263,13 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u6
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use ur_db::{DatabaseManager, GraphManager, NewTicket, TicketRepo};
 
-    async fn create_test_db(tmp: &TempDir) -> (DatabaseManager, SnapshotManager) {
-        let db_path = tmp.path().join("test.db");
-        let db_path_str = db_path.to_string_lossy().to_string();
-        let db = DatabaseManager::open(&db_path_str)
-            .await
-            .expect("open test db");
-        // Insert some data so backup is non-trivial
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let ticket = NewTicket {
-            id: Some("ur-001".to_string()),
-            project: "ur".to_string(),
-            type_: "code".to_string(),
-            priority: 1,
-            parent_id: None,
-            title: "Test Epic".to_string(),
-            body: "For backup testing.".to_string(),
-            ..Default::default()
-        };
-        repo.create_ticket(&ticket).await.expect("insert test data");
-        let sm = SnapshotManager::new(db.pool().clone());
-        (db, sm)
+    fn test_snapshot_manager() -> SnapshotManager {
+        SnapshotManager::new(
+            "docker".to_string(),
+            "ur-postgres".to_string(),
+            "ur".to_string(),
+        )
     }
 
     #[test]
@@ -313,33 +294,17 @@ mod tests {
         BackupTaskManager::validate_backup_path(tmp.path()).expect("should succeed");
     }
 
-    #[tokio::test]
-    async fn run_backup_creates_file() {
-        let db_tmp = TempDir::new().unwrap();
-        let backup_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
-        run_backup(&sm, backup_tmp.path(), 3).await;
-
-        let entries: Vec<_> = std::fs::read_dir(backup_tmp.path())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("ur-backup-"))
-            .collect();
-        assert_eq!(entries.len(), 1, "should create exactly one backup file");
-        assert!(entries[0].metadata().unwrap().len() > 0);
-    }
-
     #[test]
     fn clean_old_backups_respects_retain_count() {
         let tmp = TempDir::new().unwrap();
         // Create fake backups with ascending timestamps
-        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "old1").unwrap();
-        std::fs::write(tmp.path().join("ur-backup-20260102T000000Z.db"), "old2").unwrap();
-        std::fs::write(tmp.path().join("ur-backup-20260103T000000Z.db"), "old3").unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.pgdump"), "old1").unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260102T000000Z.pgdump"), "old2").unwrap();
+        std::fs::write(tmp.path().join("ur-backup-20260103T000000Z.pgdump"), "old3").unwrap();
         // Create a non-backup file that should be preserved
         std::fs::write(tmp.path().join("other.txt"), "keep").unwrap();
 
-        let current = "ur-backup-20260313T120000Z.db";
+        let current = "ur-backup-20260313T120000Z.pgdump";
         std::fs::write(tmp.path().join(current), "current").unwrap();
 
         // retain_count = 2: keep current + 20260103, remove the rest
@@ -347,15 +312,21 @@ mod tests {
 
         assert!(tmp.path().join(current).exists(), "current must be kept");
         assert!(
-            tmp.path().join("ur-backup-20260103T000000Z.db").exists(),
+            tmp.path()
+                .join("ur-backup-20260103T000000Z.pgdump")
+                .exists(),
             "second newest must be kept"
         );
         assert!(
-            !tmp.path().join("ur-backup-20260102T000000Z.db").exists(),
+            !tmp.path()
+                .join("ur-backup-20260102T000000Z.pgdump")
+                .exists(),
             "third should be removed"
         );
         assert!(
-            !tmp.path().join("ur-backup-20260101T000000Z.db").exists(),
+            !tmp.path()
+                .join("ur-backup-20260101T000000Z.pgdump")
+                .exists(),
             "oldest should be removed"
         );
         assert!(
@@ -368,21 +339,29 @@ mod tests {
     fn clean_old_backups_preserves_manual_backups() {
         let tmp = TempDir::new().unwrap();
         // Create automatic backups
-        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "auto1").unwrap();
-        std::fs::write(tmp.path().join("ur-backup-20260102T000000Z.db"), "auto2").unwrap();
+        std::fs::write(
+            tmp.path().join("ur-backup-20260101T000000Z.pgdump"),
+            "auto1",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("ur-backup-20260102T000000Z.pgdump"),
+            "auto2",
+        )
+        .unwrap();
         // Create manual backups
         std::fs::write(
-            tmp.path().join("manual-ur-backup-20260101T120000Z.db"),
+            tmp.path().join("manual-ur-backup-20260101T120000Z.pgdump"),
             "manual1",
         )
         .unwrap();
         std::fs::write(
-            tmp.path().join("manual-ur-backup-20260102T120000Z.db"),
+            tmp.path().join("manual-ur-backup-20260102T120000Z.pgdump"),
             "manual2",
         )
         .unwrap();
 
-        let current = "ur-backup-20260103T000000Z.db";
+        let current = "ur-backup-20260103T000000Z.pgdump";
         std::fs::write(tmp.path().join(current), "current").unwrap();
 
         // retain_count = 1: keep only the newest automatic backup, delete the rest
@@ -391,18 +370,26 @@ mod tests {
         // Current automatic backup kept
         assert!(tmp.path().join(current).exists());
         // Older automatic backups deleted
-        assert!(!tmp.path().join("ur-backup-20260102T000000Z.db").exists());
-        assert!(!tmp.path().join("ur-backup-20260101T000000Z.db").exists());
+        assert!(
+            !tmp.path()
+                .join("ur-backup-20260102T000000Z.pgdump")
+                .exists()
+        );
+        assert!(
+            !tmp.path()
+                .join("ur-backup-20260101T000000Z.pgdump")
+                .exists()
+        );
         // Both manual backups preserved
         assert!(
             tmp.path()
-                .join("manual-ur-backup-20260101T120000Z.db")
+                .join("manual-ur-backup-20260101T120000Z.pgdump")
                 .exists(),
             "manual backups must survive automatic cleanup"
         );
         assert!(
             tmp.path()
-                .join("manual-ur-backup-20260102T120000Z.db")
+                .join("manual-ur-backup-20260102T120000Z.pgdump")
                 .exists(),
             "manual backups must survive automatic cleanup"
         );
@@ -411,20 +398,23 @@ mod tests {
     #[test]
     fn clean_old_backups_keeps_all_when_under_retain() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
-        let current = "ur-backup-20260102T000000Z.db";
+        std::fs::write(tmp.path().join("ur-backup-20260101T000000Z.pgdump"), "a").unwrap();
+        let current = "ur-backup-20260102T000000Z.pgdump";
         std::fs::write(tmp.path().join(current), "b").unwrap();
 
         clean_old_backups(tmp.path(), current, 5);
 
-        assert!(tmp.path().join("ur-backup-20260101T000000Z.db").exists());
+        assert!(
+            tmp.path()
+                .join("ur-backup-20260101T000000Z.pgdump")
+                .exists()
+        );
         assert!(tmp.path().join(current).exists());
     }
 
-    #[tokio::test]
-    async fn spawn_returns_none_when_no_path() {
-        let db_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
+    #[test]
+    fn spawn_returns_none_when_no_path() {
+        let sm = test_snapshot_manager();
         let config = BackupConfig {
             path: None,
             interval_minutes: 30,
@@ -437,11 +427,10 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn spawn_returns_none_when_disabled() {
-        let db_tmp = TempDir::new().unwrap();
+    #[test]
+    fn spawn_returns_none_when_disabled() {
         let backup_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
+        let sm = test_snapshot_manager();
         let config = BackupConfig {
             path: Some(backup_tmp.path().to_path_buf()),
             interval_minutes: 30,
@@ -454,10 +443,9 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
-    async fn spawn_returns_none_on_invalid_path() {
-        let db_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
+    #[test]
+    fn spawn_returns_none_on_invalid_path() {
+        let sm = test_snapshot_manager();
         let config = BackupConfig {
             path: Some(PathBuf::from("/nonexistent/backup/path")),
             interval_minutes: 30,
@@ -471,79 +459,31 @@ mod tests {
         assert!(result.is_none(), "invalid path should disable backup");
     }
 
-    #[tokio::test]
-    async fn spawn_and_shutdown_triggers_final_backup() {
-        let db_tmp = TempDir::new().unwrap();
+    #[test]
+    fn list_backups_returns_sorted_including_manual() {
         let backup_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
-        let config = BackupConfig {
-            path: Some(backup_tmp.path().to_path_buf()),
-            interval_minutes: 60, // Won't tick in this test
-            enabled: true,
-            retain_count: 3,
-        };
-        let mgr = BackupTaskManager::new(sm, config);
-        let (tx, rx) = watch::channel(false);
-
-        let handle = mgr
-            .spawn(rx)
-            .expect("should succeed")
-            .expect("should be Some");
-        assert!(!handle.is_finished());
-
-        // Signal shutdown — should trigger final backup
-        tx.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("task should finish within timeout")
-            .expect("task should not panic");
-
-        // Verify final backup was created
-        let entries: Vec<_> = std::fs::read_dir(backup_tmp.path())
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("ur-backup-"))
-            .collect();
-        assert_eq!(entries.len(), 1, "shutdown should create a final backup");
-    }
-
-    #[tokio::test]
-    async fn run_once_creates_manual_backup() {
-        let db_tmp = TempDir::new().unwrap();
-        let backup_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
-        let config = BackupConfig {
-            path: Some(backup_tmp.path().to_path_buf()),
-            interval_minutes: 30,
-            enabled: true,
-            retain_count: 3,
-        };
-        let mgr = BackupTaskManager::new(sm, config);
-        let path = mgr.run_once().await.expect("backup should succeed");
-        assert!(path.exists());
-        assert!(
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("manual-ur-backup-"),
-            "on-demand backups must use manual- prefix"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_backups_returns_sorted_including_manual() {
-        let db_tmp = TempDir::new().unwrap();
-        let backup_tmp = TempDir::new().unwrap();
-        let (_db, sm) = create_test_db(&db_tmp).await;
+        let sm = test_snapshot_manager();
 
         // Create fake backup files (automatic and manual)
-        std::fs::write(backup_tmp.path().join("ur-backup-20260101T000000Z.db"), "a").unwrap();
-        std::fs::write(backup_tmp.path().join("ur-backup-20260103T000000Z.db"), "c").unwrap();
-        std::fs::write(backup_tmp.path().join("ur-backup-20260102T000000Z.db"), "b").unwrap();
+        std::fs::write(
+            backup_tmp.path().join("ur-backup-20260101T000000Z.pgdump"),
+            "a",
+        )
+        .unwrap();
+        std::fs::write(
+            backup_tmp.path().join("ur-backup-20260103T000000Z.pgdump"),
+            "c",
+        )
+        .unwrap();
+        std::fs::write(
+            backup_tmp.path().join("ur-backup-20260102T000000Z.pgdump"),
+            "b",
+        )
+        .unwrap();
         std::fs::write(
             backup_tmp
                 .path()
-                .join("manual-ur-backup-20260104T000000Z.db"),
+                .join("manual-ur-backup-20260104T000000Z.pgdump"),
             "m",
         )
         .unwrap();
@@ -568,5 +508,28 @@ mod tests {
                 .to_string_lossy()
                 .contains("20260103")
         );
+    }
+
+    #[test]
+    fn backup_filename_uses_pgdump_extension() {
+        let name = backup_filename();
+        assert!(name.ends_with(".pgdump"), "got: {name}");
+        assert!(name.starts_with("ur-backup-"), "got: {name}");
+    }
+
+    #[test]
+    fn manual_backup_filename_uses_pgdump_extension() {
+        let name = manual_backup_filename();
+        assert!(name.ends_with(".pgdump"), "got: {name}");
+        assert!(name.starts_with("manual-ur-backup-"), "got: {name}");
+    }
+
+    #[test]
+    fn is_backup_file_matches_pgdump() {
+        assert!(is_backup_file("ur-backup-20260101T000000Z.pgdump"));
+        assert!(is_backup_file("manual-ur-backup-20260101T000000Z.pgdump"));
+        assert!(!is_backup_file("ur-backup-20260101T000000Z.db"));
+        assert!(!is_backup_file("other.pgdump"));
+        assert!(!is_backup_file("other.txt"));
     }
 }

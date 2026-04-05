@@ -5,17 +5,14 @@ use tracing::{debug, info};
 
 use crate::output::{BackupCreated, BackupEntry, BackupList, OutputManager};
 
-/// Run an on-demand database backup using VACUUM INTO.
-///
-/// Connects directly to the SQLite database file and creates a consistent
-/// snapshot in the configured backup directory.
+/// Run an on-demand database backup via pg_dump into the postgres container.
 pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let backup_path = config
         .db
         .backup
         .path
         .as_ref()
-        .context("no backup path configured — set [backup] path in ur.toml")?;
+        .context("no backup path configured — set [db.backup] path in ur.toml")?;
 
     if !backup_path.exists() {
         bail!(
@@ -24,27 +21,20 @@ pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Resul
         );
     }
 
-    let db_path = config.config_dir.join("ur.db");
-    if !db_path.exists() {
-        bail!("database not found at {}", db_path.display());
-    }
+    info!(backup_dir = %backup_path.display(), "creating on-demand backup via pg_dump");
 
-    info!(db = %db_path.display(), backup_dir = %backup_path.display(), "creating on-demand backup");
-
-    let db_path_str = db_path.to_string_lossy().to_string();
-    let db = ur_db::DatabaseManager::open(&db_path_str)
-        .await
-        .context("failed to open database")?;
-
-    let snapshot_manager = ur_db::SnapshotManager::new(db.pool().clone());
+    let snapshot_manager = ur_db::SnapshotManager::new(
+        config.server.container_command.clone(),
+        ur_config::DEFAULT_DB_HOST.to_string(),
+        config.db.name.clone(),
+    );
     let filename = backup_filename();
     let target = backup_path.join(&filename);
-    let target_str = target.to_string_lossy();
 
     snapshot_manager
-        .vacuum_into(&target_str)
+        .dump_to(&filename)
         .await
-        .context("backup failed")?;
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     clean_old_backups(backup_path, &filename, config.db.backup.retain_count);
 
@@ -59,11 +49,10 @@ pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Resul
     Ok(())
 }
 
-/// Restore a database from a backup file.
+/// Restore a database from a .pgdump backup file via pg_restore.
 ///
-/// Copies the backup file to a new location (the active database path with a
-/// `.restored` suffix) so the user can inspect it before replacing the live
-/// database. Prints instructions for completing the swap.
+/// Restores directly into the live Postgres database using pg_restore
+/// with --clean --if-exists. No server restart is needed.
 pub async fn restore(
     config: &ur_config::Config,
     source: &Path,
@@ -73,46 +62,31 @@ pub async fn restore(
         bail!("backup file not found: {}", source.display());
     }
 
-    let db_path = config.config_dir.join("ur.db");
-    let restore_target = config.config_dir.join("ur.db.restored");
-
-    if restore_target.exists() {
-        bail!(
-            "restore target already exists: {} — remove it first",
-            restore_target.display()
-        );
-    }
+    let filename = source
+        .file_name()
+        .context("invalid backup file path")?
+        .to_string_lossy();
 
     info!(
         source = %source.display(),
-        target = %restore_target.display(),
-        "restoring database from backup"
+        "restoring database from backup via pg_restore"
     );
 
-    let source_str = source.to_string_lossy().to_string();
-    let target_str = restore_target.to_string_lossy().to_string();
+    let snapshot_manager = ur_db::SnapshotManager::new(
+        config.server.container_command.clone(),
+        ur_config::DEFAULT_DB_HOST.to_string(),
+        config.db.name.clone(),
+    );
 
-    // Use SnapshotManager::restore to copy and verify schema integrity
-    let _restored_db = ur_db::SnapshotManager::restore(&source_str, &target_str)
+    snapshot_manager
+        .restore_from(&filename)
         .await
-        .context("restore failed — backup may be corrupt or incompatible")?;
+        .map_err(|e| anyhow::anyhow!("restore failed: {e}"))?;
 
     if output.is_json() {
-        output.print_text(&format!(
-            "Restored database verified: {}",
-            restore_target.display()
-        ));
+        output.print_text(&format!("Database restored from {}", source.display()));
     } else {
-        println!("Restored database verified: {}", restore_target.display());
-        println!();
-        println!("To complete the restore:");
-        println!("  1. Stop the server: ur server stop");
-        println!(
-            "  2. Replace the database: mv {} {}",
-            restore_target.display(),
-            db_path.display()
-        );
-        println!("  3. Start the server: ur server start");
+        println!("Database restored from {}", source.display());
     }
 
     Ok(())
@@ -203,7 +177,7 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
 /// Generate a timestamped manual backup filename.
 fn backup_filename() -> String {
     let now = chrono::Utc::now();
-    format!("manual-ur-backup-{}.db", now.format("%Y%m%dT%H%M%SZ"))
+    format!("manual-ur-backup-{}.pgdump", now.format("%Y%m%dT%H%M%SZ"))
 }
 
 /// Remove backup files that exceed the retain count.
@@ -218,7 +192,7 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u6
         .filter_map(|entry| {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().to_string();
-            if name_str.starts_with("ur-backup-") && name_str.ends_with(".db") {
+            if name_str.starts_with("ur-backup-") && name_str.ends_with(".pgdump") {
                 Some(name_str)
             } else {
                 None
@@ -238,7 +212,7 @@ fn clean_old_backups(backup_dir: &Path, current_filename: &str, retain_count: u6
 
 /// Check whether a filename is any kind of backup file (automatic or manual).
 fn is_backup_file(name: &str) -> bool {
-    name.ends_with(".db")
+    name.ends_with(".pgdump")
         && (name.starts_with("ur-backup-") || name.starts_with("manual-ur-backup-"))
 }
 
@@ -246,7 +220,7 @@ fn is_backup_file(name: &str) -> bool {
 fn backup_timestamp(name: &str) -> &str {
     name.strip_prefix("manual-ur-backup-")
         .or_else(|| name.strip_prefix("ur-backup-"))
-        .and_then(|s| s.strip_suffix(".db"))
+        .and_then(|s| s.strip_suffix(".pgdump"))
         .unwrap_or("?")
 }
 
