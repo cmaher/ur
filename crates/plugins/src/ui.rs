@@ -33,6 +33,22 @@ impl UiRegistry {
         self.plugins.push(plugin);
     }
 
+    /// Configure all registered plugins with their respective TOML tables.
+    ///
+    /// For each plugin, looks up a matching key in `plugin_configs` by plugin name.
+    /// Plugins without a matching config entry receive an empty table.
+    pub fn configure_all(
+        &mut self,
+        plugin_configs: &std::collections::HashMap<String, toml::Table>,
+    ) -> Result<()> {
+        let empty = toml::Table::new();
+        for plugin in &mut self.plugins {
+            let config = plugin_configs.get(plugin.name()).unwrap_or(&empty);
+            plugin.configure(config)?;
+        }
+        Ok(())
+    }
+
     /// Iterate over registered plugins.
     pub fn plugins(&self) -> &[Box<dyn UiPlugin>] {
         &self.plugins
