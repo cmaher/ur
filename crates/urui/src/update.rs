@@ -767,14 +767,16 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
         }
         DataMsg::NotificationFlowLoaded(result) => {
             if let Ok(workflow) = result {
-                let (msgs, cmds) = model.notifications.process_flow_updates(&[workflow]);
-                let mut all_cmds = cmds;
-                for msg in msgs {
-                    let (new_model, msg_cmds) = update(model, msg);
-                    model = new_model;
-                    all_cmds.extend(msg_cmds);
+                let (notif_msgs, notif_cmds) =
+                    model.notifications.process_flow_updates(&[workflow]);
+                let mut cmds = notif_cmds;
+                // Only show the most recent banner to avoid banner churn.
+                if let Some(msg) = notif_msgs.into_iter().last() {
+                    let (m, extra_cmds) = update(model, msg);
+                    model = m;
+                    cmds.extend(extra_cmds);
                 }
-                return (model, all_cmds);
+                return (model, cmds);
             }
         }
     }
