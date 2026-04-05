@@ -90,7 +90,7 @@ impl WorkerStrategy {
                 ]);
             }
             Self::Design => {
-                skills.extend(["design".into()]);
+                skills.extend(["design".into(), "dispatch".into()]);
             }
         }
         skills
