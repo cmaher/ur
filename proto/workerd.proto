@@ -9,6 +9,8 @@ service WorkerDaemonService {
   rpc AddressFeedbackTickets(AddressFeedbackRequest) returns (AddressFeedbackResponse);
   rpc StepComplete(StepCompleteRequest) returns (StepCompleteResponse);
   rpc PauseNudge(PauseNudgeRequest) returns (PauseNudgeResponse);
+  rpc SetTicket(SetTicketRequest) returns (SetTicketResponse);
+  rpc DispatchTicket(DispatchTicketRequest) returns (DispatchTicketResponse);
 }
 
 message SendMessageRequest {
@@ -56,3 +58,15 @@ message StepCompleteResponse {}
 message PauseNudgeRequest {}
 
 message PauseNudgeResponse {}
+
+message SetTicketRequest {
+  string ticket_id = 1;
+}
+
+message SetTicketResponse {}
+
+message DispatchTicketRequest {}
+
+message DispatchTicketResponse {
+  string error = 1;
+}
