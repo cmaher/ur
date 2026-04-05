@@ -142,9 +142,7 @@ impl NavigationModel {
 
         // Teardown the popped page
         let handler_count = teardown_page(&popped, model);
-        for _ in 0..handler_count {
-            model.input_stack.pop();
-        }
+        pop_handlers(&mut model.input_stack, handler_count);
 
         // Init the newly revealed page
         cmds.extend(init_page(self.current_page(), model));
@@ -162,9 +160,7 @@ impl NavigationModel {
             // Teardown the old tab's root page handlers before switching.
             let old_root = &self.tab_stacks[&self.active_tab][0].clone();
             let handler_count = teardown_page(old_root, model);
-            for _ in 0..handler_count {
-                model.input_stack.pop();
-            }
+            pop_handlers(&mut model.input_stack, handler_count);
 
             self.active_tab = target;
             // Always init the target tab's root page (pushes handlers, triggers fetch if needed).
@@ -187,18 +183,14 @@ impl NavigationModel {
             while stack.len() > 1 {
                 let popped = stack.pop().expect("stack has more than one entry");
                 let handler_count = teardown_page(&popped, model);
-                for _ in 0..handler_count {
-                    model.input_stack.pop();
-                }
+                pop_handlers(&mut model.input_stack, handler_count);
             }
         }
 
         // Teardown root page handlers before re-init (prevents duplicate handlers).
         let root = self.tab_stacks[&self.active_tab][0].clone();
         let handler_count = teardown_page(&root, model);
-        for _ in 0..handler_count {
-            model.input_stack.pop();
-        }
+        pop_handlers(&mut model.input_stack, handler_count);
 
         // Re-init the root page
         cmds.extend(init_page(self.current_page(), model));
@@ -277,6 +269,13 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
             super::pages::help_page::init_help_page(model);
             vec![]
         }
+    }
+}
+
+/// Pop `count` handlers from the input stack.
+fn pop_handlers(input_stack: &mut super::input::InputStack, count: usize) {
+    for _ in 0..count {
+        input_stack.pop();
     }
 }
 
