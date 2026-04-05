@@ -12,9 +12,10 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonService;
 use ur_rpc::proto::workerd::{
     AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
-    ImplementRequest, ImplementResponse, NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest,
-    PauseNudgeResponse, SendMessageRequest, SendMessageResponse, StepCompleteRequest,
-    StepCompleteResponse,
+    DispatchTicketRequest, DispatchTicketResponse, ImplementRequest, ImplementResponse,
+    NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest, PauseNudgeResponse,
+    SendMessageRequest, SendMessageResponse, SetTicketRequest, SetTicketResponse,
+    StepCompleteRequest, StepCompleteResponse,
 };
 
 /// Buffer for dispatched commands that workerd drains on idle signals.
@@ -41,6 +42,8 @@ pub struct WorkerDaemonServiceImpl {
     pub worker_id: String,
     pub worker_secret: String,
     pub dispatch_buffer: Arc<Mutex<DispatchBuffer>>,
+    pub dispatch_ticket_id: Arc<Mutex<Option<String>>>,
+    pub is_design_worker: bool,
 }
 
 impl WorkerDaemonServiceImpl {
@@ -76,6 +79,61 @@ impl WorkerDaemonServiceImpl {
                 Err(e) => warn!(error = %e, "failed to update agent status on server"),
             }
         });
+    }
+
+    /// Send CreateWorkflow + WorkerLaunch RPCs to the server for a dispatched ticket.
+    async fn dispatch_ticket_to_server(&self, ticket_id: &str) -> Result<(), String> {
+        let addr = format!("http://{}", self.server_addr);
+        let worker_id = self.worker_id.clone();
+        let worker_secret = self.worker_secret.clone();
+        let ticket_id = ticket_id.to_owned();
+
+        // 1. CreateWorkflow
+        let channel = tonic::transport::Endpoint::try_from(addr.clone())
+            .map_err(|e| e.to_string())?
+            .connect()
+            .await
+            .map_err(|e| format!("failed to connect for CreateWorkflow: {e}"))?;
+
+        let mut ticket_client =
+            ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient::new(channel);
+
+        let mut request = tonic::Request::new(ur_rpc::proto::ticket::CreateWorkflowRequest {
+            ticket_id: ticket_id.clone(),
+            status: ur_rpc::lifecycle::AWAITING_DISPATCH.to_owned(),
+        });
+        inject_auth_headers(request.metadata_mut(), &worker_id, &worker_secret);
+
+        ticket_client
+            .create_workflow(request)
+            .await
+            .map_err(|e| format!("CreateWorkflow failed: {e}"))?;
+
+        info!(ticket_id = %ticket_id, "CreateWorkflow sent successfully");
+
+        // 2. WorkerLaunch
+        let channel = tonic::transport::Endpoint::try_from(addr)
+            .map_err(|e| e.to_string())?
+            .connect()
+            .await
+            .map_err(|e| format!("failed to connect for WorkerLaunch: {e}"))?;
+
+        let mut core_client = CoreServiceClient::new(channel);
+
+        let mut request = tonic::Request::new(ur_rpc::proto::core::WorkerLaunchRequest {
+            worker_id: ticket_id.clone(),
+            ..Default::default()
+        });
+        inject_auth_headers(request.metadata_mut(), &worker_id, &worker_secret);
+
+        core_client
+            .worker_launch(request)
+            .await
+            .map_err(|e| format!("WorkerLaunch failed: {e}"))?;
+
+        info!(ticket_id = %ticket_id, "WorkerLaunch sent successfully");
+
+        Ok(())
     }
 
     /// Fire-and-forget: send WorkflowStepComplete RPC to the ur-server.
@@ -338,5 +396,59 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         }
 
         Ok(Response::new(AddressFeedbackResponse {}))
+    }
+
+    async fn set_ticket(
+        &self,
+        request: Request<SetTicketRequest>,
+    ) -> Result<Response<SetTicketResponse>, Status> {
+        if !self.is_design_worker {
+            return Err(Status::failed_precondition(
+                "SetTicket is only available in design mode",
+            ));
+        }
+
+        let ticket_id = request.into_inner().ticket_id;
+        info!(ticket_id = %ticket_id, "SetTicket received");
+
+        let mut stored = self.dispatch_ticket_id.lock().await;
+        *stored = Some(ticket_id);
+
+        Ok(Response::new(SetTicketResponse {}))
+    }
+
+    async fn dispatch_ticket(
+        &self,
+        _request: Request<DispatchTicketRequest>,
+    ) -> Result<Response<DispatchTicketResponse>, Status> {
+        if !self.is_design_worker {
+            return Err(Status::failed_precondition(
+                "DispatchTicket is only available in design mode",
+            ));
+        }
+
+        let ticket_id = {
+            let stored = self.dispatch_ticket_id.lock().await;
+            stored.clone()
+        };
+
+        let Some(ticket_id) = ticket_id else {
+            info!("DispatchTicket called with no ticket set");
+            return Ok(Response::new(DispatchTicketResponse {
+                error: "No ticket set. Use `workertools set-ticket <id>` first.".to_string(),
+            }));
+        };
+
+        info!(ticket_id = %ticket_id, "DispatchTicket received, sending to server");
+
+        match self.dispatch_ticket_to_server(&ticket_id).await {
+            Ok(()) => Ok(Response::new(DispatchTicketResponse {
+                error: String::new(),
+            })),
+            Err(e) => {
+                error!(error = %e, "DispatchTicket server RPCs failed");
+                Ok(Response::new(DispatchTicketResponse { error: e }))
+            }
+        }
     }
 }
