@@ -82,10 +82,15 @@ script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 
 [tasks.install]
-description = "Build ur CLI + builderd, install to UR_INSTALL_DIR (default ~/bin), and build all container images"
+description = "Build ur CLI + builderd, install to UR_INSTALL_DIR (default ~/.local/bin), and build all container images"
 dependencies = ["image"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
+
+[tasks.tools]
+description = "Build and install tool binaries (tk-import, tk-verify) to UR_INSTALL_DIR (default ~/.local/bin)"
+script_runner = "@shell"
+script = ["scripts/build/install-tools.sh"]
 
 [tasks.install-nocache]
 description = "Same as install but force-rebuilds the base image (no Docker cache)"
