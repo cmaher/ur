@@ -452,6 +452,12 @@ impl CmdRunner {
                     })));
                 });
             }
+            FetchCmd::WorkflowForNotification { ticket_id } => {
+                tokio::spawn(async move {
+                    let result = fetch_workflow_for_notification(port, &ticket_id).await;
+                    let _ = tx.send(Msg::Data(Box::new(DataMsg::NotificationFlowLoaded(result))));
+                });
+            }
         }
     }
 }
@@ -592,6 +598,35 @@ async fn fetch_flows(
         })?;
     let inner = resp.into_inner();
     Ok((inner.workflows, inner.total_count))
+}
+
+/// Fetch a single workflow by ticket ID via `GetWorkflow` gRPC for notification
+/// detection. Returns `Err` on connection/transport failures; returns `Err` for
+/// NotFound (the ticket may not have a workflow) which the caller can treat as a no-op.
+async fn fetch_workflow_for_notification(
+    port: u16,
+    ticket_id: &str,
+) -> Result<ur_rpc::proto::ticket::WorkflowInfo, String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::GetWorkflowRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    debug!(port, %ticket_id, "v2: fetching workflow for notification");
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    let resp = client
+        .get_workflow(GetWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %ticket_id, error = %e, "v2: workflow notification fetch failed");
+            e.to_string()
+        })?;
+    let inner = resp.into_inner();
+    inner
+        .workflow
+        .ok_or_else(|| format!("GetWorkflow returned empty response for {ticket_id}"))
 }
 
 /// Fetch workers via `WorkerList` gRPC, filtered by project if set.
