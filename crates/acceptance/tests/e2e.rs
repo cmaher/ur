@@ -1586,10 +1586,28 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
     let project_key = "hotreload";
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Create a bare git repo for the new project ----
+        // ---- Create a bare git repo and a working clone for the new project ----
         let repos_dir = env.config_path.join("hotreload-repos");
         std::fs::create_dir_all(&repos_dir).expect("failed to create hotreload-repos dir");
         let bare_repo = create_bare_repo(&repos_dir);
+
+        // Clone the bare repo to get a working dir with origin pointing at it.
+        // `ur project add` resolves the git remote origin from the path argument,
+        // so we need a working clone rather than the bare repo itself.
+        let clone_dir = repos_dir.join("hotreload-clone");
+        let clone_output = Command::new("git")
+            .args([
+                "clone",
+                bare_repo.to_str().unwrap(),
+                clone_dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to clone bare repo");
+        assert!(
+            clone_output.status.success(),
+            "git clone failed: {}",
+            String::from_utf8_lossy(&clone_output.stderr)
+        );
 
         // ---- Add the project via `ur project add` (triggers ReloadProjects RPC) ----
         let add_output = run_cmd(
@@ -1597,7 +1615,7 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
             &[
                 "project",
                 "add",
-                bare_repo.to_str().unwrap(),
+                clone_dir.to_str().unwrap(),
                 "--image",
                 "ur-worker",
                 "--key",
