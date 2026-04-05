@@ -14,7 +14,7 @@ pub fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
     MarkdownColors {
         text: ctx.theme.base_content,
         heading: ctx.theme.accent,
-        code: ctx.theme.warning,
+        code: ctx.theme.secondary,
         dim: ctx.theme.neutral_content,
     }
 }
@@ -133,7 +133,7 @@ mod tests {
         let colors = markdown_colors(&ctx);
         assert_eq!(colors.text, ctx.theme.base_content);
         assert_eq!(colors.heading, ctx.theme.accent);
-        assert_eq!(colors.code, ctx.theme.warning);
+        assert_eq!(colors.code, ctx.theme.secondary);
         assert_eq!(colors.dim, ctx.theme.neutral_content);
     }
 

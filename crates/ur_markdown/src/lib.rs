@@ -149,6 +149,11 @@ impl MarkdownRenderer {
             Event::Start(Tag::Emphasis) => state.italic += 1,
             Event::End(TagEnd::Emphasis) => state.italic = state.italic.saturating_sub(1),
             Event::Code(code) => {
+                if let Some(prefix) = state.pending_list_prefix.take() {
+                    state
+                        .current_spans
+                        .push(Span::styled(prefix, Style::default().fg(self.colors.dim)));
+                }
                 let style = Style::default().fg(self.colors.code);
                 state
                     .current_spans
@@ -650,6 +655,40 @@ mod tests {
             all_text.contains("the docs"),
             "link text missing: {all_text:?}"
         );
+    }
+
+    #[test]
+    fn list_item_starting_with_inline_code_has_bullet_first() {
+        let colors = default_colors();
+        let md = "* `cmd` -- desc";
+        let lines = render_markdown(md, 80, &colors);
+        let item_line = lines
+            .iter()
+            .find(|l| spans_text(l).contains("cmd"))
+            .expect("item line not found");
+        let text = spans_text(item_line);
+        assert!(
+            text.starts_with("• "),
+            "bullet should appear before code span: {text:?}"
+        );
+        // Verify the bullet span comes before the code span.
+        let bullet_idx = item_line
+            .spans
+            .iter()
+            .position(|s| s.content.contains('•'))
+            .expect("bullet span not found");
+        let code_idx = item_line
+            .spans
+            .iter()
+            .position(|s| s.content.contains("cmd"))
+            .expect("code span not found");
+        assert!(
+            bullet_idx < code_idx,
+            "bullet span (idx {bullet_idx}) should precede code span (idx {code_idx})"
+        );
+        // Verify the code span uses the code color.
+        let code_span = &item_line.spans[code_idx];
+        assert_eq!(code_span.style.fg, Some(colors.code));
     }
 
     #[test]
