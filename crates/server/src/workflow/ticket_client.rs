@@ -166,18 +166,15 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use tempfile::TempDir;
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkflowRepo};
+    use ur_db::{GraphManager, TicketRepo, WorkflowRepo};
+    use ur_db_test::TestDb;
 
-    async fn setup() -> (TicketClient, TicketRepo, TempDir) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let db = DatabaseManager::open(&db_path.to_string_lossy())
-            .await
-            .expect("open test db");
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(db.pool().clone());
+    async fn setup() -> (TicketClient, TicketRepo, TestDb) {
+        let test_db = TestDb::new().await;
+        let pool = test_db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool);
 
         let handler = TicketServiceHandler {
             ticket_repo: repo.clone(),
@@ -190,12 +187,12 @@ mod tests {
         };
 
         let client = TicketClient::new(handler);
-        (client, repo, tmp)
+        (client, repo, test_db)
     }
 
     #[tokio::test]
     async fn create_workflow_issue_ticket_creates_child_with_metadata() {
-        let (client, repo, _tmp) = setup().await;
+        let (client, repo, _test_db) = setup().await;
 
         // Create a parent ticket first.
         let parent = ur_db::NewTicket {
@@ -240,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_workflow_issue_ticket_deduplicates() {
-        let (client, repo, _tmp) = setup().await;
+        let (client, repo, _test_db) = setup().await;
 
         // Create parent.
         let parent = ur_db::NewTicket {
@@ -285,7 +282,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_issue_types_create_separate_tickets() {
-        let (client, repo, _tmp) = setup().await;
+        let (client, repo, _test_db) = setup().await;
 
         // Create parent.
         let parent = ur_db::NewTicket {

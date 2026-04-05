@@ -837,17 +837,16 @@ mod tests {
         }
     }
 
-    async fn test_worker_repo() -> WorkerRepo {
-        let db = ur_db::DatabaseManager::open(":memory:")
-            .await
-            .expect("failed to open in-memory db");
-        WorkerRepo::new(db.pool().clone())
+    async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
+        let test_db = ur_db_test::TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.db().pool().clone());
+        (repo, test_db)
     }
 
-    async fn test_manager() -> (WorkerManager, tempfile::TempDir) {
+    async fn test_manager() -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
         let workspace = tempfile::tempdir().unwrap();
         let config = test_config(workspace.path());
-        let worker_repo = test_worker_repo().await;
+        let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
         let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
@@ -885,12 +884,12 @@ mod tests {
             PromptModesConfig::default(),
             worker_repo,
         );
-        (mgr, workspace)
+        (mgr, workspace, test_db)
     }
 
     #[tokio::test]
     async fn prepare_creates_repo_and_registers() {
-        let (mgr, workspace) = test_manager().await;
+        let (mgr, workspace, _test_db) = test_manager().await;
         let process_id = "test-proc";
         let wid = mgr.generate_worker_id(process_id);
 
@@ -904,7 +903,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_with_workspace_skips_git_init() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let process_id = "ws-proc";
         let wid = mgr.generate_worker_id(process_id);
 
@@ -924,7 +923,7 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_duplicate_process_id_returns_error() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
 
         let existing_wid = WorkerId("dup-proc-ab12".into());
         // Insert a running worker into the database
@@ -949,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_unknown_process_returns_error() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let result = mgr.stop("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown worker"));
@@ -997,7 +996,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_process_id_works() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("test-ab12".into());
         mgr.register_worker(
             wid.clone(),
@@ -1159,7 +1158,7 @@ skills = ["only-one"]
 
     #[tokio::test]
     async fn verify_worker_valid_pair_returns_true() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("test-ab12".into());
         let secret = "my-secret-token";
         mgr.register_worker(
@@ -1177,7 +1176,7 @@ skills = ["only-one"]
 
     #[tokio::test]
     async fn verify_worker_wrong_secret_returns_false() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("test-ab12".into());
         mgr.register_worker(
             wid.clone(),
@@ -1194,19 +1193,19 @@ skills = ["only-one"]
 
     #[tokio::test]
     async fn verify_worker_unknown_id_returns_false() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         assert!(!mgr.verify_worker("unknown-ab12", "any-secret").await);
     }
 
     #[tokio::test]
     async fn verify_worker_invalid_id_format_returns_false() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         assert!(!mgr.verify_worker("nodash", "any-secret").await);
     }
 
     #[tokio::test]
     async fn get_worker_context_returns_context_for_registered_agent() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("ctx-ab12".into());
         let slot = PathBuf::from("/tmp/slot");
         mgr.register_worker(
@@ -1226,7 +1225,7 @@ skills = ["only-one"]
 
     #[tokio::test]
     async fn get_worker_context_empty_project_key_maps_to_none() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("ws-ab12".into());
         mgr.register_worker(
             wid.clone(),
@@ -1244,14 +1243,14 @@ skills = ["only-one"]
 
     #[tokio::test]
     async fn get_worker_context_returns_none_for_unknown_agent() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("missing-ab12".into());
         assert!(mgr.get_worker_context(&wid).await.is_none());
     }
 
     #[tokio::test]
     async fn get_worker_context_returns_none_when_no_slot_path() {
-        let (mgr, _workspace) = test_manager().await;
+        let (mgr, _workspace, _test_db) = test_manager().await;
         let wid = WorkerId("nosl-ab12".into());
         mgr.register_worker(
             wid.clone(),
