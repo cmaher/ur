@@ -346,10 +346,7 @@ fn handle_body_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
     ) {
         Some(&mut model.help_page.scroll)
     } else {
-        model
-            .ticket_body
-            .as_mut()
-            .map(|bm| &mut bm.scroll)
+        model.ticket_body.as_mut().map(|bm| &mut bm.scroll)
     };
 
     if let Some(scroll) = scroll {

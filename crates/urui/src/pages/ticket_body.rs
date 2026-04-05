@@ -73,12 +73,7 @@ fn render_header(ticket_id: &str, title: &str, area: Rect, buf: &mut Buffer, ctx
 }
 
 /// Render the scrollable body pane using the shared markdown component.
-fn render_body_pane(
-    body_model: &TicketBodyModel,
-    area: Rect,
-    buf: &mut Buffer,
-    ctx: &TuiContext,
-) {
+fn render_body_pane(body_model: &TicketBodyModel, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
     render_scrollable_markdown(&body_model.body, area, buf, ctx, &body_model.scroll);
 }
 
@@ -154,10 +149,7 @@ mod tests {
         bm.scroll.last_body_height.set(10);
 
         model.ticket_body.as_mut().unwrap().scroll.scroll_down(3);
-        assert_eq!(
-            model.ticket_body.as_ref().unwrap().scroll.scroll_offset,
-            3
-        );
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 3);
     }
 
     #[test]
@@ -173,12 +165,7 @@ mod tests {
         bm.scroll.last_total_lines.set(5);
         bm.scroll.last_body_height.set(3);
 
-        model
-            .ticket_body
-            .as_mut()
-            .unwrap()
-            .scroll
-            .scroll_down(100);
+        model.ticket_body.as_mut().unwrap().scroll.scroll_down(100);
         // max_offset = 5 - 3 = 2
         assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 2);
     }
@@ -226,10 +213,7 @@ mod tests {
         bm.scroll.last_body_height.set(10);
 
         model.ticket_body.as_mut().unwrap().scroll.page_down();
-        assert_eq!(
-            model.ticket_body.as_ref().unwrap().scroll.scroll_offset,
-            10
-        );
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 10);
     }
 
     #[test]
