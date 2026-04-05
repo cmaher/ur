@@ -30,7 +30,7 @@ Migrations (`migrations/`):
 cargo test -p ur_db
 ```
 
-Tests connect to a Postgres database via `DATABASE_URL` env var (defaults to `postgres://ur:ur@localhost:5432/ur_test`). No mocks.
+Tests connect to a Postgres database via `DATABASE_URL` env var (defaults to `postgres://ur:ur@localhost:5432/ur_test`). No mocks. CI uses a dedicated `ci-postgres` service on port 5433 to avoid conflicts with the development database. The `ur_db_test` crate provides a `TestDb` helper that creates isolated test databases per test run.
 
 ## Conventions
 
