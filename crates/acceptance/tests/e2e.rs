@@ -569,6 +569,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
+        scenario_project_add_then_launch(&env);
         scenario_dispatch_creates_workflow(&env);
         scenario_ticket_close_preserves_workflow(&env);
         scenario_flow_list_and_cancel(&env);
@@ -581,6 +582,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "design-test-1",
         "design-test-2",
         "rust-image-test",
+        "hotreload-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -1506,6 +1508,138 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
         // Worker is already killed by flow_cancel (CancelWorkflow kills the
         // associated worker container). Just force-remove to clean up.
         force_remove_container(&env.runtime, &container_name);
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Project add then launch: add a project via `ur project add` while the server
+/// is running, then immediately launch a worker for that project without restart.
+/// Verifies the hot-reload flow: config write → gRPC ReloadProjects → pool slot
+/// acquisition for the newly added project.
+fn scenario_project_add_then_launch(env: &TestEnv) {
+    let ticket_id = "hotreload-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let project_key = "hotreload";
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Create a bare git repo for the new project ----
+        let repos_dir = env.config_path.join("hotreload-repos");
+        std::fs::create_dir_all(&repos_dir).expect("failed to create hotreload-repos dir");
+        let bare_repo = create_bare_repo(&repos_dir);
+
+        // ---- Add the project via `ur project add` (triggers ReloadProjects RPC) ----
+        let add_output = run_cmd(
+            &env.ur,
+            &[
+                "project",
+                "add",
+                bare_repo.to_str().unwrap(),
+                "--image",
+                "ur-worker",
+                "--key",
+                project_key,
+            ],
+            &env_slice,
+        );
+        assert!(
+            add_output.status.success(),
+            "ur project add failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&add_output.stdout),
+            String::from_utf8_lossy(&add_output.stderr),
+        );
+
+        // Verify the add output mentions server reload
+        let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+        assert!(
+            add_stdout.contains("reloaded")
+                || add_stdout.contains("Reloaded")
+                || add_stdout.contains("reload")
+                || add_stdout.contains("available"),
+            "project add output should confirm server reload.\nGot: {add_stdout}"
+        );
+
+        // ---- Launch a worker for the newly added project (no server restart) ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {project_key} failed \
+             (hot-reload should make project available).\n\
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\n\
+             Got: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify workspace has cloned content from the new project ----
+        let ls_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/workspace/README.md"],
+        );
+        assert_exec_success(
+            &ls_output,
+            "hot-reloaded project pool slot should contain README.md from cloned repo",
+        );
+
+        // ---- Verify ur-ping works (gRPC connectivity) ----
+        assert_ping_pong(&env.runtime, &container_name);
+
+        // ---- Verify pool directory structure on host ----
+        let pool_slot = env
+            .config_path
+            .join("workspace")
+            .join("pool")
+            .join(project_key)
+            .join("0");
+        assert!(
+            pool_slot.exists(),
+            "pool slot directory should exist at {}",
+            pool_slot.display()
+        );
+        assert!(
+            pool_slot.join(".git").exists(),
+            "pool slot should be a git repo (have .git)"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- Clean up: remove the project so it doesn't affect later tests ----
+        let remove_output = run_cmd(
+            &env.ur,
+            &["project", "remove", project_key, "--force"],
+            &env_slice,
+        );
+        assert!(
+            remove_output.status.success(),
+            "project remove failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&remove_output.stdout),
+            String::from_utf8_lossy(&remove_output.stderr),
+        );
     }));
 
     if let Err(e) = result {
