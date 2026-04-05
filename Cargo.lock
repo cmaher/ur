@@ -348,6 +348,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "compose"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "indexmap",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "tracing",
+ "ur_config",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1674,6 +1687,17 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "plugins"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "compose",
+ "toml",
+ "tonic",
+]
 
 [[package]]
 name = "potential_utf"
@@ -3196,11 +3220,13 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "compose",
  "container",
  "dirs",
  "fs4",
  "glob",
  "http-body",
+ "plugins",
  "serde",
  "serde_json",
  "tempfile",
@@ -3241,6 +3267,7 @@ dependencies = [
  "futures",
  "local_repo",
  "mlua",
+ "plugins",
  "prost",
  "rand 0.9.2",
  "remote_repo",
@@ -3261,6 +3288,7 @@ dependencies = [
  "ur_db_test",
  "ur_rpc",
  "ur_utils",
+ "url",
  "uuid",
 ]
 
@@ -3352,6 +3380,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "plugins",
  "ratatui",
  "tokio",
  "toml_edit",
