@@ -12,15 +12,16 @@ use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
-    SendWorkerMessageRequest, SendWorkerMessageResponse, UpdateAgentStatusRequest,
-    UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
-    WorkerLaunchResponse, WorkerListRequest, WorkerListResponse, WorkerStopRequest,
-    WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
+    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
+    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
+    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
 
 use ur_db::WorkerRepo;
 
-use crate::{RepoPoolManager, WorkerManager};
+use crate::{ProjectRegistry, RepoPoolManager, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -141,13 +142,13 @@ pub struct CoreServiceHandler {
     pub repo_pool_manager: RepoPoolManager,
     pub workspace: PathBuf,
     pub proxy_hostname: String,
-    pub projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
+    pub project_registry: ProjectRegistry,
     pub worker_repo: WorkerRepo,
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
     pub network_config: ur_config::NetworkConfig,
-    pub hostexec_config: crate::hostexec::HostExecConfigManager,
     pub builderd_addr: String,
+    pub config_dir: PathBuf,
 }
 
 impl CoreServiceHandler {
@@ -161,7 +162,7 @@ impl CoreServiceHandler {
     ) -> Result<Vec<(String, std::path::PathBuf)>, Status> {
         // Validate all keys first before acquiring any slots.
         for key in context_repos {
-            if !self.projects.contains_key(key) {
+            if self.project_registry.get(key).is_none() {
                 return Err(CoreError::InvalidContextRepo {
                     reason: format!("unknown project key: {key}"),
                 }
@@ -358,7 +359,7 @@ impl CoreService for CoreServiceHandler {
         };
 
         let (git_hooks_dir, skill_hooks_dir, claude_md, mounts, ports, resolved_image) =
-            match self.projects.get(&project_key) {
+            match self.project_registry.get(&project_key) {
                 Some(proj) if !project_key.is_empty() => (
                     proj.git_hooks_dir.clone(),
                     proj.skill_hooks_dir.clone(),
@@ -591,6 +592,29 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<LinkCommentTicketResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
+
+    async fn reload_projects(
+        &self,
+        _req: Request<ReloadProjectsRequest>,
+    ) -> Result<Response<ReloadProjectsResponse>, Status> {
+        info!("reload_projects request received");
+        let report = self
+            .project_registry
+            .reload(&self.config_dir)
+            .map_err(|e| {
+                error!(error = %e, "reload_projects failed");
+                Status::internal(format!("failed to reload projects: {e}"))
+            })?;
+        info!(
+            added = ?report.added,
+            removed = ?report.removed,
+            "projects reloaded"
+        );
+        Ok(Response::new(ReloadProjectsResponse {
+            added: report.added,
+            removed: report.removed,
+        }))
+    }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -796,6 +820,13 @@ impl CoreService for WorkerCoreServiceHandler {
         }
 
         Ok(Response::new(UpdateAgentStatusResponse {}))
+    }
+
+    async fn reload_projects(
+        &self,
+        _req: Request<ReloadProjectsRequest>,
+    ) -> Result<Response<ReloadProjectsResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
     }
 }
 

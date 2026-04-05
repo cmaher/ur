@@ -177,6 +177,7 @@ impl ComposeManager {
 struct ComposeParams {
     server_container_name: String,
     squid_container_name: String,
+    postgres_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
     /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
@@ -205,6 +206,7 @@ pub fn generate_compose(
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
+        postgres_container_name: db.host.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
         backup_path: if db.backup.enabled {
@@ -244,7 +246,7 @@ fn write_header(out: &mut String) {
 
 fn write_squid_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-squid:").unwrap();
-    writeln!(out, "    image: ur-squid:latest").unwrap();
+    writeln!(out, "    image: ur-squid:${{UR_IMAGE_TAG:-latest}}").unwrap();
     writeln!(out, "    container_name: {}", params.squid_container_name).unwrap();
     writeln!(out, "    volumes:").unwrap();
     writeln!(
@@ -259,9 +261,14 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
 }
 
 fn write_postgres_service(out: &mut String, params: &ComposeParams) {
-    writeln!(out, "  ur-postgres:").unwrap();
+    writeln!(out, "  {}:", params.postgres_container_name).unwrap();
     writeln!(out, "    image: postgres:17-alpine").unwrap();
-    writeln!(out, "    container_name: ur-postgres").unwrap();
+    writeln!(
+        out,
+        "    container_name: {}",
+        params.postgres_container_name
+    )
+    .unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
     // Volumes
@@ -307,13 +314,13 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
 
 fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "  ur-server:").unwrap();
-    writeln!(out, "    image: ur-server:latest").unwrap();
+    writeln!(out, "    image: ur-server:${{UR_IMAGE_TAG:-latest}}").unwrap();
     writeln!(out, "    container_name: {}", params.server_container_name).unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
     // Depends on
     writeln!(out, "    depends_on:").unwrap();
-    writeln!(out, "      ur-postgres:").unwrap();
+    writeln!(out, "      {}:", params.postgres_container_name).unwrap();
     writeln!(out, "        condition: service_healthy").unwrap();
 
     // Volumes
@@ -397,8 +404,9 @@ fn write_networks(out: &mut String, params: &ComposeParams) {
 
 /// Build a `ComposeManager` from the resolved ur config.
 ///
-/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, and `UR_BUILDERD_PORT`
-/// as environment variables so the compose file's variable interpolation picks them up.
+/// Forwards `UR_CONFIG`, `UR_WORKSPACE`, `UR_SERVER_PORT`, `UR_BUILDERD_PORT`,
+/// and optionally `UR_IMAGE_TAG` and `UR_CONTAINER` as environment variables
+/// so the compose file's variable interpolation picks them up.
 #[instrument(skip(config), fields(compose_file = %config.compose_file.display()))]
 pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager {
     let mut env_vars = vec![
@@ -420,6 +428,11 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
     // Forward UR_CONTAINER if set so compose can potentially use it
     if let Ok(val) = std::env::var("UR_CONTAINER") {
         env_vars.push(("UR_CONTAINER".to_string(), val));
+    }
+
+    // Forward UR_IMAGE_TAG if set so CI-tagged images are used by compose
+    if let Ok(val) = std::env::var("UR_IMAGE_TAG") {
+        env_vars.push(("UR_IMAGE_TAG".to_string(), val));
     }
 
     env_vars.push((

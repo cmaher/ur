@@ -103,6 +103,10 @@ async fn make_grpc_handler(
     let local_repo = local_repo::GitBackend {
         client: ur_rpc::proto::builder::BuilderdClient::new(channel),
     };
+    let project_registry = ur_server::ProjectRegistry::new(
+        std::collections::HashMap::new(),
+        ur_server::hostexec::HostExecConfigManager::empty(),
+    );
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
         workspace.clone(),
@@ -111,6 +115,7 @@ async fn make_grpc_handler(
         local_repo,
         worker_repo.clone(),
         workspace.join("config"),
+        project_registry.clone(),
     );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
@@ -124,23 +129,18 @@ async fn make_grpc_handler(
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
     );
-    let hostexec_config = ur_server::hostexec::HostExecConfigManager::load(
-        Path::new("/nonexistent"),
-        &ur_config::HostExecConfig::default(),
-    )
-    .unwrap();
     let handler = ur_server::grpc::CoreServiceHandler {
         worker_manager,
         repo_pool_manager,
-        workspace,
+        workspace: workspace.clone(),
         proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
-        projects: std::collections::HashMap::new(),
+        project_registry,
         worker_repo,
         ticket_repo,
         workflow_repo,
         network_config,
-        hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
+        config_dir: workspace,
     };
     (handler, test_db)
 }

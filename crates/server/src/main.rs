@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -15,8 +15,8 @@ use ur_db::{
 use ur_server::worker::PromptModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
-    BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, RepoPoolManager,
-    WorkerManager, WorkflowEngine,
+    BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, ProjectRegistry,
+    RepoPoolManager, WorkerManager, WorkflowEngine,
 };
 
 #[derive(Parser)]
@@ -156,11 +156,8 @@ async fn init_and_serve(
     worker_repo: WorkerRepo,
     builderd_addr: String,
     host_workspace: PathBuf,
+    project_registry: ProjectRegistry,
 ) -> anyhow::Result<()> {
-    let hostexec_config =
-        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
-            .expect("failed to load hostexec config");
-
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
     let workflow_repo = WorkflowRepo::new(db.pool().clone());
@@ -175,7 +172,7 @@ async fn init_and_serve(
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
-        valid_projects: cfg.projects.keys().cloned().collect(),
+        project_registry: project_registry.clone(),
         transition_tx: None, // set in serve_grpc_servers after builderd connects
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
         ui_event_poller: Some(ui_event_poller.clone()),
@@ -187,27 +184,26 @@ async fn init_and_serve(
         repo_pool_manager,
         workspace: cfg.workspace.clone(),
         proxy_hostname: cfg.proxy.hostname.clone(),
-        projects: cfg.projects.clone(),
+        project_registry: project_registry.clone(),
         worker_repo: worker_repo.clone(),
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config: cfg.network.clone(),
-        hostexec_config: hostexec_config.clone(),
         builderd_addr: builderd_addr.clone(),
+        config_dir: cfg.config_dir.clone(),
     };
 
     serve_grpc_servers(
         cfg.server_port,
         cfg.worker_port,
         cfg.network.worker_prefix.clone(),
-        cfg.projects.clone(),
+        project_registry,
         grpc_handler,
         ticket_handler,
         worker_manager,
         worker_repo,
         ticket_repo,
         workflow_repo,
-        hostexec_config,
         builderd_addr,
         host_workspace,
         Arc::new(cfg.clone()),
@@ -316,14 +312,13 @@ async fn serve_grpc_servers(
     server_port: u16,
     worker_port: u16,
     network_prefix: String,
-    projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
+    project_registry: ProjectRegistry,
     grpc_handler: ur_server::grpc::CoreServiceHandler,
     mut ticket_handler: ur_server::grpc_ticket::TicketServiceHandler,
     worker_manager: WorkerManager,
     worker_repo: WorkerRepo,
     ticket_repo: TicketRepo,
     workflow_repo: WorkflowRepo,
-    hostexec_config: ur_server::hostexec::HostExecConfigManager,
     builderd_addr: String,
     host_workspace: PathBuf,
     config: Arc<ur_config::Config>,
@@ -369,8 +364,7 @@ async fn serve_grpc_servers(
         ticket_repo,
         workflow_repo,
         network_prefix,
-        projects,
-        hostexec_config,
+        project_registry,
         builderd_addr,
         host_workspace,
         worker_ticket_handler,
@@ -388,6 +382,92 @@ async fn serve_grpc_servers(
     let _ = wf.ui_poller_handle.await;
 
     server_result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn init_managers(
+    cfg: &Config,
+    db: &DatabaseManager,
+    local_workspace: &Path,
+    host_workspace: &Path,
+    host_config_dir: &Path,
+    logs_dir: &Path,
+    prompt_modes: PromptModesConfig,
+    network_manager: NetworkManager,
+    docker_command: &str,
+) -> anyhow::Result<(
+    String,
+    WorkerRepo,
+    RepoPoolManager,
+    WorkerManager,
+    ProjectRegistry,
+)> {
+    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
+        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
+
+    let builderd_retry_channel =
+        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
+            .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
+    let builderd_client =
+        ur_rpc::proto::builder::BuilderdClient::new(builderd_retry_channel.channel().clone());
+    let local_repo = local_repo::GitBackend {
+        client: builderd_client.clone(),
+    };
+    let worker_repo = WorkerRepo::new(db.pool().clone());
+
+    reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
+
+    let hostexec_config =
+        ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
+            .expect("failed to load hostexec config");
+    let project_registry = ProjectRegistry::new(cfg.projects.clone(), hostexec_config);
+
+    let repo_pool_manager = RepoPoolManager::new(
+        cfg,
+        local_workspace.to_path_buf(),
+        host_workspace.to_path_buf(),
+        builderd_client,
+        local_repo,
+        worker_repo.clone(),
+        host_config_dir.to_path_buf(),
+        project_registry.clone(),
+    );
+    let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| logs_dir.to_path_buf());
+    let worker_manager = WorkerManager::new(
+        local_workspace.to_path_buf(),
+        host_config_dir.to_path_buf(),
+        logs_dir.to_path_buf(),
+        host_logs_dir,
+        repo_pool_manager.clone(),
+        network_manager,
+        cfg.network.clone(),
+        cfg.worker_port,
+        prompt_modes,
+        worker_repo.clone(),
+    );
+
+    reconcile_workers(&worker_repo, docker_command).await?;
+
+    let stale_deleted = worker_repo
+        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
+        .await
+        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
+    info!(
+        count = stale_deleted.len(),
+        deleted = ?stale_deleted,
+        ttl_days = cfg.server.stale_worker_ttl_days,
+        "stale worker cleanup complete"
+    );
+
+    Ok((
+        builderd_addr,
+        worker_repo,
+        repo_pool_manager,
+        worker_manager,
+        project_registry,
+    ))
 }
 
 #[tokio::main]
@@ -435,58 +515,19 @@ async fn main() -> anyhow::Result<()> {
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
-    let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
-        .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
-
-    let builderd_retry_channel =
-        ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
-            .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    let builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::new(builderd_retry_channel.channel().clone());
-    let local_repo = local_repo::GitBackend {
-        client: builderd_client.clone(),
-    };
-    let worker_repo = WorkerRepo::new(db.pool().clone());
-
-    reconcile_slots(&worker_repo, &cfg, &local_workspace, &host_workspace).await?;
-
-    let repo_pool_manager = RepoPoolManager::new(
-        &cfg,
-        local_workspace.clone(),
-        host_workspace.clone(),
-        builderd_client,
-        local_repo,
-        worker_repo.clone(),
-        host_config_dir.clone(),
-    );
-    let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| logs_dir.clone());
-    let worker_manager = WorkerManager::new(
-        local_workspace,
-        host_config_dir,
-        logs_dir,
-        host_logs_dir,
-        repo_pool_manager.clone(),
-        network_manager,
-        cfg.network.clone(),
-        cfg.worker_port,
-        prompt_modes,
-        worker_repo.clone(),
-    );
-
-    reconcile_workers(&worker_repo, &docker_command).await?;
-
-    let stale_deleted = worker_repo
-        .cleanup_stale_workers(cfg.server.stale_worker_ttl_days)
-        .await
-        .map_err(|e| anyhow::anyhow!("stale worker cleanup failed: {e}"))?;
-    info!(
-        count = stale_deleted.len(),
-        deleted = ?stale_deleted,
-        ttl_days = cfg.server.stale_worker_ttl_days,
-        "stale worker cleanup complete"
-    );
+    let (builderd_addr, worker_repo, repo_pool_manager, worker_manager, project_registry) =
+        init_managers(
+            &cfg,
+            &db,
+            &local_workspace,
+            &host_workspace,
+            &host_config_dir,
+            &logs_dir,
+            prompt_modes,
+            network_manager,
+            &docker_command,
+        )
+        .await?;
 
     let result = init_and_serve(
         &cfg,
@@ -496,6 +537,7 @@ async fn main() -> anyhow::Result<()> {
         worker_repo,
         builderd_addr,
         host_workspace,
+        project_registry,
     )
     .await;
 

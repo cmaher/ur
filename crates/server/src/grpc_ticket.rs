@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::pin::Pin;
 
 use tonic::{Code, Request, Response, Status};
@@ -110,7 +110,7 @@ impl From<TicketError> for Status {
 pub struct TicketServiceHandler {
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
-    pub valid_projects: HashSet<String>,
+    pub project_registry: crate::ProjectRegistry,
     /// Optional channel sender for workflow transition requests.
     /// None on the worker server (no workflow engine).
     pub transition_tx: Option<tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>>,
@@ -383,11 +383,12 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(project = %req.project, title = %req.title, "create_ticket request");
 
-        if !self.valid_projects.is_empty() && !self.valid_projects.contains(&req.project) {
+        let valid_projects = self.project_registry.valid_project_keys();
+        if !valid_projects.is_empty() && !valid_projects.contains(&req.project) {
             return Err(TicketError::Validation(format!(
                 "unknown project '{}'; configured projects: {}",
                 req.project,
-                self.valid_projects
+                valid_projects
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>()
@@ -641,14 +642,15 @@ impl TicketService for TicketServiceHandler {
         };
 
         let project = req.project.filter(|s| !s.is_empty());
+        let valid_projects = self.project_registry.valid_project_keys();
         if let Some(ref p) = project
-            && !self.valid_projects.is_empty()
-            && !self.valid_projects.contains(p)
+            && !valid_projects.is_empty()
+            && !valid_projects.contains(p)
         {
             return Err(TicketError::Validation(format!(
                 "unknown project '{}'; configured projects: {}",
                 p,
-                self.valid_projects
+                valid_projects
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>()
@@ -1214,10 +1216,14 @@ mod tests {
         let graph_manager = GraphManager::new(pool.clone());
         let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
         let workflow_repo = WorkflowRepo::new(pool);
+        let project_registry = crate::ProjectRegistry::new(
+            std::collections::HashMap::new(),
+            crate::hostexec::HostExecConfigManager::empty(),
+        );
         let handler = TicketServiceHandler {
             ticket_repo,
             workflow_repo,
-            valid_projects: HashSet::new(),
+            project_registry,
             transition_tx: None,
             cancel_tx: None,
             ui_event_poller: None,

@@ -131,10 +131,9 @@ type CommandOutputStream =
 
 #[derive(Clone)]
 pub struct HostExecServiceHandler {
-    pub config: HostExecConfigManager,
+    pub project_registry: crate::ProjectRegistry,
     pub lua: LuaTransformManager,
     pub worker_manager: WorkerManager,
-    pub projects: HashMap<String, ur_config::ProjectConfig>,
     pub builderd_client: BuilderdClient,
     pub host_workspace: std::path::PathBuf,
 }
@@ -371,7 +370,7 @@ impl HostExecServiceHandler {
     > {
         let Some(worker_id_val) = metadata.get(ur_config::WORKER_ID_HEADER) else {
             // No worker ID header — host-server request (e.g., from `ur` CLI).
-            return Ok((String::new(), None, self.config.clone()));
+            return Ok((String::new(), None, self.project_registry.hostexec_config()));
         };
 
         let worker_id_str = worker_id_val
@@ -404,12 +403,13 @@ impl HostExecServiceHandler {
                 };
 
                 // Grant only defaults + project-granted commands
+                let config = self.project_registry.hostexec_config();
                 let extra = self
-                    .projects
+                    .project_registry
                     .get(project_key)
-                    .map(|p| p.hostexec.as_slice())
+                    .map(|p| p.hostexec.clone())
                     .unwrap_or_default();
-                let merged_config = self.config.with_project_commands(extra);
+                let merged_config = config.with_project_commands(&extra);
 
                 (Some(lua_ctx), merged_config)
             }
@@ -421,9 +421,15 @@ impl HostExecServiceHandler {
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
                 };
-                (Some(lua_ctx), self.config.defaults_only())
+                (
+                    Some(lua_ctx),
+                    self.project_registry.hostexec_config().defaults_only(),
+                )
             }
-            None => (None, self.config.defaults_only()),
+            None => (
+                None,
+                self.project_registry.hostexec_config().defaults_only(),
+            ),
         };
 
         Ok((process_id, worker_context, config))

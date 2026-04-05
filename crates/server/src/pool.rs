@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -6,11 +5,13 @@ use chrono::Utc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use ur_config::{Config, ProjectConfig};
+use ur_config::Config;
 use ur_db::WorkerRepo;
 
 use local_repo::LocalRepo;
 use ur_rpc::proto::builder::BuilderdClient;
+
+use crate::ProjectRegistry;
 
 /// Manages a pool of pre-cloned git repositories per project.
 ///
@@ -33,8 +34,8 @@ pub struct RepoPoolManager {
     builderd_client: BuilderdClient,
     /// Git operations routed through builderd.
     local_repo: local_repo::GitBackend,
-    /// Project configs keyed by project key.
-    projects: HashMap<String, ProjectConfig>,
+    /// Shared project registry for live-reloadable project configs.
+    project_registry: ProjectRegistry,
     /// Prefix prepended to worker-ID branch names.
     git_branch_prefix: String,
     /// Database-backed slot repository for tracking slot availability.
@@ -44,6 +45,7 @@ pub struct RepoPoolManager {
 }
 
 impl RepoPoolManager {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &Config,
         local_workspace: PathBuf,
@@ -52,13 +54,14 @@ impl RepoPoolManager {
         local_repo: local_repo::GitBackend,
         worker_repo: WorkerRepo,
         host_config_dir: PathBuf,
+        project_registry: ProjectRegistry,
     ) -> Self {
         Self {
             local_workspace,
             host_workspace,
             builderd_client,
             local_repo,
-            projects: config.projects.clone(),
+            project_registry,
             git_branch_prefix: config.git_branch_prefix.clone(),
             worker_repo,
             host_config_dir,
@@ -102,7 +105,7 @@ impl RepoPoolManager {
     /// slot ID for linking via worker_slot.
     pub async fn acquire_slot(&self, project_key: &str) -> Result<(PathBuf, String), String> {
         let project = self
-            .projects
+            .project_registry
             .get(project_key)
             .ok_or_else(|| format!("unknown project: {project_key}"))?;
 
@@ -404,7 +407,7 @@ impl RepoPoolManager {
     /// Returns the host-side path to the shared slot directory.
     pub async fn acquire_shared_slot(&self, project_key: &str) -> Result<PathBuf, String> {
         let project = self
-            .projects
+            .project_registry
             .get(project_key)
             .ok_or_else(|| format!("unknown project: {project_key}"))?;
 
@@ -609,6 +612,8 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use ur_config::ProjectConfig;
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
@@ -655,12 +660,14 @@ mod tests {
             client: BuilderdClient::new(channel),
         };
         let host_config_dir = tmp.join("config");
+        let project_registry =
+            ProjectRegistry::new(projects, crate::hostexec::HostExecConfigManager::empty());
         let mgr = RepoPoolManager {
             local_workspace: workspace.clone(),
             host_workspace: workspace.clone(),
             builderd_client,
             local_repo,
-            projects,
+            project_registry,
             git_branch_prefix: String::new(),
             worker_repo,
             host_config_dir,
@@ -952,12 +959,14 @@ mod tests {
         let local_repo = local_repo::GitBackend {
             client: BuilderdClient::new(channel),
         };
+        let project_registry =
+            ProjectRegistry::new(projects, crate::hostexec::HostExecConfigManager::empty());
         let mgr = RepoPoolManager {
             local_workspace: PathBuf::from("/workspace"),
             host_workspace: PathBuf::from("/home/user/.ur/workspace"),
             builderd_client,
             local_repo,
-            projects,
+            project_registry,
             git_branch_prefix: String::new(),
             worker_repo,
             host_config_dir: PathBuf::from("/home/user/.ur"),

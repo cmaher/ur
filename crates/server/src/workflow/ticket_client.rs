@@ -164,7 +164,6 @@ impl TicketClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     use ur_db::{GraphManager, TicketRepo, WorkflowRepo};
     use ur_db_test::TestDb;
@@ -176,10 +175,14 @@ mod tests {
         let repo = TicketRepo::new(pool.clone(), graph_manager);
         let workflow_repo = WorkflowRepo::new(pool);
 
+        let project_registry = crate::ProjectRegistry::new(
+            std::collections::HashMap::new(),
+            crate::hostexec::HostExecConfigManager::empty(),
+        );
         let handler = TicketServiceHandler {
             ticket_repo: repo.clone(),
             workflow_repo,
-            valid_projects: HashSet::new(),
+            project_registry,
             transition_tx: None,
             cancel_tx: None,
             ui_event_poller: None,

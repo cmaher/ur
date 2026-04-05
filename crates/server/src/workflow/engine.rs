@@ -311,6 +311,10 @@ mod tests {
         let local_repo = local_repo::GitBackend {
             client: builderd_client.clone(),
         };
+        let project_registry = crate::ProjectRegistry::new(
+            config.projects.clone(),
+            crate::hostexec::HostExecConfigManager::empty(),
+        );
         let pool = crate::RepoPoolManager::new(
             &config,
             std::path::PathBuf::from("/tmp/test/workspace"),
@@ -319,6 +323,7 @@ mod tests {
             local_repo,
             worker_repo.clone(),
             std::path::PathBuf::from("/tmp/test/config"),
+            project_registry,
         );
         let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
         crate::WorkerManager::new(

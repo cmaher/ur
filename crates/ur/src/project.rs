@@ -1,12 +1,15 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+use ur_rpc::proto::core::ReloadProjectsRequest;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
+use crate::connection;
 use crate::output::{OutputManager, ProjectAdded, ProjectInfo, ProjectRemoved};
 
 /// Resolve the git remote "origin" URL for a repository directory.
-fn git_remote_origin(path: &Path) -> Result<String> {
+pub(crate) fn git_remote_origin(path: &Path) -> Result<String> {
     let output = std::process::Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(path)
@@ -34,7 +37,7 @@ fn git_remote_origin(path: &Path) -> Result<String> {
 ///
 /// Takes the last path segment and strips a trailing `.git` suffix.
 /// For example, `git@github.com:cmaher/ur.git` becomes `ur`.
-fn derive_key_from_repo(repo: &str) -> Result<String> {
+pub(crate) fn derive_key_from_repo(repo: &str) -> Result<String> {
     let segment = repo
         .rsplit('/')
         .next()
@@ -235,6 +238,40 @@ pub fn remove(
         println!("Removed project '{key}'");
     }
     Ok(())
+}
+
+/// Attempt to notify the running server to reload projects from ur.toml.
+///
+/// This is best-effort: if the server is not running (connection refused) or
+/// the RPC fails, we print a message but do not return an error since the
+/// config file write already succeeded.
+pub async fn try_reload_server(port: u16, key: &str, action: &str) {
+    let Some(channel) = connection::try_connect(port) else {
+        println!("Project {action} in config. Will be available on next server start.");
+        return;
+    };
+    let mut client = CoreServiceClient::new(channel);
+    match client.reload_projects(ReloadProjectsRequest {}).await {
+        Ok(_) => {
+            println!("Server reloaded — project {key} now available");
+        }
+        Err(status) => {
+            let code = status.code();
+            if code == tonic::Code::Unavailable {
+                println!("Project {action} in config. Will be available on next server start.");
+            } else {
+                warn!(
+                    code = ?code,
+                    message = status.message(),
+                    "ReloadProjects RPC failed"
+                );
+                println!(
+                    "Warning: project {action} in config but server reload failed: {}",
+                    status.message()
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
