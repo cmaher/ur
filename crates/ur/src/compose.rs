@@ -179,6 +179,7 @@ struct ComposeParams {
     squid_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
+    postgres_container_name: String,
     /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
     backup_path: Option<PathBuf>,
     /// Postgres user for env vars and healthcheck.
@@ -205,6 +206,7 @@ pub fn generate_compose(
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
+        postgres_container_name: db.host.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
         backup_path: if db.backup.enabled {
@@ -259,9 +261,14 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
 }
 
 fn write_postgres_service(out: &mut String, params: &ComposeParams) {
-    writeln!(out, "  ur-postgres:").unwrap();
+    writeln!(out, "  {}:", params.postgres_container_name).unwrap();
     writeln!(out, "    image: postgres:17-alpine").unwrap();
-    writeln!(out, "    container_name: ur-postgres").unwrap();
+    writeln!(
+        out,
+        "    container_name: {}",
+        params.postgres_container_name
+    )
+    .unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
     // Volumes
@@ -313,7 +320,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
 
     // Depends on
     writeln!(out, "    depends_on:").unwrap();
-    writeln!(out, "      ur-postgres:").unwrap();
+    writeln!(out, "      {}:", params.postgres_container_name).unwrap();
     writeln!(out, "        condition: service_healthy").unwrap();
 
     // Volumes
@@ -558,7 +565,10 @@ mod tests {
         // Verify container names
         assert!(generated.contains("container_name: test-server"));
         assert!(generated.contains("container_name: test-squid"));
-        assert!(generated.contains("container_name: ur-postgres"));
+        assert!(
+            generated.contains("container_name: ur-postgres"),
+            "postgres container_name should match db.host"
+        );
 
         // Verify postgres image
         assert!(generated.contains("image: postgres:17-alpine"));

@@ -196,6 +196,7 @@ struct TestNames {
     worker_network: String,
     server_hostname: String,
     worker_prefix: String,
+    postgres_hostname: String,
 }
 
 /// Build test names with a unique prefix derived from the run ID.
@@ -208,6 +209,7 @@ fn test_names(label: &str) -> TestNames {
         worker_network: format!("ur-{id}-{label}-workers"),
         server_hostname: format!("ur-{id}-{label}-server"),
         worker_prefix: format!("ur-{id}-{label}-worker-"),
+        postgres_hostname: format!("ur-{id}-{label}-postgres"),
     }
 }
 
@@ -282,6 +284,9 @@ fn write_test_config(
          server_hostname = \"{server}\"\n\
          worker_prefix = \"{worker_prefix}\"\n\
          \n\
+         [db]\n\
+         host = \"{postgres}\"\n\
+         \n\
          {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
@@ -290,6 +295,7 @@ fn write_test_config(
         worker_network = names.worker_network,
         server = names.server_hostname,
         worker_prefix = names.worker_prefix,
+        postgres = names.postgres_hostname,
     );
     std::fs::write(config_dir.join("ur.toml"), toml_content).expect("failed to write ur.toml");
 }
