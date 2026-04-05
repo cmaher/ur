@@ -106,12 +106,13 @@ pub struct TicketActivitiesModel {
     pub author_index: usize,
 }
 
-/// Sub-model for the ticket body page (full-screen markdown body viewer).
+/// Shared scroll state for markdown-viewing pages (ticket body, help page).
+///
+/// Holds the current scroll offset and cached render dimensions. The `Cell`
+/// fields are written by the view layer during rendering and read by the
+/// scroll methods to clamp values correctly.
 #[derive(Debug)]
-pub struct TicketBodyModel {
-    pub ticket_id: String,
-    pub title: String,
-    pub body: String,
+pub struct ScrollableMarkdownModel {
     /// Current vertical scroll offset (lines from the top).
     pub scroll_offset: usize,
     /// Height of the body pane from the last render, used for page scrolling.
@@ -120,17 +121,63 @@ pub struct TicketBodyModel {
     pub last_total_lines: Cell<usize>,
 }
 
-impl Clone for TicketBodyModel {
+impl Default for ScrollableMarkdownModel {
+    fn default() -> Self {
+        Self {
+            scroll_offset: 0,
+            last_body_height: Cell::new(0),
+            last_total_lines: Cell::new(0),
+        }
+    }
+}
+
+impl Clone for ScrollableMarkdownModel {
     fn clone(&self) -> Self {
         Self {
-            ticket_id: self.ticket_id.clone(),
-            title: self.title.clone(),
-            body: self.body.clone(),
             scroll_offset: self.scroll_offset,
             last_body_height: self.last_body_height.clone(),
             last_total_lines: self.last_total_lines.clone(),
         }
     }
+}
+
+impl ScrollableMarkdownModel {
+    /// Scroll down by the given number of lines, clamped to the maximum offset.
+    pub fn scroll_down(&mut self, delta: usize) {
+        let total = self.last_total_lines.get();
+        let height = self.last_body_height.get().max(1);
+        let max_offset = total.saturating_sub(height);
+        self.scroll_offset = (self.scroll_offset + delta).min(max_offset);
+    }
+
+    /// Scroll up by the given number of lines, clamped to zero.
+    pub fn scroll_up(&mut self, delta: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(delta);
+    }
+
+    /// Scroll down by one full page (the visible body height).
+    pub fn page_down(&mut self) {
+        let page = self.last_body_height.get().max(1);
+        let total = self.last_total_lines.get();
+        let max_offset = total.saturating_sub(page);
+        self.scroll_offset = (self.scroll_offset + page).min(max_offset);
+    }
+
+    /// Scroll up by one full page (the visible body height).
+    pub fn page_up(&mut self) {
+        let page = self.last_body_height.get().max(1);
+        self.scroll_offset = self.scroll_offset.saturating_sub(page);
+    }
+}
+
+/// Sub-model for the ticket body page (full-screen markdown body viewer).
+#[derive(Debug, Clone)]
+pub struct TicketBodyModel {
+    pub ticket_id: String,
+    pub title: String,
+    pub body: String,
+    /// Scroll state for the markdown body viewer.
+    pub scroll: ScrollableMarkdownModel,
 }
 
 /// Tracks which tabs have dirty data from UI events and manages a cooldown
@@ -385,10 +432,8 @@ pub struct WorkerListModel {
 /// Sub-model for the help page (static markdown content viewer).
 #[derive(Debug, Clone)]
 pub struct HelpPageModel {
-    /// Current vertical scroll offset (lines from the top).
-    pub scroll_offset: usize,
-    /// Rendered line count from the last render, used to clamp scroll.
-    pub last_total_lines: std::cell::Cell<usize>,
+    /// Scroll state for the markdown content viewer.
+    pub scroll: ScrollableMarkdownModel,
 }
 
 /// Which overlay is currently active, if any.
@@ -560,8 +605,11 @@ impl Model {
             ticket_activities: None,
             ticket_body: None,
             help_page: HelpPageModel {
-                scroll_offset: 0,
-                last_total_lines: Cell::new(0),
+                scroll: ScrollableMarkdownModel {
+                    scroll_offset: 0,
+                    last_body_height: Cell::new(0),
+                    last_total_lines: Cell::new(0),
+                },
             },
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
             pending_theme_swap: None,
@@ -699,5 +747,78 @@ mod tests {
         let model = Model::initial();
         assert!(model.ui_event_throttle.dirty.is_empty());
         assert!(model.ui_event_throttle.cooldown_start.is_none());
+    }
+
+    // --- ScrollableMarkdownModel tests ---
+
+    fn make_scroll_model(offset: usize, height: usize, total: usize) -> ScrollableMarkdownModel {
+        ScrollableMarkdownModel {
+            scroll_offset: offset,
+            last_body_height: Cell::new(height),
+            last_total_lines: Cell::new(total),
+        }
+    }
+
+    #[test]
+    fn scroll_down_increments_offset() {
+        let mut m = make_scroll_model(0, 10, 50);
+        m.scroll_down(3);
+        assert_eq!(m.scroll_offset, 3);
+    }
+
+    #[test]
+    fn scroll_down_clamps_to_max() {
+        let mut m = make_scroll_model(0, 10, 15);
+        m.scroll_down(100);
+        assert_eq!(m.scroll_offset, 5); // 15 - 10
+    }
+
+    #[test]
+    fn scroll_down_when_total_less_than_height() {
+        let mut m = make_scroll_model(0, 20, 5);
+        m.scroll_down(3);
+        assert_eq!(m.scroll_offset, 0); // max_offset = 0
+    }
+
+    #[test]
+    fn scroll_up_decrements_offset() {
+        let mut m = make_scroll_model(10, 10, 50);
+        m.scroll_up(3);
+        assert_eq!(m.scroll_offset, 7);
+    }
+
+    #[test]
+    fn scroll_up_clamps_to_zero() {
+        let mut m = make_scroll_model(2, 10, 50);
+        m.scroll_up(10);
+        assert_eq!(m.scroll_offset, 0);
+    }
+
+    #[test]
+    fn page_down_scrolls_by_body_height() {
+        let mut m = make_scroll_model(0, 10, 50);
+        m.page_down();
+        assert_eq!(m.scroll_offset, 10);
+    }
+
+    #[test]
+    fn page_down_clamps_to_max() {
+        let mut m = make_scroll_model(35, 10, 50);
+        m.page_down();
+        assert_eq!(m.scroll_offset, 40); // 50 - 10
+    }
+
+    #[test]
+    fn page_up_scrolls_by_body_height() {
+        let mut m = make_scroll_model(20, 10, 50);
+        m.page_up();
+        assert_eq!(m.scroll_offset, 10);
+    }
+
+    #[test]
+    fn page_up_clamps_to_zero() {
+        let mut m = make_scroll_model(5, 10, 50);
+        m.page_up();
+        assert_eq!(m.scroll_offset, 0);
     }
 }
