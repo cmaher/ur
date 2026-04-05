@@ -71,7 +71,7 @@ fn init_backup(
     db: &DatabaseManager,
     cfg: &Config,
 ) -> anyhow::Result<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)> {
-    let mut backup_config = cfg.backup.clone();
+    let mut backup_config = cfg.db.backup.clone();
     if let Ok(container_path) = std::env::var("UR_BACKUP_PATH") {
         backup_config.path = Some(std::path::PathBuf::from(container_path));
     }

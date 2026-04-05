@@ -369,7 +369,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         config.logs_dir.to_string_lossy().into_owned(),
     ));
 
-    let compose_content = generate_compose(&config.network, &config.proxy, &config.backup);
+    let compose_content = generate_compose(&config.network, &config.proxy, &config.db.backup);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -410,11 +410,18 @@ mod tests {
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            db: ur_config::DatabaseConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_DB_NAME.to_string(),
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
             },
             git_branch_prefix: String::new(),
             server: ur_config::ServerConfig {

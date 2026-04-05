@@ -11,6 +11,7 @@ use crate::output::{BackupCreated, BackupEntry, BackupList, OutputManager};
 /// snapshot in the configured backup directory.
 pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let backup_path = config
+        .db
         .backup
         .path
         .as_ref()
@@ -45,7 +46,7 @@ pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Resul
         .await
         .context("backup failed")?;
 
-    clean_old_backups(backup_path, &filename, config.backup.retain_count);
+    clean_old_backups(backup_path, &filename, config.db.backup.retain_count);
 
     info!(path = %target.display(), "backup completed");
     if output.is_json() {
@@ -119,7 +120,7 @@ pub async fn restore(
 
 /// List available backup files.
 pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
-    let backup_path = match &config.backup.path {
+    let backup_path = match &config.db.backup.path {
         Some(p) => p,
         None => {
             output.print_text("No backup path configured — set [backup] path in ur.toml");
@@ -174,14 +175,14 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
             .collect();
         output.print_success(&BackupList {
             directory: backup_path.display().to_string(),
-            retain_count: config.backup.retain_count,
+            retain_count: config.db.backup.retain_count,
             backups: backup_entries,
         });
     } else {
         println!(
             "Backups in {} (retain_count: {}):",
             backup_path.display(),
-            config.backup.retain_count
+            config.db.backup.retain_count
         );
         for (name, size) in &entries {
             let size_display = format_size(*size);
