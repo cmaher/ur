@@ -199,6 +199,9 @@ pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
 /// Home directory of the worker user inside worker containers.
 pub const WORKER_HOME: &str = "/home/worker";
 
+/// UID/GID of the worker user inside worker containers (created by `useradd` in Dockerfile.base).
+pub const WORKER_UID: u32 = 1000;
+
 /// Container-internal mount point for the workspace volume.
 /// The compose template mounts `$UR_WORKSPACE` (host path) at this path.
 pub const WORKSPACE_MOUNT: &str = "/workspace";

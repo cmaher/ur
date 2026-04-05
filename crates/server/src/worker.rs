@@ -489,7 +489,7 @@ impl WorkerManager {
         .memory(config.memory.clone())
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
-        .add_logs_dir(&self.host_logs_dir, &config.worker_id.0)
+        .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?

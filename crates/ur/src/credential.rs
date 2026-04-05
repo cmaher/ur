@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
 use tracing::{debug, info, instrument, warn};
 
 /// macOS Keychain service name where Claude Code stores OAuth credentials.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 fn worker_home() -> &'static Path {
@@ -35,25 +35,31 @@ pub struct CredentialManager;
 impl CredentialManager {
     /// Ensure credentials exist on disk for container mounting.
     ///
-    /// Seeds OAuth credentials from the macOS Keychain if no credentials file
-    /// exists yet. After seeding, containers own their session independently --
-    /// token refreshes in containers write back to the shared mount without
-    /// touching the host Keychain.
+    /// Seeds OAuth credentials from the host Claude Code installation if no
+    /// credentials file exists yet. On macOS, reads from the Keychain; on Linux,
+    /// copies from `~/.claude/.credentials.json`. After seeding, containers own
+    /// their session independently -- token refreshes in containers write back
+    /// to the shared mount without touching the host credentials.
     #[instrument(skip(self))]
     pub fn ensure_credentials(&self) -> Result<()> {
         let creds_path = Self::host_credentials_path()?;
 
-        // Seed credentials from Keychain only if missing — containers manage
-        // their own token lifecycle after the initial copy.
-        // If Keychain is unavailable (e.g. Linux CI), skip silently —
-        // the server creates an empty stub for the Docker mount.
-        if !creds_path.exists()
-            && let Ok(creds_json) = read_keychain_credentials()
-        {
-            info!(path = %creds_path.display(), "seeding credentials from Keychain");
-            write_file(&creds_path, &creds_json)?;
+        // Seed credentials if missing or empty — containers manage their own
+        // token lifecycle after the initial copy. An empty/stub file can be left
+        // behind by the server's Docker bind-mount setup, so treat it as missing.
+        let needs_seed = !creds_path.exists()
+            || std::fs::metadata(&creds_path)
+                .map(|m| m.len() < 10)
+                .unwrap_or(true);
+        if needs_seed {
+            if let Ok(creds_json) = read_host_credentials() {
+                info!(path = %creds_path.display(), "seeding credentials from host Claude Code");
+                write_file(&creds_path, &creds_json)?;
+            } else {
+                debug!(path = %creds_path.display(), "no host credentials found to seed");
+            }
         } else {
-            debug!(path = %creds_path.display(), exists = creds_path.exists(), "credentials check complete");
+            debug!(path = %creds_path.display(), "credentials already exist");
         }
 
         Ok(())
@@ -142,9 +148,18 @@ impl CredentialManager {
     }
 }
 
-/// Read Claude Code OAuth credentials from the macOS Keychain.
+/// Read Claude Code OAuth credentials from the host system.
+///
+/// On macOS, reads from the Keychain. On Linux, reads directly from the
+/// Claude Code credentials file at `~/.claude/.credentials.json`.
 #[instrument]
-fn read_keychain_credentials() -> Result<String> {
+fn read_host_credentials() -> Result<String> {
+    read_platform_credentials()
+}
+
+#[cfg(target_os = "macos")]
+fn read_platform_credentials() -> Result<String> {
+    use std::process::Command;
     debug!("reading credentials from macOS Keychain");
     let output = Command::new("security")
         .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
@@ -165,6 +180,23 @@ fn read_keychain_credentials() -> Result<String> {
         anyhow::bail!("keychain credentials are empty");
     }
     info!("credentials read from macOS Keychain");
+    Ok(trimmed)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_platform_credentials() -> Result<String> {
+    let home = std::env::var("HOME").context("HOME not set")?;
+    let path = PathBuf::from(home)
+        .join(".claude")
+        .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
+    debug!(path = %path.display(), "reading credentials from Claude Code config");
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let trimmed = contents.trim().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("{} is empty", path.display());
+    }
+    info!(path = %path.display(), "credentials read from Claude Code config");
     Ok(trimmed)
 }
 

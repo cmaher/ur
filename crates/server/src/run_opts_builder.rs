@@ -242,8 +242,24 @@ impl RunOptsBuilder {
     /// Mounts `<host_logs_dir>/workers/<worker_id>/` from the host into
     /// `/var/ur/logs` inside the container and sets `UR_LOGS_DIR=/var/ur/logs`
     /// so workerd writes file-based logs there.
-    pub fn add_logs_dir(mut self, host_logs_dir: &Path, worker_id: &str) -> Self {
+    pub fn add_logs_dir(
+        mut self,
+        host_logs_dir: &Path,
+        local_logs_dir: &Path,
+        worker_id: &str,
+    ) -> Self {
         let host_path = host_logs_dir.join("workers").join(worker_id);
+        let local_path = local_logs_dir.join("workers").join(worker_id);
+        // Pre-create via the container-internal path and chown so the non-root
+        // worker user can write logs. Without this, Docker creates bind-mount
+        // source dirs as root, causing permission errors.
+        if std::fs::create_dir_all(&local_path).is_ok() {
+            let _ = std::os::unix::fs::chown(
+                &local_path,
+                Some(ur_config::WORKER_UID),
+                Some(ur_config::WORKER_UID),
+            );
+        }
         self.volumes
             .push((host_path, PathBuf::from("/var/ur/logs")));
         self.env_vars
@@ -610,8 +626,9 @@ mod tests {
 
     #[test]
     fn add_logs_dir_creates_mount_and_env() {
+        let tmp = tempfile::tempdir().unwrap();
         let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_logs_dir(Path::new("/home/user/.ur/logs"), "worker-ab12")
+            .add_logs_dir(Path::new("/home/user/.ur/logs"), tmp.path(), "worker-ab12")
             .build();
 
         assert_eq!(opts.volumes.len(), 1);

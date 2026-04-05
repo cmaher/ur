@@ -34,6 +34,7 @@ brew install gh
 # clone
 git clone https://github.com/cmaher/ur.git
 cd ur
+git submodule update --init --recursive
 
 # Install all project tools (Rust, protoc, zig, cargo-make, etc.)
 mise trust

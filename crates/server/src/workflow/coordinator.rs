@@ -619,6 +619,37 @@ mod tests {
         repo.create_ticket(&ticket).await.unwrap();
     }
 
+    /// Poll a sync condition until it returns true, with a timeout. Avoids flaky
+    /// fixed-duration sleeps when waiting for spawned handler tasks to complete.
+    async fn poll_until(mut f: impl FnMut() -> bool, timeout_ms: u64) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while tokio::time::Instant::now() < deadline {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("poll_until timed out after {timeout_ms}ms");
+    }
+
+    /// Poll until a workflow is marked as stalled.
+    async fn poll_until_stalled(repo: &WorkflowRepo, ticket_id: &str, timeout_ms: u64) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while tokio::time::Instant::now() < deadline {
+            let stalled = repo
+                .get_workflow_by_ticket(ticket_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|wf| wf.stalled);
+            if stalled {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("workflow {ticket_id} not stalled after {timeout_ms}ms");
+    }
+
     #[tokio::test]
     async fn coordinator_processes_request_and_cleans_intent() {
         let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
@@ -648,10 +679,8 @@ mod tests {
         .await
         .unwrap();
 
-        // Give the handler time to run.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        // Wait for the handler to run.
+        poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
 
         // Intent should be cleaned up.
         let intents = workflow_repo.list_intents().await.unwrap();
@@ -692,14 +721,8 @@ mod tests {
         let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
-        // Give recovery time to run.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            1,
-            "recovered intent should trigger handler"
-        );
+        // Wait for recovery to trigger the handler.
+        poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -818,19 +841,15 @@ mod tests {
         .await
         .unwrap();
 
-        // Give both handlers time to run (first completes, pending dequeued).
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        assert_eq!(
-            dispatch_count.load(Ordering::SeqCst),
-            1,
-            "awaiting_dispatch handler should run once"
-        );
-        assert_eq!(
-            implement_count.load(Ordering::SeqCst),
-            1,
-            "implementing handler should run after awaiting_dispatch completes"
-        );
+        // Wait for both handlers to complete (first finishes, pending dequeued).
+        poll_until(
+            || {
+                dispatch_count.load(Ordering::SeqCst) >= 1
+                    && implement_count.load(Ordering::SeqCst) >= 1
+            },
+            5000,
+        )
+        .await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -871,10 +890,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Give the handler time to run.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait for the handler to run and the workflow to be stalled.
+        poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
 
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        poll_until_stalled(&workflow_repo, "ur-fail1", 5000).await;
 
         // Workflow should be stalled with the error message.
         let wf = workflow_repo

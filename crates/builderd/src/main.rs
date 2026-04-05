@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -16,6 +16,11 @@ mod registry;
 struct Cli {
     #[arg(long, default_value_t = ur_config::DEFAULT_BUILDERD_PORT)]
     port: u16,
+
+    /// IP address to bind to. Defaults to 127.0.0.1. On Linux, `ur start`
+    /// passes the Docker bridge gateway IP so containers can reach builderd.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind: IpAddr,
 
     /// Workspace root path for resolving %WORKSPACE% templates in working_dir.
     /// Overrides the BUILDERD_WORKSPACE environment variable.
@@ -36,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&logs_dir)?;
     let _log_guard = logging::init(&logs_dir);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
+    let addr = SocketAddr::new(cli.bind, cli.port);
     info!(
         %addr,
         config_dir = %config_dir.display(),

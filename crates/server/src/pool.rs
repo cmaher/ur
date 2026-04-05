@@ -269,22 +269,34 @@ impl RepoPoolManager {
 
     /// Clone a repo into a new slot directory via builderd.
     ///
-    /// Creates the parent directory locally (container-side, bind-mounted),
-    /// then sends `git clone` to builderd which runs on the host with SSH credentials.
+    /// Creates the parent directory on the host via builderd (so it's owned by the
+    /// host user, not root from inside the container), then sends `git clone`.
     async fn clone_slot(
         &self,
         repo_url: &str,
         project_key: &str,
         slot_name: &str,
     ) -> Result<(), String> {
-        // Create parent directory locally (visible on host via bind mount)
-        let local_parent = self.local_project_pool_dir(project_key);
-        tokio::fs::create_dir_all(&local_parent)
-            .await
-            .map_err(|e| format!("failed to create pool directory: {e}"))?;
-
         let host_slot = self.host_slot_path(project_key, slot_name);
         let builderd_parent = self.to_builderd_path(&self.host_project_pool_dir(project_key));
+
+        // Create parent directory via builderd so it's owned by the host user.
+        // On Linux, directories created inside the server container (which runs
+        // as root) would be root-owned on the host bind mount, causing permission
+        // errors when builderd (host user) tries to git clone into them.
+        //
+        // Use a relative path for the mkdir arg because builderd only resolves
+        // %WORKSPACE% in working_dir, not in args.
+        let builderd_workspace = self.to_builderd_path(&self.host_workspace);
+        let relative_parent = format!("pool/{project_key}");
+        self.builderd_client
+            .exec_check("mkdir", &["-p", &relative_parent], &builderd_workspace)
+            .await
+            .map_err(|e| format!("failed to create pool directory via builderd: {e}"))?;
+
+        // Also create locally so the server can scan/read the directory.
+        let local_parent = self.local_project_pool_dir(project_key);
+        let _ = tokio::fs::create_dir_all(&local_parent).await;
 
         // Use slot_name as relative path since CWD is the parent directory.
         // builderd only resolves %WORKSPACE% in working_dir, not in args.
@@ -1039,10 +1051,12 @@ mod tests {
         let result = mgr.acquire_slot("testproj").await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        // Should be a builderd/clone error (not "pool limit" or "unknown project")
+        // Should be a builderd error (not "pool limit" or "unknown project")
         assert!(
-            err.contains("git clone failed"),
-            "expected clone error, got: {err}"
+            err.contains("failed")
+                && !err.contains("pool limit")
+                && !err.contains("unknown project"),
+            "expected builderd error, got: {err}"
         );
         // The slot should NOT be in DB since clone failed
         let expected_slot = workspace.join("pool").join("testproj").join("0");
@@ -1074,8 +1088,8 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("git clone failed"),
-            "expected clone error on first call, got: {err}"
+            err.contains("failed") && !err.contains("unknown project"),
+            "expected builderd error on first call, got: {err}"
         );
 
         // No DB entry should be created for shared slots

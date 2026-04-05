@@ -5,7 +5,7 @@ set -euo pipefail
 # Builds all 5 images with a unique ci-<label> tag, runs acceptance tests,
 # then cleans up the tagged images (even on failure).
 
-LABEL=$(head -c 5 /dev/urandom | xxd -p | cut -c1-5)
+LABEL=$(od -An -tx1 -N5 /dev/urandom | tr -d ' \n' | cut -c1-5)
 TAG="ci-${LABEL}"
 IMAGES=(ur-worker-base ur-worker ur-worker-rust ur-server ur-squid)
 
