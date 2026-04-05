@@ -27,6 +27,8 @@ service CoreService {
   rpc WorkflowStepComplete(WorkflowStepCompleteRequest) returns (WorkflowStepCompleteResponse);
   // Link a PR comment to a feedback ticket for reply tracking.
   rpc LinkCommentTicket(LinkCommentTicketRequest) returns (LinkCommentTicketResponse);
+  // Hot-reload projects from ur.toml without restarting the server.
+  rpc ReloadProjects(ReloadProjectsRequest) returns (ReloadProjectsResponse);
 }
 
 message PingRequest {}
@@ -133,3 +135,10 @@ message LinkCommentTicketRequest {
 }
 
 message LinkCommentTicketResponse {}
+
+message ReloadProjectsRequest {}
+
+message ReloadProjectsResponse {
+  repeated string added = 1;
+  repeated string removed = 2;
+}

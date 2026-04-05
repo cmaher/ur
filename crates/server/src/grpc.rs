@@ -12,10 +12,11 @@ use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
-    SendWorkerMessageRequest, SendWorkerMessageResponse, UpdateAgentStatusRequest,
-    UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest,
-    WorkerLaunchResponse, WorkerListRequest, WorkerListResponse, WorkerStopRequest,
-    WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
+    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
+    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
+    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
 
 use ur_db::WorkerRepo;
@@ -591,6 +592,13 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<LinkCommentTicketResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
+
+    async fn reload_projects(
+        &self,
+        _req: Request<ReloadProjectsRequest>,
+    ) -> Result<Response<ReloadProjectsResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
 }
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -796,6 +804,13 @@ impl CoreService for WorkerCoreServiceHandler {
         }
 
         Ok(Response::new(UpdateAgentStatusResponse {}))
+    }
+
+    async fn reload_projects(
+        &self,
+        _req: Request<ReloadProjectsRequest>,
+    ) -> Result<Response<ReloadProjectsResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
     }
 }
 
