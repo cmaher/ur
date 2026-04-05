@@ -1,16 +1,13 @@
-use std::cell::Cell;
-
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use ur_markdown::{MarkdownColors, render_markdown};
-
+use crate::components::scrollable_markdown::render_scrollable_markdown;
 use crate::context::TuiContext;
 use crate::input::MarkdownScrollHandler;
-use crate::model::Model;
+use crate::model::{Model, ScrollableMarkdownModel, TicketBodyModel};
 
 /// Render the ticket body page into the given content area.
 ///
@@ -75,102 +72,24 @@ fn render_header(ticket_id: &str, title: &str, area: Rect, buf: &mut Buffer, ctx
     Paragraph::new(line).render(area, buf);
 }
 
-/// Build `MarkdownColors` from the TUI theme.
-fn markdown_colors(ctx: &TuiContext) -> MarkdownColors {
-    MarkdownColors {
-        text: ctx.theme.base_content,
-        heading: ctx.theme.accent,
-        code: ctx.theme.warning,
-        dim: ctx.theme.neutral_content,
-    }
-}
-
-/// Render the scrollable body pane and update cached metrics.
+/// Render the scrollable body pane using the shared markdown component.
 fn render_body_pane(
-    body_model: &super::super::model::TicketBodyModel,
+    body_model: &TicketBodyModel,
     area: Rect,
     buf: &mut Buffer,
     ctx: &TuiContext,
 ) {
-    let colors = markdown_colors(ctx);
-    let all_lines = render_markdown(&body_model.body, area.width as usize, &colors);
-    let visible_height = area.height as usize;
-    let total = all_lines.len();
-
-    // Update cached metrics for use by the next scroll action.
-    body_model.last_body_height.set(visible_height.max(1));
-    body_model.last_total_lines.set(total);
-
-    // Clamp scroll offset to valid range.
-    let max_offset = total.saturating_sub(visible_height);
-    let offset = body_model.scroll_offset.min(max_offset);
-
-    let visible: Vec<Line<'static>> = all_lines
-        .into_iter()
-        .skip(offset)
-        .take(visible_height)
-        .collect();
-
-    let bg_style = Style::default().bg(ctx.theme.base_100);
-    Paragraph::new(visible).style(bg_style).render(area, buf);
-}
-
-/// Handle scroll-down for the body page.
-pub fn body_scroll_down(model: &mut Model, delta: usize) {
-    let Some(ref mut body_model) = model.ticket_body else {
-        return;
-    };
-    let total = body_model.last_total_lines.get();
-    let height = body_model.last_body_height.get().max(1);
-    let max_offset = total.saturating_sub(height);
-    body_model.scroll_offset = (body_model.scroll_offset + delta).min(max_offset);
-}
-
-/// Handle scroll-up for the body page.
-pub fn body_scroll_up(model: &mut Model, delta: usize) {
-    let Some(ref mut body_model) = model.ticket_body else {
-        return;
-    };
-    body_model.scroll_offset = body_model.scroll_offset.saturating_sub(delta);
-}
-
-/// Handle page-down for the body page.
-pub fn body_page_down(model: &mut Model) {
-    let Some(ref body_model) = model.ticket_body else {
-        return;
-    };
-    let page = body_model.last_body_height.get().max(1);
-    let total = body_model.last_total_lines.get();
-    let max_offset = total.saturating_sub(page);
-    let new_offset = (body_model.scroll_offset + page).min(max_offset);
-    // Re-borrow mutably to update
-    if let Some(ref mut bm) = model.ticket_body {
-        bm.scroll_offset = new_offset;
-    }
-}
-
-/// Handle page-up for the body page.
-pub fn body_page_up(model: &mut Model) {
-    let Some(ref body_model) = model.ticket_body else {
-        return;
-    };
-    let page = body_model.last_body_height.get().max(1);
-    let new_offset = body_model.scroll_offset.saturating_sub(page);
-    if let Some(ref mut bm) = model.ticket_body {
-        bm.scroll_offset = new_offset;
-    }
+    render_scrollable_markdown(&body_model.body, area, buf, ctx, &body_model.scroll);
 }
 
 /// Initialize the body model for a ticket. No async fetch needed since body text
 /// is passed in directly.
 pub fn init_body_model(model: &mut Model, ticket_id: String, title: String, body: String) {
-    model.ticket_body = Some(super::super::model::TicketBodyModel {
+    model.ticket_body = Some(TicketBodyModel {
         ticket_id,
         title,
         body,
-        scroll_offset: 0,
-        last_body_height: Cell::new(20),
-        last_total_lines: Cell::new(0),
+        scroll: ScrollableMarkdownModel::default(),
     });
 }
 
@@ -216,7 +135,7 @@ mod tests {
         assert_eq!(bm.ticket_id, "ur-test");
         assert_eq!(bm.title, "Title");
         assert_eq!(bm.body, "Body text");
-        assert_eq!(bm.scroll_offset, 0);
+        assert_eq!(bm.scroll.scroll_offset, 0);
     }
 
     // ── scroll functions ───────────────────────────────────────────────
@@ -230,11 +149,15 @@ mod tests {
             "T".to_string(),
             "body".to_string(),
         );
-        model.ticket_body.as_ref().unwrap().last_total_lines.set(50);
-        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+        let bm = model.ticket_body.as_ref().unwrap();
+        bm.scroll.last_total_lines.set(50);
+        bm.scroll.last_body_height.set(10);
 
-        body_scroll_down(&mut model, 3);
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 3);
+        model.ticket_body.as_mut().unwrap().scroll.scroll_down(3);
+        assert_eq!(
+            model.ticket_body.as_ref().unwrap().scroll.scroll_offset,
+            3
+        );
     }
 
     #[test]
@@ -246,12 +169,18 @@ mod tests {
             "T".to_string(),
             "body".to_string(),
         );
-        model.ticket_body.as_ref().unwrap().last_total_lines.set(5);
-        model.ticket_body.as_ref().unwrap().last_body_height.set(3);
+        let bm = model.ticket_body.as_ref().unwrap();
+        bm.scroll.last_total_lines.set(5);
+        bm.scroll.last_body_height.set(3);
 
-        body_scroll_down(&mut model, 100);
+        model
+            .ticket_body
+            .as_mut()
+            .unwrap()
+            .scroll
+            .scroll_down(100);
         // max_offset = 5 - 3 = 2
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 2);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 2);
     }
 
     #[test]
@@ -263,10 +192,10 @@ mod tests {
             "T".to_string(),
             "body".to_string(),
         );
-        model.ticket_body.as_mut().unwrap().scroll_offset = 5;
+        model.ticket_body.as_mut().unwrap().scroll.scroll_offset = 5;
 
-        body_scroll_up(&mut model, 2);
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 3);
+        model.ticket_body.as_mut().unwrap().scroll.scroll_up(2);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 3);
     }
 
     #[test]
@@ -279,8 +208,8 @@ mod tests {
             "body".to_string(),
         );
 
-        body_scroll_up(&mut model, 10);
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 0);
+        model.ticket_body.as_mut().unwrap().scroll.scroll_up(10);
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 0);
     }
 
     #[test]
@@ -292,16 +221,15 @@ mod tests {
             "T".to_string(),
             "body".to_string(),
         );
-        model
-            .ticket_body
-            .as_ref()
-            .unwrap()
-            .last_total_lines
-            .set(100);
-        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+        let bm = model.ticket_body.as_ref().unwrap();
+        bm.scroll.last_total_lines.set(100);
+        bm.scroll.last_body_height.set(10);
 
-        body_page_down(&mut model);
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 10);
+        model.ticket_body.as_mut().unwrap().scroll.page_down();
+        assert_eq!(
+            model.ticket_body.as_ref().unwrap().scroll.scroll_offset,
+            10
+        );
     }
 
     #[test]
@@ -313,11 +241,17 @@ mod tests {
             "T".to_string(),
             "body".to_string(),
         );
-        model.ticket_body.as_mut().unwrap().scroll_offset = 15;
-        model.ticket_body.as_ref().unwrap().last_body_height.set(10);
+        model.ticket_body.as_mut().unwrap().scroll.scroll_offset = 15;
+        model
+            .ticket_body
+            .as_ref()
+            .unwrap()
+            .scroll
+            .last_body_height
+            .set(10);
 
-        body_page_up(&mut model);
-        assert_eq!(model.ticket_body.as_ref().unwrap().scroll_offset, 5);
+        model.ticket_body.as_mut().unwrap().scroll.page_up();
+        assert_eq!(model.ticket_body.as_ref().unwrap().scroll.scroll_offset, 5);
     }
 
     // ── input handler ──────────────────────────────────────────────────

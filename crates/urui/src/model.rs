@@ -121,6 +121,16 @@ pub struct ScrollableMarkdownModel {
     pub last_total_lines: Cell<usize>,
 }
 
+impl Default for ScrollableMarkdownModel {
+    fn default() -> Self {
+        Self {
+            scroll_offset: 0,
+            last_body_height: Cell::new(0),
+            last_total_lines: Cell::new(0),
+        }
+    }
+}
+
 impl Clone for ScrollableMarkdownModel {
     fn clone(&self) -> Self {
         Self {
