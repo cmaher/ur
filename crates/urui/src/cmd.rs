@@ -79,6 +79,8 @@ pub enum FetchCmd {
         ticket_id: String,
         author_filter: Option<String>,
     },
+    /// Fetch a single workflow by ticket ID for notification detection.
+    WorkflowForNotification { ticket_id: String },
 }
 
 impl Cmd {
