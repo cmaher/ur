@@ -49,12 +49,11 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
 }
 
 async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
-    let db_path = cfg.config_dir.join("ur.db");
-    let db_path_str = db_path.to_string_lossy();
-    let db = DatabaseManager::open(&db_path_str)
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
+    let db = DatabaseManager::open(&url)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
-    info!(db_path = %db_path.display(), "database initialized");
+    info!(url = %url, "database initialized");
     Ok(db)
 }
 
