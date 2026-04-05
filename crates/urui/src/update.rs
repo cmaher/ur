@@ -426,15 +426,16 @@ fn flush_throttle(model: &mut Model) -> Vec<Cmd> {
             cmds.push(fetch_cmd_for_tab(*tab, model));
         } else {
             invalidate_tab(*tab, model);
-            // For the Flows tab, emit per-workflow notification fetches so
-            // desktop notifications fire even when the tab is not active.
-            if *tab == TabId::Flows {
-                for ticket_id in &result.workflow_ids {
-                    cmds.push(Cmd::Fetch(FetchCmd::WorkflowForNotification {
-                        ticket_id: ticket_id.clone(),
-                    }));
-                }
-            }
+        }
+    }
+
+    // When the Flows tab is dirty but not active, emit per-workflow notification
+    // fetches so desktop notifications fire even when the tab is not visible.
+    if result.dirty_tabs.contains(&TabId::Flows) && active_tab != TabId::Flows {
+        for ticket_id in &result.workflow_ids {
+            cmds.push(Cmd::Fetch(FetchCmd::WorkflowForNotification {
+                ticket_id: ticket_id.clone(),
+            }));
         }
     }
     cmds
