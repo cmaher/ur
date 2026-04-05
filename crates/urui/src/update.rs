@@ -447,10 +447,7 @@ fn fetch_cmd_for_tab(tab: TabId, model: &Model) -> Cmd {
             }
             Cmd::batch(cmds)
         }
-        TabId::Flows => Cmd::Fetch(FetchCmd::Flows {
-            page_size: None,
-            offset: None,
-        }),
+        TabId::Flows => super::pages::flows_list::build_flow_list_fetch_cmd(model),
         TabId::Workers => Cmd::Fetch(FetchCmd::Workers),
         TabId::Help => Cmd::None, // static content, no fetch needed
     }
@@ -712,6 +709,10 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
                     super::pages::flows_list::apply_flows_data(&mut model, &data);
                     model.flow_list.data = LoadState::Loaded(data);
                     super::pages::flows_list::clamp_selection(&mut model);
+                    if let Some(ref detail) = model.flow_detail {
+                        let ticket_id = detail.ticket_id.clone();
+                        super::pages::flow_detail::init_flow_detail(&mut model, ticket_id);
+                    }
                     // Process the last notification message (banner) through update.
                     // We only show the most recent one to avoid banner churn.
                     let mut cmds = notif_cmds;
@@ -1292,6 +1293,20 @@ mod tests {
         let cmd = fetch_cmd_for_tab(TabId::Tickets, &model);
         // Should be a Batch containing ticket list + detail + activities.
         assert!(matches!(cmd, Cmd::Batch(_)));
+    }
+
+    #[test]
+    fn fetch_cmd_for_tab_flows_uses_pagination() {
+        use crate::model::FLOW_PAGE_SIZE;
+        let model = Model::initial();
+        let cmd = fetch_cmd_for_tab(TabId::Flows, &model);
+        match cmd {
+            Cmd::Fetch(FetchCmd::Flows { page_size, offset }) => {
+                assert_eq!(page_size, Some(FLOW_PAGE_SIZE as i32));
+                assert_eq!(offset, Some(0));
+            }
+            other => panic!("expected FetchCmd::Flows, got {:?}", other),
+        }
     }
 
     #[test]
@@ -2053,5 +2068,50 @@ mod tests {
             }),
         );
         assert!(new_model.status.is_none());
+    }
+
+    fn make_workflow(ticket_id: &str, status: &str) -> ur_rpc::proto::ticket::WorkflowInfo {
+        ur_rpc::proto::ticket::WorkflowInfo {
+            id: "wf-123".into(),
+            ticket_id: ticket_id.into(),
+            status: status.into(),
+            stalled: false,
+            stall_reason: String::new(),
+            implement_cycles: 2,
+            worker_id: "w-1".into(),
+            feedback_mode: "auto".into(),
+            created_at: "2026-03-22T10:00:00+00:00".into(),
+            pr_url: "https://github.com/org/repo/pull/42".into(),
+            history: vec![],
+            ticket_children_open: 3,
+            ticket_children_closed: 7,
+        }
+    }
+
+    #[test]
+    fn flows_loaded_updates_flow_detail_when_present() {
+        let mut model = Model::initial();
+        let wf = make_workflow("ur-abc", "implementing");
+        model.flow_detail = Some(crate::model::FlowDetailModel {
+            ticket_id: "ur-abc".to_string(),
+            workflow: wf.clone(),
+        });
+        // Send FlowsLoaded with updated workflow data
+        let updated_wf = make_workflow("ur-abc", "reviewing");
+        let msg = Msg::Data(Box::new(DataMsg::FlowsLoaded(Ok((vec![updated_wf], 1)))));
+        let (new_model, _) = update(model, msg);
+        let detail = new_model.flow_detail.unwrap();
+        assert_eq!(detail.ticket_id, "ur-abc");
+        assert_eq!(detail.workflow.status, "reviewing");
+    }
+
+    #[test]
+    fn flows_loaded_noop_when_flow_detail_is_none() {
+        let model = Model::initial();
+        assert!(model.flow_detail.is_none());
+        let wf = make_workflow("ur-abc", "implementing");
+        let msg = Msg::Data(Box::new(DataMsg::FlowsLoaded(Ok((vec![wf], 1)))));
+        let (new_model, _) = update(model, msg);
+        assert!(new_model.flow_detail.is_none());
     }
 }
