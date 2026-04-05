@@ -80,6 +80,20 @@ impl CliRegistry {
         Ok(false)
     }
 
+    /// Call `configure()` on each plugin with its matching TOML table from the config.
+    /// Plugins whose name doesn't appear in the map are skipped.
+    pub fn configure_all(
+        &mut self,
+        plugin_configs: &std::collections::HashMap<String, toml::Table>,
+    ) -> Result<()> {
+        for plugin in &mut self.plugins {
+            if let Some(table) = plugin_configs.get(plugin.name()) {
+                plugin.configure(table)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Iterate over registered plugins.
     pub fn plugins(&self) -> &[Box<dyn CliPlugin>] {
         &self.plugins
