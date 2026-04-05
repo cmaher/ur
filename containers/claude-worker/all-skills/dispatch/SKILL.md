@@ -1,9 +1,6 @@
 ---
 name: dispatch
-description: |
-  Triggers when user types /dispatch to launch implementation workers for designed tickets.
-  TRIGGER when: user says /dispatch or asks to dispatch implementation workers for tickets that have been designed.
-  DO NOT TRIGGER when: user wants to design, implement directly, or manage tickets manually.
+description: Dispatch implementation workers for designed tickets.
 ---
 
 # Dispatch Implementation Workers
