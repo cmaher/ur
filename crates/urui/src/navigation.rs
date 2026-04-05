@@ -159,13 +159,16 @@ impl NavigationModel {
         if self.active_tab == target {
             self.pop_to_root(model)
         } else {
-            self.active_tab = target;
-            // Trigger a fetch if the target tab's root data hasn't been loaded yet.
-            if is_tab_data_not_loaded(target, model) {
-                init_page(self.current_page(), model)
-            } else {
-                vec![]
+            // Teardown the old tab's root page handlers before switching.
+            let old_root = &self.tab_stacks[&self.active_tab][0].clone();
+            let handler_count = teardown_page(old_root, model);
+            for _ in 0..handler_count {
+                model.input_stack.pop();
             }
+
+            self.active_tab = target;
+            // Always init the target tab's root page (pushes handlers, triggers fetch if needed).
+            init_page(self.current_page(), model)
         }
     }
 
@@ -173,17 +176,28 @@ impl NavigationModel {
     /// tearing down each in reverse order.
     fn pop_to_root(&mut self, model: &mut Model) -> Vec<Cmd> {
         let mut cmds = vec![];
-        let stack = self
-            .tab_stacks
-            .get_mut(&self.active_tab)
-            .expect("tab stack should exist");
 
-        while stack.len() > 1 {
-            let popped = stack.pop().expect("stack has more than one entry");
-            let handler_count = teardown_page(&popped, model);
-            for _ in 0..handler_count {
-                model.input_stack.pop();
+        // Pop all non-root pages with teardown.
+        {
+            let stack = self
+                .tab_stacks
+                .get_mut(&self.active_tab)
+                .expect("tab stack should exist");
+
+            while stack.len() > 1 {
+                let popped = stack.pop().expect("stack has more than one entry");
+                let handler_count = teardown_page(&popped, model);
+                for _ in 0..handler_count {
+                    model.input_stack.pop();
+                }
             }
+        }
+
+        // Teardown root page handlers before re-init (prevents duplicate handlers).
+        let root = self.tab_stacks[&self.active_tab][0].clone();
+        let handler_count = teardown_page(&root, model);
+        for _ in 0..handler_count {
+            model.input_stack.pop();
         }
 
         // Re-init the root page
@@ -206,16 +220,6 @@ impl NavigationModel {
             return vec![];
         }
         self.push(page, model)
-    }
-}
-
-/// Check whether a tab's root page data is in the `NotLoaded` state.
-fn is_tab_data_not_loaded(tab: TabId, model: &Model) -> bool {
-    match tab {
-        TabId::Tickets => matches!(model.ticket_list.data, super::model::LoadState::NotLoaded),
-        TabId::Flows => matches!(model.flow_list.data, super::model::LoadState::NotLoaded),
-        TabId::Workers => matches!(model.worker_list.data, super::model::LoadState::NotLoaded),
-        TabId::Help => false, // static content, always available
     }
 }
 
@@ -520,9 +524,12 @@ mod tests {
     fn handler_stack_consistent_after_push_pop() {
         let mut nav = NavigationModel::initial();
         let mut model = Model::initial();
+
+        // Init current page (Tickets root) to establish baseline.
+        nav.init_current_page(&mut model);
         let initial_handler_count = model.input_stack.len();
 
-        // Push a page (currently pages push 0 handlers)
+        // Push a detail page (pushes 0 handlers)
         nav.push(
             PageId::TicketDetail {
                 ticket_id: "ur-abc".into(),
@@ -531,9 +538,60 @@ mod tests {
         );
         assert_eq!(model.input_stack.len(), initial_handler_count);
 
-        // Pop the page
+        // Pop the page — root re-init should not change handler count
         nav.pop(&mut model);
         assert_eq!(model.input_stack.len(), initial_handler_count);
+    }
+
+    #[test]
+    fn handler_count_consistent_after_help_tickets_help_round_trip() {
+        let mut nav = NavigationModel::initial();
+        let mut model = Model::initial();
+
+        // Init current page (Tickets root).
+        nav.init_current_page(&mut model);
+        let baseline = model.input_stack.len();
+
+        // Switch to Help — should push a scroll handler.
+        nav.switch_tab(TabId::Help, &mut model);
+        assert_eq!(
+            model.input_stack.len(),
+            baseline + 1,
+            "Help tab should push one scroll handler"
+        );
+
+        // Switch to Tickets — Help handler should be removed.
+        nav.switch_tab(TabId::Tickets, &mut model);
+        assert_eq!(
+            model.input_stack.len(),
+            baseline,
+            "Leaving Help tab should remove the scroll handler"
+        );
+
+        // Switch back to Help — handler should be pushed again.
+        nav.switch_tab(TabId::Help, &mut model);
+        assert_eq!(
+            model.input_stack.len(),
+            baseline + 1,
+            "Re-entering Help tab should push handler again"
+        );
+    }
+
+    #[test]
+    fn same_tab_press_does_not_grow_input_stack() {
+        let mut nav = NavigationModel::initial();
+        let mut model = Model::initial();
+
+        // Switch to Help to get the scroll handler pushed.
+        nav.switch_tab(TabId::Help, &mut model);
+        let help_handler_count = model.input_stack.len();
+
+        // Press same tab (Help) multiple times — handler count must not grow.
+        nav.switch_tab(TabId::Help, &mut model);
+        assert_eq!(model.input_stack.len(), help_handler_count);
+
+        nav.switch_tab(TabId::Help, &mut model);
+        assert_eq!(model.input_stack.len(), help_handler_count);
     }
 
     #[test]
@@ -558,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_tab_no_fetch_when_already_loaded() {
+    fn switch_tab_always_inits_target_root() {
         use crate::model::{FlowListData, LoadState};
         let mut nav = NavigationModel::initial();
         let mut model = Model::initial();
@@ -568,9 +626,10 @@ mod tests {
             total_count: 0,
         });
         let cmds = nav.switch_tab(TabId::Flows, &mut model);
+        // init_page always runs for the target root (pushes handlers, triggers fetch).
         assert!(
-            cmds.is_empty(),
-            "switching to an already-loaded tab should not trigger a fetch"
+            !cmds.is_empty(),
+            "switching tabs should always init the target root page"
         );
     }
 
