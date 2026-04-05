@@ -393,6 +393,12 @@ fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd
         });
     model.ui_event_throttle.mark_dirty(dirty_tabs.flatten());
 
+    let workflow_ids = items
+        .iter()
+        .filter(|item| item.entity_type == "workflow")
+        .map(|item| item.entity_id.clone());
+    model.ui_event_throttle.mark_workflow_ids(workflow_ids);
+
     let cmds = if model.ui_event_throttle.should_flush() {
         flush_throttle(&mut model)
     } else {
@@ -407,15 +413,15 @@ fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd
 /// the data will be marked stale on the next tab switch (the LoadState is
 /// set back to NotLoaded so it re-fetches when viewed).
 fn flush_throttle(model: &mut Model) -> Vec<Cmd> {
-    let dirty = model.ui_event_throttle.flush();
-    if dirty.is_empty() {
+    let result = model.ui_event_throttle.flush();
+    if result.dirty_tabs.is_empty() {
         return vec![];
     }
 
     let active_tab = model.navigation_model.active_tab;
     let mut cmds = Vec::new();
 
-    for tab in &dirty {
+    for tab in &result.dirty_tabs {
         if *tab == active_tab {
             cmds.push(fetch_cmd_for_tab(*tab, model));
         } else {
@@ -749,6 +755,18 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
             }
             // Also update the full-screen activities page model if active.
             super::pages::ticket_activities::handle_activities_data(&mut model, ticket_id, result);
+        }
+        DataMsg::NotificationFlowLoaded(result) => {
+            if let Ok(workflow) = result {
+                let (msgs, cmds) = model.notifications.process_flow_updates(&[workflow]);
+                let mut all_cmds = cmds;
+                for msg in msgs {
+                    let (new_model, msg_cmds) = update(model, msg);
+                    model = new_model;
+                    all_cmds.extend(msg_cmds);
+                }
+                return (model, all_cmds);
+            }
         }
     }
     (model, vec![])

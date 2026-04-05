@@ -180,12 +180,25 @@ pub struct TicketBodyModel {
     pub scroll: ScrollableMarkdownModel,
 }
 
+/// The result of flushing the UI event throttle.
+///
+/// Contains both the dirty tabs and any workflow entity IDs that were
+/// accumulated since the last flush.
+pub struct ThrottleFlushResult {
+    /// Tabs whose data has changed since the last flush.
+    pub dirty_tabs: HashSet<TabId>,
+    /// Workflow entity IDs from UI events accumulated since the last flush.
+    pub workflow_ids: HashSet<String>,
+}
+
 /// Tracks which tabs have dirty data from UI events and manages a cooldown
 /// window so that rapid-fire events are batched into periodic fetches.
 #[derive(Debug, Clone)]
 pub struct UiEventThrottle {
     /// Tabs whose data has changed since the last flush.
     pub dirty: HashSet<TabId>,
+    /// Workflow entity IDs from UI events pending flush.
+    pub pending_workflow_ids: HashSet<String>,
     /// When the current cooldown window started, if one is active.
     pub cooldown_start: Option<Instant>,
 }
@@ -195,6 +208,7 @@ impl UiEventThrottle {
     pub fn new() -> Self {
         Self {
             dirty: HashSet::new(),
+            pending_workflow_ids: HashSet::new(),
             cooldown_start: None,
         }
     }
@@ -202,6 +216,11 @@ impl UiEventThrottle {
     /// Mark the given tabs as dirty (their data has changed).
     pub fn mark_dirty(&mut self, tabs: impl IntoIterator<Item = TabId>) {
         self.dirty.extend(tabs);
+    }
+
+    /// Record workflow entity IDs from UI events for later retrieval on flush.
+    pub fn mark_workflow_ids(&mut self, ids: impl IntoIterator<Item = String>) {
+        self.pending_workflow_ids.extend(ids);
     }
 
     /// Returns true if the cooldown has elapsed and there are dirty tabs
@@ -216,16 +235,21 @@ impl UiEventThrottle {
         }
     }
 
-    /// Drain all dirty tabs and restart the cooldown timer.
+    /// Drain all dirty tabs and pending workflow IDs, and restart the cooldown timer.
     ///
-    /// Returns the set of tabs that were dirty. The caller is responsible
-    /// for issuing re-fetch commands for those tabs.
-    pub fn flush(&mut self) -> HashSet<TabId> {
+    /// Returns a `ThrottleFlushResult` containing the dirty tabs and workflow IDs.
+    /// The caller is responsible for issuing re-fetch commands for those tabs
+    /// and per-workflow notification fetches for the IDs.
+    pub fn flush(&mut self) -> ThrottleFlushResult {
         let tabs = std::mem::take(&mut self.dirty);
+        let workflow_ids = std::mem::take(&mut self.pending_workflow_ids);
         if !tabs.is_empty() {
             self.cooldown_start = Some(Instant::now());
         }
-        tabs
+        ThrottleFlushResult {
+            dirty_tabs: tabs,
+            workflow_ids,
+        }
     }
 }
 
@@ -673,6 +697,7 @@ mod tests {
     fn throttle_new_has_no_dirty_tabs() {
         let throttle = UiEventThrottle::new();
         assert!(throttle.dirty.is_empty());
+        assert!(throttle.pending_workflow_ids.is_empty());
         assert!(throttle.cooldown_start.is_none());
     }
 
@@ -717,9 +742,10 @@ mod tests {
     fn throttle_flush_returns_dirty_and_clears() {
         let mut throttle = UiEventThrottle::new();
         throttle.mark_dirty([TabId::Tickets, TabId::Workers]);
-        let flushed = throttle.flush();
-        assert!(flushed.contains(&TabId::Tickets));
-        assert!(flushed.contains(&TabId::Workers));
+        let result = throttle.flush();
+        assert!(result.dirty_tabs.contains(&TabId::Tickets));
+        assert!(result.dirty_tabs.contains(&TabId::Workers));
+        assert!(result.workflow_ids.is_empty());
         assert!(throttle.dirty.is_empty());
         assert!(throttle.cooldown_start.is_some());
     }
@@ -727,8 +753,9 @@ mod tests {
     #[test]
     fn throttle_flush_empty_does_not_start_cooldown() {
         let mut throttle = UiEventThrottle::new();
-        let flushed = throttle.flush();
-        assert!(flushed.is_empty());
+        let result = throttle.flush();
+        assert!(result.dirty_tabs.is_empty());
+        assert!(result.workflow_ids.is_empty());
         assert!(throttle.cooldown_start.is_none());
     }
 
@@ -746,7 +773,35 @@ mod tests {
     fn initial_model_has_empty_throttle() {
         let model = Model::initial();
         assert!(model.ui_event_throttle.dirty.is_empty());
+        assert!(model.ui_event_throttle.pending_workflow_ids.is_empty());
         assert!(model.ui_event_throttle.cooldown_start.is_none());
+    }
+
+    #[test]
+    fn throttle_mark_workflow_ids_stores_ids() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_workflow_ids(["wf-1".to_string(), "wf-2".to_string()]);
+        assert!(throttle.pending_workflow_ids.contains("wf-1"));
+        assert!(throttle.pending_workflow_ids.contains("wf-2"));
+    }
+
+    #[test]
+    fn throttle_flush_drains_workflow_ids() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_dirty([TabId::Flows]);
+        throttle.mark_workflow_ids(["wf-a".to_string(), "wf-b".to_string()]);
+        let result = throttle.flush();
+        assert!(result.dirty_tabs.contains(&TabId::Flows));
+        assert!(result.workflow_ids.contains("wf-a"));
+        assert!(result.workflow_ids.contains("wf-b"));
+        assert!(throttle.pending_workflow_ids.is_empty());
+    }
+
+    #[test]
+    fn throttle_workflow_ids_deduplicate() {
+        let mut throttle = UiEventThrottle::new();
+        throttle.mark_workflow_ids(["wf-1".to_string(), "wf-1".to_string()]);
+        assert_eq!(throttle.pending_workflow_ids.len(), 1);
     }
 
     // --- ScrollableMarkdownModel tests ---
