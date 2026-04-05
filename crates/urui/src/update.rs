@@ -447,10 +447,7 @@ fn fetch_cmd_for_tab(tab: TabId, model: &Model) -> Cmd {
             }
             Cmd::batch(cmds)
         }
-        TabId::Flows => Cmd::Fetch(FetchCmd::Flows {
-            page_size: None,
-            offset: None,
-        }),
+        TabId::Flows => super::pages::flows_list::build_flow_list_fetch_cmd(model),
         TabId::Workers => Cmd::Fetch(FetchCmd::Workers),
         TabId::Help => Cmd::None, // static content, no fetch needed
     }
@@ -1292,6 +1289,20 @@ mod tests {
         let cmd = fetch_cmd_for_tab(TabId::Tickets, &model);
         // Should be a Batch containing ticket list + detail + activities.
         assert!(matches!(cmd, Cmd::Batch(_)));
+    }
+
+    #[test]
+    fn fetch_cmd_for_tab_flows_uses_pagination() {
+        use crate::model::FLOW_PAGE_SIZE;
+        let model = Model::initial();
+        let cmd = fetch_cmd_for_tab(TabId::Flows, &model);
+        match cmd {
+            Cmd::Fetch(FetchCmd::Flows { page_size, offset }) => {
+                assert_eq!(page_size, Some(FLOW_PAGE_SIZE as i32));
+                assert_eq!(offset, Some(0));
+            }
+            other => panic!("expected FetchCmd::Flows, got {:?}", other),
+        }
     }
 
     #[test]
