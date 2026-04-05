@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use rand::Rng;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::graph::GraphManager;
@@ -15,12 +15,12 @@ use crate::model::{
 
 #[derive(Clone)]
 pub struct TicketRepo {
-    pool: SqlitePool,
+    pool: PgPool,
     graph_manager: GraphManager,
 }
 
 impl TicketRepo {
-    pub fn new(pool: SqlitePool, graph_manager: GraphManager) -> Self {
+    pub fn new(pool: PgPool, graph_manager: GraphManager) -> Self {
         Self {
             pool,
             graph_manager,

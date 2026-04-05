@@ -1,17 +1,17 @@
 // SnapshotManager: point-in-time snapshots of ticket state.
 
 use crate::database::DatabaseManager;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use std::fs;
 use std::path::Path;
 
 #[derive(Clone)]
 pub struct SnapshotManager {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl SnapshotManager {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 

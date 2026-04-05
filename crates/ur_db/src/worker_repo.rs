@@ -5,7 +5,7 @@ use std::future::Future;
 use std::path::Path;
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::model::{AgentStatus, Slot, Worker, WorkerSlot};
@@ -28,7 +28,7 @@ pub struct WorkerReconcileResult {
 
 #[derive(Clone)]
 pub struct WorkerRepo {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 /// Column tuple type returned by worker SELECT queries.
@@ -65,7 +65,7 @@ fn worker_from_row(row: WorkerRow) -> Worker {
 }
 
 impl WorkerRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 

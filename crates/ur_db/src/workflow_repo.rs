@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::model::{
@@ -20,11 +20,11 @@ pub struct PaginatedWorkflow {
 
 #[derive(Clone)]
 pub struct WorkflowRepo {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl WorkflowRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
@@ -244,10 +244,7 @@ impl WorkflowRepo {
 
         let total_count: i32 = rows.first().map(|r| r.get("total_count")).unwrap_or(0);
 
-        let workflows = rows
-            .into_iter()
-            .map(|r| sqlite_row_to_paginated(&r))
-            .collect();
+        let workflows = rows.into_iter().map(|r| pg_row_to_paginated(&r)).collect();
 
         Ok((workflows, total_count))
     }
@@ -935,7 +932,7 @@ fn build_paginated_binds(status: &Option<LifecycleStatus>, project: Option<&str>
     binds
 }
 
-fn sqlite_row_to_paginated(r: &sqlx::sqlite::SqliteRow) -> PaginatedWorkflow {
+fn pg_row_to_paginated(r: &sqlx::postgres::PgRow) -> PaginatedWorkflow {
     use sqlx::Row as _;
     let workflow = Workflow {
         id: r.get("id"),

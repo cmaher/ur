@@ -7,21 +7,19 @@ mod worker_repo_tests;
 mod workflow_repo_tests;
 
 use crate::database::DatabaseManager;
-use std::path::PathBuf;
 
 pub struct TestDb {
     db: DatabaseManager,
-    path: PathBuf,
 }
 
 impl TestDb {
     pub async fn new() -> Self {
-        let file_name = format!("ur_test_{}.db", uuid::Uuid::new_v4());
-        let path = std::env::temp_dir().join(file_name);
-        let db = DatabaseManager::open(path.to_str().expect("temp path is valid UTF-8"))
+        let db_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://ur:ur@localhost:5432/ur_test".to_string());
+        let db = DatabaseManager::open(&db_url)
             .await
             .expect("failed to open test database");
-        Self { db, path }
+        Self { db }
     }
 
     pub fn db(&self) -> &DatabaseManager {
@@ -30,6 +28,5 @@ impl TestDb {
 
     pub async fn cleanup(self) {
         self.db.pool().close().await;
-        std::fs::remove_file(&self.path).ok();
     }
 }

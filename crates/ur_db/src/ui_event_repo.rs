@@ -1,16 +1,16 @@
 // UiEventRepo: read and delete operations for the ui_events ephemeral buffer.
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::model::UiEventRow;
 
 #[derive(Clone)]
 pub struct UiEventRepo {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl UiEventRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
