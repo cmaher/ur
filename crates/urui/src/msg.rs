@@ -406,6 +406,8 @@ pub enum DataMsg {
         worker_id: String,
         result: Result<(), String>,
     },
+    /// A single workflow fetched for notification detection.
+    NotificationFlowLoaded(Result<WorkflowInfo, String>),
 }
 
 /// Ticket operation request messages. Each variant carries the parameters needed

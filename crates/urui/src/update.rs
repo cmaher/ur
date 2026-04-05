@@ -393,6 +393,12 @@ fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd
         });
     model.ui_event_throttle.mark_dirty(dirty_tabs.flatten());
 
+    let workflow_ids = items
+        .iter()
+        .filter(|item| item.entity_type == "workflow")
+        .map(|item| item.entity_id.clone());
+    model.ui_event_throttle.mark_workflow_ids(workflow_ids);
+
     let cmds = if model.ui_event_throttle.should_flush() {
         flush_throttle(&mut model)
     } else {
@@ -407,19 +413,29 @@ fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd
 /// the data will be marked stale on the next tab switch (the LoadState is
 /// set back to NotLoaded so it re-fetches when viewed).
 fn flush_throttle(model: &mut Model) -> Vec<Cmd> {
-    let dirty = model.ui_event_throttle.flush();
-    if dirty.is_empty() {
+    let result = model.ui_event_throttle.flush();
+    if result.dirty_tabs.is_empty() {
         return vec![];
     }
 
     let active_tab = model.navigation_model.active_tab;
     let mut cmds = Vec::new();
 
-    for tab in &dirty {
+    for tab in &result.dirty_tabs {
         if *tab == active_tab {
             cmds.push(fetch_cmd_for_tab(*tab, model));
         } else {
             invalidate_tab(*tab, model);
+        }
+    }
+
+    // When the Flows tab is dirty but not active, emit per-workflow notification
+    // fetches so desktop notifications fire even when the tab is not visible.
+    if result.dirty_tabs.contains(&TabId::Flows) && active_tab != TabId::Flows {
+        for ticket_id in &result.workflow_ids {
+            cmds.push(Cmd::Fetch(FetchCmd::WorkflowForNotification {
+                ticket_id: ticket_id.clone(),
+            }));
         }
     }
     cmds
@@ -749,6 +765,20 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
             }
             // Also update the full-screen activities page model if active.
             super::pages::ticket_activities::handle_activities_data(&mut model, ticket_id, result);
+        }
+        DataMsg::NotificationFlowLoaded(result) => {
+            if let Ok(workflow) = result {
+                let (notif_msgs, notif_cmds) =
+                    model.notifications.process_flow_updates(&[workflow]);
+                let mut cmds = notif_cmds;
+                // Only show the most recent banner to avoid banner churn.
+                if let Some(msg) = notif_msgs.into_iter().last() {
+                    let (m, extra_cmds) = update(model, msg);
+                    model = m;
+                    cmds.extend(extra_cmds);
+                }
+                return (model, cmds);
+            }
         }
     }
     (model, vec![])
@@ -2071,11 +2101,19 @@ mod tests {
     }
 
     fn make_workflow(ticket_id: &str, status: &str) -> ur_rpc::proto::ticket::WorkflowInfo {
+        make_workflow_ext(ticket_id, status, false)
+    }
+
+    fn make_workflow_ext(
+        ticket_id: &str,
+        status: &str,
+        stalled: bool,
+    ) -> ur_rpc::proto::ticket::WorkflowInfo {
         ur_rpc::proto::ticket::WorkflowInfo {
             id: "wf-123".into(),
             ticket_id: ticket_id.into(),
             status: status.into(),
-            stalled: false,
+            stalled,
             stall_reason: String::new(),
             implement_cycles: 2,
             worker_id: "w-1".into(),
@@ -2113,5 +2151,115 @@ mod tests {
         let msg = Msg::Data(Box::new(DataMsg::FlowsLoaded(Ok((vec![wf], 1)))));
         let (new_model, _) = update(model, msg);
         assert!(new_model.flow_detail.is_none());
+    }
+
+    // ── Notification-only workflow fetch path tests ─────────────────
+
+    #[test]
+    fn workflow_event_on_inactive_tab_produces_notification_fetch() {
+        // Default active tab is Tickets, so a workflow event should trigger
+        // a WorkflowForNotification fetch for the inactive Flows tab.
+        let model = Model::initial();
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "workflow".to_string(),
+            entity_id: "ur-wf1".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+        // Flows tab was invalidated (not active).
+        assert!(matches!(new_model.flow_list.data, LoadState::NotLoaded));
+        // Should contain a WorkflowForNotification fetch with the entity_id.
+        let has_notif_fetch = cmds.iter().any(|c| {
+            matches!(
+                c,
+                Cmd::Fetch(FetchCmd::WorkflowForNotification { ticket_id })
+                    if ticket_id == "ur-wf1"
+            )
+        });
+        assert!(
+            has_notif_fetch,
+            "expected WorkflowForNotification fetch, got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn workflow_event_on_active_flows_tab_does_not_produce_notification_fetch() {
+        use crate::navigation::TabId;
+        // Switch to Flows tab so it is the active tab.
+        let mut model = Model::initial();
+        model.navigation_model.active_tab = TabId::Flows;
+
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "workflow".to_string(),
+            entity_id: "ur-wf2".to_string(),
+        }]);
+        let (_new_model, cmds) = update(model, msg);
+        // Active tab should get a full Flows fetch, NOT a WorkflowForNotification.
+        let has_notif_fetch = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Fetch(FetchCmd::WorkflowForNotification { .. })));
+        assert!(
+            !has_notif_fetch,
+            "should not produce WorkflowForNotification when Flows tab is active, got: {cmds:?}"
+        );
+        // Should have a regular Flows fetch instead.
+        let has_flows_fetch = cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Fetch(FetchCmd::Flows { .. })));
+        assert!(
+            has_flows_fetch,
+            "expected regular Flows fetch for active tab, got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn notification_flow_loaded_with_transition_fires_notification() {
+        use super::super::components::banner::BannerVariant;
+
+        let mut model = Model::initial();
+        // Seed the notification model with a prior "implementing" state so that
+        // a transition to "in_review" is detected.
+        let prior = make_workflow("ur-nf1", "implementing");
+        model.notifications.seed_flows(&[prior]);
+
+        let updated = make_workflow("ur-nf1", "in_review");
+        let msg = Msg::Data(Box::new(DataMsg::NotificationFlowLoaded(Ok(updated))));
+        let (new_model, _cmds) = update(model, msg);
+
+        // A banner should have been shown for the transition.
+        assert!(new_model.banner.is_some());
+        let banner = new_model.banner.as_ref().unwrap();
+        assert_eq!(banner.variant, BannerVariant::Success);
+        assert!(banner.message.contains("ur-nf1"));
+        assert!(banner.message.contains("review"));
+    }
+
+    #[test]
+    fn notification_flow_loaded_without_transition_is_noop() {
+        let mut model = Model::initial();
+        // Seed with "implementing" state.
+        let prior = make_workflow("ur-nf2", "implementing");
+        model.notifications.seed_flows(&[prior]);
+
+        // Send same status again — no transition.
+        let same = make_workflow("ur-nf2", "implementing");
+        let msg = Msg::Data(Box::new(DataMsg::NotificationFlowLoaded(Ok(same))));
+        let (new_model, cmds) = update(model, msg);
+
+        // No banner, no commands.
+        assert!(new_model.banner.is_none());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn notification_flow_loaded_error_is_noop() {
+        let model = Model::initial();
+        let msg = Msg::Data(Box::new(DataMsg::NotificationFlowLoaded(Err(
+            "rpc failed".to_string()
+        ))));
+        let (new_model, cmds) = update(model, msg);
+
+        // Error result should be silently ignored.
+        assert!(new_model.banner.is_none());
+        assert!(cmds.is_empty());
     }
 }
