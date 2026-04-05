@@ -626,7 +626,7 @@ impl WorkerRepo {
     pub async fn cleanup_stale_workers(&self, ttl_days: u64) -> Result<Vec<String>, sqlx::Error> {
         let interval = format!("{ttl_days} days");
         let rows = sqlx::query_as::<_, (String,)>(
-            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at < (now() - $1::interval) RETURNING worker_id",
+            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at::TIMESTAMPTZ < (now() - $1::interval) RETURNING worker_id",
         )
         .bind(&interval)
         .fetch_all(&self.pool)
