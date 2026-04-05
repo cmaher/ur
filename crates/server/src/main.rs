@@ -166,8 +166,11 @@ async fn init_and_serve(
     let workflow_repo = WorkflowRepo::new(db.pool().clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
-    let poll_interval = std::time::Duration::from_millis(cfg.server.ui_event_poll_interval_ms);
-    let ui_event_poller = ur_server::UiEventPoller::new(ui_event_repo, poll_interval);
+    let fallback_interval =
+        std::time::Duration::from_millis(cfg.server.ui_event_fallback_interval_ms);
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
+    let ui_event_poller =
+        ur_server::UiEventPoller::new(ui_event_repo, fallback_interval, database_url);
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
