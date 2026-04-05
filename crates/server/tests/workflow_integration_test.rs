@@ -231,6 +231,10 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
+    let project_registry = ur_server::ProjectRegistry::new(
+        config.projects.clone(),
+        ur_server::hostexec::HostExecConfigManager::empty(),
+    );
     let pool = ur_server::RepoPoolManager::new(
         &config,
         std::path::PathBuf::from("/tmp/test/workspace"),
@@ -239,6 +243,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         local_repo,
         worker_repo.clone(),
         std::path::PathBuf::from("/tmp/test/config"),
+        project_registry,
     );
     let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
     ur_server::WorkerManager::new(

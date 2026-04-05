@@ -40,6 +40,15 @@ impl HostExecConfigManager {
         Ok(Self { commands })
     }
 
+    /// Create an empty config manager with no commands.
+    ///
+    /// Useful for tests where hostexec is irrelevant.
+    pub fn empty() -> Self {
+        Self {
+            commands: HashMap::new(),
+        }
+    }
+
     /// Create a new config manager containing only the built-in default commands.
     pub fn defaults_only(&self) -> Self {
         Self {

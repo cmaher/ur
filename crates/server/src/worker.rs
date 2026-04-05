@@ -853,6 +853,10 @@ mod tests {
         let local_repo = local_repo::GitBackend {
             client: ur_rpc::proto::builder::BuilderdClient::new(channel),
         };
+        let project_registry = crate::ProjectRegistry::new(
+            config.projects.clone(),
+            crate::hostexec::HostExecConfigManager::empty(),
+        );
         let repo_pool_manager = RepoPoolManager::new(
             &config,
             workspace.path().to_path_buf(),
@@ -861,6 +865,7 @@ mod tests {
             local_repo,
             worker_repo.clone(),
             workspace.path().join("config"),
+            project_registry,
         );
         let network_manager = NetworkManager::new(
             "docker".into(),
