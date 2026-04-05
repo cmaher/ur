@@ -62,7 +62,7 @@ impl WorkflowRepo {
 
     /// Delete a workflow event by ID (after successful processing).
     pub async fn delete_workflow_event(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM workflow_event WHERE id = ?")
+        sqlx::query("DELETE FROM workflow_event WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -75,7 +75,7 @@ impl WorkflowRepo {
         &self,
         ticket_id: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM workflow_event WHERE ticket_id = ?")
+        sqlx::query("DELETE FROM workflow_event WHERE ticket_id = $1")
             .bind(ticket_id)
             .execute(&self.pool)
             .await?;
@@ -85,7 +85,7 @@ impl WorkflowRepo {
 
     /// Increment the attempts counter on a workflow event (after a failed processing attempt).
     pub async fn increment_workflow_event_attempts(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow_event SET attempts = attempts + 1 WHERE id = ?")
+        sqlx::query("UPDATE workflow_event SET attempts = attempts + 1 WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -106,13 +106,15 @@ impl WorkflowRepo {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        sqlx::query("INSERT INTO workflow (id, ticket_id, status, created_at) VALUES (?, ?, ?, ?)")
-            .bind(&id)
-            .bind(ticket_id)
-            .bind(status.as_str())
-            .bind(&now)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO workflow (id, ticket_id, status, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&id)
+        .bind(ticket_id)
+        .bind(status.as_str())
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
 
         Ok(Workflow {
             id,
@@ -154,10 +156,10 @@ impl WorkflowRepo {
     ) -> Result<Option<Workflow>, sqlx::Error> {
         let query = if active_only {
             "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
-             FROM workflow WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+             FROM workflow WHERE ticket_id = $1 AND status NOT IN ('done', 'cancelled')"
         } else {
             "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
-             FROM workflow WHERE ticket_id = ? ORDER BY created_at DESC LIMIT 1"
+             FROM workflow WHERE ticket_id = $1 ORDER BY created_at DESC LIMIT 1"
         };
         let row = sqlx::query_as::<
             _,
@@ -196,7 +198,7 @@ impl WorkflowRepo {
                     (String, String, String, bool, String, i32, String, bool, String, String, String, String, String),
                 >(
                     "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
-                     FROM workflow WHERE status = ? ORDER BY created_at",
+                     FROM workflow WHERE status = $1 ORDER BY created_at",
                 )
                 .bind(s.as_str())
                 .fetch_all(&self.pool)
@@ -255,7 +257,7 @@ impl WorkflowRepo {
         ticket_id: &str,
         status: LifecycleStatus,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET status = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')")
             .bind(status.as_str())
             .bind(ticket_id)
             .execute(&self.pool)
@@ -270,7 +272,7 @@ impl WorkflowRepo {
         ticket_id: &str,
         reason: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET stalled = 1, stall_reason = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET stalled = true, stall_reason = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')")
             .bind(reason)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -281,7 +283,7 @@ impl WorkflowRepo {
 
     /// Clear a workflow stall (reset stalled flag and reason).
     pub async fn clear_workflow_stall(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET stalled = 0, stall_reason = '' WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET stalled = false, stall_reason = '' WHERE ticket_id = $1 AND status NOT IN ('done', 'cancelled')")
             .bind(ticket_id)
             .execute(&self.pool)
             .await?;
@@ -292,7 +294,7 @@ impl WorkflowRepo {
     /// Increment the implement_cycles counter on a workflow.
     pub async fn increment_implement_cycles(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workflow SET implement_cycles = implement_cycles + 1 WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
+            "UPDATE workflow SET implement_cycles = implement_cycles + 1 WHERE ticket_id = $1 AND status NOT IN ('done', 'cancelled')",
         )
         .bind(ticket_id)
         .execute(&self.pool)
@@ -304,7 +306,7 @@ impl WorkflowRepo {
     /// Reset the implement_cycles counter on a workflow to zero.
     pub async fn reset_implement_cycles(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workflow SET implement_cycles = 0 WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
+            "UPDATE workflow SET implement_cycles = 0 WHERE ticket_id = $1 AND status NOT IN ('done', 'cancelled')",
         )
         .bind(ticket_id)
         .execute(&self.pool)
@@ -319,7 +321,7 @@ impl WorkflowRepo {
         ticket_id: &str,
         worker_id: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET worker_id = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET worker_id = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')")
             .bind(worker_id)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -334,7 +336,7 @@ impl WorkflowRepo {
         ticket_id: &str,
         noverify: bool,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET noverify = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET noverify = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')")
             .bind(noverify)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -349,7 +351,7 @@ impl WorkflowRepo {
         ticket_id: &str,
         feedback_mode: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE workflow SET feedback_mode = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')")
+        sqlx::query("UPDATE workflow SET feedback_mode = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')")
             .bind(feedback_mode)
             .bind(ticket_id)
             .execute(&self.pool)
@@ -369,13 +371,13 @@ impl WorkflowRepo {
     ) -> Result<(), sqlx::Error> {
         let query = match condition {
             ur_rpc::workflow_condition::WorkflowCondition::CiStatus => {
-                "UPDATE workflow SET ci_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+                "UPDATE workflow SET ci_status = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')"
             }
             ur_rpc::workflow_condition::WorkflowCondition::Mergeable => {
-                "UPDATE workflow SET mergeable = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+                "UPDATE workflow SET mergeable = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')"
             }
             ur_rpc::workflow_condition::WorkflowCondition::ReviewStatus => {
-                "UPDATE workflow SET review_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')"
+                "UPDATE workflow SET review_status = $1 WHERE ticket_id = $2 AND status NOT IN ('done', 'cancelled')"
             }
         };
 
@@ -392,7 +394,7 @@ impl WorkflowRepo {
     /// Called when a workflow transitions to InReview.
     pub async fn initialize_workflow_conditions(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE workflow SET ci_status = ?, mergeable = ?, review_status = ? WHERE ticket_id = ? AND status NOT IN ('done', 'cancelled')",
+            "UPDATE workflow SET ci_status = $1, mergeable = $2, review_status = $3 WHERE ticket_id = $4 AND status NOT IN ('done', 'cancelled')",
         )
         .bind(ur_rpc::workflow_condition::ci_status::PENDING)
         .bind(ur_rpc::workflow_condition::mergeable::UNKNOWN)
@@ -417,7 +419,7 @@ impl WorkflowRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(&id)
         .bind(workflow_id)
@@ -443,7 +445,7 @@ impl WorkflowRepo {
         let id = Uuid::new_v4().to_string();
 
         sqlx::query(
-            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO workflow_events (id, workflow_id, event, created_at) VALUES ($1, $2, $3, $4)",
         )
         .bind(&id)
         .bind(workflow_id)
@@ -461,7 +463,7 @@ impl WorkflowRepo {
         workflow_id: &str,
     ) -> Result<Vec<WorkflowEventRow>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT event, created_at FROM workflow_events WHERE workflow_id = ? ORDER BY created_at ASC",
+            "SELECT event, created_at FROM workflow_events WHERE workflow_id = $1 ORDER BY created_at ASC",
         )
         .bind(workflow_id)
         .fetch_all(&self.pool)
@@ -479,13 +481,13 @@ impl WorkflowRepo {
         &self,
         ticket_id: &str,
     ) -> Result<(i64, i64), sqlx::Error> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = ?")
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = $1")
             .bind(ticket_id)
             .fetch_one(&self.pool)
             .await?;
 
         let closed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM ticket WHERE parent_id = ? AND status = 'closed'",
+            "SELECT COUNT(*) FROM ticket WHERE parent_id = $1 AND status = 'closed'",
         )
         .bind(ticket_id)
         .fetch_one(&self.pool)
@@ -509,7 +511,7 @@ impl WorkflowRepo {
 
         sqlx::query(
             "INSERT INTO workflow_intent (id, ticket_id, target_status, created_at)
-             VALUES (?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(&id)
         .bind(ticket_id)
@@ -578,7 +580,7 @@ impl WorkflowRepo {
 
     /// Delete a workflow intent by ID (after successful processing).
     pub async fn delete_intent(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM workflow_intent WHERE id = ?")
+        sqlx::query("DELETE FROM workflow_intent WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -588,7 +590,7 @@ impl WorkflowRepo {
 
     /// Delete all workflow intents for a ticket (used when cancelling a workflow).
     pub async fn delete_intents_for_ticket(&self, ticket_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM workflow_intent WHERE ticket_id = ?")
+        sqlx::query("DELETE FROM workflow_intent WHERE ticket_id = $1")
             .bind(ticket_id)
             .execute(&self.pool)
             .await?;
@@ -649,7 +651,7 @@ impl WorkflowRepo {
             "SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at
              FROM ticket t
              INNER JOIN workflow w ON w.ticket_id = t.id
-             WHERE w.status = ?
+             WHERE w.status = $1
              ORDER BY t.priority ASC, t.created_at ASC",
         )
         .bind(status.as_str())
@@ -708,7 +710,7 @@ impl WorkflowRepo {
             "SELECT t.id, t.title, t.type, t.status
              FROM ticket t
              INNER JOIN workflow w ON w.ticket_id = t.id
-             WHERE w.worker_id = ?
+             WHERE w.worker_id = $1
              ORDER BY t.priority ASC",
         )
         .bind(worker_id)
@@ -740,7 +742,7 @@ impl WorkflowRepo {
     ) -> Result<(), sqlx::Error> {
         for comment_id in comment_ids {
             sqlx::query(
-                "INSERT OR IGNORE INTO workflow_comments (ticket_id, comment_id) VALUES (?, ?)",
+                "INSERT INTO workflow_comments (ticket_id, comment_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
             )
             .bind(ticket_id)
             .bind(comment_id)
@@ -757,7 +759,7 @@ impl WorkflowRepo {
     ) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String,)>(
             "SELECT comment_id FROM workflow_comments
-             WHERE ticket_id = ? AND feedback_created = 0
+             WHERE ticket_id = $1 AND feedback_created = false
              ORDER BY created_at ASC",
         )
         .bind(ticket_id)
@@ -775,8 +777,8 @@ impl WorkflowRepo {
     ) -> Result<(), sqlx::Error> {
         for comment_id in comment_ids {
             sqlx::query(
-                "UPDATE workflow_comments SET feedback_created = 1
-                 WHERE ticket_id = ? AND comment_id = ?",
+                "UPDATE workflow_comments SET feedback_created = true
+                 WHERE ticket_id = $1 AND comment_id = $2",
             )
             .bind(ticket_id)
             .bind(comment_id)
@@ -790,7 +792,7 @@ impl WorkflowRepo {
     pub async fn get_seen_comment_ids(&self, ticket_id: &str) -> Result<Vec<String>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String,)>(
             "SELECT comment_id FROM workflow_comments
-             WHERE ticket_id = ?
+             WHERE ticket_id = $1
              ORDER BY created_at ASC",
         )
         .bind(ticket_id)
@@ -814,7 +816,7 @@ impl WorkflowRepo {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO ticket_comments (comment_id, ticket_id, pr_number, gh_repo) \
-             VALUES (?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(comment_id)
         .bind(ticket_id)
@@ -830,7 +832,7 @@ impl WorkflowRepo {
     pub async fn get_pending_replies(&self) -> Result<Vec<TicketComment>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
             "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
-             FROM ticket_comments WHERE reply_posted = 0 \
+             FROM ticket_comments WHERE reply_posted = false \
              ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -860,8 +862,8 @@ impl WorkflowRepo {
         ticket_id: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE ticket_comments SET reply_posted = 1 \
-             WHERE comment_id = ? AND ticket_id = ?",
+            "UPDATE ticket_comments SET reply_posted = true \
+             WHERE comment_id = $1 AND ticket_id = $2",
         )
         .bind(comment_id)
         .bind(ticket_id)
@@ -879,19 +881,24 @@ fn build_paginated_sql(
     project: Option<&str>,
 ) -> String {
     let mut conditions = Vec::new();
+    let mut param_idx = 0usize;
 
     if status.is_some() {
-        conditions.push("w.status = ?".to_string());
+        param_idx += 1;
+        conditions.push(format!("w.status = ${param_idx}"));
     } else {
         conditions.push("w.status NOT IN ('done', 'cancelled')".to_string());
     }
 
     let ticket_join = if project.is_some() {
-        conditions.push("t.project = ?".to_string());
+        param_idx += 1;
+        conditions.push(format!("t.project = ${param_idx}"));
         "INNER JOIN ticket t ON t.id = w.ticket_id"
     } else {
         ""
     };
+
+    let _ = param_idx;
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
