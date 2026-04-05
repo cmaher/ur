@@ -49,12 +49,11 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
 }
 
 async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
-    let db_path = cfg.config_dir.join("ur.db");
-    let db_path_str = db_path.to_string_lossy();
-    let db = DatabaseManager::open(&db_path_str)
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
+    let db = DatabaseManager::open(&url)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
-    info!(db_path = %db_path.display(), "database initialized");
+    info!(url = %url, "database initialized");
     Ok(db)
 }
 
@@ -68,15 +67,18 @@ fn load_prompt_modes(cfg: &Config) -> anyhow::Result<PromptModesConfig> {
 }
 
 fn init_backup(
-    db: &DatabaseManager,
     cfg: &Config,
 ) -> anyhow::Result<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)> {
-    let mut backup_config = cfg.backup.clone();
+    let mut backup_config = cfg.db.backup.clone();
     if let Ok(container_path) = std::env::var("UR_BACKUP_PATH") {
         backup_config.path = Some(std::path::PathBuf::from(container_path));
     }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let snapshot_manager = SnapshotManager::new(db.pool().clone());
+    let snapshot_manager = SnapshotManager::new(
+        cfg.server.container_command.clone(),
+        ur_config::DEFAULT_DB_HOST.to_string(),
+        cfg.db.name.clone(),
+    );
     let backup_task_manager = BackupTaskManager::new(snapshot_manager, backup_config);
     let backup_handle = backup_task_manager
         .spawn(shutdown_rx)
@@ -164,8 +166,11 @@ async fn init_and_serve(
     let workflow_repo = WorkflowRepo::new(db.pool().clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
-    let poll_interval = std::time::Duration::from_millis(cfg.server.ui_event_poll_interval_ms);
-    let ui_event_poller = ur_server::UiEventPoller::new(ui_event_repo, poll_interval);
+    let fallback_interval =
+        std::time::Duration::from_millis(cfg.server.ui_event_fallback_interval_ms);
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
+    let ui_event_poller =
+        ur_server::UiEventPoller::new(ui_event_repo, fallback_interval, database_url);
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
@@ -426,7 +431,7 @@ async fn main() -> anyhow::Result<()> {
 
     let prompt_modes = load_prompt_modes(&cfg)?;
     let db = init_database(&cfg).await?;
-    let (shutdown_tx, backup_handle) = init_backup(&db, &cfg)?;
+    let (shutdown_tx, backup_handle) = init_backup(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 

@@ -300,6 +300,8 @@ struct RawConfig {
     proxy: Option<RawProxyConfig>,
     network: Option<RawNetworkConfig>,
     hostexec: Option<RawHostExecConfig>,
+    db: Option<RawDatabaseConfig>,
+    /// Deprecated: use `[db.backup]` instead. Kept for backward compatibility.
     backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
     logs_dir: Option<PathBuf>,
@@ -408,7 +410,18 @@ struct RawNetworkConfig {
     worker_prefix: Option<String>,
 }
 
-/// Raw TOML representation for the `[backup]` section.
+/// Raw TOML representation for the `[db]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawDatabaseConfig {
+    host: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    name: Option<String>,
+    backup: Option<RawBackupConfig>,
+}
+
+/// Raw TOML representation for the `[backup]` or `[db.backup]` section.
 #[derive(Debug, Deserialize)]
 struct RawBackupConfig {
     path: Option<PathBuf>,
@@ -509,7 +522,7 @@ struct RawServerConfig {
     github_scan_interval_secs: Option<u64>,
     builderd_retry_count: Option<u32>,
     builderd_retry_backoff_ms: Option<u64>,
-    ui_event_poll_interval_ms: Option<u64>,
+    ui_event_fallback_interval_ms: Option<u64>,
 }
 
 /// Environment variable: container runtime command override (e.g. "nerdctl").
@@ -531,8 +544,10 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
 /// Default GitHub scan interval in seconds for the poller.
 pub const DEFAULT_GITHUB_SCAN_INTERVAL_SECS: u64 = 30;
 
-/// Default UI event poll interval in milliseconds.
-pub const DEFAULT_UI_EVENT_POLL_INTERVAL_MS: u64 = 200;
+/// Default UI event fallback interval in milliseconds.
+/// Used as the timeout when LISTEN/NOTIFY is active; also the poll interval
+/// when the LISTEN connection is unavailable.
+pub const DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS: u64 = 5000;
 
 /// Default number of builderd retry attempts.
 pub const DEFAULT_BUILDERD_RETRY_COUNT: u32 = 3;
@@ -560,8 +575,10 @@ pub struct ServerConfig {
     /// Base backoff in milliseconds for builderd retries (default: 200).
     /// Each retry doubles this value (exponential backoff).
     pub builderd_retry_backoff_ms: u64,
-    /// UI event poll interval in milliseconds (default: 200).
-    pub ui_event_poll_interval_ms: u64,
+    /// UI event fallback interval in milliseconds (default: 5000).
+    /// Used as the timeout between LISTEN/NOTIFY wake-ups; also the poll
+    /// interval when the LISTEN connection is unavailable.
+    pub ui_event_fallback_interval_ms: u64,
 }
 
 /// Default TUI theme name.
@@ -785,6 +802,50 @@ pub struct BackupConfig {
     pub retain_count: u64,
 }
 
+/// Default database host.
+pub const DEFAULT_DB_HOST: &str = "ur-postgres";
+
+/// Default database port.
+pub const DEFAULT_DB_PORT: u16 = 5432;
+
+/// Default database user.
+pub const DEFAULT_DB_USER: &str = "ur";
+
+/// Default database password.
+pub const DEFAULT_DB_PASSWORD: &str = "ur";
+
+/// Default database name.
+pub const DEFAULT_DB_NAME: &str = "ur";
+
+/// Database configuration, including connection details and backup settings.
+///
+/// The `backup` field nests the existing `BackupConfig` under `[db.backup]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseConfig {
+    /// Database hostname (default: "ur-postgres").
+    pub host: String,
+    /// Database port (default: 5432).
+    pub port: u16,
+    /// Database user (default: "ur").
+    pub user: String,
+    /// Database password (default: "ur").
+    pub password: String,
+    /// Database name (default: "ur").
+    pub name: String,
+    /// Periodic backup settings for the database.
+    pub backup: BackupConfig,
+}
+
+impl DatabaseConfig {
+    /// Construct a Postgres connection URL from the configured fields.
+    pub fn database_url(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.user, self.password, self.host, self.port, self.name
+        )
+    }
+}
+
 /// Known image aliases and their full tags.
 pub const IMAGE_ALIASES: &[(&str, &str)] = &[
     ("ur-worker", "ur-worker:latest"),
@@ -920,8 +981,8 @@ pub struct Config {
     pub network: NetworkConfig,
     /// Global hostexec command configuration (from `[hostexec]` section).
     pub hostexec: HostExecConfig,
-    /// Periodic backup settings for the database.
-    pub backup: BackupConfig,
+    /// Database configuration (connection details + backup settings).
+    pub db: DatabaseConfig,
     /// Server runtime settings (container command, polling intervals, etc.).
     pub server: ServerConfig,
     /// TUI display settings (theme, keymap).
@@ -990,7 +1051,7 @@ impl Config {
             None => HostExecConfig::default(),
         };
 
-        let backup = resolve_backup(raw.backup);
+        let db = resolve_database(raw.db, raw.backup);
         let server = resolve_server(raw.server);
         let tui = resolve_tui(raw.tui);
 
@@ -1018,7 +1079,7 @@ impl Config {
             proxy,
             network,
             hostexec,
-            backup,
+            db,
             server,
             tui,
             logs_dir,
@@ -1267,9 +1328,9 @@ fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
             builderd_retry_backoff_ms: s
                 .builderd_retry_backoff_ms
                 .unwrap_or(DEFAULT_BUILDERD_RETRY_BACKOFF_MS),
-            ui_event_poll_interval_ms: s
-                .ui_event_poll_interval_ms
-                .unwrap_or(DEFAULT_UI_EVENT_POLL_INTERVAL_MS),
+            ui_event_fallback_interval_ms: s
+                .ui_event_fallback_interval_ms
+                .unwrap_or(DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS),
         },
         None => ServerConfig {
             container_command,
@@ -1279,7 +1340,7 @@ fn resolve_server(raw: Option<RawServerConfig>) -> ServerConfig {
             github_scan_interval_secs: DEFAULT_GITHUB_SCAN_INTERVAL_SECS,
             builderd_retry_count: DEFAULT_BUILDERD_RETRY_COUNT,
             builderd_retry_backoff_ms: DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-            ui_event_poll_interval_ms: DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
+            ui_event_fallback_interval_ms: DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
         },
     }
 }
@@ -1300,6 +1361,31 @@ fn resolve_backup(raw: Option<RawBackupConfig>) -> BackupConfig {
             enabled: true,
             retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
         },
+    }
+}
+
+/// Resolve the `[db]` config, with backward compatibility for top-level `[backup]`.
+///
+/// If `[db.backup]` is present, it takes precedence. If only `[backup]` is present
+/// at the top level (legacy format), it is used as the backup config. If neither
+/// is present, defaults are used.
+fn resolve_database(
+    raw_db: Option<RawDatabaseConfig>,
+    raw_backup_legacy: Option<RawBackupConfig>,
+) -> DatabaseConfig {
+    let raw = raw_db.unwrap_or_default();
+    // [db.backup] takes precedence over top-level [backup]
+    let backup_raw = raw.backup.or(raw_backup_legacy);
+    let backup = resolve_backup(backup_raw);
+    DatabaseConfig {
+        host: raw.host.unwrap_or_else(|| DEFAULT_DB_HOST.to_string()),
+        port: raw.port.unwrap_or(DEFAULT_DB_PORT),
+        user: raw.user.unwrap_or_else(|| DEFAULT_DB_USER.to_string()),
+        password: raw
+            .password
+            .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string()),
+        name: raw.name.unwrap_or_else(|| DEFAULT_DB_NAME.to_string()),
+        backup,
     }
 }
 
@@ -2227,10 +2313,13 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.backup.path, None);
-        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
-        assert!(cfg.backup.enabled);
-        assert_eq!(cfg.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
+        assert_eq!(cfg.db.backup.path, None);
+        assert_eq!(
+            cfg.db.backup.interval_minutes,
+            DEFAULT_BACKUP_INTERVAL_MINUTES
+        );
+        assert!(cfg.db.backup.enabled);
+        assert_eq!(cfg.db.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
     }
 
     #[test]
@@ -2238,10 +2327,13 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "[backup]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.backup.path, None);
-        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
-        assert!(cfg.backup.enabled);
-        assert_eq!(cfg.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
+        assert_eq!(cfg.db.backup.path, None);
+        assert_eq!(
+            cfg.db.backup.interval_minutes,
+            DEFAULT_BACKUP_INTERVAL_MINUTES
+        );
+        assert!(cfg.db.backup.enabled);
+        assert_eq!(cfg.db.backup.retain_count, DEFAULT_BACKUP_RETAIN_COUNT);
     }
 
     #[test]
@@ -2254,10 +2346,10 @@ rg = { lua = "rg-safe.lua" }
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.backup.path,
+            cfg.db.backup.path,
             Some(std::path::PathBuf::from("/backups/ur"))
         );
-        assert_eq!(cfg.backup.interval_minutes, 60);
+        assert_eq!(cfg.db.backup.interval_minutes, 60);
     }
 
     #[test]
@@ -2270,10 +2362,13 @@ rg = { lua = "rg-safe.lua" }
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.backup.path,
+            cfg.db.backup.path,
             Some(std::path::PathBuf::from("/backups/ur"))
         );
-        assert_eq!(cfg.backup.interval_minutes, DEFAULT_BACKUP_INTERVAL_MINUTES);
+        assert_eq!(
+            cfg.db.backup.interval_minutes,
+            DEFAULT_BACKUP_INTERVAL_MINUTES
+        );
     }
 
     #[test]
@@ -2313,7 +2408,7 @@ rg = { lua = "rg-safe.lua" }
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert!(!cfg.backup.enabled);
+        assert!(!cfg.db.backup.enabled);
     }
 
     #[test]
@@ -2325,7 +2420,127 @@ rg = { lua = "rg-safe.lua" }
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.backup.retain_count, 7);
+        assert_eq!(cfg.db.backup.retain_count, 7);
+    }
+
+    #[test]
+    fn db_defaults_when_section_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.db.host, DEFAULT_DB_HOST);
+        assert_eq!(cfg.db.port, DEFAULT_DB_PORT);
+        assert_eq!(cfg.db.user, DEFAULT_DB_USER);
+        assert_eq!(cfg.db.password, DEFAULT_DB_PASSWORD);
+        assert_eq!(cfg.db.name, DEFAULT_DB_NAME);
+    }
+
+    #[test]
+    fn db_reads_custom_values() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[db]
+host = "my-postgres"
+port = 5433
+user = "myuser"
+password = "mypass"
+name = "mydb"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.db.host, "my-postgres");
+        assert_eq!(cfg.db.port, 5433);
+        assert_eq!(cfg.db.user, "myuser");
+        assert_eq!(cfg.db.password, "mypass");
+        assert_eq!(cfg.db.name, "mydb");
+    }
+
+    #[test]
+    fn db_backup_nested_under_db_section() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[db.backup]
+path = "/backups/ur"
+interval_minutes = 45
+retain_count = 5
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.db.backup.path,
+            Some(std::path::PathBuf::from("/backups/ur"))
+        );
+        assert_eq!(cfg.db.backup.interval_minutes, 45);
+        assert_eq!(cfg.db.backup.retain_count, 5);
+    }
+
+    #[test]
+    fn db_backup_prefers_nested_over_legacy() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+[backup]
+path = "/old/path"
+retain_count = 2
+
+[db.backup]
+path = "/new/path"
+retain_count = 10
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.db.backup.path,
+            Some(std::path::PathBuf::from("/new/path"))
+        );
+        assert_eq!(cfg.db.backup.retain_count, 10);
+    }
+
+    #[test]
+    fn database_url_constructs_correct_postgres_url() {
+        let db = DatabaseConfig {
+            host: "myhost".to_string(),
+            port: 5433,
+            user: "admin".to_string(),
+            password: "secret".to_string(),
+            name: "testdb".to_string(),
+            backup: BackupConfig {
+                path: None,
+                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        assert_eq!(
+            db.database_url(),
+            "postgres://admin:secret@myhost:5433/testdb"
+        );
+    }
+
+    #[test]
+    fn database_url_with_defaults() {
+        let db = DatabaseConfig {
+            host: DEFAULT_DB_HOST.to_string(),
+            port: DEFAULT_DB_PORT,
+            user: DEFAULT_DB_USER.to_string(),
+            password: DEFAULT_DB_PASSWORD.to_string(),
+            name: DEFAULT_DB_NAME.to_string(),
+            backup: BackupConfig {
+                path: None,
+                interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        assert_eq!(db.database_url(), "postgres://ur:ur@ur-postgres:5432/ur");
     }
 
     #[test]

@@ -4,15 +4,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::model::{Slot, Worker};
 use crate::tests::TestDb;
 use crate::worker_repo::WorkerRepo;
 
 /// Set a worker's updated_at to a specific timestamp directly in the database.
-async fn set_worker_updated_at(pool: &SqlitePool, worker_id: &str, updated_at: &str) {
-    sqlx::query("UPDATE worker SET updated_at = ? WHERE worker_id = ?")
+async fn set_worker_updated_at(pool: &PgPool, worker_id: &str, updated_at: &str) {
+    sqlx::query("UPDATE worker SET updated_at = $1 WHERE worker_id = $2")
         .bind(updated_at)
         .bind(worker_id)
         .execute(pool)

@@ -3,7 +3,7 @@
 ## Overview
 
 `ur start` brings up the full stack: builderd (host daemon) + Docker Compose services
-(ur-server, ur-squid, ur-qdrant). `ur stop` tears everything down in reverse.
+(ur-postgres, ur-server, ur-squid). `ur stop` tears everything down in reverse.
 
 ## Start Flow
 
@@ -24,9 +24,11 @@ ur start
     ├── Write ~/.ur/docker-compose.yml
     ├── docker compose down (pre-cleanup of stale state)
     └── docker compose up -d --wait
+        ├── ur-postgres (postgres:17-alpine, infra network, data at $UR_CONFIG/postgres)
         ├── ur-squid (forward proxy, infra + workers networks)
         └── ur-server (gRPC server, infra + workers networks)
-            └── Connects to builderd via UR_BUILDERD_ADDR
+            ├── Connects to builderd via UR_BUILDERD_ADDR
+            └── Connects to ur-postgres via DATABASE_URL (depends_on: ur-postgres healthy)
 ```
 
 ## Stop Flow
@@ -65,18 +67,23 @@ Environment variables passed to `docker compose`:
 - `UR_WORKSPACE` — host workspace directory (mounted as `/workspace` in server)
 - `UR_SERVER_PORT` — gRPC listen port for ur-server
 - `UR_BUILDERD_PORT` — builderd port (server uses this to build `UR_BUILDERD_ADDR`)
+- `DATABASE_URL` — Postgres connection URL for ur-server (e.g., `postgres://ur:ur@ur-postgres:5432/ur`)
 
 The server container receives `UR_BUILDERD_ADDR=http://host.docker.internal:$UR_BUILDERD_PORT`
 to reach builderd on the host via Docker's host gateway.
 
+The `ur-postgres` container stores data at `$UR_CONFIG/postgres` (mounted as `/var/lib/postgresql/data`).
+If backup is configured, the host backup path is mounted at `/backup` in the postgres container for `pg_dump`/`pg_restore`.
+
 ## Network Topology
 
 ```
-Host (macOS)
+Host (macOS / Linux)
 ├── builderd [:42071] ← gRPC from server container
 │
 └── Docker
     ├── infra network (bridge)
+    │   ├── ur-postgres [:5432] ← Postgres connections from ur-server
     │   ├── ur-server [:42069] ← gRPC from CLI + workers
     │   └── ur-squid [:3128] ← HTTP proxy for workers
     │

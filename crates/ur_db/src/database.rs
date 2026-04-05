@@ -1,21 +1,19 @@
-// DatabaseManager: SQLite connection pool and migration runner.
+// DatabaseManager: Postgres connection pool and migration runner.
 
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct DatabaseManager {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl DatabaseManager {
-    pub async fn open(path: &str) -> Result<Self, sqlx::Error> {
-        let options = SqliteConnectOptions::from_str(path)?
-            .create_if_missing(true)
-            .foreign_keys(true);
+    pub async fn open(url: &str) -> Result<Self, sqlx::Error> {
+        let options = PgConnectOptions::from_str(url)?;
 
-        let pool = SqlitePoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(5)
             .connect_with(options)
             .await?;
@@ -25,7 +23,7 @@ impl DatabaseManager {
         Ok(Self { pool })
     }
 
-    pub fn pool(&self) -> &SqlitePool {
+    pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 }

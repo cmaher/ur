@@ -29,6 +29,7 @@ remote_repo = { path = "../remote_repo" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error", "retry"] }
 ur_utils = { path = "../ur_utils" }
 serde_json.workspace = true
+sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
 
 [features]
 temporal = ["ur_rpc/temporal"]
@@ -38,6 +39,7 @@ container = { path = "../container" }
 futures = "0.3"
 local_repo = { path = "../local_repo" }
 tempfile = "3"
+ur_db_test = { path = "../ur_db_test" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error"] }
 
 [lints]

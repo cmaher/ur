@@ -1150,9 +1150,9 @@ fn workflow_to_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use tonic::Request;
-    use ur_db::{DatabaseManager, GraphManager, NewTicket};
+    use ur_db::{GraphManager, NewTicket};
+    use ur_db_test::TestDb;
 
     fn test_workflow() -> ur_db::Workflow {
         ur_db::Workflow {
@@ -1208,15 +1208,12 @@ mod tests {
         assert_eq!(proto.ticket_children_closed, 0);
     }
 
-    async fn setup_handler() -> (TempDir, TicketServiceHandler) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let db = DatabaseManager::open(&db_path.to_string_lossy())
-            .await
-            .expect("open test db");
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(db.pool().clone());
+    async fn setup_handler() -> (TestDb, TicketServiceHandler) {
+        let test_db = TestDb::new().await;
+        let pool = test_db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool);
         let handler = TicketServiceHandler {
             ticket_repo,
             workflow_repo,
@@ -1226,12 +1223,12 @@ mod tests {
             ui_event_poller: None,
             worker_manager: None,
         };
-        (tmp, handler)
+        (test_db, handler)
     }
 
     #[tokio::test]
     async fn get_ticket_found() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         handler
             .ticket_repo
@@ -1266,7 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_ticket_not_found() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         let result = TicketService::get_ticket(
             &handler,
@@ -1283,7 +1280,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_workflow_includes_history_and_progress() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         handler
             .ticket_repo
@@ -1343,7 +1340,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_workflows_includes_history_and_progress() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         handler
             .ticket_repo
@@ -1392,7 +1389,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_workflow_no_workflow_is_noop() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         // No workflow exists for this ticket — should succeed silently.
         let resp = TicketService::cancel_workflow(
@@ -1408,7 +1405,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_active_workflow_marks_cancelled_and_deletes_intents() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         handler
             .ticket_repo
@@ -1508,7 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_active_workflow_with_worker_id_but_no_manager() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
 
         handler
             .ticket_repo
@@ -1559,14 +1556,14 @@ mod tests {
 
     #[tokio::test]
     async fn kill_workflow_worker_skips_empty_worker_id() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
         // Should return immediately without error.
         handler.kill_workflow_worker("t-any", "").await;
     }
 
     #[tokio::test]
     async fn kill_workflow_worker_skips_when_no_worker_manager() {
-        let (_tmp, handler) = setup_handler().await;
+        let (_test_db, handler) = setup_handler().await;
         assert!(handler.worker_manager.is_none());
         // Should return immediately without error even with a worker_id.
         handler.kill_workflow_worker("t-any", "worker-456").await;

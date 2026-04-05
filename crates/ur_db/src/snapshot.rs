@@ -1,60 +1,78 @@
-// SnapshotManager: point-in-time snapshots of ticket state.
+// SnapshotManager: pg_dump/pg_restore via docker exec into the postgres container.
 
-use crate::database::DatabaseManager;
-use sqlx::SqlitePool;
-use std::fs;
-use std::path::Path;
+use std::process::Stdio;
+use tokio::process::Command;
 
 #[derive(Clone)]
 pub struct SnapshotManager {
-    pool: SqlitePool,
+    container_command: String,
+    container_name: String,
+    db_name: String,
 }
 
 impl SnapshotManager {
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(container_command: String, container_name: String, db_name: String) -> Self {
+        Self {
+            container_command,
+            container_name,
+            db_name,
+        }
     }
 
-    /// Create a consistent snapshot of the database at the given path using
-    /// SQLite's VACUUM INTO. This produces a self-contained copy without
-    /// requiring the WAL or shared-memory files.
-    pub async fn vacuum_into(&self, path: &str) -> Result<(), sqlx::Error> {
-        let path = path.to_owned();
-        let pool = self.pool.clone();
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "VACUUM INTO '{}'",
-            path.replace('\'', "''")
-        )))
-        .execute(&pool)
-        .await?;
+    /// Create a pg_dump backup inside the container at /backup/<filename>.
+    ///
+    /// Runs: docker exec <container> pg_dump -Fc -f /backup/<filename> <dbname>
+    pub async fn dump_to(&self, filename: &str) -> Result<(), String> {
+        let backup_path = format!("/backup/{filename}");
+        let output = Command::new(&self.container_command)
+            .args([
+                "exec",
+                &self.container_name,
+                "pg_dump",
+                "-Fc",
+                "-f",
+                &backup_path,
+                &self.db_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("failed to run {}: {e}", self.container_command))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("pg_dump failed: {stderr}"));
+        }
         Ok(())
     }
 
-    /// Restore a snapshot into a new database file. Copies the source file to
-    /// the target path, then opens it with migrations to verify schema
-    /// integrity. Fails if the target path already exists.
-    pub async fn restore(
-        source_path: &str,
-        target_path: &str,
-    ) -> Result<DatabaseManager, sqlx::Error> {
-        let target = Path::new(target_path);
-        if target.exists() {
-            return Err(sqlx::Error::Protocol(format!(
-                "restore target already exists: {target_path}"
-            )));
+    /// Restore a pg_dump backup from /backup/<filename> into the live database.
+    ///
+    /// Runs: docker exec <container> pg_restore --clean --if-exists -d <dbname> /backup/<filename>
+    pub async fn restore_from(&self, filename: &str) -> Result<(), String> {
+        let backup_path = format!("/backup/{filename}");
+        let output = Command::new(&self.container_command)
+            .args([
+                "exec",
+                &self.container_name,
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "-d",
+                &self.db_name,
+                &backup_path,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("failed to run {}: {e}", self.container_command))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("pg_restore failed: {stderr}"));
         }
-
-        let source = Path::new(source_path);
-        if !source.exists() {
-            return Err(sqlx::Error::Protocol(format!(
-                "snapshot source does not exist: {source_path}"
-            )));
-        }
-
-        fs::copy(source_path, target_path)
-            .map_err(|e| sqlx::Error::Protocol(format!("failed to copy snapshot: {e}")))?;
-
-        // Open the restored database and run migrations to verify integrity.
-        DatabaseManager::open(target_path).await
+        Ok(())
     }
 }

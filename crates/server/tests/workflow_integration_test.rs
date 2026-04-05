@@ -7,12 +7,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tempfile::TempDir;
 use tokio::sync::{Mutex, Notify, watch};
 use tonic::transport::{Endpoint, Server};
 
 use ur_db::model::{LifecycleStatus, NewTicket, Worker};
-use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+use ur_db_test::TestDb;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{UpdateAgentStatusRequest, WorkflowStepCompleteRequest};
 use ur_server::workflow::{
@@ -215,17 +215,14 @@ impl TestHarness {
 // Test infrastructure helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_db() -> (TempDir, TicketRepo, WorkflowRepo, WorkerRepo) {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("test.db");
-    let db = DatabaseManager::open(&db_path.to_string_lossy())
-        .await
-        .expect("open test db");
-    let graph = GraphManager::new(db.pool().clone());
-    let ticket_repo = TicketRepo::new(db.pool().clone(), graph);
-    let workflow_repo = WorkflowRepo::new(db.pool().clone());
-    let worker_repo = WorkerRepo::new(db.pool().clone());
-    (tmp, ticket_repo, workflow_repo, worker_repo)
+async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
+    let test_db = TestDb::new().await;
+    let pool = test_db.db().pool().clone();
+    let graph = GraphManager::new(pool.clone());
+    let ticket_repo = TicketRepo::new(pool.clone(), graph);
+    let workflow_repo = WorkflowRepo::new(pool.clone());
+    let worker_repo = WorkerRepo::new(pool);
+    (test_db, ticket_repo, workflow_repo, worker_repo)
 }
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
@@ -283,11 +280,18 @@ fn dummy_config() -> Arc<ur_config::Config> {
             worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
         },
         hostexec: ur_config::HostExecConfig::default(),
-        backup: ur_config::BackupConfig {
-            path: None,
-            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-            enabled: true,
-            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        db: ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
         },
         git_branch_prefix: String::new(),
         server: ur_config::ServerConfig {
@@ -298,7 +302,7 @@ fn dummy_config() -> Arc<ur_config::Config> {
             github_scan_interval_secs: 30,
             builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
             builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-            ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
+            ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
         },
         projects: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
@@ -455,7 +459,7 @@ fn build_lifecycle_handlers() -> LifecycleCounters {
 ///   AddressingFeedback → (step complete + feedback_mode=later) → Merging
 #[tokio::test]
 async fn full_lifecycle_awaiting_dispatch_through_merging() {
-    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_test_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ1";
     let worker_id = "w-integ1";
@@ -499,7 +503,7 @@ async fn full_lifecycle_awaiting_dispatch_through_merging() {
 /// Test the AddressingFeedback → Implementing path (feedback_mode=now).
 #[tokio::test]
 async fn feedback_mode_now_routes_back_to_implementing() {
-    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_test_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ2";
     let worker_id = "w-integ2";
@@ -540,7 +544,7 @@ async fn feedback_mode_now_routes_back_to_implementing() {
 /// handler completion (the specific bug this patch fixes).
 #[tokio::test]
 async fn coordinator_dequeues_pending_across_grpc_boundary() {
-    let (_tmp, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+    let (_test_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
 
     let ticket_id = "ur-integ3";
     let worker_id = "w-integ3";

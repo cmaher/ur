@@ -17,6 +17,59 @@ use ur_rpc::proto::core::PingRequest;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
+fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
+    ur_config::Config {
+        config_dir: dir.to_path_buf(),
+        logs_dir: dir.join("logs"),
+        workspace: workspace.to_path_buf(),
+        server_port: ur_config::DEFAULT_SERVER_PORT,
+        builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
+        compose_file: dir.join("docker-compose.yml"),
+        proxy: ur_config::ProxyConfig {
+            hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+            allowlist: vec![],
+        },
+        network: test_network_config(),
+        hostexec: ur_config::HostExecConfig::default(),
+        db: ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        },
+        worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
+        git_branch_prefix: String::new(),
+        server: ur_config::ServerConfig {
+            container_command: "docker".into(),
+            stale_worker_ttl_days: 7,
+            max_implement_cycles: Some(6),
+            poll_interval_ms: 500,
+            github_scan_interval_secs: 30,
+            builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
+            builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
+            ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
+        },
+        projects: HashMap::new(),
+        tui: ur_config::TuiConfig::default(),
+    }
+}
+
+fn test_network_config() -> ur_config::NetworkConfig {
+    ur_config::NetworkConfig {
+        name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
+        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
+        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
+    }
+}
+
 /// Build test components backed by the given database pool.
 /// Returns (WorkerManager, WorkerRepo, CoreServiceHandler).
 async fn make_components_with_db(
@@ -30,48 +83,10 @@ async fn make_components_with_db(
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    let network_config = ur_config::NetworkConfig {
-        name: ur_config::DEFAULT_NETWORK_NAME.to_string(),
-        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.to_string(),
-        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
-        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
-    };
+    let network_config = test_network_config();
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
-    let config = ur_config::Config {
-        config_dir: dir.to_path_buf(),
-        logs_dir: dir.join("logs"),
-        workspace: workspace.clone(),
-        server_port: ur_config::DEFAULT_SERVER_PORT,
-        builderd_port: ur_config::DEFAULT_SERVER_PORT + 2,
-        compose_file: dir.join("docker-compose.yml"),
-        proxy: ur_config::ProxyConfig {
-            hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
-            allowlist: vec![],
-        },
-        network: network_config.clone(),
-        hostexec: ur_config::HostExecConfig::default(),
-        backup: ur_config::BackupConfig {
-            path: None,
-            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-            enabled: true,
-            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-        },
-        worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
-        git_branch_prefix: String::new(),
-        server: ur_config::ServerConfig {
-            container_command: "docker".into(),
-            stale_worker_ttl_days: 7,
-            max_implement_cycles: Some(6),
-            poll_interval_ms: 500,
-            github_scan_interval_secs: 30,
-            builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
-            builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-            ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
-        },
-        projects: HashMap::new(),
-        tui: ur_config::TuiConfig::default(),
-    };
+    let config = test_config(dir, &workspace);
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
     let graph_manager = ur_db::GraphManager::new(db.pool().clone());
     let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
@@ -171,13 +186,11 @@ async fn authed_ping(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_reclaims_worker_with_live_container() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test1.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
     // --- Phase 1: "Original server" registers a worker ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     let worker_id_str = "restart-test-worker-1";
     let secret = "test-secret-reclaim";
@@ -226,7 +239,7 @@ async fn restart_reclaims_worker_with_live_container() {
     assert_eq!(pre.container_status, "running");
 
     // --- Phase 2: "Server restart" — rebuild components with the same DB ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), db).await;
 
     // Run reconciliation with container alive (simulates docker inspect returning true).
     let reconcile_result = worker_repo2
@@ -287,16 +300,14 @@ async fn restart_reclaims_worker_with_live_container() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test2.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
     // --- Phase 1: "Original server" registers worker with a slot ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     // Create pool directory structure with a slot directory on disk.
     let pool_dir = workspace.join("pool").join("test-proj");
@@ -355,7 +366,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     assert!(!slot_dir.exists());
 
     // --- Phase 3: "Server restart" — rebuild with same DB, run reconciliation ---
-    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), db).await;
 
     // Run slot reconciliation (as main.rs does on startup).
     let mut project_configs = HashMap::new();
@@ -437,12 +448,10 @@ async fn insert_worker_with_slot(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_mixed_live_and_dead_workers() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test3.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
@@ -474,7 +483,7 @@ async fn restart_mixed_live_and_dead_workers() {
     .await;
 
     // --- Phase 2: "Restart" with reconciliation ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), db).await;
 
     let reconcile_result = worker_repo2
         .reconcile_workers(|cid| async move { cid == "container-alive" })

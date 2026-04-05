@@ -468,21 +468,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tempfile::TempDir;
     use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db_test::TestDb;
 
-    async fn setup_test_db() -> (TempDir, TicketRepo, WorkflowRepo, WorkerRepo) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let db = DatabaseManager::open(&db_path.to_string_lossy())
-            .await
-            .expect("open test db");
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(db.pool().clone());
-        let worker_repo = WorkerRepo::new(db.pool().clone());
-        (tmp, repo, workflow_repo, worker_repo)
+    async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
+        let test_db = TestDb::new().await;
+        let pool = test_db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool.clone());
+        let worker_repo = WorkerRepo::new(pool);
+        (test_db, repo, workflow_repo, worker_repo)
     }
 
     fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
@@ -511,11 +508,18 @@ mod tests {
                 worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
             hostexec: ur_config::HostExecConfig::default(),
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            db: ur_config::DatabaseConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_DB_NAME.to_string(),
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
             },
             git_branch_prefix: String::new(),
             server: ur_config::ServerConfig {
@@ -526,7 +530,7 @@ mod tests {
                 github_scan_interval_secs: 30,
                 builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
                 builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-                ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
+                ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
@@ -650,9 +654,25 @@ mod tests {
         panic!("workflow {ticket_id} not stalled after {timeout_ms}ms");
     }
 
+    async fn poll_until_intents_empty(repo: &WorkflowRepo, timeout_ms: u64) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while tokio::time::Instant::now() < deadline {
+            let intents = repo.list_intents().await.unwrap();
+            if intents.is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let intents = repo.list_intents().await.unwrap();
+        assert!(
+            intents.is_empty(),
+            "intents should be cleaned up within {timeout_ms}ms"
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_processes_request_and_cleans_intent() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-coord1").await;
 
         let call_count = Arc::new(AtomicU32::new(0));
@@ -682,12 +702,8 @@ mod tests {
         // Wait for the handler to run.
         poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
 
-        // Intent should be cleaned up.
-        let intents = workflow_repo.list_intents().await.unwrap();
-        assert!(
-            intents.is_empty(),
-            "intents should be cleaned up after success"
-        );
+        // Intent should be cleaned up (poll to account for async cleanup delay).
+        poll_until_intents_empty(&workflow_repo, 5000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -695,7 +711,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_recovers_intents_on_startup() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-recov1").await;
 
         // Pre-create an intent to simulate crash recovery.
@@ -730,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_skips_stalled_workflow_on_recovery() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-stall1").await;
 
         // Pre-create a workflow and mark it stalled.
@@ -794,7 +810,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_processes_pending_after_first_handler_completes() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-pend1").await;
 
         let dispatch_count = Arc::new(AtomicU32::new(0));
@@ -857,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_stalls_workflow_on_handler_failure() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-fail1").await;
 
         // Create a workflow row so set_workflow_stalled has something to update.
@@ -904,12 +920,8 @@ mod tests {
         assert!(wf.stalled, "workflow should be stalled after failure");
         assert_eq!(wf.stall_reason, "intentional test failure");
 
-        // Intent should be cleaned up.
-        let intents = workflow_repo.list_intents().await.unwrap();
-        assert!(
-            intents.is_empty(),
-            "intents should be cleaned up after failure"
-        );
+        // Intent should be cleaned up (poll to account for async cleanup delay).
+        poll_until_intents_empty(&workflow_repo, 5000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -917,7 +929,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_intent_preserves_intents_for_other_statuses() {
-        let (_tmp, repo, workflow_repo, _worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, _worker_repo) = setup_test_db().await;
         create_test_ticket(&repo, "ur-race1").await;
 
         // Simulate the race: two intents exist for the same ticket but different statuses.

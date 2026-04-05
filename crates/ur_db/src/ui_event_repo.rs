@@ -1,16 +1,16 @@
 // UiEventRepo: read and delete operations for the ui_events ephemeral buffer.
 
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 use crate::model::UiEventRow;
 
 #[derive(Clone)]
 pub struct UiEventRepo {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 impl UiEventRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
@@ -35,7 +35,7 @@ impl UiEventRepo {
 
     /// Delete all UI events with id <= max_id.
     pub async fn delete_ui_events(&self, max_id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM ui_events WHERE id <= ?")
+        sqlx::query("DELETE FROM ui_events WHERE id <= $1")
             .bind(max_id)
             .execute(&self.pool)
             .await?;

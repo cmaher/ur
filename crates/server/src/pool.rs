@@ -610,16 +610,18 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    async fn test_worker_repo() -> WorkerRepo {
-        let db = ur_db::DatabaseManager::open(":memory:")
-            .await
-            .expect("failed to open in-memory db");
-        WorkerRepo::new(db.pool().clone())
+    async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
+        let test_db = ur_db_test::TestDb::new().await;
+        let repo = WorkerRepo::new(test_db.db().pool().clone());
+        (repo, test_db)
     }
 
     /// Create a RepoPoolManager backed by a temp directory with a fake project config.
     /// Both local and host workspace point to the same temp path (no container split in tests).
-    async fn test_pool(tmp: &Path, pool_limit: u32) -> (RepoPoolManager, PathBuf) {
+    async fn test_pool(
+        tmp: &Path,
+        pool_limit: u32,
+    ) -> (RepoPoolManager, PathBuf, ur_db_test::TestDb) {
         let workspace = tmp.join("workspace");
         let mut projects = HashMap::new();
         projects.insert(
@@ -645,7 +647,7 @@ mod tests {
                 ignored_workflow_checks: Vec::new(),
             },
         );
-        let worker_repo = test_worker_repo().await;
+        let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
         let builderd_client = BuilderdClient::new(channel.clone());
@@ -663,7 +665,7 @@ mod tests {
             worker_repo,
             host_config_dir,
         };
-        (mgr, workspace)
+        (mgr, workspace, test_db)
     }
 
     /// Insert a slot row into the DB for testing. Returns the slot ID.
@@ -723,35 +725,35 @@ mod tests {
     #[tokio::test]
     async fn next_slot_index_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         assert_eq!(mgr.next_slot_index(&[]), 0);
     }
 
     #[tokio::test]
     async fn next_slot_index_contiguous() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         assert_eq!(mgr.next_slot_index(&[0, 1, 2]), 3);
     }
 
     #[tokio::test]
     async fn next_slot_index_fills_gap() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         assert_eq!(mgr.next_slot_index(&[0, 2, 3]), 1);
     }
 
     #[tokio::test]
     async fn next_slot_index_fills_first_gap() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         assert_eq!(mgr.next_slot_index(&[1, 2, 3]), 0);
     }
 
     #[tokio::test]
     async fn acquire_slot_unknown_project_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         let result = mgr.acquire_slot("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown project"));
@@ -760,7 +762,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_slot_pool_limit_reached_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 1).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 1).await;
 
         // Create one slot directory and mark it in-use in DB (linked to a running worker)
         let slot0 = workspace.join("pool").join("testproj").join("0");
@@ -776,7 +778,7 @@ mod tests {
     #[tokio::test]
     async fn scan_slots_finds_numeric_dirs() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         let pool_dir = workspace.join("pool").join("testproj");
         std::fs::create_dir_all(pool_dir.join("0")).unwrap();
@@ -792,7 +794,7 @@ mod tests {
     #[tokio::test]
     async fn scan_slots_empty_when_dir_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         let pool_dir = workspace.join("pool").join("testproj");
         let slots = mgr.scan_slots(&pool_dir).await;
@@ -802,7 +804,7 @@ mod tests {
     #[tokio::test]
     async fn worker_slot_link_unlink_via_db() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         let slot_path = PathBuf::from("/fake/slot/0");
 
         let slot_id = insert_test_slot(&mgr.worker_repo, "testproj", "0", &slot_path).await;
@@ -869,7 +871,7 @@ mod tests {
     #[tokio::test]
     async fn find_available_slot_excludes_shared() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Insert a slot with name "shared" — this should never be returned
         let shared_path = PathBuf::from("/fake/pool/testproj/shared");
@@ -902,7 +904,7 @@ mod tests {
     #[tokio::test]
     async fn pool_root_and_slot_paths() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // In tests, local and host paths are the same
         assert_eq!(mgr.local_pool_root(), workspace.join("pool"));
@@ -919,7 +921,7 @@ mod tests {
 
     #[tokio::test]
     async fn dual_workspace_paths() {
-        let worker_repo = test_worker_repo().await;
+        let (worker_repo, _test_db) = test_worker_repo().await;
         let mut projects = HashMap::new();
         projects.insert(
             "proj".into(),
@@ -998,7 +1000,7 @@ mod tests {
         // When local and host workspace are the same (e.g., in tests or non-container mode),
         // to_builderd_path still produces %WORKSPACE% templates.
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         let slot_path = workspace.join("pool").join("myproj").join("0");
         let builderd_path = mgr.to_builderd_path(&slot_path);
@@ -1011,7 +1013,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_slot_skips_in_use_slots_selects_first_available() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Create three slot directories
         let slot0 = workspace.join("pool").join("testproj").join("0");
@@ -1044,7 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_slot_clones_when_no_existing_slots() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // No slots exist on disk or in DB. Acquire should attempt git clone via builderd into slot 0.
         // The clone will fail (no builderd running), but we verify the error propagates.
@@ -1071,7 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_shared_slot_unknown_project_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, _) = test_pool(tmp.path(), 10).await;
+        let (mgr, _, _test_db) = test_pool(tmp.path(), 10).await;
         let result = mgr.acquire_shared_slot("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("unknown project"));
@@ -1080,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_shared_slot_clones_on_first_call() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // No shared directory exists. Acquire should attempt clone via builderd.
         // Clone will fail (no builderd), but we verify it attempts clone (not fetch/reset).
@@ -1105,7 +1107,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_shared_slot_fetches_when_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Create the shared directory to simulate a previous clone
         let shared_dir = workspace.join("pool").join("testproj").join("shared");
@@ -1125,7 +1127,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_shared_slot_does_not_count_against_pool_limit() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 1).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 1).await;
 
         // Fill the pool: create one exclusive slot directory and mark it in-use
         let slot0 = workspace.join("pool").join("testproj").join("0");
@@ -1151,7 +1153,7 @@ mod tests {
     #[tokio::test]
     async fn acquire_shared_slot_returns_correct_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Create the shared directory and a .git dir to simulate a clone
         let shared_dir = workspace.join("pool").join("testproj").join("shared");
@@ -1169,7 +1171,7 @@ mod tests {
     #[tokio::test]
     async fn apply_local_files_noop_when_dir_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // No local dir exists — should be a no-op (no error)
         let slot = workspace.join("pool").join("testproj").join("0");
@@ -1181,7 +1183,7 @@ mod tests {
     #[tokio::test]
     async fn apply_local_files_copies_flat_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Set up source: <config>/projects/testproj/local/
         let local_dir = tmp
@@ -1214,7 +1216,7 @@ mod tests {
     #[tokio::test]
     async fn apply_local_files_copies_nested_directories() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Set up nested source: .cargo/config.toml
         let local_dir = tmp
@@ -1255,7 +1257,7 @@ mod tests {
     #[tokio::test]
     async fn apply_local_files_overwrites_existing() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mgr, workspace) = test_pool(tmp.path(), 10).await;
+        let (mgr, workspace, _test_db) = test_pool(tmp.path(), 10).await;
 
         // Set up source with a file
         let local_dir = tmp

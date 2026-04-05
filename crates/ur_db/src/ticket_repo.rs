@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use rand::Rng;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::graph::GraphManager;
@@ -13,14 +13,52 @@ use crate::model::{
     Ticket, TicketFilter, TicketUpdate,
 };
 
+type TicketRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    bool,
+    i32,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i32,
+    i32,
+);
+
+fn ticket_from_row(row: TicketRow) -> Ticket {
+    Ticket {
+        id: row.0,
+        project: row.1,
+        type_: row.2,
+        status: row.3,
+        lifecycle_status: row.4.parse::<LifecycleStatus>().unwrap_or_default(),
+        lifecycle_managed: row.5,
+        priority: row.6,
+        parent_id: row.7,
+        title: row.8,
+        body: row.9,
+        branch: row.10,
+        created_at: row.11,
+        updated_at: row.12,
+        children_completed: row.13,
+        children_total: row.14,
+    }
+}
+
 #[derive(Clone)]
 pub struct TicketRepo {
-    pool: SqlitePool,
+    pool: PgPool,
     graph_manager: GraphManager,
 }
 
 impl TicketRepo {
-    pub fn new(pool: SqlitePool, graph_manager: GraphManager) -> Self {
+    pub fn new(pool: PgPool, graph_manager: GraphManager) -> Self {
         Self {
             pool,
             graph_manager,
@@ -109,7 +147,7 @@ impl TicketRepo {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO ticket (id, project, type, status, lifecycle_status, priority, parent_id, title, body, branch, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(id)
         .bind(&ticket.project)
@@ -156,9 +194,9 @@ impl TicketRepo {
             ),
         >(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
-             FROM ticket WHERE id = ?",
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             FROM ticket WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -236,8 +274,8 @@ impl TicketRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "UPDATE ticket SET type = ?, status = ?, lifecycle_status = ?, lifecycle_managed = ?, priority = ?, title = ?, body = ?, parent_id = ?, branch = ?, project = ?, updated_at = ?
-             WHERE id = ?",
+            "UPDATE ticket SET type = $1, status = $2, lifecycle_status = $3, lifecycle_managed = $4, priority = $5, title = $6, body = $7, parent_id = $8, branch = $9, project = $10, updated_at = $11
+             WHERE id = $12",
         )
         .bind(type_)
         .bind(status)
@@ -307,32 +345,45 @@ impl TicketRepo {
     ) -> (String, Vec<String>) {
         let mut where_clause = String::from(" WHERE 1=1");
         let mut binds: Vec<String> = Vec::new();
+        let mut param_idx = 0usize;
 
         if !include_children && filter.parent_id.is_none() {
             where_clause.push_str(" AND parent_id IS NULL");
         }
         if let Some(ref project) = filter.project {
-            where_clause.push_str(" AND project = ?");
+            param_idx += 1;
+            where_clause.push_str(&format!(" AND project = ${param_idx}"));
             binds.push(project.clone());
         }
         if !filter.statuses.is_empty() {
-            let placeholders: Vec<&str> = filter.statuses.iter().map(|_| "?").collect();
+            let placeholders: Vec<String> = filter
+                .statuses
+                .iter()
+                .map(|_| {
+                    param_idx += 1;
+                    format!("${param_idx}")
+                })
+                .collect();
             where_clause.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
             binds.extend(filter.statuses.iter().cloned());
         }
         if let Some(ref type_) = filter.type_ {
-            where_clause.push_str(" AND type = ?");
+            param_idx += 1;
+            where_clause.push_str(&format!(" AND type = ${param_idx}"));
             binds.push(type_.clone());
         }
         if let Some(ref parent_id) = filter.parent_id {
-            where_clause.push_str(" AND parent_id = ?");
+            param_idx += 1;
+            where_clause.push_str(&format!(" AND parent_id = ${param_idx}"));
             binds.push(parent_id.clone());
         }
         if let Some(ref lifecycle_status) = filter.lifecycle_status {
-            where_clause.push_str(" AND lifecycle_status = ?");
+            param_idx += 1;
+            where_clause.push_str(&format!(" AND lifecycle_status = ${param_idx}"));
             binds.push(lifecycle_status.as_str().to_owned());
         }
 
+        let _ = param_idx;
         (where_clause, binds)
     }
 
@@ -342,7 +393,7 @@ impl TicketRepo {
         where_clause: &str,
         binds: &[String],
     ) -> Result<i32, sqlx::Error> {
-        let count_query = format!("SELECT COUNT(*) FROM ticket{where_clause}");
+        let count_query = format!("SELECT COUNT(*)::INT4 FROM ticket{where_clause}");
         let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(count_query));
         for bind in binds {
             q = q.bind(bind);
@@ -360,8 +411,8 @@ impl TicketRepo {
     ) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = format!(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
              FROM ticket{where_clause} ORDER BY priority ASC, created_at ASC"
         );
 
@@ -461,106 +512,64 @@ impl TicketRepo {
     }
 
     pub async fn list_tickets(&self, filter: &TicketFilter) -> Result<Vec<Ticket>, sqlx::Error> {
-        let mut query = String::from(
-            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
-             FROM ticket WHERE 1=1",
-        );
-        let mut binds: Vec<String> = Vec::new();
+        let (query, binds) = Self::build_list_tickets_query(filter);
 
-        if let Some(ref project) = filter.project {
-            query.push_str(" AND project = ?");
-            binds.push(project.clone());
-        }
-        if !filter.statuses.is_empty() {
-            let placeholders: Vec<&str> = filter.statuses.iter().map(|_| "?").collect();
-            query.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
-            binds.extend(filter.statuses.iter().cloned());
-        }
-        if let Some(ref type_) = filter.type_ {
-            query.push_str(" AND type = ?");
-            binds.push(type_.clone());
-        }
-        if let Some(ref parent_id) = filter.parent_id {
-            query.push_str(" AND parent_id = ?");
-            binds.push(parent_id.clone());
-        }
-        if let Some(ref lifecycle_status) = filter.lifecycle_status {
-            query.push_str(" AND lifecycle_status = ?");
-            binds.push(lifecycle_status.as_str().to_owned());
-        }
-
-        query.push_str(" ORDER BY priority ASC, created_at ASC");
-
-        let mut q = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                bool,
-                i32,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-                i32,
-                i32,
-            ),
-        >(sqlx::AssertSqlSafe(query));
+        let mut q = sqlx::query_as::<_, TicketRow>(sqlx::AssertSqlSafe(query));
         for bind in &binds {
             q = q.bind(bind);
         }
 
         let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(ticket_from_row).collect())
+    }
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    project,
-                    type_,
-                    status,
-                    lifecycle_status_str,
-                    lifecycle_managed,
-                    priority,
-                    parent_id,
-                    title,
-                    body,
-                    branch,
-                    created_at,
-                    updated_at,
-                    children_completed,
-                    children_total,
-                )| {
-                    Ticket {
-                        id,
-                        project,
-                        type_,
-                        status,
-                        lifecycle_status: lifecycle_status_str
-                            .parse::<LifecycleStatus>()
-                            .unwrap_or_default(),
-                        lifecycle_managed,
-                        priority,
-                        parent_id,
-                        title,
-                        body,
-                        branch,
-                        created_at,
-                        updated_at,
-                        children_completed,
-                        children_total,
-                    }
-                },
-            )
-            .collect())
+    fn build_list_tickets_query(filter: &TicketFilter) -> (String, Vec<String>) {
+        let mut query = String::from(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             FROM ticket WHERE 1=1",
+        );
+        let mut binds: Vec<String> = Vec::new();
+        let mut param_idx = 0usize;
+
+        if let Some(ref project) = filter.project {
+            param_idx += 1;
+            query.push_str(&format!(" AND project = ${param_idx}"));
+            binds.push(project.clone());
+        }
+        if !filter.statuses.is_empty() {
+            let placeholders: Vec<String> = filter
+                .statuses
+                .iter()
+                .map(|_| {
+                    param_idx += 1;
+                    format!("${param_idx}")
+                })
+                .collect();
+            query.push_str(&format!(" AND status IN ({})", placeholders.join(",")));
+            binds.extend(filter.statuses.iter().cloned());
+        }
+        if let Some(ref type_) = filter.type_ {
+            param_idx += 1;
+            query.push_str(&format!(" AND type = ${param_idx}"));
+            binds.push(type_.clone());
+        }
+        if let Some(ref parent_id) = filter.parent_id {
+            param_idx += 1;
+            query.push_str(&format!(" AND parent_id = ${param_idx}"));
+            binds.push(parent_id.clone());
+        }
+        if let Some(ref lifecycle_status) = filter.lifecycle_status {
+            param_idx += 1;
+            query.push_str(&format!(" AND lifecycle_status = ${param_idx}"));
+            binds.push(lifecycle_status.as_str().to_owned());
+        }
+
+        let _ = param_idx;
+        query.push_str(" ORDER BY priority ASC, created_at ASC");
+
+        (query, binds)
     }
 
     /// List a ticket tree: root ticket + all descendants via recursive CTE.
@@ -592,7 +601,7 @@ impl TicketRepo {
         >(
             "WITH RECURSIVE tree(id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth) AS (
                 SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, 0
-                FROM ticket WHERE id = ?
+                FROM ticket WHERE id = $1
                 UNION ALL
                 SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at, tree.depth + 1
                 FROM ticket t JOIN tree ON t.parent_id = tree.id
@@ -622,11 +631,11 @@ impl TicketRepo {
         >(
             "WITH RECURSIVE tree(id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth) AS (
                 SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, 0
-                FROM ticket WHERE id = ?
+                FROM ticket WHERE id = $1
                 UNION ALL
                 SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at, tree.depth + 1
                 FROM ticket t JOIN tree ON t.parent_id = tree.id
-                WHERE t.status = ?
+                WHERE t.status = $2
             )
             SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, depth
             FROM tree ORDER BY depth ASC, priority ASC, created_at ASC",
@@ -711,7 +720,7 @@ impl TicketRepo {
         value: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO meta (entity_id, entity_type, key, value) VALUES (?, ?, ?, ?)
+            "INSERT INTO meta (entity_id, entity_type, key, value) VALUES ($1, $2, $3, $4)
              ON CONFLICT (entity_id, entity_type, key) DO UPDATE SET value = excluded.value",
         )
         .bind(entity_id)
@@ -730,7 +739,7 @@ impl TicketRepo {
         entity_type: &str,
     ) -> Result<HashMap<String, String>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM meta WHERE entity_id = ? AND entity_type = ?",
+            "SELECT key, value FROM meta WHERE entity_id = $1 AND entity_type = $2",
         )
         .bind(entity_id)
         .bind(entity_type)
@@ -746,7 +755,7 @@ impl TicketRepo {
         target: &str,
         kind: EdgeKind,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT OR IGNORE INTO edge (source_id, target_id, kind) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO edge (source_id, target_id, kind) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
             .bind(source)
             .bind(target)
             .bind(edge_kind_to_str(&kind))
@@ -762,7 +771,7 @@ impl TicketRepo {
         target: &str,
         kind: EdgeKind,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM edge WHERE source_id = ? AND target_id = ? AND kind = ?")
+        sqlx::query("DELETE FROM edge WHERE source_id = $1 AND target_id = $2 AND kind = $3")
             .bind(source)
             .bind(target)
             .bind(edge_kind_to_str(&kind))
@@ -782,7 +791,7 @@ impl TicketRepo {
                 let kind_str = edge_kind_to_str(k);
                 sqlx::query_as::<_, (String, String, String)>(
                     "SELECT source_id, target_id, kind FROM edge
-                     WHERE (source_id = ? OR target_id = ?) AND kind = ?",
+                     WHERE (source_id = $1 OR target_id = $2) AND kind = $3",
                 )
                 .bind(ticket_id)
                 .bind(ticket_id)
@@ -793,7 +802,7 @@ impl TicketRepo {
             None => {
                 sqlx::query_as::<_, (String, String, String)>(
                     "SELECT source_id, target_id, kind FROM edge
-                     WHERE source_id = ? OR target_id = ?",
+                     WHERE source_id = $1 OR target_id = $2",
                 )
                 .bind(ticket_id)
                 .bind(ticket_id)
@@ -822,7 +831,7 @@ impl TicketRepo {
         let timestamp = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "INSERT INTO activity (id, ticket_id, timestamp, author, message) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO activity (id, ticket_id, timestamp, author, message) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&id)
         .bind(ticket_id)
@@ -848,7 +857,7 @@ impl TicketRepo {
     ) -> Result<Vec<Activity>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
             "SELECT id, ticket_id, timestamp, author, message FROM activity
-             WHERE ticket_id = ? AND author = ? ORDER BY timestamp ASC",
+             WHERE ticket_id = $1 AND author = $2 ORDER BY timestamp ASC",
         )
         .bind(ticket_id)
         .bind(author)
@@ -870,7 +879,7 @@ impl TicketRepo {
     pub async fn get_activities(&self, ticket_id: &str) -> Result<Vec<Activity>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
             "SELECT id, ticket_id, timestamp, author, message FROM activity
-             WHERE ticket_id = ? ORDER BY timestamp ASC",
+             WHERE ticket_id = $1 ORDER BY timestamp ASC",
         )
         .bind(ticket_id)
         .fetch_all(&self.pool)
@@ -897,7 +906,7 @@ impl TicketRepo {
             "SELECT t.id, t.title, t.type, t.status, m.key, m.value
              FROM ticket t
              JOIN meta m ON m.entity_id = t.id AND m.entity_type = 'ticket'
-             WHERE m.key = ? AND m.value = ?
+             WHERE m.key = $1 AND m.value = $2
              ORDER BY t.priority ASC",
         )
         .bind(key)
@@ -928,7 +937,7 @@ impl TicketRepo {
             "SELECT t.id, t.title, t.type, t.status, m.key, m.value
              FROM ticket t
              JOIN meta m ON m.entity_id = t.id AND m.entity_type = 'ticket'
-             WHERE m.key = ?
+             WHERE m.key = $1
              ORDER BY t.priority ASC",
         )
         .bind(key)
@@ -956,9 +965,14 @@ impl TicketRepo {
         if blockers.is_empty() {
             return Ok(false);
         }
-        let placeholders: String = blockers.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let placeholders: String = blockers
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
         let query = format!(
-            "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
+            "SELECT COUNT(*)::INT4 FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
         );
         let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query));
         for blocker_id in &blockers {
@@ -981,20 +995,20 @@ impl TicketRepo {
         let (query, binds): (String, Vec<String>) = match project {
             Some(p) => (
                 "WITH RECURSIVE descendants(id, title, priority, type) AS (
-                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = $1
                     UNION ALL
                     SELECT t.id, t.title, t.priority, t.type
                     FROM ticket t JOIN descendants d ON t.parent_id = d.id
                 )
                 SELECT id, title, priority, type FROM descendants
-                WHERE id IN (SELECT id FROM ticket WHERE status = 'open' AND project = ?)
+                WHERE id IN (SELECT id FROM ticket WHERE status = 'open' AND project = $2)
                 ORDER BY priority ASC"
                     .to_owned(),
                 vec![epic_id.to_owned(), p.to_owned()],
             ),
             None => (
                 "WITH RECURSIVE descendants(id, title, priority, type) AS (
-                    SELECT id, title, priority, type FROM ticket WHERE parent_id = ?
+                    SELECT id, title, priority, type FROM ticket WHERE parent_id = $1
                     UNION ALL
                     SELECT t.id, t.title, t.priority, t.type
                     FROM ticket t JOIN descendants d ON t.parent_id = d.id
@@ -1036,7 +1050,7 @@ impl TicketRepo {
         entity_type: &str,
         key: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM meta WHERE entity_id = ? AND entity_type = ? AND key = ?")
+        sqlx::query("DELETE FROM meta WHERE entity_id = $1 AND entity_type = $2 AND key = $3")
             .bind(entity_id)
             .bind(entity_type)
             .bind(key)
@@ -1050,7 +1064,7 @@ impl TicketRepo {
     /// Returns true if the epic has no children.
     pub async fn epic_all_children_closed(&self, epic_id: &str) -> Result<bool, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM ticket WHERE parent_id = ? AND status != 'closed'",
+            "SELECT COUNT(*)::INT4 FROM ticket WHERE parent_id = $1 AND status != 'closed'",
         )
         .bind(epic_id)
         .fetch_one(&self.pool)
@@ -1062,7 +1076,7 @@ impl TicketRepo {
     /// Close all open children of the given epic.
     pub async fn close_open_children(&self, epic_id: &str) -> Result<u64, sqlx::Error> {
         let result = sqlx::query(
-            "UPDATE ticket SET status = 'closed' WHERE parent_id = ? AND status != 'closed'",
+            "UPDATE ticket SET status = 'closed' WHERE parent_id = $1 AND status != 'closed'",
         )
         .bind(epic_id)
         .execute(&self.pool)
@@ -1097,7 +1111,7 @@ impl TicketRepo {
         >(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
              FROM ticket
-             WHERE lifecycle_status = ?
+             WHERE lifecycle_status = $1
              ORDER BY priority ASC, created_at ASC",
         )
         .bind(status.as_str())
@@ -1162,9 +1176,8 @@ fn random_base36_char() -> char {
 }
 
 fn is_unique_violation(err: &dyn sqlx::error::DatabaseError) -> bool {
-    // SQLite unique constraint violation code is "2067" (SQLITE_CONSTRAINT_UNIQUE)
-    // but the message always contains "UNIQUE constraint failed"
-    err.message().contains("UNIQUE constraint failed")
+    // Postgres unique violation error code is 23505
+    err.code().is_some_and(|code| code == "23505")
 }
 
 fn edge_kind_to_str(kind: &EdgeKind) -> &'static str {

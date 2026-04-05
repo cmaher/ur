@@ -179,8 +179,16 @@ struct ComposeParams {
     squid_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
-    /// Host-side backup path, if configured. Mounted at `/backup` in the server container.
+    /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
     backup_path: Option<PathBuf>,
+    /// Postgres user for env vars and healthcheck.
+    db_user: String,
+    /// Postgres password for env vars.
+    db_password: String,
+    /// Postgres database name for env vars.
+    db_name: String,
+    /// Full DATABASE_URL for the server service.
+    database_url: String,
 }
 
 /// Generate the docker compose YAML programmatically.
@@ -192,18 +200,22 @@ struct ComposeParams {
 pub fn generate_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
-    backup: &ur_config::BackupConfig,
+    db: &ur_config::DatabaseConfig,
 ) -> String {
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
-        backup_path: if backup.enabled {
-            backup.path.clone()
+        backup_path: if db.backup.enabled {
+            db.backup.path.clone()
         } else {
             None
         },
+        db_user: db.user.clone(),
+        db_password: db.password.clone(),
+        db_name: db.name.clone(),
+        database_url: db.database_url(),
     };
 
     let mut out = String::with_capacity(2048);
@@ -211,6 +223,8 @@ pub fn generate_compose(
     write_header(&mut out);
     writeln!(out, "services:").unwrap();
     write_squid_service(&mut out, &params);
+    writeln!(out).unwrap();
+    write_postgres_service(&mut out, &params);
     writeln!(out).unwrap();
     write_server_service(&mut out, &params);
     writeln!(out).unwrap();
@@ -244,17 +258,19 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    restart: unless-stopped").unwrap();
 }
 
-fn write_server_service(out: &mut String, params: &ComposeParams) {
-    writeln!(out, "  ur-server:").unwrap();
-    writeln!(out, "    image: ur-server:latest").unwrap();
-    writeln!(out, "    container_name: {}", params.server_container_name).unwrap();
+fn write_postgres_service(out: &mut String, params: &ComposeParams) {
+    writeln!(out, "  ur-postgres:").unwrap();
+    writeln!(out, "    image: postgres:17-alpine").unwrap();
+    writeln!(out, "    container_name: ur-postgres").unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
     // Volumes
     writeln!(out, "    volumes:").unwrap();
-    writeln!(out, "      - /var/run/docker.sock:/var/run/docker.sock").unwrap();
-    writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
-    writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
+    writeln!(
+        out,
+        "      - ${{UR_CONFIG:-~/.ur}}/postgres:/var/lib/postgresql/data"
+    )
+    .unwrap();
     if let Some(backup_path) = &params.backup_path {
         writeln!(
             out,
@@ -264,6 +280,47 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         )
         .unwrap();
     }
+
+    // Environment
+    writeln!(out, "    environment:").unwrap();
+    writeln!(out, "      - POSTGRES_USER={}", params.db_user).unwrap();
+    writeln!(out, "      - POSTGRES_PASSWORD={}", params.db_password).unwrap();
+    writeln!(out, "      - POSTGRES_DB={}", params.db_name).unwrap();
+
+    // Healthcheck
+    writeln!(out, "    healthcheck:").unwrap();
+    writeln!(
+        out,
+        "      test: [\"CMD-SHELL\", \"pg_isready -U {}\"]",
+        params.db_user
+    )
+    .unwrap();
+    writeln!(out, "      interval: 1s").unwrap();
+    writeln!(out, "      timeout: 2s").unwrap();
+    writeln!(out, "      retries: 10").unwrap();
+    writeln!(out, "      start_period: 3s").unwrap();
+
+    // Networks
+    writeln!(out, "    networks:").unwrap();
+    writeln!(out, "      - infra").unwrap();
+}
+
+fn write_server_service(out: &mut String, params: &ComposeParams) {
+    writeln!(out, "  ur-server:").unwrap();
+    writeln!(out, "    image: ur-server:latest").unwrap();
+    writeln!(out, "    container_name: {}", params.server_container_name).unwrap();
+    writeln!(out, "    restart: unless-stopped").unwrap();
+
+    // Depends on
+    writeln!(out, "    depends_on:").unwrap();
+    writeln!(out, "      ur-postgres:").unwrap();
+    writeln!(out, "        condition: service_healthy").unwrap();
+
+    // Volumes
+    writeln!(out, "    volumes:").unwrap();
+    writeln!(out, "      - /var/run/docker.sock:/var/run/docker.sock").unwrap();
+    writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
+    writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
     writeln!(out, "      - ${{UR_LOGS_DIR:-~/.ur/logs}}:/logs").unwrap();
 
     // Environment
@@ -280,6 +337,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_HOST_LOGS_DIR=${{UR_LOGS_DIR:-${{HOME}}/.ur/logs}}"
     )
     .unwrap();
+    writeln!(out, "      - DATABASE_URL={}", params.database_url).unwrap();
     if params.backup_path.is_some() {
         writeln!(
             out,
@@ -369,7 +427,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         config.logs_dir.to_string_lossy().into_owned(),
     ));
 
-    let compose_content = generate_compose(&config.network, &config.proxy, &config.backup);
+    let compose_content = generate_compose(&config.network, &config.proxy, &config.db);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
 }
@@ -410,11 +468,18 @@ mod tests {
             worker_port: 10000,
             builderd_port: ur_config::DEFAULT_BUILDERD_PORT,
             hostexec: ur_config::HostExecConfig::default(),
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            db: ur_config::DatabaseConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_DB_NAME.to_string(),
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
             },
             git_branch_prefix: String::new(),
             server: ur_config::ServerConfig {
@@ -425,7 +490,7 @@ mod tests {
                 github_scan_interval_secs: 30,
                 builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
                 builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-                ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
+                ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
@@ -470,21 +535,51 @@ mod tests {
             hostname: "test-squid".to_string(),
             allowlist: vec![],
         };
-        let backup = ur_config::BackupConfig {
-            path: None,
-            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-            enabled: true,
-            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
         };
-        let generated = generate_compose(&network, &proxy, &backup);
+        let generated = generate_compose(&network, &proxy, &db);
 
         // Verify services are present
         assert!(generated.contains("  ur-squid:"));
         assert!(generated.contains("  ur-server:"));
+        assert!(generated.contains("  ur-postgres:"));
 
         // Verify container names
         assert!(generated.contains("container_name: test-server"));
         assert!(generated.contains("container_name: test-squid"));
+        assert!(generated.contains("container_name: ur-postgres"));
+
+        // Verify postgres image
+        assert!(generated.contains("image: postgres:17-alpine"));
+
+        // Verify postgres data volume
+        assert!(generated.contains("/postgres:/var/lib/postgresql/data"));
+
+        // Verify postgres env vars
+        assert!(generated.contains("POSTGRES_USER=ur"));
+        assert!(generated.contains("POSTGRES_PASSWORD=ur"));
+        assert!(generated.contains("POSTGRES_DB=ur"));
+
+        // Verify postgres healthcheck
+        assert!(generated.contains("pg_isready -U ur"));
+
+        // Verify server depends_on postgres
+        assert!(generated.contains("depends_on:"));
+        assert!(generated.contains("condition: service_healthy"));
+
+        // Verify server has DATABASE_URL
+        assert!(generated.contains("DATABASE_URL=postgres://ur:ur@ur-postgres:5432/ur"));
 
         // Verify network names
         assert!(generated.contains("name: test-net"));
@@ -509,6 +604,17 @@ mod tests {
         // Verify networks section
         assert!(generated.contains("networks:"));
         assert!(generated.contains("driver: bridge"));
+
+        // Verify server does NOT mount backup volume
+        // (backup is on postgres container, not server)
+        let server_section = generated
+            .split("  ur-server:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(!server_section.contains("/backup"));
     }
 
     #[test]
@@ -523,13 +629,20 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let backup = ur_config::BackupConfig {
-            path: None,
-            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-            enabled: true,
-            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
         };
-        let generated = generate_compose(&network, &proxy, &backup);
+        let generated = generate_compose(&network, &proxy, &db);
 
         // Verify top-level structure: starts with comment, then services, then networks
         assert!(generated.starts_with("# Auto-generated"));
@@ -540,6 +653,98 @@ mod tests {
         let services_pos = generated.find("services:").unwrap();
         let networks_pos = generated.rfind("networks:").unwrap();
         assert!(services_pos < networks_pos);
+    }
+
+    #[test]
+    fn generate_compose_backup_on_postgres_not_server() {
+        let network = ur_config::NetworkConfig {
+            name: "ur".to_string(),
+            worker_name: "ur-workers".to_string(),
+            server_hostname: "ur-server".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
+        };
+        let proxy = ur_config::ProxyConfig {
+            hostname: "ur-squid".to_string(),
+            allowlist: vec![],
+        };
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: Some(PathBuf::from("/home/user/.ur/backup")),
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        let generated = generate_compose(&network, &proxy, &db);
+
+        // Backup volume should be on postgres container
+        let postgres_section = generated
+            .split("  ur-postgres:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(postgres_section.contains("/home/user/.ur/backup:/backup"));
+
+        // Backup volume mount should NOT be on server container
+        let server_section = generated
+            .split("  ur-server:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(!server_section.contains("/home/user/.ur/backup:/backup"));
+
+        // Postgres should only be on infra network
+        assert!(postgres_section.contains("- infra"));
+        assert!(!postgres_section.contains("- workers"));
+    }
+
+    #[test]
+    fn generate_compose_postgres_on_infra_only() {
+        let network = ur_config::NetworkConfig {
+            name: "ur".to_string(),
+            worker_name: "ur-workers".to_string(),
+            server_hostname: "ur-server".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
+        };
+        let proxy = ur_config::ProxyConfig {
+            hostname: "ur-squid".to_string(),
+            allowlist: vec![],
+        };
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        let generated = generate_compose(&network, &proxy, &db);
+
+        // Extract postgres section and verify it only has infra network
+        let postgres_section = generated
+            .split("  ur-postgres:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(postgres_section.contains("- infra"));
+        // Postgres should not be on workers network
+        assert!(!postgres_section.contains("- workers"));
     }
 
     #[test]

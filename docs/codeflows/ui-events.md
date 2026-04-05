@@ -2,22 +2,24 @@
 
 ## Overview
 
-The UI events pipeline provides real-time change notifications from the server database to connected clients (primarily the TUI). It is an ephemeral, poll-and-consume system: SQLite triggers capture data mutations, a server-side poller reads and deletes buffered rows, and a gRPC streaming RPC delivers batched events to subscribers. If no listeners are connected, events are consumed and discarded.
+The UI events pipeline provides real-time change notifications from the server database to connected clients (primarily the TUI). It uses Postgres triggers with `pg_notify` for instant wake-up: triggers on data mutations insert rows into the `ui_events` table and call `pg_notify('ui_events', '')`, a `PgListener` (LISTEN/NOTIFY) wakes the server-side poller, and a gRPC streaming RPC delivers batched events to subscribers. A configurable fallback timeout ensures events are still delivered if the LISTEN connection drops. If no listeners are connected, events are consumed and discarded.
 
 ## Data Flow
 
 ```
-SQLite Triggers (ticket, workflow, worker tables)
+Postgres Triggers (ticket, workflow, worker tables)
 │
 │  INSERT INTO ui_events (entity_type, entity_id)
+│  + PERFORM pg_notify('ui_events', '')
 │
 ▼
 ┌──────────────────────┐
-│  ui_events table      │   Ephemeral buffer
+│  ui_events table      │   Ephemeral buffer (BIGSERIAL PK)
 │  (autoincrement id)   │
 └──────────┬───────────┘
            │
-           │  Poll every ui_event_poll_interval_ms (default: 200ms)
+           │  PgListener wakes on NOTIFY
+           │  (fallback: poll every fallback_interval, default 5s)
            │
            ▼
 ┌──────────────────────┐
@@ -26,7 +28,7 @@ SQLite Triggers (ticket, workflow, worker tables)
 └──────────┬───────────┘
            │
            │  Dispatch to registered listeners
-           │  via broadcast/mpsc channels
+           │  via mpsc channels
            │
            ▼
 ┌──────────────────────┐
@@ -40,44 +42,52 @@ SQLite Triggers (ticket, workflow, worker tables)
 └──────────────────────┘
 ```
 
-## SQLite Triggers
+## Postgres Triggers
 
-Six triggers on three tables populate the `ui_events` buffer. Each trigger fires on INSERT or UPDATE, writing the entity type and ID:
+Triggers on three tables populate the `ui_events` buffer and send a NOTIFY signal. Each trigger is implemented as a PL/pgSQL function executed after INSERT or UPDATE. Ticket triggers use a recursive CTE to propagate events to ancestor tickets (parent chain).
 
-| Trigger | Table | Operation | entity_type | entity_id |
-|---------|-------|-----------|-------------|-----------|
-| `ui_events_ticket_insert` | `ticket` | INSERT | `ticket` | `NEW.id` |
-| `ui_events_ticket_update` | `ticket` | UPDATE | `ticket` | `NEW.id` |
-| `ui_events_workflow_insert` | `workflow` | INSERT | `workflow` | `NEW.ticket_id` |
-| `ui_events_workflow_update` | `workflow` | UPDATE | `workflow` | `NEW.ticket_id` |
-| `ui_events_worker_insert` | `worker` | INSERT | `worker` | `NEW.worker_id` |
-| `ui_events_worker_update` | `worker` | UPDATE | `worker` | `NEW.worker_id` |
+| Trigger | Table | Operation | entity_type | entity_id | Ancestor propagation |
+|---------|-------|-----------|-------------|-----------|---------------------|
+| `ui_events_ticket_insert` | `ticket` | INSERT | `ticket` | `NEW.id` + ancestors | Yes (recursive CTE) |
+| `ui_events_ticket_update` | `ticket` | UPDATE | `ticket` | `NEW.id` + ancestors | Yes (recursive CTE) |
+| `ui_events_workflow_insert` | `workflow` | INSERT | `workflow` | `NEW.ticket_id` | No |
+| `ui_events_workflow_update` | `workflow` | UPDATE | `workflow` | `NEW.ticket_id` | No |
+| `ui_events_worker_insert` | `worker` | INSERT | `worker` | `NEW.worker_id` | No |
+| `ui_events_worker_update` | `worker` | UPDATE | `worker` | `NEW.worker_id` | No |
 
-Source: `crates/ur_db/migrations/015_ui_events.sql`
+Each trigger function ends with `PERFORM pg_notify('ui_events', '')` to wake the poller immediately.
+
+Source: `crates/ur_db/migrations/001_initial.sql`
 
 ## ui_events Table
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `id` | INTEGER PK AUTOINCREMENT | Monotonically increasing event ID |
+| `id` | BIGSERIAL PK | Monotonically increasing event ID |
 | `entity_type` | TEXT NOT NULL | One of: `ticket`, `workflow`, `worker` |
 | `entity_id` | TEXT NOT NULL | ID of the changed entity |
-| `created_at` | TEXT NOT NULL | Timestamp (default: `datetime('now')`) |
+| `created_at` | TEXT NOT NULL | Timestamp (default: `now()::TEXT`) |
 
 The table is an ephemeral buffer, not a permanent log. Rows are deleted immediately after consumption by the poller.
 
 ## UiEventPoller
 
-The `UiEventPoller` is a server-side tokio task that runs a poll-consume-dispatch loop:
+The `UiEventPoller` is a server-side tokio task that uses Postgres LISTEN/NOTIFY for instant wake-up, with a fallback timeout for resilience.
 
-1. **Poll**: Query `SELECT * FROM ui_events ORDER BY id` to read all buffered events
-2. **Delete**: Remove consumed rows from the table (by ID range or batch delete)
-3. **Dispatch**: Send the batch to all registered listeners via channels
-4. **Sleep**: Wait `ui_event_poll_interval_ms` before the next cycle
+### Wake Mechanism
+
+The poller holds a dedicated `PgListener` connection (separate from the pool) that subscribes to the `ui_events` channel. When a trigger fires `pg_notify('ui_events', '')`, the listener wakes immediately. If the LISTEN connection drops, the poller falls back to periodic polling at the fallback interval and attempts to reconnect.
+
+### Poll Cycle
+
+1. **Poll**: Query all buffered events from `ui_events` ordered by ID
+2. **Delete**: Remove consumed rows (by max ID)
+3. **Dispatch**: Send the batch to all registered listeners via mpsc channels
+4. **Wait**: Wait for NOTIFY signal, fallback timeout, or shutdown signal
 
 ### Listener Registration
 
-Listeners register with the poller and receive events through channels. Each gRPC stream subscriber gets its own channel. The poller iterates over all registered listener channels and sends the batch to each.
+Listeners register with the poller and receive events through mpsc channels. Each gRPC stream subscriber gets its own channel. The poller iterates over all registered listener channels and sends the batch to each.
 
 ### Dead Channel Cleanup
 
@@ -86,6 +96,10 @@ When a listener disconnects (channel closed), the send fails. The poller detects
 ### No Listeners Behavior
 
 If no listeners are registered when events are polled, the events are still consumed (deleted from the table) and discarded. The `ui_events` table is a transient buffer, not a durable queue. This prevents unbounded table growth when no clients are connected.
+
+### LISTEN Connection Recovery
+
+The poller tracks four wake reasons: `Notification` (LISTEN/NOTIFY fired), `Timeout` (fallback interval elapsed), `Shutdown` (shutdown signal received), and `ListenError` (LISTEN connection broke). On `ListenError`, the poller drops the broken connection and attempts to reconnect. If reconnection fails, subsequent iterations use fallback polling until a reconnect succeeds.
 
 ## gRPC Interface
 
@@ -132,20 +146,20 @@ Unknown entity types are mapped to `UNKNOWN` rather than causing errors. This al
 
 ## Configuration
 
-The poll interval is configurable in `ur.toml` under the `[server]` section:
+The fallback poll interval is configured in `ur.toml` under the `[server]` section:
 
 ```toml
 [server]
-ui_event_poll_interval_ms = 200  # default
+ui_event_poll_interval_ms = 5000  # default: 5000 (5 seconds)
 ```
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ui_event_poll_interval_ms` | 200 | Milliseconds between poll cycles |
+| `ui_event_poll_interval_ms` | 5000 | Fallback interval in milliseconds when LISTEN/NOTIFY is active; primary wake-up is instant via NOTIFY |
 
-Lower values increase responsiveness but add database load. The default of 200ms provides near-real-time updates without excessive polling.
+With LISTEN/NOTIFY working, events are delivered nearly instantly regardless of this interval. The interval only governs fallback polling when the LISTEN connection is unavailable.
 
-Source: `crates/ur_config/src/lib.rs` (`ServerConfig`, `DEFAULT_UI_EVENT_POLL_INTERVAL_MS`)
+Source: `crates/ur_config/src/lib.rs` (`ServerConfig`)
 
 ## Client Consumption (urui TUI)
 
@@ -169,10 +183,12 @@ Source: `crates/urui/src/event.rs` (`EventManager`, `AppEvent`)
 | gRPC stream disconnects | Server-side listener channel closes; poller cleans up on next dispatch |
 | No listeners connected | Events are consumed and discarded; table stays clean |
 | Database read failure | Poller logs the error and retries on the next poll cycle |
+| LISTEN connection drops | Poller falls back to periodic polling and attempts reconnection |
 
 ## Key Files
 
-- `crates/ur_db/migrations/015_ui_events.sql` -- Table schema and SQLite triggers
+- `crates/ur_db/migrations/001_initial.sql` -- Table schema and Postgres trigger functions with `pg_notify`
+- `crates/server/src/ui_event_poller.rs` -- `UiEventPoller` with `PgListener` LISTEN/NOTIFY integration
 - `proto/ticket.proto` -- `SubscribeUiEvents` RPC, `UiEvent`, `UiEventBatch` messages
 - `crates/ur_config/src/lib.rs` -- `ui_event_poll_interval_ms` configuration
 - `crates/urui/src/event.rs` -- Client-side `EventManager` and `AppEvent` enum

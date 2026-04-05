@@ -1,17 +1,14 @@
-use crate::database::DatabaseManager;
+use crate::tests::TestDb;
 
 #[tokio::test]
 async fn open_creates_database_and_runs_migrations() {
-    let db_path = format!("/tmp/ur_db_test_{}.db", uuid::Uuid::new_v4());
-    let manager = DatabaseManager::open(&db_path)
-        .await
-        .expect("should open database");
+    let test_db = TestDb::new().await;
 
-    // Verify tables exist by querying sqlite_master
+    // Verify tables exist by querying information_schema
     let tables: Vec<(String,)> = sqlx::query_as(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '_sqlx%' ORDER BY name",
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name NOT LIKE '_sqlx%' ORDER BY table_name",
     )
-    .fetch_all(manager.pool())
+    .fetch_all(test_db.db().pool())
     .await
     .expect("should query tables");
 
@@ -21,16 +18,5 @@ async fn open_creates_database_and_runs_migrations() {
     assert!(table_names.contains(&"meta"), "missing meta table");
     assert!(table_names.contains(&"activity"), "missing activity table");
 
-    // Verify foreign keys are enabled
-    let fk: (i32,) = sqlx::query_as("PRAGMA foreign_keys")
-        .fetch_one(manager.pool())
-        .await
-        .expect("should query foreign_keys pragma");
-    assert_eq!(fk.0, 1, "foreign_keys should be ON");
-
-    // Cleanup
-    drop(manager);
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(format!("{db_path}-shm"));
-    let _ = std::fs::remove_file(format!("{db_path}-wal"));
+    test_db.cleanup().await;
 }

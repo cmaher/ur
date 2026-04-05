@@ -5,7 +5,7 @@ use std::future::Future;
 use std::path::Path;
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::model::{AgentStatus, Slot, Worker, WorkerSlot};
@@ -28,7 +28,7 @@ pub struct WorkerReconcileResult {
 
 #[derive(Clone)]
 pub struct WorkerRepo {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 /// Column tuple type returned by worker SELECT queries.
@@ -65,7 +65,7 @@ fn worker_from_row(row: WorkerRow) -> Worker {
 }
 
 impl WorkerRepo {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
@@ -74,7 +74,7 @@ impl WorkerRepo {
     pub async fn insert_worker(&self, worker: &Worker) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&worker.worker_id)
         .bind(&worker.process_id)
@@ -96,7 +96,7 @@ impl WorkerRepo {
     pub async fn get_worker(&self, worker_id: &str) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
             "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
-             FROM worker WHERE worker_id = ?",
+             FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
         .fetch_optional(&self.pool)
@@ -112,12 +112,14 @@ impl WorkerRepo {
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 
-        sqlx::query("UPDATE worker SET container_status = ?, updated_at = ? WHERE worker_id = ?")
-            .bind(container_status)
-            .bind(&now)
-            .bind(worker_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE worker SET container_status = $1, updated_at = $2 WHERE worker_id = $3",
+        )
+        .bind(container_status)
+        .bind(&now)
+        .bind(worker_id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -129,7 +131,7 @@ impl WorkerRepo {
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
 
-        sqlx::query("UPDATE worker SET agent_status = ?, updated_at = ? WHERE worker_id = ?")
+        sqlx::query("UPDATE worker SET agent_status = $1, updated_at = $2 WHERE worker_id = $3")
             .bind(agent_status.as_str())
             .bind(&now)
             .bind(worker_id)
@@ -146,7 +148,7 @@ impl WorkerRepo {
     ) -> Result<i32, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "UPDATE worker SET idle_redispatch_count = idle_redispatch_count + 1, updated_at = ? WHERE worker_id = ?",
+            "UPDATE worker SET idle_redispatch_count = idle_redispatch_count + 1, updated_at = $1 WHERE worker_id = $2",
         )
         .bind(&now)
         .bind(worker_id)
@@ -154,7 +156,7 @@ impl WorkerRepo {
         .await?;
 
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT idle_redispatch_count FROM worker WHERE worker_id = ?",
+            "SELECT idle_redispatch_count FROM worker WHERE worker_id = $1",
         )
         .bind(worker_id)
         .fetch_one(&self.pool)
@@ -169,7 +171,7 @@ impl WorkerRepo {
     ) -> Result<Vec<Worker>, sqlx::Error> {
         let rows = sqlx::query_as::<_, WorkerRow>(
             "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
-             FROM worker WHERE container_status = ? ORDER BY created_at ASC",
+             FROM worker WHERE container_status = $1 ORDER BY created_at ASC",
         )
         .bind(container_status)
         .fetch_all(&self.pool)
@@ -180,7 +182,7 @@ impl WorkerRepo {
 
     pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM worker WHERE worker_id = ? AND worker_secret = ?",
+            "SELECT COUNT(*)::INT4 FROM worker WHERE worker_id = $1 AND worker_secret = $2",
         )
         .bind(worker_id)
         .bind(secret)
@@ -197,7 +199,7 @@ impl WorkerRepo {
     ) -> Result<Option<Worker>, sqlx::Error> {
         let row = sqlx::query_as::<_, WorkerRow>(
             "SELECT worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count
-             FROM worker WHERE project_key = ? AND workspace_path = ?",
+             FROM worker WHERE project_key = $1 AND workspace_path = $2",
         )
         .bind(project_key)
         .bind(workspace_path)
@@ -212,7 +214,7 @@ impl WorkerRepo {
     pub async fn insert_slot(&self, slot: &Slot) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO slot (id, project_key, slot_name, host_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&slot.id)
         .bind(&slot.project_key)
@@ -229,7 +231,7 @@ impl WorkerRepo {
     pub async fn get_slot(&self, id: &str) -> Result<Option<Slot>, sqlx::Error> {
         let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
             "SELECT id, project_key, slot_name, host_path, created_at, updated_at
-             FROM slot WHERE id = ?",
+             FROM slot WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -253,7 +255,7 @@ impl WorkerRepo {
     ) -> Result<Option<Slot>, sqlx::Error> {
         let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
             "SELECT id, project_key, slot_name, host_path, created_at, updated_at
-             FROM slot WHERE host_path = ?",
+             FROM slot WHERE host_path = $1",
         )
         .bind(host_path)
         .fetch_optional(&self.pool)
@@ -274,7 +276,7 @@ impl WorkerRepo {
     pub async fn list_slots_by_project(&self, project_key: &str) -> Result<Vec<Slot>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
             "SELECT id, project_key, slot_name, host_path, created_at, updated_at
-             FROM slot WHERE project_key = ? ORDER BY created_at ASC",
+             FROM slot WHERE project_key = $1 ORDER BY created_at ASC",
         )
         .bind(project_key)
         .fetch_all(&self.pool)
@@ -307,7 +309,7 @@ impl WorkerRepo {
         let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
             "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at
              FROM slot s
-             WHERE s.project_key = ?
+             WHERE s.project_key = $1
                AND s.slot_name != 'shared'
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
@@ -336,10 +338,10 @@ impl WorkerRepo {
     /// Count slots that have an active worker linked via worker_slot.
     pub async fn slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM slot s
+            "SELECT COUNT(*)::INT4 FROM slot s
              INNER JOIN worker_slot ws ON ws.slot_id = s.id
              INNER JOIN worker w ON w.worker_id = ws.worker_id
-             WHERE s.project_key = ?
+             WHERE s.project_key = $1
                AND w.container_status IN ('provisioning', 'running', 'stopping')",
         )
         .bind(project_key)
@@ -350,7 +352,7 @@ impl WorkerRepo {
     }
 
     pub async fn delete_slot(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM slot WHERE id = ?")
+        sqlx::query("DELETE FROM slot WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -367,7 +369,7 @@ impl WorkerRepo {
         slot_id: &str,
     ) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO worker_slot (worker_id, slot_id, created_at) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO worker_slot (worker_id, slot_id, created_at) VALUES ($1, $2, $3)")
             .bind(worker_id)
             .bind(slot_id)
             .bind(&now)
@@ -379,7 +381,7 @@ impl WorkerRepo {
 
     /// Unlink a worker from its slot by removing the worker_slot row.
     pub async fn unlink_worker_slot(&self, worker_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM worker_slot WHERE worker_id = ?")
+        sqlx::query("DELETE FROM worker_slot WHERE worker_id = $1")
             .bind(worker_id)
             .execute(&self.pool)
             .await?;
@@ -393,7 +395,7 @@ impl WorkerRepo {
         worker_id: &str,
     ) -> Result<Option<WorkerSlot>, sqlx::Error> {
         let row = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT worker_id, slot_id, created_at FROM worker_slot WHERE worker_id = ?",
+            "SELECT worker_id, slot_id, created_at FROM worker_slot WHERE worker_id = $1",
         )
         .bind(worker_id)
         .fetch_optional(&self.pool)
@@ -460,7 +462,7 @@ impl WorkerRepo {
     /// Delete all workers that are linked to a given slot_id via worker_slot.
     pub async fn delete_workers_by_slot_id(&self, slot_id: &str) -> Result<u64, sqlx::Error> {
         let result = sqlx::query(
-            "DELETE FROM worker WHERE worker_id IN (SELECT worker_id FROM worker_slot WHERE slot_id = ?)",
+            "DELETE FROM worker WHERE worker_id IN (SELECT worker_id FROM worker_slot WHERE slot_id = $1)",
         )
         .bind(slot_id)
         .execute(&self.pool)
@@ -622,11 +624,11 @@ impl WorkerRepo {
     /// Returns the list of deleted worker IDs. Associated worker_slot rows are
     /// cascade-deleted via the foreign key constraint.
     pub async fn cleanup_stale_workers(&self, ttl_days: u64) -> Result<Vec<String>, sqlx::Error> {
-        let modifier = format!("-{ttl_days} days");
+        let interval = format!("{ttl_days} days");
         let rows = sqlx::query_as::<_, (String,)>(
-            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at < datetime('now', ?) RETURNING worker_id",
+            "DELETE FROM worker WHERE container_status = 'stopped' AND updated_at::TIMESTAMPTZ < (now() - $1::interval) RETURNING worker_id",
         )
-        .bind(&modifier)
+        .bind(&interval)
         .fetch_all(&self.pool)
         .await?;
 

@@ -231,21 +231,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tempfile::TempDir;
     use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{DatabaseManager, GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ur_db_test::TestDb;
 
-    async fn setup_test_db() -> (TempDir, TicketRepo, WorkflowRepo, WorkerRepo) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test.db");
-        let db = DatabaseManager::open(&db_path.to_string_lossy())
-            .await
-            .expect("open test db");
-        let graph_manager = GraphManager::new(db.pool().clone());
-        let repo = TicketRepo::new(db.pool().clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(db.pool().clone());
-        let worker_repo = WorkerRepo::new(db.pool().clone());
-        (tmp, repo, workflow_repo, worker_repo)
+    async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
+        let test_db = TestDb::new().await;
+        let pool = test_db.db().pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool.clone());
+        let worker_repo = WorkerRepo::new(pool);
+        (test_db, repo, workflow_repo, worker_repo)
     }
 
     fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
@@ -274,11 +271,18 @@ mod tests {
                 worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
             },
             hostexec: ur_config::HostExecConfig::default(),
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            db: ur_config::DatabaseConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_DB_NAME.to_string(),
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
             },
             git_branch_prefix: String::new(),
             server: ur_config::ServerConfig {
@@ -289,7 +293,7 @@ mod tests {
                 github_scan_interval_secs: 30,
                 builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
                 builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
-                ui_event_poll_interval_ms: ur_config::DEFAULT_UI_EVENT_POLL_INTERVAL_MS,
+                ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
@@ -356,7 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_processes_event_and_deletes_on_success() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: Some("ur-test1".to_string()),
@@ -421,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_stalls_workflow_on_failure() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: Some("ur-test2".to_string()),
@@ -497,7 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_open_to_awaiting_dispatch_noop_processes_and_deletes() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: Some("ur-ad01".to_string()),
@@ -571,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_awaiting_dispatch_to_implementing_fires_handler() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: Some("ur-ad02".to_string()),
@@ -682,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_deletes_event_with_no_handler() {
-        let (_tmp, repo, workflow_repo, worker_repo) = setup_test_db().await;
+        let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
 
         let ticket = NewTicket {
             id: Some("ur-test4".to_string()),

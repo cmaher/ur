@@ -7,14 +7,15 @@ version = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.7"
 rand = "0.8"
-sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1", features = ["fs"] }
+sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+tokio = { version = "1", features = ["fs", "process"] }
 ur_rpc = { path = "../ur_rpc" }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
+ur_db_test = { path = "../ur_db_test" }
 
 [lints]
 workspace = true

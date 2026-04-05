@@ -4,11 +4,11 @@ use std::collections::HashMap;
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::Dfs;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 
 #[derive(Clone)]
 pub struct GraphManager {
-    pool: SqlitePool,
+    pool: PgPool,
 }
 
 struct BuiltGraph {
@@ -17,7 +17,7 @@ struct BuiltGraph {
 }
 
 impl GraphManager {
-    pub fn new(pool: SqlitePool) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 

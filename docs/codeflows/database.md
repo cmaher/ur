@@ -1,56 +1,66 @@
 # Database Lifecycle
 
-How the SQLite database is initialized, migrated, queried, backed up, and shut down.
+How the Postgres database is initialized, migrated, queried, backed up, and shut down.
 
 ## Overview
 
-The ticket system uses a single SQLite file (`ur.db`) managed by sqlx with async access, automatic migrations, and optional periodic backups via `VACUUM INTO`.
+The ticket system uses a Postgres database managed by sqlx with async access via `PgPool`, automatic migrations, and optional periodic backups via `pg_dump` into the `ur-postgres` container.
 
-## DB Path Resolution
+## Connection URL Resolution
 
-The database file lives alongside the config file at `$UR_CONFIG/ur.db` (default `~/.ur/ur.db`).
+The server connects to Postgres via a connection URL (e.g., `postgres://ur:ur@ur-postgres:5432/ur`).
 
 ```
-Config::load()
-  → cfg.config_dir          (e.g., ~/.ur/)
-    → cfg.config_dir.join("ur.db")
-      → DatabaseManager::open(&db_path_str)
+init_database(cfg)
+  → std::env::var("DATABASE_URL")
+    → falls back to cfg.db.database_url()
+      → DatabaseManager::open(&url)
 ```
 
-`DatabaseManager::open()` passes `create_if_missing(true)` to sqlx, so the file is created on first run. Foreign keys are enabled at connection time.
+`DatabaseConfig` in `ur_config` holds host, port, user, password, and name fields with a `database_url()` method that constructs the full Postgres URL. Defaults: host=`ur-postgres`, port=`5432`, user=`ur`, password=`ur`, name=`ur`.
 
 ## Initialization and Migration
 
 On startup (`crates/server/src/main.rs`):
 
-1. `DatabaseManager::open(path)` creates an sqlx `SqlitePool` (max 5 connections)
+1. `DatabaseManager::open(url)` creates an sqlx `PgPool`
 2. `sqlx::migrate!().run(&pool)` applies pending migrations from `crates/ur_db/migrations/`
 3. Migrations are embedded at compile time via the `sqlx::migrate!()` macro
 
 Current migrations:
-- `001_initial.sql` — creates `ticket`, `edge`, `meta`, `activity` tables plus indexes
+- `001_initial.sql` — consolidated schema: creates all tables (`ticket`, `edge`, `meta`, `activity`, `slot`, `worker`, `worker_slot`, `workflow`, `workflow_event`, `workflow_intent`, `workflow_comments`, `workflow_events`, `ui_events`, `ticket_comments`), indexes, triggers (lifecycle change, UI event with ancestor propagation, `pg_notify`)
 
-Adding a new migration: create `migrations/NNN_<name>.sql`. The migrate macro picks it up automatically at next compile.
+Adding a new migration: create `migrations/NNN_<name>.sql`. The migrate macro picks it up automatically at next compile. **Never modify existing migration files** — sqlx checksums applied migrations and will fail if they change.
 
 ## Schema
 
 ```
-ticket (id PK, type, status, priority, parent_id FK→ticket, title, body, created_at, updated_at)
+ticket (id PK, type, status, priority, parent_id FK→ticket, title, body, created_at, updated_at, project, lifecycle_status, branch, lifecycle_managed)
 edge (source_id FK, target_id FK, kind) — PK: (source_id, target_id, kind)
 meta (entity_id, entity_type, key, value) — PK: (entity_id, entity_type, key)
 activity (id PK, ticket_id FK, timestamp, author, message)
+slot (id PK, project_key, slot_name, host_path, created_at, updated_at)
+worker (worker_id PK, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, created_at, updated_at, idle_redispatch_count)
+worker_slot (worker_id FK, slot_id FK) — PK: (worker_id, slot_id)
+workflow (id PK, ticket_id FK, status, created_at, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status)
+workflow_event (id PK, ticket_id FK, old_lifecycle_status, new_lifecycle_status, attempts, created_at)
+workflow_intent (id PK, ticket_id FK, target_status, created_at)
+workflow_comments (ticket_id FK, comment_id) — PK: (ticket_id, comment_id)
+workflow_events (id PK, workflow_id FK, event, created_at)
+ui_events (id BIGSERIAL PK, entity_type, entity_id, created_at)
+ticket_comments (comment_id, ticket_id FK, pr_number, gh_repo, reply_posted, created_at) — PK: (comment_id, ticket_id)
 
-Indexes: idx_edge_target(target_id, kind), idx_activity_ticket_id(ticket_id), idx_meta_lookup(entity_type, key, value)
+Indexes: idx_ticket_parent_id, idx_ticket_project_priority, idx_ticket_status, idx_edge_target, idx_meta_lookup, idx_activity_ticket_id, idx_slot_project, idx_worker_container_status, idx_worker_process_id, idx_workflow_ticket_id, idx_workflow_status, idx_workflow_event_ticket_id, idx_workflow_event_created_at, idx_workflow_intent_ticket_id, idx_workflow_intent_created_at, idx_workflow_comments_ticket_id, idx_workflow_events_workflow_created, idx_ticket_comments_pending (partial)
 ```
 
 ## Component Interactions
 
 ```
 DatabaseManager
-  ├── owns SqlitePool (max 5 connections, WAL mode)
+  ├── owns PgPool
   ├── runs migrations on open
   │
-  ├── pool() → SqlitePool (shared via clone)
+  ├── pool() → PgPool (shared via clone)
   │     │
   │     ├── GraphManager(pool)
   │     │     └── builds petgraph DiGraph from edge table
@@ -60,9 +70,18 @@ DatabaseManager
   │     │     └── CRUD: tickets, activities, metadata, edges
   │     │         dispatchable_tickets (uses GraphManager for blocker check)
   │     │
-  │     └── SnapshotManager(pool)
-  │           └── vacuum_into(path) — VACUUM INTO for consistent backup
-  │               restore(source, target) — copy + reopen with migrations
+  │     ├── WorkflowRepo(pool)
+  │     │     └── workflow lifecycle, events, intents, comments
+  │     │
+  │     ├── WorkerRepo(pool)
+  │     │     └── worker and slot management
+  │     │
+  │     ├── UiEventRepo(pool)
+  │     │     └── poll and delete ui_events rows
+  │     │
+  │     └── SnapshotManager(container_command, container_name, db_name)
+  │           └── dump_to(filename) — pg_dump -Fc inside ur-postgres container
+  │               restore_from(filename) — pg_restore --clean inside ur-postgres container
   │
   └── (pool is shared, not owned exclusively by any manager)
 ```
@@ -70,14 +89,14 @@ DatabaseManager
 ### Wiring in main.rs
 
 ```
-let db = DatabaseManager::open(&db_path_str).await?;
+let db = DatabaseManager::open(&database_url).await?;
 
 // Backup subsystem
-let snapshot_manager = SnapshotManager::new(db.pool().clone());
-let backup_task_manager = BackupTaskManager::new(snapshot_manager, cfg.backup.clone());
+let snapshot_manager = SnapshotManager::new(container_command, container_name, db_name);
+let backup_task_manager = BackupTaskManager::new(snapshot_manager, cfg.db.backup.clone());
 backup_task_manager.spawn(shutdown_rx)?;
 
-// Ticket subsystem (behind "ticket" feature flag)
+// Ticket subsystem
 let graph_manager = GraphManager::new(db.pool().clone());
 let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
 // → injected into TicketServiceHandler for gRPC
@@ -96,7 +115,7 @@ All managers receive the pool via constructor injection. `DatabaseManager` is no
 | `update_ticket` | Fetch-then-UPDATE (partial update via TicketUpdate) |
 | `list_tickets` | Dynamic WHERE from TicketFilter (status, type, parent_id) |
 | `set_meta` / `get_meta` / `delete_meta` | UPSERT/SELECT/DELETE on meta table |
-| `add_edge` / `remove_edge` / `edges_for` | INSERT OR IGNORE/DELETE/SELECT on edge table |
+| `add_edge` / `remove_edge` / `edges_for` | INSERT ON CONFLICT DO NOTHING/DELETE/SELECT on edge table |
 | `add_activity` / `get_activities` | INSERT/SELECT on activity table |
 | `tickets_by_metadata` / `tickets_with_metadata_key` | JOIN ticket+meta for metadata queries |
 | `dispatchable_tickets` | Open children of epic with no open transitive blockers |
@@ -104,20 +123,24 @@ All managers receive the pool via constructor injection. `DatabaseManager` is no
 
 ## Periodic Backup Flow
 
-Configured via `[backup]` section in `ur.toml`:
+Configured via `[db.backup]` section in `ur.toml` (legacy `[backup]` also supported):
 
 ```toml
-[backup]
+[db.backup]
 path = "/path/to/backup/dir"    # omit to disable
 interval_minutes = 30            # default: 30
+retain_count = 3                 # default: 3
 ```
+
+The backup path on the host is mounted at `/backup` in the `ur-postgres` container via Docker Compose.
 
 ### Startup
 
 1. `BackupTaskManager::new(snapshot_manager, backup_config)` — stores config and snapshot manager
 2. `backup_task_manager.spawn(shutdown_rx)` — validates path, spawns tokio task
    - Returns `None` if `path` is not configured (backup disabled)
-   - Returns `Err` if path doesn't exist, isn't a directory, or isn't writable
+   - Returns `None` if `enabled = false`
+   - Returns `None` (with warning) if path doesn't exist, isn't a directory, or isn't writable
 
 ### Backup Loop
 
@@ -125,15 +148,15 @@ interval_minutes = 30            # default: 30
 loop {
     tokio::select! {
         sleep(interval) => {
-            1. Generate timestamped filename: ur-backup-YYYYMMDDTHHMMSSz.db
-            2. SnapshotManager::vacuum_into(backup_dir/filename)
-               → SQLite VACUUM INTO (consistent, no WAL dependency)
-            3. On success: clean_old_backups() removes older ur-backup-*.db files
-               (keeps only the latest)
+            1. Generate timestamped filename: ur-backup-YYYYMMDDTHHMMSSz.pgdump
+            2. SnapshotManager::dump_to(filename)
+               → docker exec ur-postgres pg_dump -Fc -f /backup/<filename> <dbname>
+            3. On success: clean_old_backups() removes older ur-backup-*.pgdump files
+               (keeps retain_count most recent)
             4. On failure: log error, continue loop
         }
         shutdown_rx.changed() => {
-            if shutdown signaled: return (task exits)
+            if shutdown signaled: run final backup, then return
         }
     }
 }
@@ -141,11 +164,13 @@ loop {
 
 ### Restore
 
-`SnapshotManager::restore(source_path, target_path)`:
-1. Validates source exists and target does not
-2. Copies snapshot file to target path
-3. Opens the copy with `DatabaseManager::open()` (re-runs migrations to verify schema integrity)
-4. Returns the new `DatabaseManager`
+`SnapshotManager::restore_from(filename)`:
+1. Runs `docker exec ur-postgres pg_restore --clean --if-exists -d <dbname> /backup/<filename>`
+2. Restores directly into the live database, replacing existing data
+
+### Manual Backup
+
+`BackupTaskManager::run_once()` creates a manual backup with `manual-` prefix (`manual-ur-backup-*.pgdump`). Manual backups are excluded from automatic retention cleanup.
 
 ## Shutdown
 
@@ -154,11 +179,11 @@ In `main.rs`, after the gRPC server exits:
 ```
 let _ = shutdown_tx.send(true);       // signal backup task to stop
 if let Some(handle) = backup_handle {
-    let _ = handle.await;             // wait for clean exit
+    let _ = handle.await;             // wait for clean exit (includes final backup)
 }
 ```
 
-The sqlx `SqlitePool` is dropped when `DatabaseManager` goes out of scope, closing all connections.
+The `PgPool` is dropped when `DatabaseManager` goes out of scope, closing all connections.
 
 ## Key Files
 
@@ -169,5 +194,5 @@ The sqlx `SqlitePool` is dropped when `DatabaseManager` goes out of scope, closi
 - Data models: `crates/ur_db/src/model.rs`
 - Migration: `crates/ur_db/migrations/001_initial.sql`
 - Backup task: `crates/server/src/backup.rs`
-- Backup config: `crates/ur_config/src/lib.rs` (`BackupConfig`, `RawBackupConfig`)
+- Database config: `crates/ur_config/src/lib.rs` (`DatabaseConfig`, `BackupConfig`)
 - Server wiring: `crates/server/src/main.rs`
