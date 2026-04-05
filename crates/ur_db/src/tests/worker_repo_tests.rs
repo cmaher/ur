@@ -12,7 +12,7 @@ use crate::worker_repo::WorkerRepo;
 
 /// Set a worker's updated_at to a specific timestamp directly in the database.
 async fn set_worker_updated_at(pool: &PgPool, worker_id: &str, updated_at: &str) {
-    sqlx::query("UPDATE worker SET updated_at = ? WHERE worker_id = ?")
+    sqlx::query("UPDATE worker SET updated_at = $1 WHERE worker_id = $2")
         .bind(updated_at)
         .bind(worker_id)
         .execute(pool)

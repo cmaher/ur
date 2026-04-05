@@ -911,15 +911,15 @@ fn build_paginated_sql(
         "SELECT w.id, w.ticket_id, w.status, w.stalled, w.stall_reason, \
          w.implement_cycles, w.worker_id, w.noverify, w.feedback_mode, \
          w.ci_status, w.mergeable, w.review_status, w.created_at, \
-         COUNT(*) OVER() AS total_count, \
-         COALESCE(tc.children_closed, 0) AS children_closed, \
-         COALESCE(tc.children_total, 0) - COALESCE(tc.children_closed, 0) AS children_open \
+         (COUNT(*) OVER())::INT4 AS total_count, \
+         COALESCE(tc.children_closed, 0)::INT8 AS children_closed, \
+         (COALESCE(tc.children_total, 0) - COALESCE(tc.children_closed, 0))::INT8 AS children_open \
          FROM workflow w \
          {ticket_join} \
          LEFT JOIN ( \
            SELECT parent_id, \
-             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS children_closed, \
-             COUNT(*) AS children_total \
+             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END)::INT8 AS children_closed, \
+             COUNT(*)::INT8 AS children_total \
            FROM ticket WHERE parent_id != '' GROUP BY parent_id \
          ) tc ON tc.parent_id = w.ticket_id \
          {where_clause} \

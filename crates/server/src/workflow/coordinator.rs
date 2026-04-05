@@ -654,6 +654,22 @@ mod tests {
         panic!("workflow {ticket_id} not stalled after {timeout_ms}ms");
     }
 
+    async fn poll_until_intents_empty(repo: &WorkflowRepo, timeout_ms: u64) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while tokio::time::Instant::now() < deadline {
+            let intents = repo.list_intents().await.unwrap();
+            if intents.is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let intents = repo.list_intents().await.unwrap();
+        assert!(
+            intents.is_empty(),
+            "intents should be cleaned up within {timeout_ms}ms"
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_processes_request_and_cleans_intent() {
         let (_test_db, repo, workflow_repo, worker_repo) = setup_test_db().await;
@@ -686,12 +702,8 @@ mod tests {
         // Wait for the handler to run.
         poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
 
-        // Intent should be cleaned up.
-        let intents = workflow_repo.list_intents().await.unwrap();
-        assert!(
-            intents.is_empty(),
-            "intents should be cleaned up after success"
-        );
+        // Intent should be cleaned up (poll to account for async cleanup delay).
+        poll_until_intents_empty(&workflow_repo, 5000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();
@@ -908,12 +920,8 @@ mod tests {
         assert!(wf.stalled, "workflow should be stalled after failure");
         assert_eq!(wf.stall_reason, "intentional test failure");
 
-        // Intent should be cleaned up.
-        let intents = workflow_repo.list_intents().await.unwrap();
-        assert!(
-            intents.is_empty(),
-            "intents should be cleaned up after failure"
-        );
+        // Intent should be cleaned up (poll to account for async cleanup delay).
+        poll_until_intents_empty(&workflow_repo, 5000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();

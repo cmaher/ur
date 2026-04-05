@@ -182,7 +182,7 @@ impl WorkerRepo {
 
     pub async fn verify_worker(&self, worker_id: &str, secret: &str) -> Result<bool, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM worker WHERE worker_id = $1 AND worker_secret = $2",
+            "SELECT COUNT(*)::INT4 FROM worker WHERE worker_id = $1 AND worker_secret = $2",
         )
         .bind(worker_id)
         .bind(secret)
@@ -338,7 +338,7 @@ impl WorkerRepo {
     /// Count slots that have an active worker linked via worker_slot.
     pub async fn slots_in_use(&self, project_key: &str) -> Result<i32, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM slot s
+            "SELECT COUNT(*)::INT4 FROM slot s
              INNER JOIN worker_slot ws ON ws.slot_id = s.id
              INNER JOIN worker w ON w.worker_id = ws.worker_id
              WHERE s.project_key = $1

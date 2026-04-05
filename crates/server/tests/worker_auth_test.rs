@@ -65,6 +65,7 @@ async fn make_test_components(
     ur_server::WorkerManager,
     ur_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
+    ur_db_test::TestDb,
 ) {
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -72,13 +73,12 @@ async fn make_test_components(
     let (config, network_config) = make_test_config(dir, &workspace);
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
-    let db = ur_db::DatabaseManager::open(":memory:")
-        .await
-        .expect("failed to open in-memory db");
-    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
-    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
-    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone());
+    let test_db = ur_db_test::TestDb::new().await;
+    let pool = test_db.db().pool().clone();
+    let worker_repo = ur_db::WorkerRepo::new(pool.clone());
+    let graph_manager = ur_db::GraphManager::new(pool.clone());
+    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let workflow_repo = ur_db::WorkflowRepo::new(pool);
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -123,7 +123,7 @@ async fn make_test_components(
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
     };
-    (worker_manager, worker_repo, handler)
+    (worker_manager, worker_repo, handler, test_db)
 }
 
 /// Spawn a gRPC server with CoreService wrapped in the worker auth interceptor.
@@ -156,7 +156,7 @@ async fn spawn_authed_server(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_without_worker_headers() {
     let dir = tempfile::tempdir().unwrap();
-    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let (worker_manager, worker_repo, handler, _test_db) = make_test_components(dir.path()).await;
     let channel = spawn_authed_server(worker_manager, worker_repo, handler).await;
 
     let mut client = CoreServiceClient::new(channel);
@@ -171,7 +171,7 @@ async fn worker_server_rejects_requests_without_worker_headers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_rejects_requests_with_invalid_secret() {
     let dir = tempfile::tempdir().unwrap();
-    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let (worker_manager, worker_repo, handler, _test_db) = make_test_components(dir.path()).await;
 
     // Register a real worker so the ID exists but use a different secret in the request
     let worker_id = worker_manager.generate_worker_id("authtest");
@@ -210,7 +210,7 @@ async fn worker_server_rejects_requests_with_invalid_secret() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn worker_server_accepts_requests_with_valid_credentials() {
     let dir = tempfile::tempdir().unwrap();
-    let (worker_manager, worker_repo, handler) = make_test_components(dir.path()).await;
+    let (worker_manager, worker_repo, handler, _test_db) = make_test_components(dir.path()).await;
 
     let worker_id = worker_manager.generate_worker_id("validtest");
     let secret = "correct-secret-value";

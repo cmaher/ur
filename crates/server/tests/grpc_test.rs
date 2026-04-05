@@ -83,20 +83,21 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
     (config, network_config)
 }
 
-async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
+async fn make_grpc_handler(
+    dir: &Path,
+) -> (ur_server::grpc::CoreServiceHandler, ur_db_test::TestDb) {
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
     let (config, network_config) = make_test_config(dir, &workspace);
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
-    let db = ur_db::DatabaseManager::open(":memory:")
-        .await
-        .expect("failed to open in-memory db");
-    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
-    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
-    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone());
+    let test_db = ur_db_test::TestDb::new().await;
+    let pool = test_db.db().pool().clone();
+    let worker_repo = ur_db::WorkerRepo::new(pool.clone());
+    let graph_manager = ur_db::GraphManager::new(pool.clone());
+    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let workflow_repo = ur_db::WorkflowRepo::new(pool);
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -128,7 +129,7 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         &ur_config::HostExecConfig::default(),
     )
     .unwrap();
-    ur_server::grpc::CoreServiceHandler {
+    let handler = ur_server::grpc::CoreServiceHandler {
         worker_manager,
         repo_pool_manager,
         workspace,
@@ -140,7 +141,8 @@ async fn make_grpc_handler(dir: &Path) -> ur_server::grpc::CoreServiceHandler {
         network_config,
         hostexec_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
-    }
+    };
+    (handler, test_db)
 }
 
 #[tokio::test]
@@ -150,7 +152,7 @@ async fn grpc_ping_over_tcp() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    let handler = make_grpc_handler(dir.path()).await;
+    let (handler, _test_db) = make_grpc_handler(dir.path()).await;
     let (channel, _addr) = spawn_grpc_server(handler).await;
 
     let mut client = CoreServiceClient::new(channel);
@@ -189,14 +191,14 @@ async fn make_worker_handler() -> (
     ur_server::grpc::WorkerCoreServiceHandler,
     ur_db::TicketRepo,
     ur_db::WorkflowRepo,
+    ur_db_test::TestDb,
 ) {
-    let db = ur_db::DatabaseManager::open(":memory:")
-        .await
-        .expect("failed to open in-memory db");
-    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
-    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
-    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone());
+    let test_db = ur_db_test::TestDb::new().await;
+    let pool = test_db.db().pool().clone();
+    let worker_repo = ur_db::WorkerRepo::new(pool.clone());
+    let graph_manager = ur_db::GraphManager::new(pool.clone());
+    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let workflow_repo = ur_db::WorkflowRepo::new(pool);
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {
@@ -206,7 +208,7 @@ async fn make_worker_handler() -> (
         worker_prefix: "ur-worker-".to_string(),
         transition_tx,
     };
-    (handler, ticket_repo, workflow_repo)
+    (handler, ticket_repo, workflow_repo, test_db)
 }
 
 #[tokio::test]
@@ -215,7 +217,7 @@ async fn link_comment_ticket_writes_row() {
     use ur_rpc::proto::core::LinkCommentTicketRequest;
     use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
-    let (handler, ticket_repo, workflow_repo) = make_worker_handler().await;
+    let (handler, ticket_repo, workflow_repo, _test_db) = make_worker_handler().await;
     let (channel, _addr) = spawn_worker_grpc_server(handler).await;
     let mut client = CoreServiceClient::new(channel);
 
@@ -292,7 +294,7 @@ async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
     use ur_rpc::proto::core::LinkCommentTicketRequest;
     use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
-    let (handler, ticket_repo, workflow_repo) = make_worker_handler().await;
+    let (handler, ticket_repo, workflow_repo, _test_db) = make_worker_handler().await;
     let (channel, _addr) = spawn_worker_grpc_server(handler).await;
     let mut client = CoreServiceClient::new(channel);
 

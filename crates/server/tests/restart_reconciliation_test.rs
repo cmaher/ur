@@ -186,13 +186,11 @@ async fn authed_ping(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_reclaims_worker_with_live_container() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test1.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
     // --- Phase 1: "Original server" registers a worker ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     let worker_id_str = "restart-test-worker-1";
     let secret = "test-secret-reclaim";
@@ -241,7 +239,7 @@ async fn restart_reclaims_worker_with_live_container() {
     assert_eq!(pre.container_status, "running");
 
     // --- Phase 2: "Server restart" — rebuild components with the same DB ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), db).await;
 
     // Run reconciliation with container alive (simulates docker inspect returning true).
     let reconcile_result = worker_repo2
@@ -302,16 +300,14 @@ async fn restart_reclaims_worker_with_live_container() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test2.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
     // --- Phase 1: "Original server" registers worker with a slot ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     // Create pool directory structure with a slot directory on disk.
     let pool_dir = workspace.join("pool").join("test-proj");
@@ -370,7 +366,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     assert!(!slot_dir.exists());
 
     // --- Phase 3: "Server restart" — rebuild with same DB, run reconciliation ---
-    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), db).await;
 
     // Run slot reconciliation (as main.rs does on startup).
     let mut project_configs = HashMap::new();
@@ -452,12 +448,10 @@ async fn insert_worker_with_slot(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_mixed_live_and_dead_workers() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("test3.db");
-    let db = ur_db::DatabaseManager::open(db_path.to_str().unwrap())
-        .await
-        .unwrap();
+    let test_db = ur_db_test::TestDb::new().await;
+    let db = test_db.db();
 
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), &db).await;
+    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), db).await;
 
     let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
@@ -489,7 +483,7 @@ async fn restart_mixed_live_and_dead_workers() {
     .await;
 
     // --- Phase 2: "Restart" with reconciliation ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), &db).await;
+    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), db).await;
 
     let reconcile_result = worker_repo2
         .reconcile_workers(|cid| async move { cid == "container-alive" })

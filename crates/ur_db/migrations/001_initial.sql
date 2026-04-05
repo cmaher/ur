@@ -1,5 +1,7 @@
 -- Consolidated Postgres schema (replaces 22 incremental SQLite migrations).
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 --------------------------------------------------------------------------------
 -- ticket
 --------------------------------------------------------------------------------
@@ -121,11 +123,11 @@ CREATE TABLE workflow (
     ticket_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL DEFAULT (now()::TEXT),
-    stalled INTEGER NOT NULL DEFAULT 0,
+    stalled BOOLEAN NOT NULL DEFAULT FALSE,
     stall_reason TEXT NOT NULL DEFAULT '',
     implement_cycles INTEGER NOT NULL DEFAULT 0,
     worker_id TEXT NOT NULL DEFAULT '',
-    noverify INTEGER NOT NULL DEFAULT 0,
+    noverify BOOLEAN NOT NULL DEFAULT FALSE,
     feedback_mode TEXT NOT NULL DEFAULT '',
     ci_status TEXT NOT NULL DEFAULT 'pending',
     mergeable TEXT NOT NULL DEFAULT 'unknown',
@@ -172,7 +174,7 @@ CREATE INDEX idx_workflow_intent_created_at ON workflow_intent(created_at);
 CREATE TABLE workflow_comments (
     ticket_id TEXT NOT NULL,
     comment_id TEXT NOT NULL,
-    feedback_created INTEGER NOT NULL DEFAULT 0,
+    feedback_created BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TEXT NOT NULL DEFAULT (now()::TEXT),
     PRIMARY KEY (ticket_id, comment_id),
     FOREIGN KEY (ticket_id) REFERENCES ticket(id)
@@ -209,15 +211,15 @@ CREATE TABLE ui_events (
 CREATE TABLE ticket_comments (
     comment_id TEXT NOT NULL,
     ticket_id TEXT NOT NULL,
-    pr_number INTEGER NOT NULL,
+    pr_number BIGINT NOT NULL,
     gh_repo TEXT NOT NULL,
-    reply_posted INTEGER NOT NULL DEFAULT 0,
+    reply_posted BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TEXT NOT NULL DEFAULT (now()::TEXT),
     PRIMARY KEY (comment_id, ticket_id),
     FOREIGN KEY (ticket_id) REFERENCES ticket(id)
 );
 
-CREATE INDEX idx_ticket_comments_pending ON ticket_comments(reply_posted) WHERE reply_posted = 0;
+CREATE INDEX idx_ticket_comments_pending ON ticket_comments(reply_posted) WHERE reply_posted = FALSE;
 
 --------------------------------------------------------------------------------
 -- Triggers

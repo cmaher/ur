@@ -194,8 +194,8 @@ impl TicketRepo {
             ),
         >(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
              FROM ticket WHERE id = $1",
         )
         .bind(id)
@@ -393,7 +393,7 @@ impl TicketRepo {
         where_clause: &str,
         binds: &[String],
     ) -> Result<i32, sqlx::Error> {
-        let count_query = format!("SELECT COUNT(*) FROM ticket{where_clause}");
+        let count_query = format!("SELECT COUNT(*)::INT4 FROM ticket{where_clause}");
         let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(count_query));
         for bind in binds {
             q = q.bind(bind);
@@ -411,8 +411,8 @@ impl TicketRepo {
     ) -> Result<Vec<Ticket>, sqlx::Error> {
         let mut query = format!(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
              FROM ticket{where_clause} ORDER BY priority ASC, created_at ASC"
         );
 
@@ -526,8 +526,8 @@ impl TicketRepo {
     fn build_list_tickets_query(filter: &TicketFilter) -> (String, Vec<String>) {
         let mut query = String::from(
             "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
-             (SELECT COUNT(*) FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id AND c.status = 'closed') AS children_completed, \
+             (SELECT COUNT(*)::INT4 FROM ticket c WHERE c.parent_id = ticket.id) AS children_total \
              FROM ticket WHERE 1=1",
         );
         let mut binds: Vec<String> = Vec::new();
@@ -972,7 +972,7 @@ impl TicketRepo {
             .collect::<Vec<_>>()
             .join(", ");
         let query = format!(
-            "SELECT COUNT(*) FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
+            "SELECT COUNT(*)::INT4 FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
         );
         let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query));
         for blocker_id in &blockers {
@@ -1064,7 +1064,7 @@ impl TicketRepo {
     /// Returns true if the epic has no children.
     pub async fn epic_all_children_closed(&self, epic_id: &str) -> Result<bool, sqlx::Error> {
         let count = sqlx::query_scalar::<_, i32>(
-            "SELECT COUNT(*) FROM ticket WHERE parent_id = $1 AND status != 'closed'",
+            "SELECT COUNT(*)::INT4 FROM ticket WHERE parent_id = $1 AND status != 'closed'",
         )
         .bind(epic_id)
         .fetch_one(&self.pool)
