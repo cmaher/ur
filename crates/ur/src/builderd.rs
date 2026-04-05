@@ -76,28 +76,7 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
         .open(&stderr_path)
         .context("failed to open builderd stderr log")?;
 
-    let mut args = vec![
-        "--port".to_string(),
-        config.builderd_port.to_string(),
-        "--workspace".to_string(),
-        config.workspace.display().to_string(),
-        "--logs-dir".to_string(),
-        config.logs_dir.display().to_string(),
-    ];
-
-    // On Linux, bind builderd to the Docker bridge gateway IP so containers
-    // can reach it via host.docker.internal. On macOS, Docker Desktop handles
-    // this routing natively so the default 127.0.0.1 works.
-    if cfg!(target_os = "linux") {
-        if let Some(gateway_ip) = detect_docker_bridge_ip() {
-            info!(gateway_ip, "binding builderd to Docker bridge gateway");
-            args.extend(["--bind".to_string(), gateway_ip]);
-        } else {
-            warn!(
-                "could not detect Docker bridge IP; builderd will bind to 127.0.0.1 — containers may not be able to reach it"
-            );
-        }
-    }
+    let args = builderd_args(config);
 
     let child = std::process::Command::new(&bin)
         .args(&args)
@@ -119,9 +98,47 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn builderd_args(config: &ur_config::Config) -> Vec<String> {
+    vec![
+        "--port".to_string(),
+        config.builderd_port.to_string(),
+        "--workspace".to_string(),
+        config.workspace.display().to_string(),
+        "--logs-dir".to_string(),
+        config.logs_dir.display().to_string(),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn builderd_args(config: &ur_config::Config) -> Vec<String> {
+    let mut args = vec![
+        "--port".to_string(),
+        config.builderd_port.to_string(),
+        "--workspace".to_string(),
+        config.workspace.display().to_string(),
+        "--logs-dir".to_string(),
+        config.logs_dir.display().to_string(),
+    ];
+
+    // Bind builderd to the Docker bridge gateway IP so containers can reach it
+    // via host.docker.internal. On macOS, Docker Desktop handles this natively.
+    if let Some(gateway_ip) = detect_docker_bridge_ip() {
+        info!(gateway_ip, "binding builderd to Docker bridge gateway");
+        args.extend(["--bind".to_string(), gateway_ip]);
+    } else {
+        warn!(
+            "could not detect Docker bridge IP; builderd will bind to 127.0.0.1 — containers may not be able to reach it"
+        );
+    }
+
+    args
+}
+
 /// Detect the IP address of the Docker bridge network (`docker0`) by parsing
 /// the output of `ip -4 addr show docker0`. Returns `None` if the interface
 /// doesn't exist or the IP can't be parsed.
+#[cfg(not(target_os = "macos"))]
 fn detect_docker_bridge_ip() -> Option<String> {
     let output = std::process::Command::new("ip")
         .args(["-4", "-o", "addr", "show", "docker0"])

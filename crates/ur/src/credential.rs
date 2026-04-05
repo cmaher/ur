@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
 use tracing::{debug, info, instrument, warn};
 
 /// macOS Keychain service name where Claude Code stores OAuth credentials.
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
 fn worker_home() -> &'static Path {
@@ -154,15 +154,12 @@ impl CredentialManager {
 /// Claude Code credentials file at `~/.claude/.credentials.json`.
 #[instrument]
 fn read_host_credentials() -> Result<String> {
-    if cfg!(target_os = "macos") {
-        read_keychain_credentials()
-    } else {
-        read_linux_credentials()
-    }
+    read_platform_credentials()
 }
 
-/// Read Claude Code OAuth credentials from the macOS Keychain.
-fn read_keychain_credentials() -> Result<String> {
+#[cfg(target_os = "macos")]
+fn read_platform_credentials() -> Result<String> {
+    use std::process::Command;
     debug!("reading credentials from macOS Keychain");
     let output = Command::new("security")
         .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
@@ -186,8 +183,8 @@ fn read_keychain_credentials() -> Result<String> {
     Ok(trimmed)
 }
 
-/// Read Claude Code OAuth credentials from `~/.claude/.credentials.json` (Linux).
-fn read_linux_credentials() -> Result<String> {
+#[cfg(not(target_os = "macos"))]
+fn read_platform_credentials() -> Result<String> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let path = PathBuf::from(home)
         .join(".claude")
