@@ -15,7 +15,7 @@ mod ticket;
 mod tui;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use anyhow::{Context, Result, bail};
@@ -1189,7 +1189,7 @@ fn main() {
     }
 }
 
-fn handle_project(
+async fn handle_project(
     command: ProjectCommands,
     config: &ur_config::Config,
     output: &OutputManager,
@@ -1210,6 +1210,7 @@ fn handle_project(
             }
             input::reject_path_traversal(&path, "path")?;
             ur_config::validate_image_alias(&image)?;
+            let resolved_key = resolve_add_project_key(&path, key.as_deref())?;
             project::add(
                 config,
                 &path,
@@ -1218,15 +1219,30 @@ fn handle_project(
                 name.as_deref(),
                 pool_limit,
                 output,
-            )?
+            )?;
+            project::try_reload_server(config.server_port, &resolved_key, "added").await;
         }
         ProjectCommands::List => project::list(config, output)?,
         ProjectCommands::Remove { key, force } => {
             input::validate_id(&key, "key")?;
-            project::remove(config, &key, force, output)?
+            project::remove(config, &key, force, output)?;
+            project::try_reload_server(config.server_port, &key, "removed").await;
         }
     }
     Ok(())
+}
+
+/// Resolve the project key that `project::add` will use, without side effects.
+fn resolve_add_project_key(path: &Path, explicit_key: Option<&str>) -> Result<String> {
+    match explicit_key {
+        Some(k) => Ok(k.to_string()),
+        None => {
+            let canonical =
+                std::fs::canonicalize(path).context("failed to resolve path for key derivation")?;
+            let repo = project::git_remote_origin(&canonical)?;
+            project::derive_key_from_repo(&repo)
+        }
+    }
 }
 
 fn handle_proxy(
@@ -1304,7 +1320,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             }
         },
         Commands::Init { .. } => unreachable!(),
-        Commands::Project { command } => handle_project(command, &config, output)?,
+        Commands::Project { command } => handle_project(command, &config, output).await?,
         Commands::Proxy { command } => handle_proxy(command, &config, output)?,
         Commands::Server { command } => match command {
             ServerCommands::Redeploy { component } => {
