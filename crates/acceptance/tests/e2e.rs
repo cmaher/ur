@@ -1516,6 +1516,64 @@ fn scenario_flow_list_and_cancel(env: &TestEnv) {
     }
 }
 
+/// Verify that a hot-reloaded worker has correct workspace content, gRPC connectivity,
+/// pool directory structure, then stop the worker and remove the project.
+fn verify_hot_reloaded_worker(
+    env: &TestEnv,
+    container_name: &str,
+    project_key: &str,
+    ticket_id: &str,
+    env_slice: &[(&str, &str)],
+) {
+    let ls_output = exec_in_container(
+        &env.runtime,
+        container_name,
+        &["ls", "/workspace/README.md"],
+    );
+    assert_exec_success(
+        &ls_output,
+        "hot-reloaded project pool slot should contain README.md from cloned repo",
+    );
+
+    assert_ping_pong(&env.runtime, container_name);
+
+    let pool_slot = env
+        .config_path
+        .join("workspace")
+        .join("pool")
+        .join(project_key)
+        .join("0");
+    assert!(
+        pool_slot.exists(),
+        "pool slot directory should exist at {}",
+        pool_slot.display()
+    );
+    assert!(
+        pool_slot.join(".git").exists(),
+        "pool slot should be a git repo (have .git)"
+    );
+
+    let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], env_slice);
+    assert!(
+        stop_output.status.success(),
+        "ur worker stop failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&stop_output.stdout),
+        String::from_utf8_lossy(&stop_output.stderr),
+    );
+
+    let remove_output = run_cmd(
+        &env.ur,
+        &["project", "remove", project_key, "--force"],
+        env_slice,
+    );
+    assert!(
+        remove_output.status.success(),
+        "project remove failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_output.stdout),
+        String::from_utf8_lossy(&remove_output.stderr),
+    );
+}
+
 /// Project add then launch: add a project via `ur project add` while the server
 /// is running, then immediately launch a worker for that project without restart.
 /// Verifies the hot-reload flow: config write → gRPC ReloadProjects → pool slot
@@ -1588,58 +1646,7 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Verify workspace has cloned content from the new project ----
-        let ls_output = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["ls", "/workspace/README.md"],
-        );
-        assert_exec_success(
-            &ls_output,
-            "hot-reloaded project pool slot should contain README.md from cloned repo",
-        );
-
-        // ---- Verify ur-ping works (gRPC connectivity) ----
-        assert_ping_pong(&env.runtime, &container_name);
-
-        // ---- Verify pool directory structure on host ----
-        let pool_slot = env
-            .config_path
-            .join("workspace")
-            .join("pool")
-            .join(project_key)
-            .join("0");
-        assert!(
-            pool_slot.exists(),
-            "pool slot directory should exist at {}",
-            pool_slot.display()
-        );
-        assert!(
-            pool_slot.join(".git").exists(),
-            "pool slot should be a git repo (have .git)"
-        );
-
-        // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
-        assert!(
-            stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&stop_output.stdout),
-            String::from_utf8_lossy(&stop_output.stderr),
-        );
-
-        // ---- Clean up: remove the project so it doesn't affect later tests ----
-        let remove_output = run_cmd(
-            &env.ur,
-            &["project", "remove", project_key, "--force"],
-            &env_slice,
-        );
-        assert!(
-            remove_output.status.success(),
-            "project remove failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&remove_output.stdout),
-            String::from_utf8_lossy(&remove_output.stderr),
-        );
+        verify_hot_reloaded_worker(env, &container_name, project_key, ticket_id, &env_slice);
     }));
 
     if let Err(e) = result {
