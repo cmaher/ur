@@ -589,6 +589,13 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     stop_server(&env.ur, &env.config_path);
 
     if let Err(e) = scenario_result {
+        // Reprint the panic message near the end of output so it's visible
+        // in tail-truncated logs (e.g., the pre-push hook shows only the last 30 lines).
+        if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
+        } else if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
+        }
         std::panic::resume_unwind(e);
     }
 }
