@@ -1,0 +1,13 @@
+[package]
+name = "ur_db_test"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+tokio = { version = "1", features = ["full"] }
+ur_db = { path = "../ur_db" }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true
