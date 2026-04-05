@@ -1,0 +1,12 @@
+[package]
+name = "sqlite-to-pg"
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[dependencies]
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres"] }
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

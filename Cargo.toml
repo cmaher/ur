@@ -9,6 +9,7 @@ members = [
     "crates/ur",
     "crates/ur_config",
     "crates/ur_db",
+    "crates/ur_db_test",
     "crates/ur_markdown",
     "crates/ur_rpc",
     "crates/ur_utils",
@@ -20,6 +21,7 @@ members = [
     "crates/workertools",
     "tools/tk-import",
     "tools/tk-verify",
+    "tools/sqlite-to-pg",
 ]
 default-members = [
     "crates/container",
