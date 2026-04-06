@@ -180,6 +180,7 @@ struct ComposeParams {
     postgres_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
+    postgres_container_name: String,
     /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
     backup_path: Option<PathBuf>,
     /// Postgres user for env vars and healthcheck.
@@ -571,7 +572,10 @@ mod tests {
         // Verify container names
         assert!(generated.contains("container_name: test-server"));
         assert!(generated.contains("container_name: test-squid"));
-        assert!(generated.contains("container_name: ur-postgres"));
+        assert!(
+            generated.contains("container_name: ur-postgres"),
+            "postgres container_name should match db.host"
+        );
 
         // Verify postgres image
         assert!(generated.contains("image: postgres:17-alpine"));

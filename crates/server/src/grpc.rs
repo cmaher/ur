@@ -241,35 +241,55 @@ impl CoreServiceHandler {
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
-        let (workspace_dir, project_key, slot_id) =
-            if !req.project_key.is_empty() && !req.workspace_dir.is_empty() {
+        // When project_key is empty, attempt to extract it from worker_id.
+        // Worker IDs follow the ticket convention `{project}-{hash}` (e.g., "ur-abc12").
+        // Only use the extracted key if it matches a known project.
+        let effective_project_key = if !req.project_key.is_empty() {
+            req.project_key.clone()
+        } else if let Some(prefix) = req.worker_id.split('-').next() {
+            if !prefix.is_empty() && self.projects.contains_key(prefix) {
                 info!(
                     worker_id = req.worker_id,
-                    project_key = req.project_key,
+                    extracted_project_key = prefix,
+                    "extracted project key from worker_id"
+                );
+                prefix.to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        let (workspace_dir, project_key, slot_id) =
+            if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
+                info!(
+                    worker_id = req.worker_id,
+                    project_key = %effective_project_key,
                     workspace_dir = req.workspace_dir,
                     "using workspace dir with project key (no pool slot)"
                 );
                 (
                     Some(PathBuf::from(&req.workspace_dir)),
-                    req.project_key.clone(),
+                    effective_project_key.clone(),
                     None,
                 )
-            } else if !req.project_key.is_empty() {
+            } else if !effective_project_key.is_empty() {
                 let (slot_path, slot_id) = strategy
-                    .acquire_slot(&self.repo_pool_manager, &req.project_key)
+                    .acquire_slot(&self.repo_pool_manager, &effective_project_key)
                     .await
                     .map_err(|e| CoreError::PoolSlotFailed {
                         reason: e.to_string(),
                     })?;
                 info!(
                     worker_id = req.worker_id,
-                    project_key = req.project_key,
+                    project_key = %effective_project_key,
                     slot_path = %slot_path.display(),
                     slot_id = ?slot_id,
                     strategy = strategy.name(),
                     "acquired pool slot"
                 );
-                (Some(slot_path), req.project_key.clone(), slot_id)
+                (Some(slot_path), effective_project_key, slot_id)
             } else if !req.workspace_dir.is_empty() {
                 (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
             } else {
