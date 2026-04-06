@@ -151,6 +151,7 @@ async fn run_daemon_only() -> Result<()> {
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
     let worker_secret =
         std::env::var(ur_config::UR_WORKER_SECRET_ENV).unwrap_or_else(|_| String::new());
+    let is_design_worker = std::env::var("UR_WORKER_CLAUDE").unwrap_or_default() == "design";
     let service = grpc_service::WorkerDaemonServiceImpl {
         server_addr,
         worker_id,
@@ -163,6 +164,8 @@ async fn run_daemon_only() -> Result<()> {
                 nudge_suppressed_until: None,
             },
         )),
+        dispatch_ticket_id: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        is_design_worker,
     };
     info!(port = WORKERD_GRPC_PORT, "starting gRPC server");
 

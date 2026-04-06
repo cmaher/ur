@@ -1,6 +1,7 @@
 mod agent;
 mod repo;
 mod status;
+mod workflow;
 
 use std::io::Write;
 
@@ -76,6 +77,11 @@ enum Commands {
         #[command(subcommand)]
         command: agent::AgentCommands,
     },
+    /// Workflow commands (set-ticket, dispatch)
+    Workflow {
+        #[command(subcommand)]
+        command: workflow::WorkflowCommands,
+    },
 }
 
 #[tokio::main]
@@ -104,6 +110,9 @@ async fn main() {
         }
         Commands::Agent { command } => {
             std::process::exit(agent::run(command).await);
+        }
+        Commands::Workflow { command } => {
+            std::process::exit(workflow::run(command).await);
         }
     }
 }
