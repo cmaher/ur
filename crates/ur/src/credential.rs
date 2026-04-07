@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
@@ -35,22 +36,32 @@ pub struct CredentialManager;
 impl CredentialManager {
     /// Ensure credentials exist on disk for container mounting.
     ///
-    /// Seeds OAuth credentials from the host Claude Code installation if no
-    /// credentials file exists yet. On macOS, reads from the Keychain; on Linux,
-    /// copies from `~/.claude/.credentials.json`. After seeding, containers own
-    /// their session independently -- token refreshes in containers write back
-    /// to the shared mount without touching the host credentials.
+    /// Re-seeds OAuth credentials from the host Claude Code installation if the
+    /// shared credentials file is missing, empty, or older than `max_age`. On
+    /// macOS, reads from the Keychain; on Linux, copies from
+    /// `~/.claude/.credentials.json`. Pass `Duration::ZERO` to force a re-seed
+    /// unconditionally.
+    ///
+    /// Between re-seeds, containers own their session independently — token
+    /// refreshes in containers write back to the shared mount without touching
+    /// the host credentials. The age check ensures host re-logins eventually
+    /// propagate without clobbering fresh container-driven refreshes on every
+    /// launch.
     #[instrument(skip(self))]
-    pub fn ensure_credentials(&self) -> Result<()> {
+    pub fn ensure_credentials(&self, max_age: Duration) -> Result<()> {
         let creds_path = Self::host_credentials_path()?;
 
-        // Seed credentials if missing or empty — containers manage their own
-        // token lifecycle after the initial copy. An empty/stub file can be left
-        // behind by the server's Docker bind-mount setup, so treat it as missing.
-        let needs_seed = !creds_path.exists()
-            || std::fs::metadata(&creds_path)
-                .map(|m| m.len() < 10)
-                .unwrap_or(true);
+        // Re-seed if the file is missing, empty/stub, or older than max_age.
+        // An empty/stub file can be left behind by the server's Docker
+        // bind-mount setup, so treat it as missing.
+        let needs_seed = match std::fs::metadata(&creds_path) {
+            Err(_) => true,
+            Ok(meta) if meta.len() < 10 => true,
+            Ok(meta) => match meta.modified() {
+                Ok(mtime) => mtime.elapsed().map(|age| age >= max_age).unwrap_or(true),
+                Err(_) => true,
+            },
+        };
         if needs_seed {
             if let Ok(creds_json) = read_host_credentials() {
                 info!(path = %creds_path.display(), "seeding credentials from host Claude Code");
@@ -59,7 +70,7 @@ impl CredentialManager {
                 debug!(path = %creds_path.display(), "no host credentials found to seed");
             }
         } else {
-            debug!(path = %creds_path.display(), "credentials already exist");
+            debug!(path = %creds_path.display(), "credentials are fresh");
         }
 
         Ok(())
