@@ -197,6 +197,7 @@ struct TestNames {
     worker_network: String,
     server_hostname: String,
     worker_prefix: String,
+    postgres_hostname: String,
 }
 
 /// Build test names with a unique prefix derived from the run ID.
@@ -210,6 +211,7 @@ fn test_names(label: &str) -> TestNames {
         worker_network: format!("ur-{id}-{label}-workers"),
         server_hostname: format!("ur-{id}-{label}-server"),
         worker_prefix: format!("ur-{id}-{label}-worker-"),
+        postgres_hostname: format!("ur-{id}-{label}-postgres"),
     }
 }
 

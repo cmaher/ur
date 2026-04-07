@@ -300,13 +300,6 @@ impl RunOptsBuilder {
         self
     }
 
-    /// Merge volumes and environment variables from a plugin-provided [`plugins::WorkerConfig`].
-    pub fn add_plugin_config(mut self, plugin_config: &plugins::WorkerConfig) -> Self {
-        self.volumes.extend(plugin_config.volumes.clone());
-        self.env_vars.extend(plugin_config.env_vars.clone());
-        self
-    }
-
     /// Produce the final [`RunOpts`].
     pub fn build(self) -> RunOpts {
         RunOpts {

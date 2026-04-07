@@ -308,8 +308,6 @@ struct RawConfig {
     tui: Option<RawTuiConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
-    #[serde(default)]
-    plugins: HashMap<String, toml::Table>,
 }
 
 /// Raw TOML representation for the `[hostexec]` section.
@@ -963,7 +961,7 @@ pub struct ProjectConfig {
 }
 
 /// Resolved, ready-to-use daemon configuration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
@@ -996,9 +994,6 @@ pub struct Config {
     pub git_branch_prefix: String,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
-    /// Raw plugin configuration sections, keyed by plugin name.
-    /// Each plugin's `[plugins.<name>]` table is preserved as-is for the plugin to interpret.
-    pub plugins: HashMap<String, toml::Table>,
 }
 
 impl Config {
@@ -1090,7 +1085,6 @@ impl Config {
             logs_dir,
             git_branch_prefix,
             projects,
-            plugins: raw.plugins,
         })
     }
 }

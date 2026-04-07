@@ -1,8 +1,1440 @@
-use plugins::CliRegistry;
+mod builderd;
+mod compose;
+pub(crate) mod connection;
+mod credential;
+mod db;
+mod describe;
+mod flow;
+mod init;
+mod input;
+mod logging;
+mod output;
+mod project;
+mod proxy;
+mod ticket;
+mod tui;
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process;
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use container::{ContainerId, ContainerRuntime};
+use tonic::transport::Channel;
+use tracing::{debug, info, instrument, warn};
+use ur_rpc::error::StatusResultExt;
+use ur_rpc::proto::core::core_service_client::CoreServiceClient;
+use ur_rpc::proto::core::*;
+use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+use ur_rpc::proto::ticket::*;
+
+use compose::{ComposeManager, compose_manager_from_config};
+use output::{
+    ContainerKilled, CredentialsSaved, ErrorCode, OutputManager, StructuredError, WorkerDir,
+    WorkerLaunched, WorkerStopped,
+};
+
+#[derive(Parser)]
+#[command(name = "ur", about = "Coding LLM coordination framework")]
+struct Cli {
+    /// Output format: text or json (also: OUTPUT_FORMAT env var)
+    #[arg(long, global = true)]
+    output: Option<String>,
+
+    /// Print command schema as JSON and exit
+    #[arg(long, global = true)]
+    describe: bool,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Database backup and restore
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
+    /// Bootstrap the ~/.ur/ config directory
+    Init {
+        /// Overwrite all files
+        #[arg(long)]
+        force: bool,
+        /// Overwrite ur.toml only
+        #[arg(long)]
+        force_config: bool,
+        /// Overwrite squid/ files (allowlist.txt)
+        #[arg(long)]
+        force_squid: bool,
+    },
+    /// Manage projects
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
+    },
+    /// Manage the forward proxy domain allowlist
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCommands,
+    },
+    /// Manage the ur-server lifecycle
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+    /// Manage tickets
+    Ticket {
+        #[command(subcommand)]
+        command: crate::ticket::TicketArgs,
+    },
+    /// Manage TUI settings (themes, keymaps)
+    Tui {
+        #[command(subcommand)]
+        command: Box<crate::tui::TuiArgs>,
+    },
+    /// Manage workflows
+    Flow {
+        #[command(subcommand)]
+        command: crate::flow::FlowArgs,
+    },
+    /// Manage workers
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProxyCommands {
+    /// Allow a domain through the proxy
+    Allow { domain: String },
+    /// Block a domain (remove from allowlist)
+    Block { domain: String },
+    /// List allowed domains
+    List,
+}
+
+#[derive(Subcommand)]
+enum ProjectCommands {
+    /// Add a new project from a local git directory
+    Add {
+        /// Path to a git repository directory (e.g. "." for current directory)
+        path: PathBuf,
+        /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full image reference
+        #[arg(long)]
+        image: String,
+        /// Project key (derived from repo name if omitted)
+        #[arg(long)]
+        key: Option<String>,
+        /// Display-friendly project name
+        #[arg(long)]
+        name: Option<String>,
+        /// Maximum number of cached repo clones (default: 10)
+        #[arg(long)]
+        pool_limit: Option<u32>,
+    },
+    /// List all configured projects with pool usage
+    List,
+    /// Remove a project and delete all pool clones
+    Remove {
+        /// Project key to remove
+        key: String,
+        /// Required to confirm deletion of pool clones
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerCommands {
+    /// Redeploy a single infrastructure component without rebuilding
+    Redeploy {
+        /// Component to redeploy
+        component: Component,
+    },
+    /// Restart the server (stop then start)
+    Restart,
+    /// Start the server
+    Start,
+    /// Kill all containers and stop the server
+    Stop,
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum Component {
+    /// ur-server container
+    Server,
+    /// builderd host-native process
+    Builderd,
+    /// ur-squid proxy container
+    Squid,
+    /// ur-qdrant vector DB container
+    Qdrant,
+    /// All components (builderd, squid, qdrant, server)
+    All,
+}
+
+#[derive(Subcommand)]
+enum DbCommands {
+    /// Create an on-demand database backup
+    Backup,
+    /// List available backup files
+    List,
+    /// Restore a database from a backup file
+    Restore {
+        /// Path to the backup file to restore
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkerCommands {
+    /// Attach to a running process
+    Attach {
+        worker_id: String,
+        /// Stop the process when the attach session exits
+        #[arg(long)]
+        rm: bool,
+    },
+    /// Print the host directory assigned to a running process
+    Dir { worker_id: String },
+    /// Force-stop a running worker process (via server)
+    Kill { worker_id: String },
+    /// Launch a new worker process (requires -p project or -w workspace)
+    Launch {
+        ticket_id: String,
+        /// Mount a host directory as the container workspace (mutually exclusive with -p)
+        #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
+        workspace: Option<PathBuf>,
+        /// Project key — determines container image from project config (mutually exclusive with -w)
+        #[arg(short = 'p', long = "project", conflicts_with = "workspace")]
+        project: Option<String>,
+        /// Attach to the process after launching
+        #[arg(short = 'a', long = "attach")]
+        attach: bool,
+        /// Stop the process when the attach session exits (implies -a)
+        #[arg(long)]
+        rm: bool,
+        /// Stop existing process with this ID before launching
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+        /// Prompt mode name (default: "code")
+        #[arg(short = 'm', long = "mode", default_value = "code")]
+        mode: String,
+        /// Comma-separated skill list; overrides mode when provided
+        #[arg(short = 's', long = "skills")]
+        skills: Option<String>,
+        /// Dispatch a ticket: validate it exists and is open, then transition to implementing
+        #[arg(short = 'd', long = "dispatch")]
+        dispatch: bool,
+        /// Comma-separated list of project keys to mount as read-only context repositories
+        #[arg(long = "context-repos")]
+        context_repos: Option<String>,
+    },
+    /// List all running processes
+    List,
+    /// Save credentials from a running container for reuse
+    SaveCredentials { worker_id: String },
+    /// Show detailed worker information
+    Describe { worker_id: Option<String> },
+    /// Send a message to a running worker's agent
+    Send { worker_id: String, message: String },
+    /// Stop a running worker process
+    Stop { worker_id: String },
+    /// Open the host directory for a running process in VS Code
+    Code { worker_id: String },
+}
+
+#[instrument]
+fn load_config() -> Result<ur_config::Config> {
+    debug!("loading ur config");
+    ur_config::Config::load().context("failed to load config")
+}
+
+#[instrument(skip(config, compose, output))]
+fn start_server(
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
+    info!("starting server");
+
+    // Seed credentials from host Claude Code before starting anything so
+    // they're available for bind-mounting into worker containers.
+    let cred_mgr = credential::CredentialManager;
+    if let Err(e) = cred_mgr.ensure_credentials() {
+        debug!(error = %e, "credential seeding failed");
+    }
+    let has_credentials = credential::CredentialManager::host_credentials_path()
+        .ok()
+        .and_then(|p| std::fs::metadata(&p).ok())
+        .is_some_and(|m| m.len() > 10);
+    if !has_credentials {
+        warn!("no shared credentials found");
+        if !output.is_json() {
+            println!();
+            println!("No shared credentials found. Log in to Claude Code on this machine first.");
+        }
+    }
+
+    match builderd::start_builderd(config, output) {
+        Ok(()) => info!("builderd started"),
+        Err(e) => {
+            info!(error = %e, "builderd failed to start");
+            return Err(e);
+        }
+    }
+
+    match compose.up() {
+        Ok(()) => info!("compose up succeeded"),
+        Err(e) => {
+            info!(error = %e, "compose up failed");
+            return Err(e);
+        }
+    }
+
+    info!("server started successfully");
+    output.print_text("server started");
+
+    Ok(())
+}
+
+#[instrument(skip(config, compose, output))]
+async fn stop_server(
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
+    info!("stopping server");
+
+    // Try graceful stop via gRPC (proper slot release + DB cleanup), fall back to Docker
+    let port = config.server_port;
+    if let Some(channel) = connection::try_connect(port) {
+        let mut client = CoreServiceClient::new(channel);
+        info!("server reachable — stopping workers via gRPC");
+        stop_workers_via_grpc(&mut client, output).await;
+    } else {
+        info!("server unreachable — stopping workers via Docker");
+        kill_all_containers(&config.network.worker_prefix, output)?;
+    }
+
+    if !compose.is_running()? {
+        info!("server is not running, nothing to stop");
+        output.print_text("server is not running");
+        return Ok(());
+    }
+    compose.down()?;
+    info!("compose down succeeded");
+    output.print_text("server stopped");
+
+    builderd::stop_builderd(config, output)?;
+    info!("builderd stopped");
+    info!("server stop complete");
+    Ok(())
+}
+
+#[instrument(skip(config, compose, output))]
+fn redeploy_component(
+    component: &Component,
+    config: &ur_config::Config,
+    compose: &ComposeManager,
+    output: &OutputManager,
+) -> Result<()> {
+    match component {
+        Component::Builderd => {
+            output.print_text("redeploying builderd...");
+            builderd::stop_builderd(config, output)?;
+            builderd::start_builderd(config, output)?;
+        }
+        Component::Squid => {
+            output.print_text("redeploying squid...");
+            compose.recreate_service("ur-squid")?;
+            output.print_text("squid redeployed");
+        }
+        Component::Qdrant => {
+            output.print_text("redeploying qdrant...");
+            compose.recreate_service("ur-qdrant")?;
+            output.print_text("qdrant redeployed");
+        }
+        Component::Server => {
+            output.print_text("redeploying server...");
+            compose.recreate_service("ur-server")?;
+            output.print_text("server redeployed");
+        }
+        Component::All => {
+            redeploy_component(&Component::Builderd, config, compose, output)?;
+            redeploy_component(&Component::Squid, config, compose, output)?;
+            redeploy_component(&Component::Qdrant, config, compose, output)?;
+            redeploy_component(&Component::Server, config, compose, output)?;
+            output.print_text("all components redeployed");
+        }
+    }
+    Ok(())
+}
+
+/// Stop all running workers via the server's gRPC API in parallel.
+///
+/// Best-effort: logs warnings for individual failures but does not propagate errors,
+/// since the server is about to be stopped anyway.
+async fn stop_workers_via_grpc(client: &mut CoreServiceClient<Channel>, output: &OutputManager) {
+    let workers = match client.worker_list(WorkerListRequest {}).await {
+        Ok(resp) => resp.into_inner().workers,
+        Err(e) => {
+            warn!(error = %e, "failed to list workers via gRPC");
+            return;
+        }
+    };
+
+    if workers.is_empty() {
+        output.print_text("No workers running");
+        return;
+    }
+
+    info!(
+        count = workers.len(),
+        "stopping workers via gRPC in parallel"
+    );
+
+    let mut set = tokio::task::JoinSet::new();
+    for w in &workers {
+        let mut c = client.clone();
+        let wid = w.worker_id.clone();
+        set.spawn(async move {
+            let result = c
+                .worker_stop(WorkerStopRequest {
+                    worker_id: wid.clone(),
+                })
+                .await;
+            (wid, result)
+        });
+    }
+
+    while let Some(join_result) = set.join_next().await {
+        let (wid, result) = join_result.expect("worker stop task panicked");
+        let result: Result<(), tonic::Status> = result.map(|_| ());
+        match result {
+            Ok(_) => {
+                info!(worker_id = %wid, "worker stopped via gRPC");
+                if output.is_json() {
+                    output.print_success(&WorkerStopped {
+                        worker_id: wid.clone(),
+                    });
+                } else {
+                    println!("Stopped {wid}");
+                }
+            }
+            Err(e) => {
+                warn!(worker_id = %wid, error = %e, "failed to stop worker via gRPC");
+                eprintln!("Warning: failed to stop {wid}: {e}");
+            }
+        }
+    }
+}
+
+async fn connect(port: u16) -> Result<CoreServiceClient<Channel>> {
+    let channel = connection::connect(port).await?;
+    Ok(CoreServiceClient::new(channel))
+}
+
+#[instrument(skip(output))]
+fn kill_all_containers(worker_prefix: &str, output: &OutputManager) -> Result<()> {
+    let rt = container::runtime_from_env();
+    let containers = rt.list_by_prefix(worker_prefix)?;
+    if containers.is_empty() {
+        debug!(worker_prefix, "no worker containers running");
+        output.print_text(&format!(
+            "No worker containers running (prefix: {worker_prefix})"
+        ));
+        return Ok(());
+    }
+    info!(
+        count = containers.len(),
+        worker_prefix, "killing all worker containers"
+    );
+
+    // Stop and remove all containers in parallel
+    let handles: Vec<_> = containers
+        .into_iter()
+        .map(|id| {
+            std::thread::spawn(move || {
+                let rt = container::runtime_from_env();
+                let stop_err = rt.stop(&id).err();
+                let rm_err = rt.rm(&id).err();
+                (id, stop_err, rm_err)
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let (id, stop_err, rm_err) = handle.join().expect("container kill thread panicked");
+        if let Some(e) = stop_err {
+            warn!(container = %id.0, error = %e, "failed to stop container");
+            eprintln!("Warning: failed to stop {}: {e}", id.0);
+        }
+        if let Some(e) = rm_err {
+            warn!(container = %id.0, error = %e, "failed to remove container");
+            eprintln!("Warning: failed to remove {}: {e}", id.0);
+        }
+        info!(container = %id.0, "container killed");
+        if output.is_json() {
+            output.print_success(&ContainerKilled {
+                container_id: id.0.clone(),
+            });
+        } else {
+            println!("Killed {}", id.0);
+        }
+    }
+    Ok(())
+}
+
+/// Wait for a container's Docker HEALTHCHECK to report "healthy".
+/// Polls every 500ms for up to 60s.
+fn wait_for_healthy(worker_id: &str, worker_prefix: &str) -> Result<()> {
+    let runtime = container::runtime_from_env();
+    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
+    let max_attempts = 120; // 60s at 500ms intervals
+    let mut printed = false;
+    for i in 0..max_attempts {
+        let status = runtime.health_status(&id).unwrap_or_default();
+        if status == "healthy" {
+            if printed {
+                eprintln!(" ready");
+            }
+            return Ok(());
+        }
+        if status == "unhealthy" {
+            if printed {
+                eprintln!();
+            }
+            bail!("container {} became unhealthy", id.0);
+        }
+        if i == 0 {
+            eprint!("Waiting for worker to initialize");
+            printed = true;
+        }
+        eprint!(".");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    if printed {
+        eprintln!();
+    }
+    bail!("container {} did not become healthy after 60s", id.0);
+}
+
+#[instrument]
+fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
+    let runtime = container::runtime_from_env();
+    let id = ContainerId(format!("{worker_prefix}{worker_id}"));
+    info!(container = %id.0, "attaching to agent session");
+    // Attach to the `agent` tmux session managed by workerd. This lets the user
+    // see the live Claude Code session. Multiple clients can attach simultaneously
+    // and send-keys works regardless of attached clients.
+    let session = tmux::Session::from_name("agent");
+    let command = session.attach_command();
+    let status = runtime.exec_interactive(&id, &command)?;
+    Ok(status.code().unwrap_or(1))
+}
+
+#[instrument(skip(client, output))]
+async fn process_list(
+    client: &mut CoreServiceClient<Channel>,
+    output: &OutputManager,
+) -> Result<()> {
+    info!("listing processes");
+    let resp = client.worker_list(WorkerListRequest {}).await?;
+    let workers = resp.into_inner().workers;
+    if workers.is_empty() {
+        output.print_text("No running workers.");
+        return Ok(());
+    }
+    output.print_items(&workers, |workers| {
+        let mut out = format!(
+            "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
+            "WORKER", "PROJECT", "CONTAINER", "MODE", "STATUS", "AGENT", "DIRECTORY"
+        );
+        for w in workers {
+            let container_short = if w.container_id.len() > 12 {
+                &w.container_id[..12]
+            } else {
+                &w.container_id
+            };
+            let project = if w.project_key.is_empty() {
+                "-"
+            } else {
+                &w.project_key
+            };
+            let directory = if w.directory.is_empty() {
+                "-"
+            } else {
+                &w.directory
+            };
+            let container_status = if w.container_status.is_empty() {
+                "-"
+            } else {
+                &w.container_status
+            };
+            let agent_status = if w.agent_status.is_empty() {
+                "-"
+            } else {
+                &w.agent_status
+            };
+            out.push_str(&format!(
+                "{:<20} {:<12} {:<16} {:<8} {:<12} {:<14} {}\n",
+                w.worker_id,
+                project,
+                container_short,
+                w.mode,
+                container_status,
+                agent_status,
+                directory
+            ));
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    });
+    Ok(())
+}
+
+#[instrument(skip(client, output))]
+async fn worker_describe(
+    client: &mut CoreServiceClient<Channel>,
+    worker_id: Option<&str>,
+    output: &OutputManager,
+) -> Result<()> {
+    info!("describing worker");
+    let resp = client.worker_list(WorkerListRequest {}).await?;
+    let workers = resp.into_inner().workers;
+
+    let filtered: Vec<_> = if let Some(id) = worker_id {
+        workers.into_iter().filter(|w| w.worker_id == id).collect()
+    } else {
+        workers
+    };
+
+    if filtered.is_empty() {
+        if let Some(id) = worker_id {
+            bail!("unknown worker: {id}");
+        }
+        output.print_text("No running workers.");
+        return Ok(());
+    }
+
+    output.print_items(&filtered, |workers| {
+        let mut out = String::new();
+        for (i, w) in workers.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            format_worker_describe(w, &mut out);
+        }
+        if out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    });
+    Ok(())
+}
+
+fn format_worker_describe(w: &WorkerSummary, out: &mut String) {
+    fn dash(s: &str) -> &str {
+        if s.is_empty() { "-" } else { s }
+    }
+    let mut fields: Vec<(&str, &str)> = vec![
+        ("Worker", &w.worker_id),
+        ("Container", dash(&w.container_status)),
+        ("Agent", dash(&w.agent_status)),
+        ("Mode", &w.mode),
+        ("Directory", dash(&w.directory)),
+        ("Workflow", dash(&w.workflow_id)),
+        ("Workflow Status", dash(&w.workflow_status)),
+    ];
+
+    if !w.pr_url.is_empty() {
+        fields.push(("PR", &w.pr_url));
+    }
+    let stall_display;
+    if w.workflow_stalled {
+        stall_display = if w.workflow_stall_reason.is_empty() {
+            "yes".to_owned()
+        } else {
+            format!("yes \u{2014} {}", w.workflow_stall_reason)
+        };
+        fields.push(("Stalled", &stall_display));
+    }
+
+    let label_width = fields.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+
+    for (label, value) in &fields {
+        out.push_str(&format!(
+            "{:>width$}: {}\n",
+            label,
+            value,
+            width = label_width
+        ));
+    }
+}
+
+/// Cancel any active workflow for a ticket via the CancelWorkflow RPC.
+async fn cancel_workflow(port: u16, ticket_id: &str) -> Result<()> {
+    let channel = connection::connect(port).await?;
+    let mut ticket_client = TicketServiceClient::new(channel);
+
+    ticket_client
+        .cancel_workflow(CancelWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await
+        .with_status_context("cancel workflow")?;
+
+    info!(ticket_id, "cancelled active workflow");
+    Ok(())
+}
+
+/// Create a workflow for a ticket with status=awaiting_dispatch via the CreateWorkflow RPC.
+async fn dispatch_ticket(port: u16, ticket_id: &str) -> Result<()> {
+    let channel = connection::connect(port).await?;
+    let mut ticket_client = TicketServiceClient::new(channel);
+
+    ticket_client
+        .create_workflow(CreateWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+            status: ur_rpc::lifecycle::AWAITING_DISPATCH.to_owned(),
+        })
+        .await
+        .with_status_context("create workflow for dispatch")?;
+
+    info!(ticket_id, "created workflow with awaiting_dispatch status");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[instrument(skip(client, output, projects), fields(ticket_id, workspace = ?workspace, project_key = ?project_key, mode, skills = ?skills))]
+async fn process_launch(
+    client: &mut CoreServiceClient<Channel>,
+    ticket_id: &str,
+    workspace: Option<PathBuf>,
+    project_key: &str,
+    worker_prefix: &str,
+    mode: &str,
+    skills: &[String],
+    context_repos: &[String],
+    dispatch: bool,
+    output: &OutputManager,
+    projects: &HashMap<String, ur_config::ProjectConfig>,
+) -> Result<()> {
+    info!(ticket_id, project_key, "launching worker process");
+
+    // Refresh credentials from host Claude Code and ensure config exists
+    let cred_mgr = credential::CredentialManager;
+    cred_mgr.ensure_credentials()?;
+    debug!(ticket_id, "credentials ensured");
+
+    // Resolve workspace to an absolute path if provided
+    let workspace_dir = match workspace {
+        Some(path) => {
+            let abs = std::fs::canonicalize(&path)
+                .with_context(|| format!("failed to resolve workspace path: {}", path.display()))?;
+            debug!(workspace = %abs.display(), "resolved workspace path");
+            abs.to_string_lossy().into_owned()
+        }
+        None => String::new(),
+    };
+
+    let default_image;
+    let image_id = match projects
+        .get(project_key)
+        .map(|p| p.container.image.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(image) => image,
+        None if !workspace_dir.is_empty() => {
+            // Workspace mount without a project — use the base image
+            default_image = ur_config::IMAGE_ALIASES
+                .first()
+                .expect("IMAGE_ALIASES must not be empty")
+                .1;
+            default_image
+        }
+        None => {
+            return Err(if project_key.is_empty() {
+                anyhow::anyhow!(
+                    "no project specified — use -p <project> to select a project with a configured container image"
+                )
+            } else {
+                anyhow::anyhow!(
+                    "project '{}' has no container image configured (set container.image in ur.toml)",
+                    project_key
+                )
+            });
+        }
+    };
+    let container_name = format!("{worker_prefix}{ticket_id}");
+    if !output.is_json() {
+        println!("Launching worker {container_name}...");
+    }
+    let resp = client
+        .worker_launch(WorkerLaunchRequest {
+            worker_id: ticket_id.into(),
+            image_id: image_id.into(),
+            cpus: 2,
+            memory: "8G".into(),
+            workspace_dir,
+            claude_credentials: String::new(),
+            mode: mode.to_owned(),
+            skills: skills.to_vec(),
+            project_key: project_key.to_owned(),
+            context_repos: context_repos.to_vec(),
+            dispatch,
+        })
+        .await?;
+
+    let container_id = resp.into_inner().container_id;
+    info!(
+        ticket_id,
+        container_name, container_id, image_id, "worker process launched"
+    );
+    if output.is_json() {
+        output.print_success(&WorkerLaunched {
+            worker_id: ticket_id.to_string(),
+            container_id,
+        });
+    } else {
+        println!("Worker {container_name} running (container {container_id})");
+    }
+    Ok(())
+}
+
+#[instrument(skip(client, output))]
+async fn process_stop(
+    client: &mut CoreServiceClient<Channel>,
+    worker_id: &str,
+    output: &OutputManager,
+) -> Result<()> {
+    info!(worker_id, "stopping worker process");
+    if !output.is_json() {
+        println!("Stopping {worker_id}...");
+    }
+    client
+        .worker_stop(WorkerStopRequest {
+            worker_id: worker_id.into(),
+        })
+        .await?;
+    info!(worker_id, "worker process stopped");
+    if output.is_json() {
+        output.print_success(&WorkerStopped {
+            worker_id: worker_id.to_string(),
+        });
+    } else {
+        println!("Worker {worker_id} stopped.");
+    }
+    Ok(())
+}
+
+#[instrument(skip(command, projects, output), fields(command_name = command_name(&command)))]
+async fn handle_worker(
+    command: WorkerCommands,
+    port: u16,
+    worker_prefix: &str,
+    projects: &HashMap<String, ur_config::ProjectConfig>,
+    output: &OutputManager,
+) -> Result<()> {
+    match command {
+        WorkerCommands::List => {
+            let mut client = connect(port).await?;
+            process_list(&mut client, output).await
+        }
+        WorkerCommands::Attach { worker_id, rm } => {
+            handle_worker_attach(port, worker_prefix, output, &worker_id, rm).await
+        }
+        WorkerCommands::Kill { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &worker_id, output).await
+        }
+        WorkerCommands::SaveCredentials { worker_id } => {
+            handle_worker_save_credentials(worker_prefix, output, &worker_id)
+        }
+        WorkerCommands::Launch {
+            ticket_id,
+            workspace,
+            project,
+            attach,
+            rm,
+            force,
+            mode,
+            skills,
+            dispatch,
+            context_repos,
+        } => {
+            handle_worker_launch(
+                port,
+                worker_prefix,
+                projects,
+                output,
+                ticket_id,
+                workspace,
+                project,
+                attach,
+                rm,
+                force,
+                mode,
+                skills,
+                dispatch,
+                context_repos,
+            )
+            .await
+        }
+        WorkerCommands::Describe { worker_id } => {
+            debug!(worker_id = ?worker_id, "describing worker");
+            let mut client = connect(port).await?;
+            worker_describe(&mut client, worker_id.as_deref(), output).await
+        }
+        WorkerCommands::Send { worker_id, message } => {
+            handle_worker_send(port, output, worker_id, message).await
+        }
+        WorkerCommands::Stop { worker_id } => {
+            input::validate_id(&worker_id, "worker_id")?;
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &worker_id, output).await
+        }
+        WorkerCommands::Dir { worker_id } => handle_worker_dir(port, output, &worker_id).await,
+        WorkerCommands::Code { worker_id } => handle_worker_code(port, &worker_id).await,
+    }
+}
+
+async fn handle_worker_attach(
+    port: u16,
+    worker_prefix: &str,
+    output: &OutputManager,
+    worker_id: &str,
+    rm: bool,
+) -> Result<()> {
+    if output.is_json() {
+        let err = StructuredError::new(
+            ErrorCode::InteractiveNotSupported,
+            "attach is an interactive command and cannot produce JSON output",
+        );
+        output.print_error(&err);
+        process::exit(err.code.exit_code());
+    }
+    let exit_code = process_attach(worker_id, worker_prefix)?;
+    if rm {
+        println!("Stopping {worker_id} (--rm)...");
+        let mut client = connect(port).await?;
+        process_stop(&mut client, worker_id, output).await?;
+    }
+    process::exit(exit_code);
+}
+
+fn handle_worker_save_credentials(
+    worker_prefix: &str,
+    output: &OutputManager,
+    worker_id: &str,
+) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    info!(worker_id = %worker_id, "saving credentials from container");
+    let runtime = container::runtime_from_env();
+    let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
+    let cred_mgr = credential::CredentialManager;
+    let paths = cred_mgr.save_from_container(&runtime, &id)?;
+    if output.is_json() {
+        output.print_success(&CredentialsSaved {
+            paths: paths.iter().map(|p| p.display().to_string()).collect(),
+        });
+    } else {
+        for path in &paths {
+            info!(path = %path.display(), "saved credential file");
+            println!("Saved {}", path.display());
+        }
+    }
+    Ok(())
+}
+
+async fn handle_worker_send(
+    port: u16,
+    output: &OutputManager,
+    worker_id: String,
+    message: String,
+) -> Result<()> {
+    input::validate_id(&worker_id, "worker_id")?;
+    let mut client = connect(port).await?;
+    info!(worker_id = %worker_id, "sending message to worker");
+    client
+        .send_worker_message(SendWorkerMessageRequest {
+            worker_id: worker_id.clone(),
+            message,
+            ..Default::default()
+        })
+        .await?;
+    if output.is_json() {
+        output.print_text(&format!(
+            "{{\"worker_id\":\"{worker_id}\",\"status\":\"sent\"}}"
+        ));
+    } else {
+        println!("Message sent to {worker_id}.");
+    }
+    Ok(())
+}
+
+async fn handle_worker_dir(port: u16, output: &OutputManager, worker_id: &str) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    let dir = process_workspace_dir(port, worker_id).await?;
+    if output.is_json() {
+        output.print_success(&WorkerDir { path: dir });
+    } else {
+        println!("{dir}");
+    }
+    Ok(())
+}
+
+async fn handle_worker_code(port: u16, worker_id: &str) -> Result<()> {
+    input::validate_id(worker_id, "worker_id")?;
+    let dir = process_workspace_dir(port, worker_id).await?;
+    let status = process::Command::new("code")
+        .arg(&dir)
+        .status()
+        .context("failed to launch VS Code — is `code` on your PATH?")?;
+    if !status.success() {
+        bail!("VS Code exited with {status}");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_worker_launch(
+    port: u16,
+    worker_prefix: &str,
+    projects: &HashMap<String, ur_config::ProjectConfig>,
+    output: &OutputManager,
+    ticket_id: String,
+    workspace: Option<PathBuf>,
+    project: Option<String>,
+    attach: bool,
+    rm: bool,
+    force: bool,
+    mode: String,
+    skills: Option<String>,
+    dispatch: bool,
+    context_repos: Option<String>,
+) -> Result<()> {
+    input::validate_id(&ticket_id, "ticket_id")?;
+    if let Some(ref p) = project {
+        input::validate_id(p, "project")?;
+    }
+    if let Some(ref w) = workspace {
+        input::reject_path_traversal(w, "workspace")?;
+    }
+
+    let skills_vec: Vec<String> = skills
+        .iter()
+        .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let context_repos_vec: Vec<String> = context_repos
+        .iter()
+        .flat_map(|s| s.split(',').map(|s| s.trim().to_owned()))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let project_keys: Vec<String> = projects.keys().cloned().collect();
+    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, &project_keys)?;
+
+    let mut client = connect(port).await?;
+    if force {
+        debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
+        let _ = process_stop(&mut client, &ticket_id, output).await;
+        cancel_workflow(port, &ticket_id).await?;
+    }
+    let is_design = mode == "design";
+    if dispatch && !is_design {
+        dispatch_ticket(port, &ticket_id).await?;
+    }
+    process_launch(
+        &mut client,
+        &ticket_id,
+        workspace,
+        &resolved_project,
+        worker_prefix,
+        &mode,
+        &skills_vec,
+        &context_repos_vec,
+        dispatch && is_design,
+        output,
+        projects,
+    )
+    .await?;
+    if attach || rm {
+        if output.is_json() {
+            let err = StructuredError::new(
+                ErrorCode::InteractiveNotSupported,
+                "attach is an interactive command and cannot produce JSON output",
+            );
+            output.print_error(&err);
+            process::exit(err.code.exit_code());
+        }
+        wait_for_healthy(&ticket_id, worker_prefix)?;
+        let exit_code = process_attach(&ticket_id, worker_prefix)?;
+        if rm {
+            println!("Stopping {ticket_id} (--rm)...");
+            let mut client = connect(port).await?;
+            process_stop(&mut client, &ticket_id, output).await?;
+        }
+        process::exit(exit_code);
+    }
+    Ok(())
+}
+
+fn resolve_project_key(
+    project: Option<String>,
+    workspace: &Option<PathBuf>,
+    ticket_id: &str,
+    project_keys: &[String],
+) -> Result<String> {
+    if let Some(p) = project {
+        return Ok(p);
+    }
+    let id_prefix = ticket_id
+        .split(&['-', '.'][..])
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
+        debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
+        return Ok(id_prefix);
+    }
+    let cwd = std::env::current_dir().context("failed to get current working directory")?;
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cannot determine directory name from cwd"))?
+        .to_owned();
+    if project_keys.contains(&dir_name) {
+        debug!(project_key = %dir_name, "derived project from cwd");
+        return Ok(dir_name);
+    }
+    if workspace.is_some() {
+        return Ok(String::new());
+    }
+    bail!(
+        "could not derive project from ticket ID prefix '{}' or \
+         cwd directory name '{}' \
+         (neither is a configured project key). Use -p <project> or -w <path>.",
+        id_prefix,
+        dir_name
+    )
+}
+
+/// Fetch the host workspace directory for a running process via gRPC.
+async fn process_workspace_dir(port: u16, worker_id: &str) -> Result<String> {
+    let mut client = connect(port).await?;
+    let resp = client
+        .worker_info(WorkerInfoRequest {
+            worker_id: worker_id.to_owned(),
+        })
+        .await?;
+    let workspace_dir = resp.into_inner().workspace_dir;
+    if workspace_dir.is_empty() {
+        bail!("no workspace directory for process {worker_id}");
+    }
+    Ok(workspace_dir)
+}
+
+/// Extract the subcommand name for span fields.
+fn command_name(cmd: &WorkerCommands) -> &'static str {
+    match cmd {
+        WorkerCommands::Attach { .. } => "attach",
+        WorkerCommands::Kill { .. } => "kill",
+        WorkerCommands::List => "list",
+        WorkerCommands::SaveCredentials { .. } => "save_credentials",
+        WorkerCommands::Send { .. } => "send",
+        WorkerCommands::Launch { .. } => "launch",
+        WorkerCommands::Describe { .. } => "describe",
+        WorkerCommands::Stop { .. } => "stop",
+        WorkerCommands::Dir { .. } => "dir",
+        WorkerCommands::Code { .. } => "code",
+    }
+}
 
 fn main() {
-    if let Err(err) = ur::run(CliRegistry::new()) {
-        eprintln!("Error: {err:#}");
-        std::process::exit(1);
+    let output_format = output::resolve_output_format_early();
+
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            output::handle_clap_error(e, output_format);
+        }
+    };
+
+    let out = OutputManager::from_args(cli.output.as_deref());
+
+    // Handle --describe: print schema JSON and exit
+    if cli.describe {
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let schema = describe::describe_command(&cmd);
+        println!("{}", serde_json::to_string_pretty(&schema).unwrap());
+        return;
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    if let Err(err) = rt.block_on(run(cli, &out)) {
+        let structured = StructuredError::from_anyhow(&err);
+        out.print_error(&structured);
+        std::process::exit(structured.code.exit_code());
+    }
+}
+
+async fn handle_project(
+    command: ProjectCommands,
+    config: &ur_config::Config,
+    output: &OutputManager,
+) -> Result<()> {
+    match command {
+        ProjectCommands::Add {
+            path,
+            image,
+            key,
+            name,
+            pool_limit,
+        } => {
+            if let Some(ref k) = key {
+                input::validate_id(k, "key")?;
+            }
+            if let Some(ref n) = name {
+                input::reject_control_chars(n, "name")?;
+            }
+            input::reject_path_traversal(&path, "path")?;
+            ur_config::validate_image_alias(&image)?;
+            let resolved_key = resolve_add_project_key(&path, key.as_deref())?;
+            project::add(
+                config,
+                &path,
+                &image,
+                key.as_deref(),
+                name.as_deref(),
+                pool_limit,
+                output,
+            )?;
+            project::try_reload_server(config.server_port, &resolved_key, "added").await;
+        }
+        ProjectCommands::List => project::list(config, output)?,
+        ProjectCommands::Remove { key, force } => {
+            input::validate_id(&key, "key")?;
+            project::remove(config, &key, force, output)?;
+            project::try_reload_server(config.server_port, &key, "removed").await;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the project key that `project::add` will use, without side effects.
+fn resolve_add_project_key(path: &Path, explicit_key: Option<&str>) -> Result<String> {
+    match explicit_key {
+        Some(k) => Ok(k.to_string()),
+        None => {
+            let canonical =
+                std::fs::canonicalize(path).context("failed to resolve path for key derivation")?;
+            let repo = project::git_remote_origin(&canonical)?;
+            project::derive_key_from_repo(&repo)
+        }
+    }
+}
+
+fn handle_proxy(
+    command: ProxyCommands,
+    config: &ur_config::Config,
+    output: &OutputManager,
+) -> Result<()> {
+    let squid_dir = config.squid_dir();
+    let allowlist_path = squid_dir.join("allowlist.txt");
+    match command {
+        ProxyCommands::Allow { domain } => {
+            input::validate_domain(&domain)?;
+            info!(domain = %domain, "allowing domain through proxy");
+            let domains = proxy::allow_domain(&allowlist_path, &domain)?;
+            proxy::signal_reconfigure(&config.proxy.hostname);
+            proxy::print_domains(&domains, output);
+        }
+        ProxyCommands::Block { domain } => {
+            input::validate_domain(&domain)?;
+            info!(domain = %domain, "blocking domain from proxy");
+            let domains = proxy::block_domain(&allowlist_path, &domain)?;
+            proxy::signal_reconfigure(&config.proxy.hostname);
+            proxy::print_domains(&domains, output);
+        }
+        ProxyCommands::List => {
+            debug!("listing proxy domains");
+            let domains = proxy::read_allowlist(&allowlist_path)?;
+            proxy::print_domains(&domains, output);
+        }
+    }
+    Ok(())
+}
+
+async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
+    // Init bypasses config loading — it creates the config files.
+    if let Commands::Init {
+        force,
+        force_config,
+        force_squid,
+    } = cli.command
+    {
+        return init::run(
+            init::InitFlags {
+                force,
+                force_config,
+                force_squid,
+            },
+            output,
+        );
+    }
+
+    let config = load_config()?;
+
+    // Initialize structured JSON file logging after config is loaded so we
+    // know where to write the log file. The guard must live until main exits.
+    let _log_guard = logging::init(&config.logs_dir);
+
+    info!(
+        config_dir = %config.config_dir.display(),
+        server_port = config.server_port,
+        builderd_port = config.builderd_port,
+        "ur CLI started"
+    );
+
+    let port = config.server_port;
+    let compose = compose_manager_from_config(&config);
+
+    match cli.command {
+        Commands::Db { command } => match command {
+            DbCommands::Backup => db::backup(&config, output).await?,
+            DbCommands::List => db::list(&config, output)?,
+            DbCommands::Restore { path } => {
+                input::reject_path_traversal(&path, "path")?;
+                db::restore(&config, &path, output).await?
+            }
+        },
+        Commands::Init { .. } => unreachable!(),
+        Commands::Project { command } => handle_project(command, &config, output).await?,
+        Commands::Proxy { command } => handle_proxy(command, &config, output)?,
+        Commands::Server { command } => match command {
+            ServerCommands::Redeploy { component } => {
+                redeploy_component(&component, &config, &compose, output)?;
+            }
+            ServerCommands::Restart => {
+                stop_server(&config, &compose, output).await?;
+                start_server(&config, &compose, output)?;
+            }
+            ServerCommands::Start => start_server(&config, &compose, output)?,
+            ServerCommands::Stop => stop_server(&config, &compose, output).await?,
+        },
+        Commands::Ticket { command } => {
+            ticket::handle(port, command, output, &config.projects).await?
+        }
+        Commands::Tui { command } => tui::handle(*command, &config, output)?,
+        Commands::Flow { command } => flow::handle(port, command, output).await?,
+        Commands::Worker { command } => {
+            handle_worker(
+                command,
+                port,
+                &config.network.worker_prefix,
+                &config.projects,
+                output,
+            )
+            .await?
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn project_keys() -> Vec<String> {
+        vec!["ur".to_owned(), "myproj".to_owned()]
+    }
+
+    #[test]
+    fn explicit_project_flag_takes_priority() {
+        let result = resolve_project_key(
+            Some("explicit".to_owned()),
+            &None,
+            "ur-abc12",
+            &project_keys(),
+        )
+        .unwrap();
+        assert_eq!(result, "explicit");
+    }
+
+    #[test]
+    fn explicit_project_flag_with_workspace() {
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(
+            Some("explicit".to_owned()),
+            &ws,
+            "ur-abc12",
+            &project_keys(),
+        )
+        .unwrap();
+        assert_eq!(result, "explicit");
+    }
+
+    #[test]
+    fn ticket_id_prefix_derivation() {
+        let result = resolve_project_key(None, &None, "ur-abc12", &project_keys()).unwrap();
+        assert_eq!(result, "ur");
+    }
+
+    #[test]
+    fn ticket_id_prefix_derivation_with_workspace() {
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "ur-abc12", &project_keys()).unwrap();
+        assert_eq!(result, "ur");
+    }
+
+    #[test]
+    fn ticket_id_prefix_dot_separator() {
+        let result = resolve_project_key(None, &None, "myproj.xyz", &project_keys()).unwrap();
+        assert_eq!(result, "myproj");
+    }
+
+    #[test]
+    fn ticket_id_prefix_not_in_keys_falls_through() {
+        // Prefix doesn't match a project key; with workspace set and cwd not matching,
+        // falls through to the workspace fallback returning empty string.
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "zzz-abc", &project_keys());
+        if let Ok(val) = result {
+            assert_ne!(val, "zzz");
+        }
+    }
+
+    #[test]
+    fn workspace_fallback_returns_empty_when_nothing_matches() {
+        // Empty ticket ID prefix + workspace set: should return Ok("") fallback
+        // (unless cwd happens to match a project key, which is also fine).
+        let ws = Some(PathBuf::from("/tmp/ws"));
+        let result = resolve_project_key(None, &ws, "", &project_keys());
+        match result {
+            Ok(val) => assert!(val.is_empty() || project_keys().contains(&val)),
+            Err(_) => panic!("should not error when workspace is set"),
+        }
+    }
+
+    #[test]
+    fn no_workspace_no_match_returns_error() {
+        // No project flag, non-matching prefix, no workspace, empty project keys
+        // so cwd can't match either → should error.
+        let result = resolve_project_key(None, &None, "zzz-abc", &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("could not derive project"));
     }
 }
