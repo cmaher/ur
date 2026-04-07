@@ -257,6 +257,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         config.worker_port,
         Default::default(),
         worker_repo,
+        std::sync::Arc::new(plugins::ServerRegistry::new()),
     )
 }
 
@@ -310,6 +311,7 @@ fn dummy_config() -> Arc<ur_config::Config> {
             ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
         },
         projects: std::collections::HashMap::new(),
+        plugins: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
     })
 }

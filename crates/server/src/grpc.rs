@@ -247,7 +247,7 @@ impl CoreServiceHandler {
         let effective_project_key = if !req.project_key.is_empty() {
             req.project_key.clone()
         } else if let Some(prefix) = req.worker_id.split('-').next() {
-            if !prefix.is_empty() && self.projects.contains_key(prefix) {
+            if !prefix.is_empty() && self.project_registry.get(prefix).is_some() {
                 info!(
                     worker_id = req.worker_id,
                     extracted_project_key = prefix,

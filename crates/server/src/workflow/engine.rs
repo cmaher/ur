@@ -296,6 +296,7 @@ mod tests {
                 ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
             },
             projects: std::collections::HashMap::new(),
+            plugins: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
         })
     }
@@ -337,6 +338,7 @@ mod tests {
             config.worker_port,
             Default::default(),
             worker_repo,
+            std::sync::Arc::new(plugins::ServerRegistry::new()),
         )
     }
 

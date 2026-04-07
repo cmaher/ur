@@ -3,7 +3,16 @@ name = "ur-server"
 edition.workspace = true
 version.workspace = true
 
+[lib]
+name = "ur_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ur-server"
+path = "src/main.rs"
+
 [dependencies]
+plugins = { path = "../plugins" }
 anyhow = "1"
 chrono = "0.4"
 container = { path = "../container" }
@@ -27,6 +36,7 @@ serde = { workspace = true }
 toml = "0.8"
 remote_repo = { path = "../remote_repo" }
 ur_rpc = { path = "../ur_rpc", features = ["stream", "error", "retry"] }
+url = "2"
 ur_utils = { path = "../ur_utils" }
 serde_json.workspace = true
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }

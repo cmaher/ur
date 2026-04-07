@@ -1,0 +1,18 @@
+[package]
+name = "compose"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = "1"
+indexmap = { version = "2", features = ["serde"] }
+serde = { workspace = true }
+serde_yaml = "0.9"
+tracing = { workspace = true }
+ur_config = { path = "../ur_config" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
