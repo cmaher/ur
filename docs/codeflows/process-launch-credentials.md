@@ -9,12 +9,15 @@ macOS: Keychain ("Claude Code-credentials")
 Linux: ~/.claude/.credentials.json
     │
     ▼
-ur CLI: CredentialManager.ensure_credentials()        [crates/ur/src/credential.rs]
-    │   if ~/.ur/claude/.credentials.json missing:
+ur CLI: CredentialManager.ensure_credentials(max_age) [crates/ur/src/credential.rs]
+    │   re-seeds if ~/.ur/claude/.credentials.json is missing, empty, or older than max_age:
     │     macOS: runs: security find-generic-password -s "Claude Code-credentials" -w
     │     Linux: reads ~/.claude/.credentials.json directly
     │     writes result to ~/.ur/claude/.credentials.json
-    │   (no-op if file already exists — containers own their session after seeding)
+    │   max_age callers:
+    │     ur start          → Duration::ZERO (force re-seed every restart)
+    │     ur worker launch  → 1 day (re-seed if file is stale; otherwise let containers refresh)
+    │     ur worker reseed-credentials → Duration::ZERO (manual force re-seed)
     │
     ▼
 ur CLI: process_launch()                              [crates/ur/src/main.rs]
@@ -36,7 +39,7 @@ Container: Claude Code reads ~/.claude/.credentials.json
 - `~/.claude/.credentials.json` — OAuth tokens (bind-mounted from host, shared across all containers)
 - `~/.claude.json` — App config with `hasCompletedOnboarding` and project trust (baked into image)
 
-**Session ownership:** Credentials are seeded once from the host Claude Code installation (macOS Keychain or Linux credentials file). After that, containers own their token lifecycle — refreshes write back to the shared mount without touching the host credentials. This avoids token rotation conflicts between host and container Claude Code sessions.
+**Session ownership:** Credentials are seeded from the host Claude Code installation (macOS Keychain or Linux credentials file) on `ur start` and on `ur worker launch` when the shared file is older than a day. Between re-seeds, containers own their token lifecycle — refreshes write back to the shared mount without touching the host credentials. The age check lets host re-logins propagate without clobbering fresh container-driven token refreshes on every launch. To force a re-seed without restarting, run `ur worker reseed-credentials`.
 
 ## Process Launch Sequence
 
@@ -45,8 +48,9 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
 
 1. CLI (host)
    ├── -f flag? → kill_container() (docker stop + rm)
-   ├── CredentialManager.ensure_credentials()
-   │   └── seed from host Claude Code if ~/.ur/claude/.credentials.json missing
+   ├── CredentialManager.ensure_credentials(max_age = 1 day)
+   │   └── re-seed from host Claude Code if ~/.ur/claude/.credentials.json
+   │       is missing, empty, or older than max_age
    │       (macOS: Keychain, Linux: ~/.claude/.credentials.json)
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
    └── client.worker_launch(WorkerLaunchRequest { ... })
@@ -123,5 +127,6 @@ Permissions are bypassed via `settings.json` (`permissions.defaultMode: "bypassP
 
 ## Manual Credential Management
 
-- `ur worker save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for refreshing stale credentials or bootstrapping from a container login.
+- `ur worker reseed-credentials` — force re-seed `~/.ur/claude/.credentials.json` from the host (Keychain on macOS, `~/.claude/.credentials.json` on Linux). Use after re-logging into Claude Code on the host when you don't want to wait for the next `ur start` or 1-day age trigger.
+- `ur worker save-credentials <id>` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/claude/`. Useful for bootstrapping from a container login.
 - Delete `~/.ur/claude/.credentials.json` to force re-seeding from host credentials on next launch.

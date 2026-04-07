@@ -17,6 +17,7 @@ mod tui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -235,6 +236,8 @@ enum WorkerCommands {
     },
     /// List all running processes
     List,
+    /// Force re-seed shared Claude Code credentials from the host (Keychain on macOS)
+    ReseedCredentials,
     /// Save credentials from a running container for reuse
     SaveCredentials { worker_id: String },
     /// Show detailed worker information
@@ -262,9 +265,10 @@ fn start_server(
     info!("starting server");
 
     // Seed credentials from host Claude Code before starting anything so
-    // they're available for bind-mounting into worker containers.
+    // they're available for bind-mounting into worker containers. Force a
+    // re-seed on every start so host re-logins propagate after a restart.
     let cred_mgr = credential::CredentialManager;
-    if let Err(e) = cred_mgr.ensure_credentials() {
+    if let Err(e) = cred_mgr.ensure_credentials(Duration::ZERO) {
         debug!(error = %e, "credential seeding failed");
     }
     let has_credentials = credential::CredentialManager::host_credentials_path()
@@ -728,9 +732,11 @@ async fn process_launch(
 ) -> Result<()> {
     info!(ticket_id, project_key, "launching worker process");
 
-    // Refresh credentials from host Claude Code and ensure config exists
+    // Refresh credentials from host Claude Code and ensure config exists.
+    // Re-seed if the file is older than a day so host re-logins propagate
+    // without clobbering fresh container-driven token refreshes.
     let cred_mgr = credential::CredentialManager;
-    cred_mgr.ensure_credentials()?;
+    cred_mgr.ensure_credentials(Duration::from_secs(60 * 60 * 24))?;
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -855,6 +861,7 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             process_stop(&mut client, &worker_id, output).await
         }
+        WorkerCommands::ReseedCredentials => handle_worker_reseed_credentials(output),
         WorkerCommands::SaveCredentials { worker_id } => {
             handle_worker_save_credentials(worker_prefix, output, &worker_id)
         }
@@ -928,6 +935,30 @@ async fn handle_worker_attach(
         process_stop(&mut client, worker_id, output).await?;
     }
     process::exit(exit_code);
+}
+
+fn handle_worker_reseed_credentials(output: &OutputManager) -> Result<()> {
+    info!("forcing credential re-seed from host");
+    let cred_mgr = credential::CredentialManager;
+    cred_mgr.ensure_credentials(Duration::ZERO)?;
+    let path = credential::CredentialManager::host_credentials_path()?;
+    if !path.exists()
+        || std::fs::metadata(&path)
+            .map(|m| m.len() < 10)
+            .unwrap_or(true)
+    {
+        anyhow::bail!(
+            "no host Claude Code credentials found to seed — log in to Claude Code on this machine first"
+        );
+    }
+    if output.is_json() {
+        output.print_success(&CredentialsSaved {
+            paths: vec![path.display().to_string()],
+        });
+    } else {
+        println!("Reseeded {}", path.display());
+    }
+    Ok(())
 }
 
 fn handle_worker_save_credentials(
@@ -1150,6 +1181,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Attach { .. } => "attach",
         WorkerCommands::Kill { .. } => "kill",
         WorkerCommands::List => "list",
+        WorkerCommands::ReseedCredentials => "reseed_credentials",
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
         WorkerCommands::Send { .. } => "send",
         WorkerCommands::Launch { .. } => "launch",
