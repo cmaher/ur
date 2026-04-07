@@ -956,6 +956,7 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
             id: None,
             created_at: None,
             wip: false,
+            branch: None,
         })
         .await
         .map_err(|e| e.to_string())?;

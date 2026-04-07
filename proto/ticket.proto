@@ -94,6 +94,8 @@ message CreateTicketRequest {
   optional string created_at = 9;
   // If true, set lifecycle_status to "design" (WIP ticket).
   bool wip = 10;
+  // Optional branch name to associate with the ticket at creation time.
+  optional string branch = 11;
 }
 
 message CreateTicketResponse {

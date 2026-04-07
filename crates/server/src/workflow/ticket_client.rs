@@ -86,6 +86,7 @@ impl TicketClient {
                 id: None,
                 created_at: None,
                 wip: false,
+                branch: None,
             }))
             .await
             .map_err(|s| anyhow::anyhow!("create_ticket failed: {}", s.message()))?;

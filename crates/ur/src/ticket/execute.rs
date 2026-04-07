@@ -461,6 +461,7 @@ where
             id: None,
             created_at: None,
             wip,
+            branch: None,
         })
         .await
         .with_status_context("create ticket")?;

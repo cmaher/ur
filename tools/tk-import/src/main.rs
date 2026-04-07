@@ -202,6 +202,7 @@ async fn create_tickets(
                 id: Some(f.id.clone()),
                 created_at: Some(f.created.clone()),
                 wip: false,
+                branch: None,
             })
             .await
         {
