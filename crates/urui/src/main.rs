@@ -450,6 +450,13 @@ fn run_editor_flow(
     // Re-initialize terminal regardless of editor outcome.
     reinit_terminal(terminal)?;
 
+    // Drain any crossterm events buffered during the editor handoff
+    // (mode-transition noise, partial escape sequences, stray keypresses).
+    // Best-effort: ignore read errors.
+    while event::poll(Duration::ZERO)? {
+        let _ = event::read();
+    }
+
     let result = match status {
         Ok(exit) if exit.success() => {
             let content = std::fs::read_to_string(&tmp_path).unwrap_or_default();
@@ -568,6 +575,13 @@ fn run_edit_editor(
 
     // Re-initialize terminal regardless of editor outcome.
     reinit_terminal(terminal)?;
+
+    // Drain any crossterm events buffered during the editor handoff
+    // (mode-transition noise, partial escape sequences, stray keypresses).
+    // Best-effort: ignore read errors.
+    while event::poll(Duration::ZERO)? {
+        let _ = event::read();
+    }
 
     match status {
         Ok(exit) if exit.success() => {
