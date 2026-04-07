@@ -672,6 +672,41 @@ impl Model {
         self.active_overlay = None;
         self.input_stack.pop();
     }
+
+    /// Return the name of the topmost handler on the input stack, if any.
+    ///
+    /// This implementation pops the top handler, reads its name, and pushes it
+    /// back. It is intended for debug-only invariant checking and is not on a
+    /// hot path.
+    #[cfg(debug_assertions)]
+    pub fn top_input_handler_name(&mut self) -> Option<String> {
+        let handler = self.input_stack.pop()?;
+        let name = handler.name().to_string();
+        self.input_stack.push(handler);
+        Some(name)
+    }
+}
+
+/// Map an [`ActiveOverlay`] variant to the name of the [`InputHandler`] that
+/// must sit on top of the input stack while that overlay is active.
+///
+/// The names returned here must match exactly the strings returned by each
+/// overlay handler's `InputHandler::name()` implementation. This mapping is the
+/// single source of truth used by the debug invariant check that runs after
+/// every `update()` call (see `crate::update::debug_assert_overlay_invariant`).
+pub fn expected_handler_name_for_overlay(overlay: &ActiveOverlay) -> &'static str {
+    match overlay {
+        ActiveOverlay::PriorityPicker { .. } => "priority_picker",
+        ActiveOverlay::TypeMenu { .. } => "type_menu",
+        ActiveOverlay::FilterMenu { .. } => "filter_menu",
+        ActiveOverlay::GotoMenu { .. } => "goto_menu",
+        ActiveOverlay::ForceCloseConfirm { .. } => "force_close_confirm",
+        ActiveOverlay::CreateActionMenu { .. } => "create_action_menu",
+        ActiveOverlay::ProjectInput { .. } => "project_input",
+        ActiveOverlay::TitleInput { .. } => "title_input",
+        ActiveOverlay::Settings { .. } => "settings_overlay",
+        ActiveOverlay::Help => "help_overlay",
+    }
 }
 
 #[cfg(test)]
