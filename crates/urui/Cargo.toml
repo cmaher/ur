@@ -3,16 +3,11 @@ name = "urui"
 edition.workspace = true
 version.workspace = true
 
-[lib]
-name = "urui"
-path = "src/lib.rs"
-
 [[bin]]
 name = "urui"
 path = "src/main.rs"
 
 [dependencies]
-plugins = { path = "../plugins" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
