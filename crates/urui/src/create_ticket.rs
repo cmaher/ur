@@ -10,10 +10,12 @@ pub struct PendingTicket {
     pub title: String,
     pub ticket_type: String,
     pub priority: i64,
+    pub branch: Option<String>,
     pub body: String,
 }
 
 const TITLE_PLACEHOLDER: &str = "<summarize>";
+pub const BRANCH_PLACEHOLDER: &str = "<ticket-id>";
 const DEFAULT_TICKET_TYPE: &str = "design";
 
 /// Normalize a ticket type string: maps aliases to their canonical form.
@@ -30,27 +32,36 @@ pub fn normalize_ticket_type(s: &str) -> String {
 
 /// Generate the default template content shown in the editor.
 pub fn generate_template() -> String {
-    format!("title: {TITLE_PLACEHOLDER}\ntype: {DEFAULT_TICKET_TYPE}\npriority: 0\n---\n\n")
+    format!(
+        "title: {TITLE_PLACEHOLDER}\ntype: {DEFAULT_TICKET_TYPE}\npriority: 0\nbranch: {BRANCH_PLACEHOLDER}\n---\n\n"
+    )
 }
 
 /// Serialize ticket fields into the frontmatter markdown format used by the editor.
 ///
 /// This is the inverse of [`parse_ticket_file`]: given the individual fields, it
-/// produces the same `title: …\npriority: …\n---\n…` format that the editor
-/// template uses.
+/// produces the same `title: …\npriority: …\nbranch: …\n---\n…` format that
+/// the editor template uses. A `None` branch is rendered as the literal
+/// `<ticket-id>` placeholder.
 pub fn serialize_to_template(
     project: &str,
     title: &str,
     ticket_type: &str,
     priority: i64,
+    branch: Option<&str>,
     body: &str,
 ) -> String {
     let _ = project; // reserved for future use in the template
+    let branch_value = branch.unwrap_or(BRANCH_PLACEHOLDER);
     let trimmed_body = body.trim();
     if trimmed_body.is_empty() {
-        format!("title: {title}\ntype: {ticket_type}\npriority: {priority}\n---\n\n")
+        format!(
+            "title: {title}\ntype: {ticket_type}\npriority: {priority}\nbranch: {branch_value}\n---\n\n"
+        )
     } else {
-        format!("title: {title}\ntype: {ticket_type}\npriority: {priority}\n---\n{trimmed_body}\n")
+        format!(
+            "title: {title}\ntype: {ticket_type}\npriority: {priority}\nbranch: {branch_value}\n---\n{trimmed_body}\n"
+        )
     }
 }
 
@@ -87,16 +98,24 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
     let mut title = String::new();
     let mut ticket_type = DEFAULT_TICKET_TYPE.to_owned();
     let mut priority: i64 = 0;
+    let mut branch: Option<String> = None;
 
     for line in front_matter.lines() {
         if let Some(val) = line.strip_prefix("title:") {
             title = val.trim().to_string();
         } else if let Some(val) = line.strip_prefix("type:") {
             ticket_type = normalize_ticket_type(val);
-        } else if let Some(val) = line.strip_prefix("priority:")
-            && let Ok(p) = val.trim().parse::<i64>()
-        {
-            priority = p;
+        } else if let Some(val) = line.strip_prefix("priority:") {
+            if let Ok(p) = val.trim().parse::<i64>() {
+                priority = p;
+            }
+        } else if let Some(val) = line.strip_prefix("branch:") {
+            let trimmed = val.trim();
+            branch = if trimmed.is_empty() || trimmed == BRANCH_PLACEHOLDER {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
         }
     }
 
@@ -105,6 +124,7 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
         title,
         ticket_type,
         priority,
+        branch,
         body,
     })
 }
@@ -255,28 +275,95 @@ mod tests {
     #[test]
     fn template_has_expected_format() {
         let t = generate_template();
-        assert_eq!(t, "title: <summarize>\ntype: design\npriority: 0\n---\n\n");
+        assert_eq!(
+            t,
+            "title: <summarize>\ntype: design\npriority: 0\nbranch: <ticket-id>\n---\n\n"
+        );
+    }
+
+    #[test]
+    fn template_ends_with_branch_placeholder_before_delimiter() {
+        let t = generate_template();
+        assert!(t.contains("\nbranch: <ticket-id>\n---\n"));
     }
 
     #[test]
     fn serialize_basic() {
-        let output = serialize_to_template("ur", "Fix the bug", "code", 2, "This is the body.");
+        let output =
+            serialize_to_template("ur", "Fix the bug", "code", 2, None, "This is the body.");
         assert_eq!(
             output,
-            "title: Fix the bug\ntype: code\npriority: 2\n---\nThis is the body.\n"
+            "title: Fix the bug\ntype: code\npriority: 2\nbranch: <ticket-id>\n---\nThis is the body.\n"
         );
     }
 
     #[test]
     fn serialize_empty_body() {
-        let output = serialize_to_template("ur", "A title", "code", 0, "");
-        assert_eq!(output, "title: A title\ntype: code\npriority: 0\n---\n\n");
+        let output = serialize_to_template("ur", "A title", "code", 0, None, "");
+        assert_eq!(
+            output,
+            "title: A title\ntype: code\npriority: 0\nbranch: <ticket-id>\n---\n\n"
+        );
     }
 
     #[test]
     fn serialize_whitespace_only_body() {
-        let output = serialize_to_template("ur", "A title", "code", 1, "   \n  ");
-        assert_eq!(output, "title: A title\ntype: code\npriority: 1\n---\n\n");
+        let output = serialize_to_template("ur", "A title", "code", 1, None, "   \n  ");
+        assert_eq!(
+            output,
+            "title: A title\ntype: code\npriority: 1\nbranch: <ticket-id>\n---\n\n"
+        );
+    }
+
+    #[test]
+    fn serialize_with_branch_some() {
+        let output =
+            serialize_to_template("ur", "A title", "code", 1, Some("feature/foo"), "body text");
+        assert_eq!(
+            output,
+            "title: A title\ntype: code\npriority: 1\nbranch: feature/foo\n---\nbody text\n"
+        );
+    }
+
+    #[test]
+    fn serialize_branch_none_emits_placeholder() {
+        let output = serialize_to_template("ur", "T", "code", 0, None, "");
+        assert!(output.contains("branch: <ticket-id>"));
+    }
+
+    #[test]
+    fn parse_branch_absent_is_none() {
+        let content = "title: T\ntype: code\npriority: 0\n---\nbody\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.branch, None);
+    }
+
+    #[test]
+    fn parse_branch_placeholder_is_none() {
+        let content = "title: T\ntype: code\npriority: 0\nbranch: <ticket-id>\n---\nbody\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.branch, None);
+    }
+
+    #[test]
+    fn parse_branch_empty_is_none() {
+        let content = "title: T\ntype: code\npriority: 0\nbranch: \n---\nbody\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.branch, None);
+    }
+
+    #[test]
+    fn parse_branch_whitespace_is_none() {
+        let content = "title: T\ntype: code\npriority: 0\nbranch:    \n---\nbody\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.branch, None);
+    }
+
+    #[test]
+    fn parse_branch_value_is_some() {
+        let content = "title: T\ntype: code\npriority: 0\nbranch: feature/foo\n---\nbody\n";
+        let ticket = parse_ticket_file(content).unwrap();
+        assert_eq!(ticket.branch.as_deref(), Some("feature/foo"));
     }
 
     #[test]
@@ -287,30 +374,32 @@ mod tests {
         let priority = 2;
         let body = "This is the body.";
 
-        let serialized = serialize_to_template(project, title, ticket_type, priority, body);
+        let serialized = serialize_to_template(project, title, ticket_type, priority, None, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, title);
         assert_eq!(parsed.ticket_type, ticket_type);
         assert_eq!(parsed.priority, priority);
         assert_eq!(parsed.body, body);
+        assert_eq!(parsed.branch, None);
     }
 
     #[test]
     fn round_trip_empty_body() {
-        let serialized = serialize_to_template("proj", "Empty body ticket", "design", 0, "");
+        let serialized = serialize_to_template("proj", "Empty body ticket", "design", 0, None, "");
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Empty body ticket");
         assert_eq!(parsed.ticket_type, "design");
         assert_eq!(parsed.priority, 0);
         assert_eq!(parsed.body, "");
+        assert_eq!(parsed.branch, None);
     }
 
     #[test]
     fn round_trip_special_characters() {
         let body = "Some **markdown** with `code`\n\n---\n\nAnother section after delimiter";
-        let serialized = serialize_to_template("ur", "Special chars", "code", 3, body);
+        let serialized = serialize_to_template("ur", "Special chars", "code", 3, None, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Special chars");
@@ -322,7 +411,7 @@ mod tests {
     #[test]
     fn round_trip_multiline_body() {
         let body = "Line 1\nLine 2\nLine 3";
-        let serialized = serialize_to_template("ur", "Multi-line", "code", 1, body);
+        let serialized = serialize_to_template("ur", "Multi-line", "code", 1, None, body);
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Multi-line");
@@ -332,13 +421,29 @@ mod tests {
 
     #[test]
     fn round_trip_negative_priority() {
-        let serialized = serialize_to_template("ur", "Negative prio", "design", -5, "body text");
+        let serialized =
+            serialize_to_template("ur", "Negative prio", "design", -5, None, "body text");
         let parsed = parse_ticket_file(&serialized).unwrap();
 
         assert_eq!(parsed.title, "Negative prio");
         assert_eq!(parsed.ticket_type, "design");
         assert_eq!(parsed.priority, -5);
         assert_eq!(parsed.body, "body text");
+    }
+
+    #[test]
+    fn round_trip_branch_some() {
+        let serialized =
+            serialize_to_template("ur", "With branch", "code", 0, Some("feature/foo"), "body");
+        let parsed = parse_ticket_file(&serialized).unwrap();
+        assert_eq!(parsed.branch.as_deref(), Some("feature/foo"));
+    }
+
+    #[test]
+    fn round_trip_branch_none() {
+        let serialized = serialize_to_template("ur", "No branch", "code", 0, None, "body");
+        let parsed = parse_ticket_file(&serialized).unwrap();
+        assert_eq!(parsed.branch, None);
     }
 
     #[test]
