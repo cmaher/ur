@@ -180,7 +180,6 @@ struct ComposeParams {
     postgres_container_name: String,
     infra_network_name: String,
     worker_network_name: String,
-    postgres_container_name: String,
     /// Host-side backup path, if configured. Mounted at `/backup` in the postgres container.
     backup_path: Option<PathBuf>,
     /// Postgres user for env vars and healthcheck.
