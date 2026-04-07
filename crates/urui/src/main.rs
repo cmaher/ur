@@ -465,6 +465,7 @@ fn run_editor_flow(
                 priority: parsed.priority,
                 body: parsed.body,
                 parent_id,
+                branch: parsed.branch,
             })
         }
         _ => {
@@ -495,6 +496,7 @@ async fn run_edit_ticket_flow(
         &ticket.title,
         &ticket.ticket_type,
         ticket.priority,
+        ticket.branch.as_deref(),
         &ticket.body,
     );
 
@@ -505,6 +507,12 @@ async fn run_edit_ticket_flow(
     let parsed = result?;
 
     // 4. If user saved, build the update op.
+    //
+    // Branch semantics on edit: the parsed branch is `None` when the user kept
+    // (or restored) the `<ticket-id>` placeholder, which means "clear the
+    // branch". The server's UpdateTicketRequest treats `Some("NONE")` as a
+    // clear sentinel and `Some("foo")` as set-to-foo. We always send a value
+    // here so the editor round-trips losslessly.
     Ok(parsed.map(|p| msg::TicketOpMsg::UpdateFields {
         ticket_id: ticket_id.to_string(),
         project: if p.project.is_empty() {
@@ -516,6 +524,7 @@ async fn run_edit_ticket_flow(
         ticket_type: p.ticket_type,
         priority: p.priority,
         body: p.body,
+        branch: Some(p.branch.unwrap_or_else(|| "NONE".to_owned())),
     }))
 }
 
@@ -545,6 +554,11 @@ async fn fetch_ticket_for_edit(
         title: ticket.title,
         ticket_type: ticket.ticket_type,
         priority: ticket.priority,
+        branch: if ticket.branch.is_empty() {
+            None
+        } else {
+            Some(ticket.branch)
+        },
         body: ticket.body,
     })
 }

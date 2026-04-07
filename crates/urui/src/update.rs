@@ -1637,6 +1637,7 @@ mod tests {
                     priority: 0,
                     body: String::new(),
                     parent_id: None,
+                    branch: None,
                 },
             }),
         );
@@ -1861,6 +1862,7 @@ mod tests {
             priority: 0,
             body: "Some body".into(),
             parent_id: None,
+            branch: None,
         };
         let (new_model, _) = update(
             model,

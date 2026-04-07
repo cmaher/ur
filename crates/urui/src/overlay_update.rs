@@ -888,6 +888,7 @@ fn handle_create_action(
                 &pending.title,
                 &pending.ticket_type,
                 pending.priority,
+                pending.branch.as_deref(),
                 &pending.body,
             );
             return (
@@ -1196,6 +1197,7 @@ mod tests {
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
+                    branch: None,
                 },
             },
         );
@@ -1218,6 +1220,7 @@ mod tests {
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
+                    branch: None,
                 },
             },
         );
@@ -1244,6 +1247,7 @@ mod tests {
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
+                    branch: None,
                 },
             },
         );

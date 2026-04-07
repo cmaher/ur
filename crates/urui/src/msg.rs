@@ -228,6 +228,8 @@ pub struct PendingTicket {
     pub body: String,
     /// Optional parent ticket ID for child ticket creation.
     pub parent_id: Option<String>,
+    /// Optional branch override. `None` means no branch override (server default).
+    pub branch: Option<String>,
 }
 
 /// A single UI event received from the server's event stream.
@@ -458,7 +460,7 @@ pub enum TicketOpMsg {
     Redrive { ticket_id: String },
     /// Open (reopen) a ticket by setting its status to "open".
     Open { ticket_id: String },
-    /// Update a ticket's editable fields (title, priority, body, project, type).
+    /// Update a ticket's editable fields (title, priority, body, project, type, branch).
     UpdateFields {
         ticket_id: String,
         project: String,
@@ -466,6 +468,10 @@ pub enum TicketOpMsg {
         ticket_type: String,
         priority: i64,
         body: String,
+        /// Optional branch override. `Some(value)` sets the branch (or `None` clears
+        /// it via the server's branch field semantics). When the editor caller
+        /// supplies `None`, the server treats it as no change.
+        branch: Option<String>,
     },
 }
 

@@ -169,7 +169,16 @@ impl CmdRunner {
                 ticket_type,
                 priority,
                 body,
-            } => self.exec_update_fields(ticket_id, project, title, ticket_type, priority, body),
+                branch,
+            } => self.exec_update_fields(
+                ticket_id,
+                project,
+                title,
+                ticket_type,
+                priority,
+                body,
+                branch,
+            ),
         }
     }
 
@@ -313,6 +322,7 @@ impl CmdRunner {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exec_update_fields(
         &self,
         ticket_id: String,
@@ -321,6 +331,7 @@ impl CmdRunner {
         ticket_type: String,
         priority: i64,
         body: String,
+        branch: Option<String>,
     ) {
         let tx = self.msg_tx.clone();
         let port = self.port;
@@ -334,6 +345,7 @@ impl CmdRunner {
                 &ticket_type,
                 priority,
                 &body,
+                branch,
             )
             .await;
             let msg = TicketOpResultMsg::Updated {
@@ -903,6 +915,7 @@ async fn update_ticket_type(port: u16, ticket_id: &str, ticket_type: &str) -> Re
 }
 
 /// Update a ticket's editable fields (project, title, type, priority, body).
+#[allow(clippy::too_many_arguments)]
 async fn update_ticket_fields(
     port: u16,
     ticket_id: &str,
@@ -911,6 +924,7 @@ async fn update_ticket_fields(
     ticket_type: &str,
     priority: i64,
     body: &str,
+    branch: Option<String>,
 ) -> Result<(), String> {
     use ur_rpc::connection::connect;
     use ur_rpc::proto::ticket::UpdateTicketRequest;
@@ -928,7 +942,7 @@ async fn update_ticket_fields(
             force: false,
             ticket_type: Some(ticket_type.to_owned()),
             parent_id: None,
-            branch: None,
+            branch,
             project: Some(project.to_owned()),
         })
         .await
@@ -956,7 +970,7 @@ async fn create_ticket(port: u16, pending: &super::msg::PendingTicket) -> Result
             id: None,
             created_at: None,
             wip: false,
-            branch: None,
+            branch: pending.branch.clone(),
         })
         .await
         .map_err(|e| e.to_string())?;
