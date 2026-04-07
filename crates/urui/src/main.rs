@@ -225,6 +225,7 @@ async fn tea_loop(
                 port,
                 &reader_paused,
                 &cmd_runner,
+                &ctx,
             )
             .await?;
         }
@@ -237,6 +238,7 @@ async fn tea_loop(
                 port,
                 &reader_paused,
                 &cmd_runner,
+                &ctx,
             )
             .await;
         }
@@ -249,6 +251,7 @@ async fn tea_loop(
 }
 
 /// Handle a SpawnEditor command: resolve project, open editor, show create action menu.
+#[allow(clippy::too_many_arguments)]
 async fn handle_create_editor_cmd(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     model: Model,
@@ -257,6 +260,7 @@ async fn handle_create_editor_cmd(
     port: u16,
     reader_paused: &Arc<AtomicBool>,
     cmd_runner: &CmdRunner,
+    ctx: &context::TuiContext,
 ) -> anyhow::Result<Model> {
     let resolved_project = resolve_editor_project(
         editor_req.project,
@@ -272,16 +276,21 @@ async fn handle_create_editor_cmd(
         editor_req.parent_id,
         editor_req.content,
     );
-    reader_paused.store(false, Ordering::Release);
     let pending = pending?;
-    if let Some(pending) = pending {
+    let new_model = if let Some(pending) = pending {
         let open_msg = Msg::Overlay(msg::OverlayMsg::OpenCreateActionMenu { pending });
         let (new_model, cmds) = update(model, open_msg);
         cmd_runner.execute_all(cmds);
-        Ok(new_model)
+        new_model
     } else {
-        Ok(model)
-    }
+        model
+    };
+    // Force a redraw so the overlay (or restored page) is on screen BEFORE
+    // the crossterm reader is unpaused, preventing stray keystrokes from
+    // hitting the loop before the overlay handler is in place.
+    terminal.draw(|frame| view(&new_model, frame, ctx))?;
+    reader_paused.store(false, Ordering::Release);
+    Ok(new_model)
 }
 
 /// Handle an EditTicket command: fetch ticket, open editor, submit update or show error.
@@ -292,9 +301,10 @@ async fn handle_edit_ticket_cmd(
     port: u16,
     reader_paused: &Arc<AtomicBool>,
     cmd_runner: &CmdRunner,
+    ctx: &context::TuiContext,
 ) -> Model {
     let edit_result = run_edit_ticket_flow(terminal, reader_paused, port, ticket_id).await;
-    match edit_result {
+    let new_model = match edit_result {
         Ok(Some(op_msg)) => {
             let (new_model, cmds) = update(model, Msg::TicketOp(op_msg));
             cmd_runner.execute_all(cmds);
@@ -312,7 +322,12 @@ async fn handle_edit_ticket_cmd(
             cmd_runner.execute_all(cmds);
             new_model
         }
-    }
+    };
+    // Force a redraw so the underlying page is restored on screen BEFORE
+    // the crossterm reader is unpaused.
+    let _ = terminal.draw(|frame| view(&new_model, frame, ctx));
+    reader_paused.store(false, Ordering::Release);
+    new_model
 }
 
 /// Extracted fields from a `SpawnEditor` command.
@@ -506,10 +521,11 @@ async fn run_edit_ticket_flow(
     );
 
     // 3. Open editor with pre-populated content.
+    //    NOTE: the reader stays paused until handle_edit_ticket_cmd has had a
+    //    chance to apply the result, push any overlay handlers, and force a
+    //    redraw — that prevents stray keystrokes during teardown.
     reader_paused.store(true, Ordering::Release);
-    let result = run_edit_editor(terminal, &content);
-    reader_paused.store(false, Ordering::Release);
-    let parsed = result?;
+    let parsed = run_edit_editor(terminal, &content)?;
 
     // 4. If user saved, build the update op.
     Ok(parsed.map(|p| msg::TicketOpMsg::UpdateFields {
