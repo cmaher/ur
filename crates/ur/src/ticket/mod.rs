@@ -178,6 +178,7 @@ fn resolve_args_project(
             priority,
             body,
             wip,
+            branch,
         } => {
             let resolved = resolve_project(project, projects)?;
             Ok(TicketArgs::Create {
@@ -188,6 +189,7 @@ fn resolve_args_project(
                 priority,
                 body,
                 wip,
+                branch,
             })
         }
         TicketArgs::List {
@@ -273,6 +275,7 @@ mod tests {
                 priority,
                 body,
                 wip,
+                branch,
             } => {
                 assert_eq!(title, "My new ticket");
                 assert!(project.is_none());
@@ -281,6 +284,7 @@ mod tests {
                 assert_eq!(priority, 0);
                 assert_eq!(body, "");
                 assert!(!wip);
+                assert!(branch.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }
@@ -312,6 +316,7 @@ mod tests {
                 priority,
                 body,
                 wip,
+                branch,
             } => {
                 assert_eq!(title, "Design doc title");
                 assert_eq!(project.as_deref(), Some("myproj"));
@@ -320,6 +325,7 @@ mod tests {
                 assert_eq!(priority, 3);
                 assert_eq!(body, "Some body text");
                 assert!(!wip);
+                assert!(branch.is_none());
             }
             other => panic!("expected Create, got {other:?}"),
         }

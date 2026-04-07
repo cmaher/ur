@@ -95,6 +95,7 @@ where
         priority,
         body,
         wip,
+        branch,
     } = args
     else {
         unreachable!()
@@ -108,6 +109,7 @@ where
         priority,
         body,
         wip,
+        branch,
     )
     .await
 }
@@ -441,6 +443,7 @@ async fn execute_create<T>(
     priority: i64,
     body: String,
     wip: bool,
+    branch: Option<String>,
 ) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
@@ -461,7 +464,7 @@ where
             id: None,
             created_at: None,
             wip,
-            branch: None,
+            branch,
         })
         .await
         .with_status_context("create ticket")?;
