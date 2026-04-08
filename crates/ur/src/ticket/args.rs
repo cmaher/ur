@@ -32,6 +32,10 @@ pub enum TicketArgs {
         /// Create as work-in-progress (sets lifecycle_status to design)
         #[arg(short = 'd', long, alias = "design")]
         wip: bool,
+
+        /// Branch name to associate with the ticket
+        #[arg(long)]
+        branch: Option<String>,
     },
 
     /// List tickets with optional filters

@@ -414,6 +414,8 @@ impl TicketService for TicketServiceHandler {
             None
         };
 
+        let branch = req.branch.filter(|s| !s.is_empty());
+
         let new_ticket = NewTicket {
             id,
             project: req.project,
@@ -424,7 +426,7 @@ impl TicketService for TicketServiceHandler {
             body: req.body,
             status,
             lifecycle_status,
-            branch: None,
+            branch,
             created_at,
         };
 
@@ -1573,5 +1575,74 @@ mod tests {
         assert!(handler.worker_manager.is_none());
         // Should return immediately without error even with a worker_id.
         handler.kill_workflow_worker("t-any", "worker-456").await;
+    }
+
+    fn create_request_with_branch(title: &str, branch: Option<String>) -> CreateTicketRequest {
+        CreateTicketRequest {
+            project: "test".into(),
+            ticket_type: "code".into(),
+            status: String::new(),
+            priority: 1,
+            parent_id: None,
+            title: title.into(),
+            body: String::new(),
+            id: None,
+            created_at: None,
+            wip: false,
+            branch,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_ticket_persists_branch_when_set() {
+        let (_test_db, handler) = setup_handler().await;
+
+        let resp = TicketService::create_ticket(
+            &handler,
+            Request::new(create_request_with_branch(
+                "with branch",
+                Some("feature/foo".into()),
+            )),
+        )
+        .await
+        .unwrap();
+        let id = resp.into_inner().id;
+
+        let got = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: id.clone(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let ticket = got.into_inner().ticket.unwrap();
+        assert_eq!(ticket.branch, "feature/foo");
+    }
+
+    #[tokio::test]
+    async fn create_ticket_branch_defaults_to_empty_when_unset() {
+        let (_test_db, handler) = setup_handler().await;
+
+        let resp = TicketService::create_ticket(
+            &handler,
+            Request::new(create_request_with_branch("no branch", None)),
+        )
+        .await
+        .unwrap();
+        let id = resp.into_inner().id;
+
+        let got = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id,
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let ticket = got.into_inner().ticket.unwrap();
+        assert_eq!(ticket.branch, "");
     }
 }

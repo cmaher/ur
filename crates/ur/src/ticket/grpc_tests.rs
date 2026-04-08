@@ -58,7 +58,7 @@ impl TicketService for MockTicketStore {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             project: req.project,
-            branch: String::new(),
+            branch: req.branch.unwrap_or_default(),
             depth: 0,
             children_completed: 0,
             children_total: 0,
@@ -419,6 +419,7 @@ async fn execute_create_and_show() {
             priority: 2,
             body: "Body text".into(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -441,6 +442,66 @@ async fn execute_create_and_show() {
 }
 
 #[tokio::test]
+async fn execute_create_with_branch_sets_branch_on_request() {
+    let (addr, store) = start_mock_server().await;
+    let mut client = connect(addr).await;
+
+    super::execute(
+        TicketArgs::Create {
+            title: "Branched ticket".into(),
+            project: Some("test".into()),
+            ticket_type: "code".into(),
+            parent: None,
+            priority: 0,
+            body: String::new(),
+            wip: false,
+            branch: Some("feature/foo".into()),
+        },
+        &mut client,
+    )
+    .await
+    .expect("create with branch should succeed");
+
+    let state = store.inner.lock().unwrap();
+    let ticket = state
+        .tickets
+        .values()
+        .find(|t| t.title == "Branched ticket")
+        .expect("ticket should exist");
+    assert_eq!(ticket.branch, "feature/foo");
+}
+
+#[tokio::test]
+async fn execute_create_without_branch_leaves_branch_empty() {
+    let (addr, store) = start_mock_server().await;
+    let mut client = connect(addr).await;
+
+    super::execute(
+        TicketArgs::Create {
+            title: "Unbranched ticket".into(),
+            project: Some("test".into()),
+            ticket_type: "code".into(),
+            parent: None,
+            priority: 0,
+            body: String::new(),
+            wip: false,
+            branch: None,
+        },
+        &mut client,
+    )
+    .await
+    .expect("create without branch should succeed");
+
+    let state = store.inner.lock().unwrap();
+    let ticket = state
+        .tickets
+        .values()
+        .find(|t| t.title == "Unbranched ticket")
+        .expect("ticket should exist");
+    assert_eq!(ticket.branch, "");
+}
+
+#[tokio::test]
 async fn execute_create_and_list_filtered() {
     let (addr, store) = start_mock_server().await;
     let mut client = connect(addr).await;
@@ -455,6 +516,7 @@ async fn execute_create_and_list_filtered() {
             priority: 1,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -477,6 +539,7 @@ async fn execute_create_and_list_filtered() {
             priority: 2,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -574,6 +637,7 @@ async fn execute_set_and_delete_meta() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -638,6 +702,7 @@ async fn execute_add_and_list_activities() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -695,6 +760,7 @@ async fn execute_add_and_remove_block() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -710,6 +776,7 @@ async fn execute_add_and_remove_block() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -771,6 +838,7 @@ async fn execute_add_and_remove_link() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -786,6 +854,7 @@ async fn execute_add_and_remove_link() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -847,6 +916,7 @@ async fn execute_update_existing_ticket() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -903,6 +973,7 @@ async fn execute_dispatchable() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -924,6 +995,7 @@ async fn execute_dispatchable() {
             priority: 1,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -969,6 +1041,7 @@ async fn execute_list_activities_empty() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
@@ -1049,6 +1122,7 @@ async fn auth_rejection_propagates_error() {
             priority: 0,
             body: String::new(),
             wip: false,
+            branch: None,
         },
         &mut client,
     )
