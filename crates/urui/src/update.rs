@@ -80,7 +80,7 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
 fn dispatch_overlay_key(overlay: &ActiveOverlay, key: crossterm::event::KeyEvent) -> Msg {
     use super::components::{
         create_action_menu, filter_menu, force_close_confirm, goto_menu, help_overlay,
-        priority_picker, project_input, settings_overlay, title_input, type_menu,
+        priority_picker, settings_overlay, text_input, title_input, type_menu,
     };
 
     match overlay {
@@ -90,7 +90,7 @@ fn dispatch_overlay_key(overlay: &ActiveOverlay, key: crossterm::event::KeyEvent
         ActiveOverlay::GotoMenu { .. } => goto_menu::handle_key(key),
         ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::handle_key(key),
         ActiveOverlay::CreateActionMenu { .. } => create_action_menu::handle_key(key),
-        ActiveOverlay::ProjectInput { .. } => project_input::handle_key(key),
+        ActiveOverlay::ProjectInput { .. } => text_input::handle_key(key),
         ActiveOverlay::TitleInput { .. } => title_input::handle_key(key),
         ActiveOverlay::Settings { .. } => settings_overlay::handle_key(key),
         ActiveOverlay::Help => help_overlay::handle_key(key),
