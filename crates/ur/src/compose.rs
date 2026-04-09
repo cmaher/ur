@@ -210,7 +210,10 @@ pub fn generate_compose(
     proxy: &ur_config::ProxyConfig,
     db: &ur_config::DatabaseConfig,
 ) -> String {
-    let include_postgres = db.host == ur_config::DEFAULT_DB_HOST;
+    // Compose service names are bare hostnames (no dots). External addresses
+    // (IPs, FQDNs) always contain dots. Use this to decide whether postgres
+    // should be included as a compose-managed service.
+    let include_postgres = !db.host.contains('.');
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
