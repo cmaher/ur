@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use ur_config::{ResolvedTemplatePath, resolve_template_path};
 use ur_db::model::LifecycleStatus;
 
+use crate::workflow::handlers::hook_log::write_hook_failure_log;
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
 
 /// Handler for the Implementing -> Verifying transition.
@@ -120,7 +121,15 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
         advance_to_pushing(ctx, ticket_id).await?;
     } else {
         info!(ticket_id = %ticket_id, exit_code = hook_result.exit_code, "pre-push hook failed");
-        add_hook_activity(ctx, ticket_id, "fail", &output_summary).await?;
+        let log_path = write_hook_failure_log(
+            &ctx.config.logs_dir,
+            worker_id,
+            "verify",
+            &hook_result.stdout,
+            &hook_result.stderr,
+            hook_result.exit_code,
+        );
+        add_hook_failure_activity(ctx, ticket_id, &log_path, &output_summary).await?;
         handle_hook_failure(ctx, ticket_id, worker_id).await?;
     }
 
@@ -245,6 +254,27 @@ async fn add_hook_activity(
          source: workflow\n\
          hook: pre-push\n\
          result: {result}\n\
+         ---\n\
+         {output}"
+    );
+    ctx.ticket_repo
+        .add_activity(ticket_id, "workflow", &message)
+        .await?;
+    Ok(())
+}
+
+/// Add an activity for a hook failure, including the log file path.
+async fn add_hook_failure_activity(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    log_path: &str,
+    output: &str,
+) -> anyhow::Result<()> {
+    let message = format!(
+        "[workflow] verify failed — logs at {log_path}\n\
+         source: workflow\n\
+         hook: pre-push\n\
+         result: fail\n\
          ---\n\
          {output}"
     );
