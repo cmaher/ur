@@ -187,7 +187,9 @@ pub fn fire_desktop_notification(notification: &DesktopNotification, icon_path: 
     let mut cmd = Command::new("terminal-notifier");
     cmd.args(["-title", &notification.title])
         .args(["-message", &notification.message])
-        .args(["-group", &group]);
+        .args(["-group", &group])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
 
     if let Some(ref url) = notification.open_url {
         cmd.args(["-open", url]);
