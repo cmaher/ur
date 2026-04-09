@@ -330,6 +330,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let mut buf = self.dispatch_buffer.lock().await;
         buf.lifecycle_step = "implementing".to_string();
         buf.step_complete = false;
+        buf.nudge_suppressed_until = None;
         buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
 
         // Pop the first command and send it immediately
@@ -355,6 +356,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let mut buf = self.dispatch_buffer.lock().await;
         buf.lifecycle_step = "designing".to_string();
         buf.step_complete = false;
+        buf.nudge_suppressed_until = None;
         buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
 
         // Pop the first command and send it immediately
@@ -384,6 +386,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let mut buf = self.dispatch_buffer.lock().await;
         buf.lifecycle_step = "addressing_feedback".to_string();
         buf.step_complete = false;
+        buf.nudge_suppressed_until = None;
         buf.commands = VecDeque::from(vec!["/clear".to_string(), skill_command]);
 
         // Pop the first command and send it immediately
