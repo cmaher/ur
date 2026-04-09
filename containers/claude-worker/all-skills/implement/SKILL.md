@@ -25,6 +25,7 @@ Before doing any implementation work, check for unaddressed workflow error activ
 2. Read the **most recent** workflow activities first (they contain the latest failure output)
 3. If workflow error activities exist and are not yet addressed:
    - The error output describes what failed (build errors, test failures, merge conflicts, etc.)
+   - Activities may reference log files (e.g., `/var/ur/logs/...`) — read them for full error details
    - Fix the errors **before** moving on to any other work or dispatching child tickets
    - The server sends `/clear` before every dispatch, so you start with a clean conversation — the ticket activities are your only source of prior context
 4. If no workflow error activities exist, proceed normally
