@@ -8,7 +8,7 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, FilterCategory, Model, TicketFilters};
 use crate::msg::{Msg, OverlayMsg};
 
@@ -23,53 +23,46 @@ pub const CATEGORIES: &[FilterCategory] = &[
 pub const STATUS_OPTIONS: &[&str] = &["open", "in_progress", "closed"];
 pub const PRIORITY_OPTIONS: &[i64] = &[0, 1, 2, 3, 4];
 
-/// Modal input handler for the filter menu overlay.
+/// Handle a key event for the filter menu overlay.
 ///
-/// Captures all keys. j/k navigate, Enter/Space activate/toggle, Esc closes.
-pub struct FilterMenuHandler;
-
-impl InputHandler for FilterMenuHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::FilterMenuClosed),
-            KeyCode::Char('j') | KeyCode::Down => {
-                Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: 1 })
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: -1 })
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => Msg::Overlay(OverlayMsg::FilterMenuActivate),
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                Msg::Overlay(OverlayMsg::FilterMenuQuickToggle { digit: c })
-            }
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+/// All keys are captured (modal). j/k navigate, Enter/Space activate/toggle,
+/// Esc closes.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::FilterMenuClosed),
+        KeyCode::Char('j') | KeyCode::Down => {
+            Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: 1 })
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: -1 })
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => Msg::Overlay(OverlayMsg::FilterMenuActivate),
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            Msg::Overlay(OverlayMsg::FilterMenuQuickToggle { digit: c })
+        }
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Space".to_string(),
-                description: "Toggle".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Close".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "filter_menu"
-    }
+/// Footer commands for the filter menu overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Space".to_string(),
+            description: "Toggle".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Close".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the filter menu overlay from the model state.
@@ -277,50 +270,43 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_esc() {
-        let handler = FilterMenuHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::FilterMenuClosed)) => {}
-            other => panic!("expected FilterMenuClosed, got {other:?}"),
-        }
+    fn handle_key_esc() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::FilterMenuClosed)
+        ));
     }
 
     #[test]
-    fn handler_captures_j() {
-        let handler = FilterMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: 1 })) => {}
-            other => panic!("expected Navigate(1), got {other:?}"),
-        }
+    fn handle_key_j() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::FilterMenuNavigate { delta: 1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_space_activate() {
-        let handler = FilterMenuHandler;
-        match handler.handle_key(key(KeyCode::Char(' '))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::FilterMenuActivate)) => {}
-            other => panic!("expected FilterMenuActivate, got {other:?}"),
-        }
+    fn handle_key_space_activate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char(' '))),
+            Msg::Overlay(OverlayMsg::FilterMenuActivate)
+        ));
     }
 
     #[test]
-    fn handler_captures_digit() {
-        let handler = FilterMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('2'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::FilterMenuQuickToggle {
-                digit: '2',
-            })) => {}
-            other => panic!("expected QuickToggle('2'), got {other:?}"),
-        }
+    fn handle_key_digit() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('2'))),
+            Msg::Overlay(OverlayMsg::FilterMenuQuickToggle { digit: '2' })
+        ));
     }
 
     #[test]
-    fn handler_captures_unknown() {
-        let handler = FilterMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -361,15 +347,8 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = FilterMenuHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Toggle"));
         assert!(cmds.iter().any(|c| c.description == "Close"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = FilterMenuHandler;
-        assert_eq!(handler.name(), "filter_menu");
     }
 }

@@ -8,46 +8,38 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
-/// Modal input handler for the title input overlay.
+/// Handle a key event for the title input overlay.
 ///
-/// Captures all keys. Characters are appended to the buffer, Backspace deletes,
-/// Enter submits, Esc cancels.
-pub struct TitleInputHandler;
-
-impl InputHandler for TitleInputHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::TitleInputCancelled),
-            KeyCode::Enter => Msg::Overlay(OverlayMsg::TitleInputSubmitRequest),
-            KeyCode::Backspace => Msg::Overlay(OverlayMsg::TitleInputBackspace),
-            KeyCode::Char(c) => Msg::Overlay(OverlayMsg::TitleInputChar(c)),
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+/// All keys are captured (modal). Characters are appended to the buffer,
+/// Backspace deletes, Enter submits, Esc cancels.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::TitleInputCancelled),
+        KeyCode::Enter => Msg::Overlay(OverlayMsg::TitleInputSubmitRequest),
+        KeyCode::Backspace => Msg::Overlay(OverlayMsg::TitleInputBackspace),
+        KeyCode::Char(c) => Msg::Overlay(OverlayMsg::TitleInputChar(c)),
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "Enter".to_string(),
-                description: "Submit".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Cancel".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "title_input"
-    }
+/// Footer commands for the title input overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "Enter".to_string(),
+            description: "Submit".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Cancel".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the title input overlay from the model state.
@@ -87,61 +79,49 @@ mod tests {
     }
 
     #[test]
-    fn handler_esc_cancels() {
-        let handler = TitleInputHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TitleInputCancelled)) => {}
-            other => panic!("expected TitleInputCancelled, got {other:?}"),
-        }
+    fn handle_key_esc_cancels() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::TitleInputCancelled)
+        ));
     }
 
     #[test]
-    fn handler_enter_submits() {
-        let handler = TitleInputHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TitleInputSubmitRequest)) => {}
-            other => panic!("expected TitleInputSubmitRequest, got {other:?}"),
-        }
+    fn handle_key_enter_submits() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::TitleInputSubmitRequest)
+        ));
     }
 
     #[test]
-    fn handler_backspace() {
-        let handler = TitleInputHandler;
-        match handler.handle_key(key(KeyCode::Backspace)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TitleInputBackspace)) => {}
-            other => panic!("expected TitleInputBackspace, got {other:?}"),
-        }
+    fn handle_key_backspace() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Backspace)),
+            Msg::Overlay(OverlayMsg::TitleInputBackspace)
+        ));
     }
 
     #[test]
-    fn handler_char_input() {
-        let handler = TitleInputHandler;
-        match handler.handle_key(key(KeyCode::Char('a'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TitleInputChar('a'))) => {}
-            other => panic!("expected TitleInputChar('a'), got {other:?}"),
-        }
+    fn handle_key_char_input() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('a'))),
+            Msg::Overlay(OverlayMsg::TitleInputChar('a'))
+        ));
     }
 
     #[test]
-    fn handler_unknown_consumed() {
-        let handler = TitleInputHandler;
-        match handler.handle_key(key(KeyCode::Tab)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Tab)),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
     fn footer_commands_present() {
-        let handler = TitleInputHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Submit"));
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = TitleInputHandler;
-        assert_eq!(handler.name(), "title_input");
     }
 }

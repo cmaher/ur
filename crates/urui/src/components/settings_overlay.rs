@@ -9,7 +9,7 @@ use crate::context::TuiContext;
 use crate::theme;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model, SettingsLevel};
 use crate::msg::{Msg, OverlayMsg, SettingsDirection};
 
@@ -42,65 +42,57 @@ fn is_light_theme(name: &str) -> bool {
     LIGHT_THEMES.contains(&name)
 }
 
-/// Modal input handler for the settings overlay.
+/// Handle a key event for the settings overlay.
 ///
-/// At the top level, captures Esc (close) and 1/Enter/Space (enter theme picker).
-/// In the theme picker, captures h/l for columns, j/k for navigation, Space to
-/// apply theme, Esc to go back.
-pub struct SettingsOverlayHandler;
-
-impl InputHandler for SettingsOverlayHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::SettingsEsc),
-            KeyCode::Char('1') | KeyCode::Enter | KeyCode::Char(' ') => {
-                Msg::Overlay(OverlayMsg::SettingsActivate)
-            }
-            KeyCode::Char('j') | KeyCode::Down => Msg::Overlay(OverlayMsg::SettingsNavigate {
-                direction: SettingsDirection::Down,
-            }),
-            KeyCode::Char('k') | KeyCode::Up => Msg::Overlay(OverlayMsg::SettingsNavigate {
-                direction: SettingsDirection::Up,
-            }),
-            KeyCode::Char('h') | KeyCode::Left => Msg::Overlay(OverlayMsg::SettingsNavigate {
-                direction: SettingsDirection::Left,
-            }),
-            KeyCode::Char('l') | KeyCode::Right => Msg::Overlay(OverlayMsg::SettingsNavigate {
-                direction: SettingsDirection::Right,
-            }),
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+/// All keys are captured (modal). At the top level, Esc closes and
+/// 1/Enter/Space enters the theme picker. In the theme picker, h/l switch
+/// columns, j/k navigate, Space applies, Esc goes back.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::SettingsEsc),
+        KeyCode::Char('1') | KeyCode::Enter | KeyCode::Char(' ') => {
+            Msg::Overlay(OverlayMsg::SettingsActivate)
+        }
+        KeyCode::Char('j') | KeyCode::Down => Msg::Overlay(OverlayMsg::SettingsNavigate {
+            direction: SettingsDirection::Down,
+        }),
+        KeyCode::Char('k') | KeyCode::Up => Msg::Overlay(OverlayMsg::SettingsNavigate {
+            direction: SettingsDirection::Up,
+        }),
+        KeyCode::Char('h') | KeyCode::Left => Msg::Overlay(OverlayMsg::SettingsNavigate {
+            direction: SettingsDirection::Left,
+        }),
+        KeyCode::Char('l') | KeyCode::Right => Msg::Overlay(OverlayMsg::SettingsNavigate {
+            direction: SettingsDirection::Right,
+        }),
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "h/l".to_string(),
-                description: "Column".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Space".to_string(),
-                description: "Apply".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Back/Close".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "settings_overlay"
-    }
+/// Footer commands for the settings overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "h/l".to_string(),
+            description: "Column".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Space".to_string(),
+            description: "Apply".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Back/Close".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the settings overlay from the model state.
@@ -346,61 +338,55 @@ mod tests {
     }
 
     #[test]
-    fn handler_esc_produces_settings_esc() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::SettingsEsc)) => {}
-            other => panic!("expected SettingsEsc, got {other:?}"),
-        }
+    fn handle_key_esc_produces_settings_esc() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::SettingsEsc)
+        ));
     }
 
     #[test]
-    fn handler_1_activates() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Char('1'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::SettingsActivate)) => {}
-            other => panic!("expected SettingsActivate, got {other:?}"),
-        }
+    fn handle_key_1_activates() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('1'))),
+            Msg::Overlay(OverlayMsg::SettingsActivate)
+        ));
     }
 
     #[test]
-    fn handler_space_activates() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Char(' '))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::SettingsActivate)) => {}
-            other => panic!("expected SettingsActivate, got {other:?}"),
-        }
+    fn handle_key_space_activates() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char(' '))),
+            Msg::Overlay(OverlayMsg::SettingsActivate)
+        ));
     }
 
     #[test]
-    fn handler_j_navigates_down() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::SettingsNavigate {
+    fn handle_key_j_navigates_down() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::SettingsNavigate {
                 direction: SettingsDirection::Down,
-            })) => {}
-            other => panic!("expected Navigate Down, got {other:?}"),
-        }
+            })
+        ));
     }
 
     #[test]
-    fn handler_h_navigates_left() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Char('h'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::SettingsNavigate {
+    fn handle_key_h_navigates_left() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('h'))),
+            Msg::Overlay(OverlayMsg::SettingsNavigate {
                 direction: SettingsDirection::Left,
-            })) => {}
-            other => panic!("expected Navigate Left, got {other:?}"),
-        }
+            })
+        ));
     }
 
     #[test]
-    fn handler_unknown_consumed() {
-        let handler = SettingsOverlayHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -474,15 +460,8 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = SettingsOverlayHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Apply"));
         assert!(cmds.iter().any(|c| c.description == "Column"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = SettingsOverlayHandler;
-        assert_eq!(handler.name(), "settings_overlay");
     }
 }

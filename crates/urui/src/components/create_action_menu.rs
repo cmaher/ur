@@ -8,7 +8,7 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{CreateAction, Msg, OverlayMsg};
 
@@ -20,60 +20,52 @@ const ACTIONS: &[(CreateAction, &str)] = &[
     (CreateAction::Abandon, "Abandon"),
 ];
 
-/// Modal input handler for the create action menu overlay.
+/// Handle a key event for the create action menu overlay.
 ///
-/// Captures all keys. j/k navigate (wrapping), Enter confirms,
+/// All keys are captured (modal). j/k navigate (wrapping), Enter confirms,
 /// 1-4 quick-select, Esc selects Abandon.
-pub struct CreateActionMenuHandler;
-
-impl InputHandler for CreateActionMenuHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::CreateActionSelected(CreateAction::Abandon)),
-            KeyCode::Char('j') | KeyCode::Down => {
-                Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: 1 })
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: -1 })
-            }
-            KeyCode::Enter => Msg::Overlay(OverlayMsg::CreateActionConfirm),
-            KeyCode::Char(c) if ('1'..='4').contains(&c) => {
-                let index = (c as u8 - b'1') as usize;
-                Msg::Overlay(OverlayMsg::CreateActionQuickSelect { index })
-            }
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::CreateActionSelected(CreateAction::Abandon)),
+        KeyCode::Char('j') | KeyCode::Down => {
+            Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: 1 })
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: -1 })
+        }
+        KeyCode::Enter => Msg::Overlay(OverlayMsg::CreateActionConfirm),
+        KeyCode::Char(c) if ('1'..='4').contains(&c) => {
+            let index = (c as u8 - b'1') as usize;
+            Msg::Overlay(OverlayMsg::CreateActionQuickSelect { index })
+        }
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Enter".to_string(),
-                description: "Confirm".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "1-4".to_string(),
-                description: "Quick select".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Abandon".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "create_action_menu"
-    }
+/// Footer commands for the create action menu overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Enter".to_string(),
+            description: "Confirm".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "1-4".to_string(),
+            description: "Quick select".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Abandon".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the create action menu overlay from the model state.
@@ -169,72 +161,59 @@ mod tests {
     }
 
     #[test]
-    fn handler_esc_selects_abandon() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionSelected(
-                CreateAction::Abandon,
-            ))) => {}
-            other => panic!("expected Abandon, got {other:?}"),
-        }
+    fn handle_key_esc_selects_abandon() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::CreateActionSelected(CreateAction::Abandon))
+        ));
     }
 
     #[test]
-    fn handler_enter_confirms() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionConfirm)) => {}
-            other => panic!("expected CreateActionConfirm, got {other:?}"),
-        }
+    fn handle_key_enter_confirms() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::CreateActionConfirm)
+        ));
     }
 
     #[test]
-    fn handler_j_navigates() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: 1 })) => {}
-            other => panic!("expected Navigate(1), got {other:?}"),
-        }
+    fn handle_key_j_navigates() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::CreateActionNavigate { delta: 1 })
+        ));
     }
 
     #[test]
-    fn handler_quick_select_1() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('1'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionQuickSelect {
-                index: 0,
-            })) => {}
-            other => panic!("expected QuickSelect(0), got {other:?}"),
-        }
+    fn handle_key_quick_select_1() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('1'))),
+            Msg::Overlay(OverlayMsg::CreateActionQuickSelect { index: 0 })
+        ));
     }
 
     #[test]
-    fn handler_quick_select_4() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('4'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::CreateActionQuickSelect {
-                index: 3,
-            })) => {}
-            other => panic!("expected QuickSelect(3), got {other:?}"),
-        }
+    fn handle_key_quick_select_4() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('4'))),
+            Msg::Overlay(OverlayMsg::CreateActionQuickSelect { index: 3 })
+        ));
     }
 
     #[test]
-    fn handler_quick_select_5_consumed() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('5'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_quick_select_5_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('5'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
-    fn handler_unknown_consumed() {
-        let handler = CreateActionMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -252,15 +231,8 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = CreateActionMenuHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Confirm"));
         assert!(cmds.iter().any(|c| c.description == "Abandon"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = CreateActionMenuHandler;
-        assert_eq!(handler.name(), "create_action_menu");
     }
 }

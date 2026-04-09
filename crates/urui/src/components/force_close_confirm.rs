@@ -8,47 +8,38 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
-/// Modal input handler for the force-close confirmation overlay.
+/// Handle a key event for the force-close confirmation overlay.
 ///
-/// Captures all keys. y/1 confirms, n/2/Esc cancels, everything else consumed.
-pub struct ForceCloseConfirmHandler;
-
-impl InputHandler for ForceCloseConfirmHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Char('1') | KeyCode::Char('y') => {
-                Msg::Overlay(OverlayMsg::ForceCloseConfirmYes)
-            }
-            KeyCode::Char('2') | KeyCode::Char('n') | KeyCode::Esc => {
-                Msg::Overlay(OverlayMsg::ForceCloseCancelled)
-            }
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+/// All keys are captured (modal). y/1 confirms, n/2/Esc cancels,
+/// everything else consumed.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Char('1') | KeyCode::Char('y') => Msg::Overlay(OverlayMsg::ForceCloseConfirmYes),
+        KeyCode::Char('2') | KeyCode::Char('n') | KeyCode::Esc => {
+            Msg::Overlay(OverlayMsg::ForceCloseCancelled)
+        }
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "1/y".to_string(),
-                description: "Yes".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "2/n".to_string(),
-                description: "No".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "force_close_confirm"
-    }
+/// Footer commands for the force-close confirmation overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "1/y".to_string(),
+            description: "Yes".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "2/n".to_string(),
+            description: "No".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the force-close confirmation overlay from the model state.
@@ -99,71 +90,58 @@ mod tests {
     }
 
     #[test]
-    fn handler_y_confirms() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Char('y'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ForceCloseConfirmYes)) => {}
-            other => panic!("expected ForceCloseConfirmYes, got {other:?}"),
-        }
+    fn handle_key_y_confirms() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('y'))),
+            Msg::Overlay(OverlayMsg::ForceCloseConfirmYes)
+        ));
     }
 
     #[test]
-    fn handler_1_confirms() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Char('1'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ForceCloseConfirmYes)) => {}
-            other => panic!("expected ForceCloseConfirmYes, got {other:?}"),
-        }
+    fn handle_key_1_confirms() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('1'))),
+            Msg::Overlay(OverlayMsg::ForceCloseConfirmYes)
+        ));
     }
 
     #[test]
-    fn handler_n_cancels() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Char('n'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ForceCloseCancelled)) => {}
-            other => panic!("expected ForceCloseCancelled, got {other:?}"),
-        }
+    fn handle_key_n_cancels() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('n'))),
+            Msg::Overlay(OverlayMsg::ForceCloseCancelled)
+        ));
     }
 
     #[test]
-    fn handler_2_cancels() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Char('2'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ForceCloseCancelled)) => {}
-            other => panic!("expected ForceCloseCancelled, got {other:?}"),
-        }
+    fn handle_key_2_cancels() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('2'))),
+            Msg::Overlay(OverlayMsg::ForceCloseCancelled)
+        ));
     }
 
     #[test]
-    fn handler_esc_cancels() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ForceCloseCancelled)) => {}
-            other => panic!("expected ForceCloseCancelled, got {other:?}"),
-        }
+    fn handle_key_esc_cancels() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::ForceCloseCancelled)
+        ));
     }
 
     #[test]
-    fn handler_unknown_consumed() {
-        let handler = ForceCloseConfirmHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
     fn footer_commands_present() {
-        let handler = ForceCloseConfirmHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert_eq!(cmds.len(), 2);
         assert!(cmds.iter().any(|c| c.description == "Yes"));
         assert!(cmds.iter().any(|c| c.description == "No"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = ForceCloseConfirmHandler;
-        assert_eq!(handler.name(), "force_close_confirm");
     }
 }

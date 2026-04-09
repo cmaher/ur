@@ -8,46 +8,38 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
-/// Modal input handler for the project input overlay.
+/// Handle a key event for the project input overlay.
 ///
-/// Captures all keys. Characters are appended to the buffer, Backspace deletes,
-/// Enter submits, Esc cancels.
-pub struct ProjectInputHandler;
-
-impl InputHandler for ProjectInputHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::ProjectInputCancelled),
-            KeyCode::Enter => Msg::Overlay(OverlayMsg::ProjectInputSubmitRequest),
-            KeyCode::Backspace => Msg::Overlay(OverlayMsg::ProjectInputBackspace),
-            KeyCode::Char(c) => Msg::Overlay(OverlayMsg::ProjectInputChar(c)),
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+/// All keys are captured (modal). Characters are appended to the buffer,
+/// Backspace deletes, Enter submits, Esc cancels.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::ProjectInputCancelled),
+        KeyCode::Enter => Msg::Overlay(OverlayMsg::ProjectInputSubmitRequest),
+        KeyCode::Backspace => Msg::Overlay(OverlayMsg::ProjectInputBackspace),
+        KeyCode::Char(c) => Msg::Overlay(OverlayMsg::ProjectInputChar(c)),
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "Enter".to_string(),
-                description: "Submit".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Cancel".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "project_input"
-    }
+/// Footer commands for the project input overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "Enter".to_string(),
+            description: "Submit".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Cancel".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the project input overlay from the model state.
@@ -87,61 +79,49 @@ mod tests {
     }
 
     #[test]
-    fn handler_esc_cancels() {
-        let handler = ProjectInputHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ProjectInputCancelled)) => {}
-            other => panic!("expected ProjectInputCancelled, got {other:?}"),
-        }
+    fn handle_key_esc_cancels() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::ProjectInputCancelled)
+        ));
     }
 
     #[test]
-    fn handler_enter_submits() {
-        let handler = ProjectInputHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ProjectInputSubmitRequest)) => {}
-            other => panic!("expected ProjectInputSubmitRequest, got {other:?}"),
-        }
+    fn handle_key_enter_submits() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::ProjectInputSubmitRequest)
+        ));
     }
 
     #[test]
-    fn handler_backspace() {
-        let handler = ProjectInputHandler;
-        match handler.handle_key(key(KeyCode::Backspace)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ProjectInputBackspace)) => {}
-            other => panic!("expected ProjectInputBackspace, got {other:?}"),
-        }
+    fn handle_key_backspace() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Backspace)),
+            Msg::Overlay(OverlayMsg::ProjectInputBackspace)
+        ));
     }
 
     #[test]
-    fn handler_char_input() {
-        let handler = ProjectInputHandler;
-        match handler.handle_key(key(KeyCode::Char('u'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::ProjectInputChar('u'))) => {}
-            other => panic!("expected ProjectInputChar('u'), got {other:?}"),
-        }
+    fn handle_key_char_input() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('u'))),
+            Msg::Overlay(OverlayMsg::ProjectInputChar('u'))
+        ));
     }
 
     #[test]
-    fn handler_unknown_consumed() {
-        let handler = ProjectInputHandler;
-        match handler.handle_key(key(KeyCode::Tab)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Tab)),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
     fn footer_commands_present() {
-        let handler = ProjectInputHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Submit"));
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = ProjectInputHandler;
-        assert_eq!(handler.name(), "project_input");
     }
 }

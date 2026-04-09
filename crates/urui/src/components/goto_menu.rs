@@ -8,63 +8,55 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{GotoTarget, Msg, OverlayMsg};
 
-/// Modal input handler for the goto menu overlay.
+/// Handle a key event for the goto menu overlay.
 ///
-/// Captures all keys. j/k navigate, Enter/Space confirm, number keys
-/// quick-select (1-indexed), Esc cancels.
-pub struct GotoMenuHandler;
-
-impl InputHandler for GotoMenuHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::GotoCancelled),
-            KeyCode::Char('j') | KeyCode::Down => {
-                Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: 1 })
+/// All keys are captured (modal). j/k navigate, Enter/Space confirm,
+/// number keys quick-select (1-indexed), Esc cancels.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::GotoCancelled),
+        KeyCode::Char('j') | KeyCode::Down => {
+            Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: 1 })
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: -1 })
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::GotoMenuConfirm),
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            let digit = (c as u8 - b'0') as usize;
+            if digit >= 1 {
+                Msg::Overlay(OverlayMsg::GotoMenuQuickSelect { digit })
+            } else {
+                Msg::Overlay(OverlayMsg::Consumed)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: -1 })
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::GotoMenuConfirm),
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                let digit = (c as u8 - b'0') as usize;
-                if digit >= 1 {
-                    Msg::Overlay(OverlayMsg::GotoMenuQuickSelect { digit })
-                } else {
-                    Msg::Overlay(OverlayMsg::Consumed)
-                }
-            }
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+        }
+        _ => Msg::Overlay(OverlayMsg::Consumed),
     }
+}
 
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Enter".to_string(),
-                description: "Confirm".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Close".to_string(),
-                common: false,
-            },
-        ]
-    }
-
-    fn name(&self) -> &str {
-        "goto_menu"
-    }
+/// Footer commands for the goto menu overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Enter".to_string(),
+            description: "Confirm".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Close".to_string(),
+            common: false,
+        },
+    ]
 }
 
 /// Render the goto menu overlay from the model state.
@@ -130,57 +122,51 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_esc() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::GotoCancelled)) => {}
-            other => panic!("expected GotoCancelled, got {other:?}"),
-        }
+    fn handle_key_esc() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::GotoCancelled)
+        ));
     }
 
     #[test]
-    fn handler_captures_j_navigate() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: 1 })) => {}
-            other => panic!("expected Navigate(1), got {other:?}"),
-        }
+    fn handle_key_j_navigate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::GotoMenuNavigate { delta: 1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_enter_confirm() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::GotoMenuConfirm)) => {}
-            other => panic!("expected GotoMenuConfirm, got {other:?}"),
-        }
+    fn handle_key_enter_confirm() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::GotoMenuConfirm)
+        ));
     }
 
     #[test]
-    fn handler_captures_number_key() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('1'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::GotoMenuQuickSelect { digit: 1 })) => {}
-            other => panic!("expected QuickSelect(1), got {other:?}"),
-        }
+    fn handle_key_number_key() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('1'))),
+            Msg::Overlay(OverlayMsg::GotoMenuQuickSelect { digit: 1 })
+        ));
     }
 
     #[test]
-    fn handler_zero_is_consumed() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('0'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_zero_is_consumed() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('0'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
-    fn handler_captures_unknown() {
-        let handler = GotoMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_unknown() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -198,15 +184,8 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = GotoMenuHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(cmds.iter().any(|c| c.description == "Confirm"));
         assert!(cmds.iter().any(|c| c.description == "Close"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = GotoMenuHandler;
-        assert_eq!(handler.name(), "goto_menu");
     }
 }

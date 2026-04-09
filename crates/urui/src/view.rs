@@ -19,6 +19,7 @@ use super::components::settings_overlay::render_settings_overlay;
 use super::components::status::render_status;
 use super::components::title_input::render_title_input;
 use super::components::type_menu::render_type_menu;
+use super::input::FooterCommand;
 use super::model::{ActiveOverlay, Model};
 use super::navigation::PageId;
 use super::pages::flow_detail::render_flow_detail;
@@ -74,17 +75,79 @@ pub fn view(model: &Model, frame: &mut Frame, ctx: &TuiContext) {
     // Active overlay (rendered on top of content area)
     render_active_overlay(area, frame.buffer_mut(), ctx, model);
 
-    // Footer: commands collected from the input stack + root page commands
-    let mut commands = model.input_stack.footer_commands();
-    commands.extend(root_page_footer_commands(model));
+    // Footer: commands follow the dispatch priority chain
+    let commands = collect_footer_commands(model);
     render_footer(chunks[3], frame.buffer_mut(), ctx, &commands);
+}
+
+/// Collect footer commands following the dispatch priority chain.
+///
+/// - If an overlay is active: overlay-specific commands + common commands from
+///   the input stack (GlobalHandler's `?` etc.)
+/// - If a banner is active: banner dismiss hint + input stack + root page commands
+/// - Otherwise: input stack + root page commands
+fn collect_footer_commands(model: &Model) -> Vec<FooterCommand> {
+    if let Some(ref overlay) = model.active_overlay {
+        let mut commands = overlay_footer_commands(overlay);
+        // Include common (right-side) commands from the input stack so global
+        // shortcuts like "? Commands" still appear alongside overlay commands.
+        commands.extend(
+            model
+                .input_stack
+                .footer_commands()
+                .into_iter()
+                .filter(|c| c.common),
+        );
+        return commands;
+    }
+
+    let mut commands = Vec::new();
+
+    if model.banner.is_some() {
+        commands.push(FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Dismiss".to_string(),
+            common: false,
+        });
+    }
+
+    commands.extend(model.input_stack.footer_commands());
+    commands.extend(root_page_footer_commands(model));
+    commands
+}
+
+/// Collect footer commands for the currently active overlay.
+fn overlay_footer_commands(overlay: &ActiveOverlay) -> Vec<FooterCommand> {
+    use super::components::create_action_menu;
+    use super::components::filter_menu;
+    use super::components::force_close_confirm;
+    use super::components::goto_menu;
+    use super::components::help_overlay;
+    use super::components::priority_picker;
+    use super::components::project_input;
+    use super::components::settings_overlay;
+    use super::components::title_input;
+    use super::components::type_menu;
+
+    match overlay {
+        ActiveOverlay::PriorityPicker { .. } => priority_picker::footer_commands(),
+        ActiveOverlay::TypeMenu { .. } => type_menu::footer_commands(),
+        ActiveOverlay::FilterMenu { .. } => filter_menu::footer_commands(),
+        ActiveOverlay::GotoMenu { .. } => goto_menu::footer_commands(),
+        ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::footer_commands(),
+        ActiveOverlay::CreateActionMenu { .. } => create_action_menu::footer_commands(),
+        ActiveOverlay::ProjectInput { .. } => project_input::footer_commands(),
+        ActiveOverlay::TitleInput { .. } => title_input::footer_commands(),
+        ActiveOverlay::Settings { .. } => settings_overlay::footer_commands(),
+        ActiveOverlay::Help => help_overlay::footer_commands(),
+    }
 }
 
 /// Collect footer commands from the current root page handler.
 ///
 /// Root pages don't push handlers onto the input stack (they persist across
 /// tab switches), so their footer commands are collected separately.
-fn root_page_footer_commands(model: &Model) -> Vec<super::input::FooterCommand> {
+fn root_page_footer_commands(model: &Model) -> Vec<FooterCommand> {
     use super::input::InputHandler;
     use super::pages::flow_detail::FlowDetailHandler;
     use super::pages::flows_list::FlowListHandler;
