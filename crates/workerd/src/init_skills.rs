@@ -128,14 +128,15 @@ impl InitSkillsManager {
         }
 
         // Append caveman fragment if UR_WORKER_CAVEMAN is set
-        if let Ok(level) = std::env::var(CAVEMAN_ENV) {
-            if !level.trim().is_empty() {
-                let caveman_src = self
-                    .home
-                    .join(POTENTIAL_CLAUDES_DIR)
-                    .join(format!("caveman-{level}.md"));
-                if caveman_src.exists() {
-                    let caveman_content = tokio::fs::read_to_string(&caveman_src).await?;
+        if let Ok(level) = std::env::var(CAVEMAN_ENV)
+            && !level.trim().is_empty()
+        {
+            let caveman_src = self
+                .home
+                .join(POTENTIAL_CLAUDES_DIR)
+                .join(format!("caveman-{level}.md"));
+            match tokio::fs::read_to_string(&caveman_src).await {
+                Ok(caveman_content) => {
                     content.push_str("\n\n");
                     content.push_str(&caveman_content);
                     info!(
@@ -143,7 +144,8 @@ impl InitSkillsManager {
                         path = %caveman_src.display(),
                         "appended caveman fragment"
                     );
-                } else {
+                }
+                Err(_) => {
                     warn!(
                         level = %level,
                         path = %caveman_src.display(),
