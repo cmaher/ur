@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use super::cmd::{Cmd, FetchCmd};
 use super::components::banner::dispatch_banner_key;
+use super::model::ActiveOverlay;
 #[cfg(debug_assertions)]
 use super::model::expected_handler_name_for_overlay;
 use super::model::{
@@ -88,22 +89,56 @@ fn debug_assert_overlay_invariant(mut model: Model) -> Model {
     model
 }
 
-/// Handle a key press event by dispatching through the input stack.
-/// The input stack walks handlers top-to-bottom; the first capture wins.
-/// If no handler captures the key, root page handlers get a chance.
-/// If a handler captures the key and produces a message, that message is
-/// fed back through update() recursively.
+/// Handle a key press event through the priority dispatch chain:
+///
+/// 1. **Overlay** — if an overlay is active, its component `handle_key` captures
+///    the key unconditionally (modal).
+/// 2. **Banner** — if a banner is visible, `dispatch_banner_key` gets a chance.
+///    If it returns `Some(msg)`, the key is captured; otherwise fall through.
+/// 3. **Input stack** — `GlobalHandler`, `MarkdownScrollHandler`, etc.
+/// 4. **Root page** — tab-specific key handling as a final fallback.
 fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
-    // Banner gets first crack at keys before the input stack.
+    // 1. Overlay gets unconditional capture (modal).
+    if let Some(overlay) = model.active_overlay.as_ref() {
+        let msg = dispatch_overlay_key(overlay, key);
+        return update(model, msg);
+    }
+
+    // 2. Banner gets next crack at keys.
     if model.banner.is_some() {
         if let Some(msg) = dispatch_banner_key(key) {
             return update(model, msg);
         }
     }
 
+    // 3. Input stack (GlobalHandler, MarkdownScrollHandler, etc.).
     match model.input_stack.dispatch(key) {
         Some(msg) => update(model, msg),
+        // 4. Root page fallback.
         None => dispatch_root_page_key(model, key),
+    }
+}
+
+/// Dispatch a key event to the active overlay's component `handle_key`.
+/// Each overlay variant maps to a specific component module whose free function
+/// handles all key events for that overlay (modal capture — always returns a `Msg`).
+fn dispatch_overlay_key(overlay: &ActiveOverlay, key: crossterm::event::KeyEvent) -> Msg {
+    use super::components::{
+        create_action_menu, filter_menu, force_close_confirm, goto_menu, help_overlay,
+        priority_picker, project_input, settings_overlay, title_input, type_menu,
+    };
+
+    match overlay {
+        ActiveOverlay::PriorityPicker { .. } => priority_picker::handle_key(key),
+        ActiveOverlay::TypeMenu { .. } => type_menu::handle_key(key),
+        ActiveOverlay::FilterMenu { .. } => filter_menu::handle_key(key),
+        ActiveOverlay::GotoMenu { .. } => goto_menu::handle_key(key),
+        ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::handle_key(key),
+        ActiveOverlay::CreateActionMenu { .. } => create_action_menu::handle_key(key),
+        ActiveOverlay::ProjectInput { .. } => project_input::handle_key(key),
+        ActiveOverlay::TitleInput { .. } => title_input::handle_key(key),
+        ActiveOverlay::Settings { .. } => settings_overlay::handle_key(key),
+        ActiveOverlay::Help => help_overlay::handle_key(key),
     }
 }
 
