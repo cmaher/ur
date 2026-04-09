@@ -233,10 +233,11 @@ impl CoreServiceHandler {
             crate::WorkerId,
             Vec<String>,
             crate::WorkerStrategy,
+            String,
         ),
         Status,
     > {
-        let (strategy, resolved_skills) = self
+        let (strategy, resolved_skills, caveman) = self
             .worker_manager
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
@@ -324,6 +325,7 @@ impl CoreServiceHandler {
             worker_id,
             resolved_skills,
             strategy,
+            caveman,
         ))
     }
 }
@@ -350,7 +352,7 @@ impl CoreService for CoreServiceHandler {
             "worker_launch request received"
         );
 
-        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy) =
+        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, caveman) =
             self.resolve_launch_workspace(&req).await?;
 
         // Acquire shared slots for context repos in parallel.
@@ -424,6 +426,7 @@ impl CoreService for CoreServiceHandler {
             ports,
             slot_id,
             context_mounts,
+            caveman,
         };
         let (container_id, _worker_secret) = self
             .worker_manager
