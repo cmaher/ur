@@ -85,39 +85,21 @@ struct RawPromptModes {
     modes: HashMap<String, RawModeEntry>,
 }
 
-/// Valid values for the caveman field on a prompt mode.
-const VALID_CAVEMAN_LEVELS: &[&str] = &["lite", "full", "ultra", "none"];
-
 /// A single prompt mode entry with its base strategy and skills list.
 #[derive(Debug, Deserialize)]
 struct RawModeEntry {
     /// The base worker strategy name (e.g. "code" or "design"). Required for custom modes.
     base: String,
     skills: Vec<String>,
-    /// Optional caveman fragment level: "lite", "full", "ultra", or "none".
-    /// When absent in a user-specified mode, defaults to "none".
-    caveman: Option<String>,
 }
 
-/// Resolved prompt modes configuration mapping mode names to skill lists, strategies, and caveman levels.
+/// Resolved prompt modes configuration mapping mode names to skill lists and strategies.
 #[derive(Debug, Clone)]
 pub struct PromptModesConfig {
     modes: HashMap<String, Vec<String>>,
     /// Maps mode names to their worker strategy. Built-in modes ("code", "design")
     /// map to their corresponding variants; custom modes map via their `base` field.
     strategies: HashMap<String, WorkerStrategy>,
-    /// Maps mode names to their caveman fragment level.
-    /// Defaults: code → "ultra", design → "lite". User-specified modes without
-    /// an explicit caveman field default to "none".
-    cavemans: HashMap<String, String>,
-}
-
-/// Returns the hardcoded default caveman levels for built-in modes.
-fn default_caveman_levels() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    map.insert("code".into(), "ultra".into());
-    map.insert("design".into(), "lite".into());
-    map
 }
 
 impl Default for PromptModesConfig {
@@ -128,7 +110,6 @@ impl Default for PromptModesConfig {
         Self {
             modes: default_prompt_modes(),
             strategies,
-            cavemans: default_caveman_levels(),
         }
     }
 }
@@ -155,7 +136,6 @@ impl PromptModesConfig {
         let mut strategies = HashMap::new();
         strategies.insert("code".into(), WorkerStrategy::Code);
         strategies.insert("design".into(), WorkerStrategy::Design);
-        let mut cavemans = default_caveman_levels();
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -163,24 +143,10 @@ impl PromptModesConfig {
                     entry.base, name
                 )
             })?;
-            let caveman = entry.caveman.unwrap_or_else(|| "none".into());
-            if !VALID_CAVEMAN_LEVELS.contains(&caveman.as_str()) {
-                return Err(format!(
-                    "invalid caveman '{}' for prompt mode '{}': must be one of: {}",
-                    caveman,
-                    name,
-                    VALID_CAVEMAN_LEVELS.join(", ")
-                ));
-            }
             strategies.insert(name.clone(), strategy);
-            cavemans.insert(name.clone(), caveman);
             modes.insert(name, entry.skills);
         }
-        Ok(Self {
-            modes,
-            strategies,
-            cavemans,
-        })
+        Ok(Self { modes, strategies })
     }
 
     /// Resolve skills for a launch request.
@@ -202,17 +168,13 @@ impl PromptModesConfig {
             .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))
     }
 
-    /// Resolve a mode name to its worker strategy, skill list, and caveman level.
+    /// Resolve a mode name to its worker strategy and skill list.
     ///
     /// For built-in modes ("code", "design"), returns the corresponding
-    /// `WorkerStrategy` variant, its default skills, and default caveman level.
-    /// For custom modes, returns the strategy determined by the `base` field,
-    /// the custom skills, and the caveman level (defaulting to "none").
+    /// `WorkerStrategy` variant and its default skills. For custom modes,
+    /// returns the strategy determined by the `base` field and the custom skills.
     /// An empty mode name defaults to "code".
-    pub fn resolve_mode(
-        &self,
-        mode: &str,
-    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
+    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
         let mode_name = if mode.is_empty() { "code" } else { mode };
         let strategy = self
             .strategies
@@ -224,12 +186,7 @@ impl PromptModesConfig {
             .get(mode_name)
             .cloned()
             .ok_or_else(|| format!("unknown prompt mode: {mode_name}"))?;
-        let caveman = self
-            .cavemans
-            .get(mode_name)
-            .cloned()
-            .unwrap_or_else(|| "none".into());
-        Ok((strategy, skills, caveman))
+        Ok((strategy, skills))
     }
 }
 
@@ -285,8 +242,6 @@ pub struct WorkerConfig {
     /// Context repositories to mount read-only into the container.
     /// Each entry is (project_key, host_path) from shared pool slots.
     pub context_mounts: Vec<(String, PathBuf)>,
-    /// Caveman fragment level: "lite", "full", "ultra", or "none".
-    pub caveman: String,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -346,11 +301,8 @@ impl WorkerManager {
         self.prompt_modes.resolve_skills(mode, skills)
     }
 
-    /// Resolve a mode name to its worker strategy, skill list, and caveman level.
-    pub fn resolve_mode(
-        &self,
-        mode: &str,
-    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
+    /// Resolve a mode name to its worker strategy and skill list.
+    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
         self.prompt_modes.resolve_mode(mode)
     }
 
@@ -745,11 +697,6 @@ fn build_worker_env_vars(
         "UR_WORKER_CLAUDE".into(),
         config.strategy.claude_md_name().into(),
     ));
-
-    // Inject caveman fragment level when not "none"
-    if config.caveman != "none" {
-        env_vars.push(("UR_WORKER_CAVEMAN".into(), config.caveman.clone()));
-    }
 
     // Inject project key so workers can resolve project context via env
     if !config.project_key.is_empty() {
@@ -1156,19 +1103,17 @@ skills = ["a", "b"]
     #[test]
     fn resolve_mode_default_returns_code_strategy() {
         let cfg = PromptModesConfig::default();
-        let (strategy, skills, caveman) = cfg.resolve_mode("").unwrap();
+        let (strategy, skills) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(caveman, "ultra");
     }
 
     #[test]
     fn resolve_mode_design_returns_design_strategy() {
         let cfg = PromptModesConfig::default();
-        let (strategy, skills, caveman) = cfg.resolve_mode("design").unwrap();
+        let (strategy, skills) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
-        assert_eq!(caveman, "lite");
     }
 
     #[test]
@@ -1179,10 +1124,9 @@ base = "design"
 skills = ["tickets", "my-custom-skill"]
 "#;
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, caveman) = cfg.resolve_mode("my-docs").unwrap();
+        let (strategy, skills) = cfg.resolve_mode("my-docs").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
-        assert_eq!(caveman, "none");
     }
 
     #[test]
@@ -1212,11 +1156,9 @@ base = "code"
 skills = ["only-one"]
 "#;
         let cfg = PromptModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, caveman) = cfg.resolve_mode("code").unwrap();
+        let (strategy, skills) = cfg.resolve_mode("code").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
-        // User overrode code mode without caveman → defaults to "none"
-        assert_eq!(caveman, "none");
     }
 
     #[tokio::test]
@@ -1326,142 +1268,6 @@ skills = ["only-one"]
         )
         .await;
         assert!(mgr.get_worker_context(&wid).await.is_none());
-    }
-
-    #[test]
-    fn caveman_default_code_is_ultra() {
-        let cfg = PromptModesConfig::default();
-        let (_, _, caveman) = cfg.resolve_mode("code").unwrap();
-        assert_eq!(caveman, "ultra");
-    }
-
-    #[test]
-    fn caveman_default_design_is_lite() {
-        let cfg = PromptModesConfig::default();
-        let (_, _, caveman) = cfg.resolve_mode("design").unwrap();
-        assert_eq!(caveman, "lite");
-    }
-
-    #[test]
-    fn caveman_user_mode_without_field_defaults_to_none() {
-        let toml = r#"
-[prompt_modes.custom]
-base = "code"
-skills = ["implement"]
-"#;
-        let cfg = PromptModesConfig::from_toml(toml).unwrap();
-        let (_, _, caveman) = cfg.resolve_mode("custom").unwrap();
-        assert_eq!(caveman, "none");
-    }
-
-    #[test]
-    fn caveman_user_mode_with_explicit_full() {
-        let toml = r#"
-[prompt_modes.custom]
-base = "code"
-skills = ["implement"]
-caveman = "full"
-"#;
-        let cfg = PromptModesConfig::from_toml(toml).unwrap();
-        let (_, _, caveman) = cfg.resolve_mode("custom").unwrap();
-        assert_eq!(caveman, "full");
-    }
-
-    #[test]
-    fn caveman_invalid_value_rejected() {
-        let toml = r#"
-[prompt_modes.custom]
-base = "code"
-skills = ["implement"]
-caveman = "wenyan"
-"#;
-        let result = PromptModesConfig::from_toml(toml);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("invalid caveman"));
-        assert!(err.contains("wenyan"));
-    }
-
-    #[test]
-    fn caveman_override_builtin_mode() {
-        let toml = r#"
-[prompt_modes.code]
-base = "code"
-skills = ["implement"]
-caveman = "lite"
-"#;
-        let cfg = PromptModesConfig::from_toml(toml).unwrap();
-        let (_, _, caveman) = cfg.resolve_mode("code").unwrap();
-        assert_eq!(caveman, "lite");
-    }
-
-    #[test]
-    fn caveman_none_env_var_not_emitted() {
-        let config = WorkerConfig {
-            process_id: "test".into(),
-            worker_id: WorkerId("test-ab12".into()),
-            image_id: "img".into(),
-            cpus: 1,
-            memory: "1g".into(),
-            workspace_dir: None,
-            proxy_hostname: "proxy".into(),
-            project_key: String::new(),
-            strategy: WorkerStrategy::Code,
-            skills: vec![],
-            git_hooks_dir: None,
-            skill_hooks_dir: None,
-            claude_md: None,
-            mounts: vec![],
-            ports: vec![],
-            slot_id: None,
-            context_mounts: vec![],
-            caveman: "none".into(),
-        };
-        let network_config = NetworkConfig {
-            name: "net".into(),
-            worker_name: "wnet".into(),
-            server_hostname: "host".into(),
-            worker_prefix: "w".into(),
-        };
-        let vars = build_worker_env_vars(&config, "secret", &network_config, 9000);
-        assert!(
-            !vars.iter().any(|(k, _)| k == "UR_WORKER_CAVEMAN"),
-            "UR_WORKER_CAVEMAN should not be emitted when caveman is 'none'"
-        );
-    }
-
-    #[test]
-    fn caveman_non_none_env_var_emitted() {
-        let config = WorkerConfig {
-            process_id: "test".into(),
-            worker_id: WorkerId("test-ab12".into()),
-            image_id: "img".into(),
-            cpus: 1,
-            memory: "1g".into(),
-            workspace_dir: None,
-            proxy_hostname: "proxy".into(),
-            project_key: String::new(),
-            strategy: WorkerStrategy::Code,
-            skills: vec![],
-            git_hooks_dir: None,
-            skill_hooks_dir: None,
-            claude_md: None,
-            mounts: vec![],
-            ports: vec![],
-            slot_id: None,
-            context_mounts: vec![],
-            caveman: "ultra".into(),
-        };
-        let network_config = NetworkConfig {
-            name: "net".into(),
-            worker_name: "wnet".into(),
-            server_hostname: "host".into(),
-            worker_prefix: "w".into(),
-        };
-        let vars = build_worker_env_vars(&config, "secret", &network_config, 9000);
-        let caveman_var = vars.iter().find(|(k, _)| k == "UR_WORKER_CAVEMAN");
-        assert!(caveman_var.is_some(), "UR_WORKER_CAVEMAN should be emitted");
-        assert_eq!(caveman_var.unwrap().1, "ultra");
     }
 
     #[test]
