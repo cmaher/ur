@@ -14,7 +14,7 @@ use super::super::model::TicketTableModel;
 use super::super::msg::{Msg, NavMsg};
 
 /// Column headers for the ticket table.
-const HEADERS: [&str; 7] = ["ID", "Type", "P", "Status", "Progress", "", "Title"];
+const HEADERS: [&str; 7] = ["ID", "P", "Type", "Status", "Progress", "", "Title"];
 
 /// Unicode symbols for ticket status display.
 const SYM_OPEN: &str = "○";
@@ -27,12 +27,12 @@ const PROGRESS_COUNT_COL: usize = 4;
 const PROGRESS_BAR_COL: usize = 5;
 
 /// Build the column width constraints for the ticket table.
-/// ID(12), Type(7), P(3), Status(8), Progress(8), Bar(10), Title(fill).
+/// ID(12), P(3), Type(7), Status(8), Progress(8), Bar(10), Title(fill).
 fn table_widths() -> Vec<Constraint> {
     vec![
         Constraint::Length(12),
-        Constraint::Length(7),
         Constraint::Length(3),
+        Constraint::Length(7),
         Constraint::Length(8),
         Constraint::Length(8),
         Constraint::Length(10),
@@ -87,8 +87,8 @@ fn build_rows(tickets: &[Ticket]) -> Vec<Vec<String>> {
         .map(|t| {
             vec![
                 t.id.clone(),
-                type_label(t).to_string(),
                 t.priority.to_string(),
+                type_label(t).to_string(),
                 dispatch_label(t),
                 String::new(), // progress count placeholder
                 String::new(), // progress bar placeholder
@@ -696,8 +696,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 7);
         assert_eq!(rows[0][0], "ur-001");
-        assert_eq!(rows[0][1], "◆ Code");
-        assert_eq!(rows[0][2], "2");
+        assert_eq!(rows[0][1], "2");
+        assert_eq!(rows[0][2], "◆ Code");
         assert_eq!(rows[0][3], "○ Open");
         assert!(rows[0][4].is_empty()); // progress count placeholder
         assert!(rows[0][5].is_empty()); // progress bar placeholder
