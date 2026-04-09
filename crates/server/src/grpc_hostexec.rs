@@ -136,6 +136,7 @@ pub struct HostExecServiceHandler {
     pub worker_manager: WorkerManager,
     pub builderd_client: BuilderdClient,
     pub host_workspace: std::path::PathBuf,
+    pub git_branch_prefix: String,
 }
 
 #[tonic::async_trait]
@@ -395,11 +396,13 @@ impl HostExecServiceHandler {
         let (worker_context, config) = match proc_context {
             Some(ref ctx) if ctx.project_key.is_some() => {
                 let project_key = ctx.project_key.as_ref().unwrap();
+                let branch = format!("{}{}", self.git_branch_prefix, worker_id_str);
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
                     process_id: process_id.clone(),
                     project_key: project_key.clone(),
                     slot_path: ctx.slot_path.clone(),
+                    branch,
                 };
 
                 // Grant only defaults + project-granted commands
@@ -420,6 +423,7 @@ impl HostExecServiceHandler {
                     process_id: process_id.clone(),
                     project_key: String::new(),
                     slot_path: ctx.slot_path.clone(),
+                    branch: String::new(),
                 };
                 (
                     Some(lua_ctx),

@@ -15,6 +15,7 @@ pub struct WorkerContext {
     pub process_id: String,
     pub project_key: String,
     pub slot_path: PathBuf,
+    pub branch: String,
 }
 
 /// Structured result from a Lua transform function.
@@ -86,6 +87,8 @@ impl LuaTransformManager {
                 .map_err(|e| anyhow::anyhow!("setting project_key: {e}"))?;
             tbl.set("slot_path", ctx.slot_path.to_string_lossy().as_ref())
                 .map_err(|e| anyhow::anyhow!("setting slot_path: {e}"))?;
+            tbl.set("branch", ctx.branch.as_str())
+                .map_err(|e| anyhow::anyhow!("setting branch: {e}"))?;
             Value::Table(tbl)
         } else {
             Value::Nil
@@ -247,6 +250,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["commit".into(), "-m".into(), "fix the bug".into()];
         let result = mgr
@@ -264,6 +268,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec![
             "commit".into(),
@@ -296,6 +301,7 @@ mod tests {
             process_id: String::new(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["commit".into(), "-m".into(), "hello".into()];
         let result = mgr
@@ -313,12 +319,192 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
-        let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
+        let args: Vec<String> = vec!["status".into()];
         let result = mgr
             .run_transform(script, "git", &args, "/workspace", Some(&ctx))
             .unwrap();
-        assert_eq!(result.args, vec!["push", "origin", "main"]);
+        assert_eq!(result.args, vec!["status"]);
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_on_commit() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec![
+            "commit".into(),
+            "--no-verify".into(),
+            "-m".into(),
+            "msg".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_on_push() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["push".into(), "--no-verify".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
+    fn test_git_allows_commit_without_no_verify() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "msg".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_anywhere_in_args() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec![
+            "push".into(),
+            "origin".into(),
+            "main".into(),
+            "--no-verify".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_main() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_new_branch() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "-b".into(), "new-branch".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_file() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "--".into(), "file.txt".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_switch_main() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["switch".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: switch")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_switch_create() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["switch".into(), "-c".into(), "new-branch".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: switch")
+        );
+    }
+
+    #[test]
+    fn test_git_allows_restore() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["restore".into(), "file.txt".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_after_global_flags() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec![
+            "-C".into(),
+            "/workspace".into(),
+            "checkout".into(),
+            "main".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
     }
 
     #[test]
@@ -371,6 +557,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let result = mgr
             .run_transform(script, "git", &[], "/workspace", Some(&ctx))
@@ -379,6 +566,31 @@ mod tests {
             result.args,
             vec!["deploy-x7q2", "ur", "/home/user/.ur/workspace/pool/ur/0",]
         );
+    }
+
+    #[test]
+    fn test_worker_context_branch_accessible_in_lua() {
+        let mgr = LuaTransformManager::new();
+        let script = r#"
+            function transform(command, args, working_dir, worker_context)
+                return {
+                    command = command,
+                    args = { worker_context.branch },
+                    working_dir = working_dir,
+                }
+            end
+        "#;
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "ur-deploy-x7q2".into(),
+        };
+        let result = mgr
+            .run_transform(script, "git", &[], "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["ur-deploy-x7q2"]);
     }
 
     #[test]
@@ -407,6 +619,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "status".into()];
         let result = mgr
@@ -427,6 +640,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "status".into()];
         let result = mgr
@@ -447,6 +661,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "ur".into(), "log".into()];
         let result = mgr
@@ -464,6 +679,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace/".into(), "status".into()];
         let result = mgr
@@ -481,6 +697,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "status".into()];
         let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
@@ -515,6 +732,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "test-ab12".into(),
         };
 
         // git.lua with worker context
@@ -553,6 +771,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec![
             "-C".into(),
@@ -578,6 +797,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/workspace".into(), "pr".into(), "list".into()];
         let result = mgr
@@ -598,6 +818,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "pr".into(), "list".into()];
         let result = mgr.run_transform(script, "gh", &args, "/workspace", Some(&ctx));
@@ -1121,6 +1342,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
         let result = mgr
@@ -1141,6 +1363,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
         };
         let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
         let result = mgr.run_transform(script, "cargo", &args, "/workspace", Some(&ctx));
@@ -1761,6 +1984,193 @@ mod tests {
         );
     }
 
+    // ── git push branch restriction tests ──
+
+    #[test]
+    fn test_git_push_bare_allowed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push"]);
+    }
+
+    #[test]
+    fn test_git_push_remote_only_allowed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin"]);
+    }
+
+    #[test]
+    fn test_git_push_origin_head_allowed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "HEAD"]);
+    }
+
+    #[test]
+    fn test_git_push_own_branch_allowed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "deploy-x7q2".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "deploy-x7q2"]);
+    }
+
+    #[test]
+    fn test_git_push_different_branch_blocked() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked push: branch 'main' does not match worker branch")
+        );
+    }
+
+    #[test]
+    fn test_git_push_head_to_wrong_dst_blocked() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD:main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked push: destination branch 'main' does not match worker branch")
+        );
+    }
+
+    #[test]
+    fn test_git_push_src_to_wrong_dst_blocked() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "deploy-x7q2:main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked push: destination branch 'main' does not match worker branch")
+        );
+    }
+
+    #[test]
+    fn test_git_push_head_to_own_branch_allowed() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "HEAD:deploy-x7q2".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "HEAD:deploy-x7q2"]);
+    }
+
+    #[test]
+    fn test_git_push_skipped_when_no_worker_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "main"]);
+    }
+
+    #[test]
+    fn test_git_push_skipped_when_branch_empty() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: String::new(),
+        };
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "main"]);
+    }
+
     #[test]
     fn test_cargo_allows_flags_before_subcommand() {
         let mgr = LuaTransformManager::new();
@@ -1902,6 +2312,7 @@ mod tests {
             process_id: "ur-abc12".into(),
             project_key: "ur".into(),
             slot_path: "/pool/ur/0".into(),
+            branch: "w-1".into(),
         };
         let args: Vec<String> = vec!["ticket".into(), "list".into()];
         let result = mgr

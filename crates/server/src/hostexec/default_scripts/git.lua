@@ -5,6 +5,7 @@ function transform(command, args, working_dir, worker_context)
     local blocked_exact = {
         ["--git-dir"] = true,
         ["--work-tree"] = true,
+        ["--no-verify"] = true,
     }
     local blocked_prefix = {
         "--git-dir=",
@@ -64,6 +65,66 @@ function transform(command, args, working_dir, worker_context)
             end
 
             i = i + 1
+        end
+    end
+
+    -- Block checkout and switch subcommands (workers must not switch branches)
+    local blocked_subcommands = {
+        ["checkout"] = true,
+        ["switch"] = true,
+    }
+    -- Find the git subcommand: first positional arg (skip global flags and their values)
+    local global_flags_with_value = {
+        ["-C"] = true,
+        ["-c"] = true,
+    }
+    local sub_i = 1
+    while sub_i <= #args do
+        local a = args[sub_i]
+        if global_flags_with_value[a] then
+            sub_i = sub_i + 2  -- skip flag + its value
+        elseif a:sub(1, 1) == "-" then
+            sub_i = sub_i + 1  -- skip other flags
+        else
+            -- First positional arg is the subcommand
+            if blocked_subcommands[a] then
+                error("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
+            end
+            break
+        end
+    end
+
+    -- Restrict push refspecs to the worker's own branch
+    if sub_i <= #args and args[sub_i] == "push" then
+        if worker_context ~= nil and worker_context.branch ~= "" then
+            local allowed_branch = worker_context.branch
+            -- Find refspec: positional args after "push" are remote and refspec
+            -- Skip flags (args starting with -)
+            local push_positionals = {}
+            local pi = sub_i + 1
+            while pi <= #args do
+                if args[pi]:sub(1, 1) ~= "-" then
+                    push_positionals[#push_positionals + 1] = args[pi]
+                end
+                pi = pi + 1
+            end
+            -- push_positionals[1] = remote (if any), push_positionals[2] = refspec (if any)
+            local refspec = push_positionals[2]
+            if refspec ~= nil and refspec ~= "HEAD" then
+                -- Split on colon to check destination
+                local colon_pos = refspec:find(":")
+                if colon_pos then
+                    local dst = refspec:sub(colon_pos + 1)
+                    if dst ~= allowed_branch then
+                        error("blocked push: destination branch '" .. dst .. "' does not match worker branch '" .. allowed_branch .. "'")
+                    end
+                else
+                    -- No colon: the whole refspec is the branch name
+                    if refspec ~= allowed_branch then
+                        error("blocked push: branch '" .. refspec .. "' does not match worker branch '" .. allowed_branch .. "'")
+                    end
+                end
+            end
         end
     end
 
