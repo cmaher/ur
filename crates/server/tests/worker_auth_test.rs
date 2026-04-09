@@ -34,6 +34,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,

@@ -419,6 +419,8 @@ struct RawDatabaseConfig {
     user: Option<String>,
     password: Option<String>,
     name: Option<String>,
+    /// Network interface to bind the postgres container port on (e.g. Tailscale IP).
+    bind_address: Option<String>,
     backup: Option<RawBackupConfig>,
 }
 
@@ -833,6 +835,9 @@ pub struct DatabaseConfig {
     pub password: String,
     /// Database name (default: "ur").
     pub name: String,
+    /// Network interface to bind the postgres container port on (e.g. a Tailscale IP).
+    /// When set, the postgres service exposes `<bind_address>:<port>:<port>`.
+    pub bind_address: Option<String>,
     /// Periodic backup settings for the database.
     pub backup: BackupConfig,
 }
@@ -1395,6 +1400,7 @@ fn resolve_database(
             .password
             .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string()),
         name: raw.name.unwrap_or_else(|| DEFAULT_DB_NAME.to_string()),
+        bind_address: raw.bind_address,
         backup,
     }
 }
@@ -2521,6 +2527,24 @@ name = "mydb"
         assert_eq!(cfg.db.user, "myuser");
         assert_eq!(cfg.db.password, "mypass");
         assert_eq!(cfg.db.name, "mydb");
+        assert_eq!(cfg.db.bind_address, None);
+    }
+
+    #[test]
+    fn db_bind_address_parsed_from_toml() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[db]
+bind_address = "100.64.1.5"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.db.bind_address, Some("100.64.1.5".to_string()));
+        assert_eq!(cfg.db.host, DEFAULT_DB_HOST);
     }
 
     #[test]
@@ -2579,6 +2603,7 @@ retain_count = 10
             user: "admin".to_string(),
             password: "secret".to_string(),
             name: "testdb".to_string(),
+            bind_address: None,
             backup: BackupConfig {
                 path: None,
                 interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -2600,6 +2625,7 @@ retain_count = 10
             user: DEFAULT_DB_USER.to_string(),
             password: DEFAULT_DB_PASSWORD.to_string(),
             name: DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: BackupConfig {
                 path: None,
                 interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,

@@ -190,6 +190,13 @@ struct ComposeParams {
     db_name: String,
     /// Full DATABASE_URL for the server service.
     database_url: String,
+    /// Whether to include the postgres service in the compose file.
+    /// False when connecting to a remote database (host != DEFAULT_DB_HOST).
+    include_postgres: bool,
+    /// Network interface to bind the postgres container port on.
+    postgres_bind_address: Option<String>,
+    /// Postgres port for bind_address exposure.
+    postgres_port: u16,
 }
 
 /// Generate the docker compose YAML programmatically.
@@ -203,6 +210,7 @@ pub fn generate_compose(
     proxy: &ur_config::ProxyConfig,
     db: &ur_config::DatabaseConfig,
 ) -> String {
+    let include_postgres = db.host == ur_config::DEFAULT_DB_HOST;
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
@@ -218,6 +226,9 @@ pub fn generate_compose(
         db_password: db.password.clone(),
         db_name: db.name.clone(),
         database_url: db.database_url(),
+        include_postgres,
+        postgres_bind_address: db.bind_address.clone(),
+        postgres_port: db.port,
     };
 
     let mut out = String::with_capacity(2048);
@@ -225,8 +236,10 @@ pub fn generate_compose(
     write_header(&mut out);
     writeln!(out, "services:").unwrap();
     write_squid_service(&mut out, &params);
-    writeln!(out).unwrap();
-    write_postgres_service(&mut out, &params);
+    if params.include_postgres {
+        writeln!(out).unwrap();
+        write_postgres_service(&mut out, &params);
+    }
     writeln!(out).unwrap();
     write_server_service(&mut out, &params);
     writeln!(out).unwrap();
@@ -307,6 +320,18 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "      retries: 10").unwrap();
     writeln!(out, "      start_period: 3s").unwrap();
 
+    // Ports (only when bind_address is configured)
+    if let Some(addr) = &params.postgres_bind_address {
+        writeln!(out, "    ports:").unwrap();
+        writeln!(
+            out,
+            "      - \"{addr}:{port}:{port}\"",
+            addr = addr,
+            port = params.postgres_port,
+        )
+        .unwrap();
+    }
+
     // Networks
     writeln!(out, "    networks:").unwrap();
     writeln!(out, "      - infra").unwrap();
@@ -318,10 +343,12 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    container_name: {}", params.server_container_name).unwrap();
     writeln!(out, "    restart: unless-stopped").unwrap();
 
-    // Depends on
-    writeln!(out, "    depends_on:").unwrap();
-    writeln!(out, "      {}:", params.postgres_container_name).unwrap();
-    writeln!(out, "        condition: service_healthy").unwrap();
+    // Depends on (only when local postgres is included)
+    if params.include_postgres {
+        writeln!(out, "    depends_on:").unwrap();
+        writeln!(out, "      {}:", params.postgres_container_name).unwrap();
+        writeln!(out, "        condition: service_healthy").unwrap();
+    }
 
     // Volumes
     writeln!(out, "    volumes:").unwrap();
@@ -488,6 +515,7 @@ mod tests {
                 user: ur_config::DEFAULT_DB_USER.to_string(),
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
+                bind_address: None,
                 backup: ur_config::BackupConfig {
                     path: None,
                     interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -555,6 +583,7 @@ mod tests {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -652,6 +681,7 @@ mod tests {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -690,6 +720,7 @@ mod tests {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: Some(PathBuf::from("/home/user/.ur/backup")),
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -742,6 +773,7 @@ mod tests {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -762,6 +794,121 @@ mod tests {
         assert!(postgres_section.contains("- infra"));
         // Postgres should not be on workers network
         assert!(!postgres_section.contains("- workers"));
+    }
+
+    #[test]
+    fn generate_compose_bind_address_exposes_postgres_port() {
+        let network = ur_config::NetworkConfig {
+            name: "ur".to_string(),
+            worker_name: "ur-workers".to_string(),
+            server_hostname: "ur-server".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
+        };
+        let proxy = ur_config::ProxyConfig {
+            hostname: "ur-squid".to_string(),
+            allowlist: vec![],
+        };
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: Some("100.64.1.5".to_string()),
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        let generated = generate_compose(&network, &proxy, &db);
+
+        // Postgres should be present with ports exposed
+        assert!(generated.contains("  ur-postgres:"));
+        assert!(generated.contains("\"100.64.1.5:5432:5432\""));
+        // Server should depend on postgres
+        assert!(generated.contains("depends_on:"));
+    }
+
+    #[test]
+    fn generate_compose_remote_host_skips_postgres() {
+        let network = ur_config::NetworkConfig {
+            name: "ur".to_string(),
+            worker_name: "ur-workers".to_string(),
+            server_hostname: "ur-server".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
+        };
+        let proxy = ur_config::ProxyConfig {
+            hostname: "ur-squid".to_string(),
+            allowlist: vec![],
+        };
+        let db = ur_config::DatabaseConfig {
+            host: "192.168.1.50".to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        let generated = generate_compose(&network, &proxy, &db);
+
+        // No postgres service
+        assert!(!generated.contains("  192.168.1.50:"));
+        assert!(!generated.contains("image: postgres"));
+        // No depends_on on server
+        assert!(!generated.contains("depends_on:"));
+        // DATABASE_URL uses remote host
+        assert!(generated.contains("DATABASE_URL=postgres://ur:ur@192.168.1.50:5432/ur"));
+        // Server and squid still present
+        assert!(generated.contains("  ur-server:"));
+        assert!(generated.contains("  ur-squid:"));
+    }
+
+    #[test]
+    fn generate_compose_default_no_ports_on_postgres() {
+        let network = ur_config::NetworkConfig {
+            name: "ur".to_string(),
+            worker_name: "ur-workers".to_string(),
+            server_hostname: "ur-server".to_string(),
+            worker_prefix: "ur-worker-".to_string(),
+        };
+        let proxy = ur_config::ProxyConfig {
+            hostname: "ur-squid".to_string(),
+            allowlist: vec![],
+        };
+        let db = ur_config::DatabaseConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        };
+        let generated = generate_compose(&network, &proxy, &db);
+
+        // Postgres present, no ports section on it
+        assert!(generated.contains("  ur-postgres:"));
+        let postgres_section = generated
+            .split("  ur-postgres:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(!postgres_section.contains("ports:"));
     }
 
     #[test]
