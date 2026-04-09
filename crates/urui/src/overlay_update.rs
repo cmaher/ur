@@ -1520,6 +1520,7 @@ mod tests {
                     priority: 2,
                     body: String::new(),
                     parent_id: None,
+                    branch: None,
                 },
             },
         );
