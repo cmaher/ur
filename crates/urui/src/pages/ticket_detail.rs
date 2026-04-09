@@ -88,11 +88,11 @@ fn render_ticket_header(
     let status_style = Style::default().fg(ctx.theme.neutral_content);
 
     let status_label = if !ticket.dispatch_status.is_empty() {
-        "Dispatched"
+        "▶ Dispatched"
     } else if ticket.status == "closed" {
-        "Closed"
+        "● Closed"
     } else {
-        "Open"
+        "○ Open"
     };
 
     // Reserve space for progress bar on the right (10 chars)

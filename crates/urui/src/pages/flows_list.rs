@@ -127,7 +127,7 @@ fn table_widths() -> Vec<Constraint> {
 /// Convert a WorkflowInfo into a row of display strings.
 fn workflow_to_row(wf: &WorkflowInfo, now: DateTime<Utc>) -> Vec<String> {
     let stalled_text = if wf.stalled {
-        "X".to_string()
+        "✗".to_string()
     } else {
         String::new()
     };
@@ -657,7 +657,7 @@ mod tests {
         wf.stalled = true;
         let now = Utc::now();
         let row = workflow_to_row(&wf, now);
-        assert_eq!(row[2], "X");
+        assert_eq!(row[2], "✗");
     }
 
     // ── workflow_progress ────────────────────────────────────────────
