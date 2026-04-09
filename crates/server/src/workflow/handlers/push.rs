@@ -2,6 +2,8 @@ use local_repo::{LocalRepo, PushResult, PushStatus};
 use remote_repo::{CreatePrOpts, GhBackend, RemoteRepo};
 use tracing::{error, info, warn};
 
+use super::hook_log::write_hook_failure_log;
+
 use ur_db::model::LifecycleStatus;
 use ur_rpc::workflow_condition;
 use ur_rpc::workflow_event::WorkflowEvent;
@@ -139,7 +141,7 @@ async fn handle_push(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<(
             stall_agent(ctx, ticket_id, worker_id).await
         }
         PushStatus::HookFailed { summary } => {
-            handle_hook_failed(ctx, ticket_id, branch, summary).await
+            handle_hook_failed(ctx, ticket_id, branch, worker_id, summary).await
         }
     }
 }
@@ -320,16 +322,17 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
             stall_agent(ctx, ticket_id, worker_id).await
         }
         PushStatus::HookFailed { summary } => {
-            handle_hook_failed(ctx, ticket_id, branch, summary).await
+            handle_hook_failed(ctx, ticket_id, branch, worker_id, summary).await
         }
     }
 }
 
-/// Handle a pre-push hook failure: record activity and send transition to Implementing.
+/// Handle a pre-push hook failure: write logs, record activity, and send transition to Implementing.
 async fn handle_hook_failed(
     ctx: &WorkflowContext,
     ticket_id: &str,
     branch: &str,
+    worker_id: &str,
     summary: &str,
 ) -> anyhow::Result<()> {
     warn!(
@@ -337,7 +340,18 @@ async fn handle_hook_failed(
         branch = %branch,
         "pre-push hook failed — sending transition to implementing"
     );
-    add_push_activity(ctx, ticket_id, "hook_failed", summary).await?;
+    let log_path = write_hook_failure_log(&ctx.config.logs_dir, worker_id, "push", summary, "", 1);
+    let first_line = format!("[workflow] push failed — logs at {log_path}");
+    let message = format!(
+        "{first_line}\n\
+         source: workflow\n\
+         result: hook_failed\n\
+         ---\n\
+         {summary}"
+    );
+    ctx.ticket_repo
+        .add_activity(ticket_id, "workflow", &message)
+        .await?;
     ctx.transition_tx
         .send(TransitionRequest {
             ticket_id: ticket_id.to_owned(),
