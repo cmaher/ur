@@ -14,9 +14,9 @@ use super::components::goto_menu::render_goto_menu;
 use super::components::header::render_header;
 use super::components::help_overlay::render_help_overlay;
 use super::components::priority_picker::render_priority_picker;
-use super::components::project_input::render_project_input;
 use super::components::settings_overlay::render_settings_overlay;
 use super::components::status::render_status;
+use super::components::text_input::render_text_input;
 use super::components::title_input::render_title_input;
 use super::components::type_menu::render_type_menu;
 use super::input::FooterCommand;
@@ -124,8 +124,8 @@ fn overlay_footer_commands(overlay: &ActiveOverlay) -> Vec<FooterCommand> {
     use super::components::goto_menu;
     use super::components::help_overlay;
     use super::components::priority_picker;
-    use super::components::project_input;
     use super::components::settings_overlay;
+    use super::components::text_input;
     use super::components::title_input;
     use super::components::type_menu;
 
@@ -136,7 +136,8 @@ fn overlay_footer_commands(overlay: &ActiveOverlay) -> Vec<FooterCommand> {
         ActiveOverlay::GotoMenu { .. } => goto_menu::footer_commands(),
         ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::footer_commands(),
         ActiveOverlay::CreateActionMenu { .. } => create_action_menu::footer_commands(),
-        ActiveOverlay::ProjectInput { .. } => project_input::footer_commands(),
+        ActiveOverlay::ProjectInput { .. } => text_input::footer_commands(),
+        ActiveOverlay::BranchInput { .. } => text_input::footer_commands(),
         ActiveOverlay::TitleInput { .. } => title_input::footer_commands(),
         ActiveOverlay::Settings { .. } => settings_overlay::footer_commands(),
         ActiveOverlay::Help => help_overlay::footer_commands(),
@@ -219,7 +220,10 @@ fn render_active_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: 
             render_create_action_menu(area, buf, ctx, model);
         }
         Some(ActiveOverlay::ProjectInput { .. }) => {
-            render_project_input(area, buf, ctx, model);
+            render_text_input(area, buf, ctx, model, " Project ");
+        }
+        Some(ActiveOverlay::BranchInput { .. }) => {
+            render_text_input(area, buf, ctx, model, " Branch ");
         }
         Some(ActiveOverlay::TitleInput { .. }) => {
             render_title_input(area, buf, ctx, model);

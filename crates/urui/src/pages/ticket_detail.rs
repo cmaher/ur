@@ -101,16 +101,25 @@ fn render_ticket_header(
 
     let id_part = format!("{} ", ticket.id);
     let status_part = format!(" [{}]", status_label);
+    let branch_part = if ticket.branch.is_empty() {
+        String::new()
+    } else {
+        format!(" ⌥ {}", ticket.branch)
+    };
+    let branch_style = Style::default().fg(ctx.theme.neutral_content);
     let title_budget = (header_text_width as usize)
-        .saturating_sub(id_part.len() + status_part.len())
+        .saturating_sub(id_part.len() + status_part.len() + branch_part.len())
         .max(1);
     let title_truncated = truncate_title(&ticket.title, title_budget);
 
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(id_part, id_style),
         Span::styled(title_truncated, title_style),
         Span::styled(status_part, status_style),
     ];
+    if !branch_part.is_empty() {
+        spans.push(Span::styled(branch_part, branch_style));
+    }
     let line = Line::from(spans);
 
     let text_area = Rect {
@@ -250,6 +259,7 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         NavMsg::TicketDetailOpenActivities => handle_open_activities(model),
         NavMsg::TicketDetailCreateChild => handle_create_child(model),
         NavMsg::TicketDetailEdit => handle_edit_parent(model),
+        NavMsg::TicketDetailBranch => handle_detail_branch(model),
         _ => (model, vec![]),
     }
 }
@@ -504,6 +514,19 @@ fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
     crate::create_ticket::start_create_child_flow(model)
 }
 
+/// Open the branch input overlay for the selected child ticket.
+fn handle_detail_branch(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenBranchInput {
+            ticket_id: ticket.id.clone(),
+            current_branch: ticket.branch.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Get the currently selected child ticket, if any.
 fn selected_child(model: &Model) -> Option<ur_rpc::proto::ticket::Ticket> {
     model
@@ -572,6 +595,11 @@ impl InputHandler for TicketDetailHandler {
             FooterCommand {
                 key_label: "A".to_string(),
                 description: "Dispatch all".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "B".to_string(),
+                description: "Branch".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -685,6 +713,7 @@ fn handle_detail_table_key(code: KeyCode) -> Option<Msg> {
 fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
     match key.code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::TicketDetailDispatchAll)),
+        KeyCode::Char('B') => Some(Msg::Nav(NavMsg::TicketDetailBranch)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketDetailCreateChild)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketDetailDispatch)),
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),

@@ -157,6 +157,22 @@ pub enum OverlayMsg {
     /// The user cancelled project input.
     ProjectInputCancelled,
 
+    /// Open the branch input overlay for a specific ticket, pre-filled with current branch.
+    OpenBranchInput {
+        ticket_id: String,
+        current_branch: String,
+    },
+    /// A character was typed into the branch input.
+    BranchInputChar(char),
+    /// Backspace in the branch input.
+    BranchInputBackspace,
+    /// The user pressed Enter in the branch input (resolved by update to BranchInputSubmitted).
+    BranchInputSubmitRequest,
+    /// The user submitted branch input text.
+    BranchInputSubmitted { ticket_id: String, branch: String },
+    /// The user cancelled branch input.
+    BranchInputCancelled,
+
     /// Open the title input overlay.
     OpenTitleInput,
     /// A character was typed into the title input.
@@ -320,6 +336,8 @@ pub enum NavMsg {
     TicketDetailCreateChild,
     /// Edit the parent ticket in $EDITOR.
     TicketDetailEdit,
+    /// Set the branch on the selected child ticket.
+    TicketDetailBranch,
 
     // ── Ticket activities page messages ──────────────────────────────
     /// Navigate within the activities table by delta (+1 down, -1 up).
@@ -460,6 +478,8 @@ pub enum TicketOpMsg {
     Redrive { ticket_id: String },
     /// Open (reopen) a ticket by setting its status to "open".
     Open { ticket_id: String },
+    /// Set a ticket's branch. Empty string clears the branch.
+    SetBranch { ticket_id: String, branch: String },
     /// Update a ticket's editable fields (title, priority, body, project, type, branch).
     UpdateFields {
         ticket_id: String,
@@ -500,6 +520,8 @@ pub enum TicketOpResultMsg {
     Redriven { result: Result<String, String> },
     /// Open/reopen completed.
     Opened { result: Result<String, String> },
+    /// Branch set completed.
+    BranchSet { result: Result<String, String> },
     /// Ticket fields updated.
     Updated { result: Result<String, String> },
 }

@@ -26,7 +26,7 @@ pub fn handle_key(key: KeyEvent) -> Msg {
     }
 }
 
-/// Footer commands for the project input overlay.
+/// Footer commands for the text input overlay.
 pub fn footer_commands() -> Vec<FooterCommand> {
     vec![
         FooterCommand {
@@ -42,16 +42,25 @@ pub fn footer_commands() -> Vec<FooterCommand> {
     ]
 }
 
-/// Render the project input overlay from the model state.
-pub fn render_project_input(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
+/// Render a text input overlay from the model state.
+///
+/// `title` is the overlay border title (e.g. `" Project "`).
+pub fn render_text_input(
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+    model: &Model,
+    title: &str,
+) {
     let buffer = match &model.active_overlay {
         Some(ActiveOverlay::ProjectInput { buffer }) => buffer.as_str(),
+        Some(ActiveOverlay::BranchInput { buffer, .. }) => buffer.as_str(),
         _ => return,
     };
 
     let width = 30u16;
     let height = 3u16; // borders + 1 line for input
-    let inner = render_overlay(area, buf, ctx, " Project ", width, height);
+    let inner = render_overlay(area, buf, ctx, title, width, height);
 
     if inner.height == 0 || inner.width == 0 {
         return;

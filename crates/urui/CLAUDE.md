@@ -72,7 +72,7 @@ Reusable rendering components (not navigation pages):
 - `goto_menu.rs` — Cross-entity navigation overlay
 - `force_close_confirm.rs` — Confirmation dialog for force-closing tickets with open children
 - `create_action_menu.rs` — Post-editor action menu (create, dispatch, edit, abandon)
-- `project_input.rs` — Text input overlay for project key
+- `text_input.rs` — Generic text input overlay (parameterized title, reused for project key and branch input)
 - `title_input.rs` — Text input overlay for ticket title
 - `settings_overlay.rs` — Settings overlay with theme picker
 - `progress_bar.rs` — Progress bar widget

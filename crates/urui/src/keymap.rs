@@ -26,6 +26,7 @@ pub enum Action {
     Filter,
     SetPriority,
     Dispatch,
+    SetBranch,
     CloseTicket,
     OpenTicket,
     CancelFlow,
@@ -279,6 +280,15 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
         Action::SetPriority,
     );
 
+    // set_branch = [B]
+    bindings.insert(
+        KeyBinding {
+            code: KeyCode::Char('B'),
+            modifiers: KeyModifiers::SHIFT,
+        },
+        Action::SetBranch,
+    );
+
     // dispatch = [D]
     bindings.insert(
         KeyBinding {
@@ -374,6 +384,7 @@ fn insert_ticket_action_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
 /// Select, Back, and Quit are handled via overrides; the rest are always present.
 fn insert_non_overridable_ticket_bindings(bindings: &mut HashMap<KeyBinding, Action>) {
     for (ch, mods, action) in [
+        ('B', KeyModifiers::SHIFT, Action::SetBranch),
         ('P', KeyModifiers::SHIFT, Action::SetPriority),
         ('D', KeyModifiers::SHIFT, Action::Dispatch),
         ('X', KeyModifiers::SHIFT, Action::CloseTicket),
