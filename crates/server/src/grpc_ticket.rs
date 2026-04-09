@@ -696,12 +696,19 @@ impl TicketService for TicketServiceHandler {
             }
         }
 
-        self.ticket_repo
+        let updated = self
+            .ticket_repo
             .update_ticket(&req.id, &update)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
-        Ok(Response::new(UpdateTicketResponse {}))
+        let new_id = if updated.id != req.id {
+            updated.id
+        } else {
+            String::new()
+        };
+
+        Ok(Response::new(UpdateTicketResponse { new_id }))
     }
 
     async fn set_meta(

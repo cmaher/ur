@@ -508,7 +508,7 @@ where
         branch
     };
     let _ = lifecycle; // lifecycle_status removed from proto; reserved for future use
-    client
+    let resp = client
         .update_ticket(UpdateTicketRequest {
             id: id.clone(),
             status,
@@ -523,7 +523,11 @@ where
         })
         .await
         .with_status_context("update ticket")?;
-    Ok(TicketOutput::Updated { id })
+    let final_id = {
+        let new_id = resp.into_inner().new_id;
+        if new_id.is_empty() { id } else { new_id }
+    };
+    Ok(TicketOutput::Updated { id: final_id })
 }
 
 async fn execute_approve<T>(

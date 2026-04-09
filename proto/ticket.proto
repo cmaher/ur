@@ -163,7 +163,10 @@ message UpdateTicketRequest {
   // Field 12 removed (was lifecycle_managed).
 }
 
-message UpdateTicketResponse {}
+message UpdateTicketResponse {
+  // Non-empty when the ticket was re-keyed (e.g. project change).
+  string new_id = 1;
+}
 
 // --- SetMeta ---
 

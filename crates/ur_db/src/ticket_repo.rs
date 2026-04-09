@@ -273,10 +273,21 @@ impl TicketRepo {
         };
         let now = Utc::now().to_rfc3339();
 
+        // When the project changes, re-key the ticket ID to match the new prefix.
+        let project_changed = project != existing.project;
+        let new_id = if project_changed {
+            let hash = extract_hash(id);
+            let candidate = self.rekey_ticket_id(id, project, &hash).await?;
+            candidate
+        } else {
+            id.to_owned()
+        };
+
         sqlx::query(
-            "UPDATE ticket SET type = $1, status = $2, lifecycle_status = $3, lifecycle_managed = $4, priority = $5, title = $6, body = $7, parent_id = $8, branch = $9, project = $10, updated_at = $11
-             WHERE id = $12",
+            "UPDATE ticket SET id = $1, type = $2, status = $3, lifecycle_status = $4, lifecycle_managed = $5, priority = $6, title = $7, body = $8, parent_id = $9, branch = $10, project = $11, updated_at = $12
+             WHERE id = $13",
         )
+        .bind(&new_id)
         .bind(type_)
         .bind(status)
         .bind(lifecycle_status.as_str())
@@ -293,7 +304,7 @@ impl TicketRepo {
         .await?;
 
         Ok(Ticket {
-            id: existing.id,
+            id: new_id,
             project: project.to_owned(),
             type_: type_.to_owned(),
             status: status.to_owned(),
@@ -309,6 +320,123 @@ impl TicketRepo {
             children_completed: 0,
             children_total: 0,
         })
+    }
+
+    /// Re-key a ticket's ID from the old project prefix to a new one.
+    /// Updates all foreign key references in a transaction, then returns
+    /// the new ID so the caller can update the ticket row itself.
+    async fn rekey_ticket_id(
+        &self,
+        old_id: &str,
+        new_project: &str,
+        hash: &str,
+    ) -> Result<String, sqlx::Error> {
+        const MAX_EXTRA: usize = 5;
+        let mut candidate_hash = hash.to_owned();
+
+        for _ in 0..=MAX_EXTRA {
+            let new_id = format!("{new_project}-{candidate_hash}");
+
+            // Check for collision with an existing ticket.
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ticket WHERE id = $1)")
+                    .bind(&new_id)
+                    .fetch_one(&self.pool)
+                    .await?;
+
+            if exists {
+                candidate_hash.push(random_base36_char());
+                continue;
+            }
+
+            // Update all tables that reference ticket.id via foreign keys.
+            self.update_ticket_references(old_id, &new_id).await?;
+            return Ok(new_id);
+        }
+
+        Err(sqlx::Error::Protocol(
+            "failed to generate unique ticket ID after maximum retries".into(),
+        ))
+    }
+
+    /// Update all foreign key references from `old_id` to `new_id` across
+    /// every table that references `ticket(id)`.
+    async fn update_ticket_references(
+        &self,
+        old_id: &str,
+        new_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        // ticket.parent_id (children pointing to this ticket as parent)
+        sqlx::query("UPDATE ticket SET parent_id = $1 WHERE parent_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // edge
+        sqlx::query("UPDATE edge SET source_id = $1 WHERE source_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE edge SET target_id = $1 WHERE target_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // activity
+        sqlx::query("UPDATE activity SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // meta (entity_type = 'ticket')
+        sqlx::query(
+            "UPDATE meta SET entity_id = $1 WHERE entity_id = $2 AND entity_type = 'ticket'",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(&self.pool)
+        .await?;
+
+        // workflow
+        sqlx::query("UPDATE workflow SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // workflow_event
+        sqlx::query("UPDATE workflow_event SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // workflow_intent
+        sqlx::query("UPDATE workflow_intent SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // workflow_comments
+        sqlx::query("UPDATE workflow_comments SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        // ticket_comments
+        sqlx::query("UPDATE ticket_comments SET ticket_id = $1 WHERE ticket_id = $2")
+            .bind(new_id)
+            .bind(old_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
     }
 
     /// Paginated ticket query with total_count.
@@ -1173,6 +1301,11 @@ fn generate_base36(len: usize) -> String {
 fn random_base36_char() -> char {
     let mut rng = rand::thread_rng();
     BASE36_CHARS[rng.gen_range(0..36)] as char
+}
+
+/// Extract the hash portion from a ticket ID (everything after the first `-`).
+fn extract_hash(id: &str) -> String {
+    id.splitn(2, '-').nth(1).unwrap_or(id).to_owned()
 }
 
 fn is_unique_violation(err: &dyn sqlx::error::DatabaseError) -> bool {
