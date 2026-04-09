@@ -137,6 +137,7 @@ fn overlay_footer_commands(overlay: &ActiveOverlay) -> Vec<FooterCommand> {
         ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::footer_commands(),
         ActiveOverlay::CreateActionMenu { .. } => create_action_menu::footer_commands(),
         ActiveOverlay::ProjectInput { .. } => text_input::footer_commands(),
+        ActiveOverlay::BranchInput { .. } => text_input::footer_commands(),
         ActiveOverlay::TitleInput { .. } => title_input::footer_commands(),
         ActiveOverlay::Settings { .. } => settings_overlay::footer_commands(),
         ActiveOverlay::Help => help_overlay::footer_commands(),
@@ -220,6 +221,9 @@ fn render_active_overlay(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: 
         }
         Some(ActiveOverlay::ProjectInput { .. }) => {
             render_text_input(area, buf, ctx, model, " Project ");
+        }
+        Some(ActiveOverlay::BranchInput { .. }) => {
+            render_text_input(area, buf, ctx, model, " Branch ");
         }
         Some(ActiveOverlay::TitleInput { .. }) => {
             render_title_input(area, buf, ctx, model);

@@ -149,6 +149,9 @@ impl CmdRunner {
                 ticket_id,
                 ticket_type,
             } => self.exec_set_type(ticket_id, ticket_type),
+            TicketOpMsg::SetBranch { ticket_id, branch } => {
+                self.exec_set_branch(ticket_id, branch);
+            }
             TicketOpMsg::Create { pending } => self.exec_create(pending),
             TicketOpMsg::CreateAndDispatch {
                 pending,
@@ -255,6 +258,25 @@ impl CmdRunner {
             let result = update_ticket_type(port, &ticket_id, &ticket_type).await;
             let msg = TicketOpResultMsg::TypeSet {
                 result: result.map(|()| format!("Type set to {ticket_type} for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::TicketOpResult(msg));
+        });
+    }
+
+    fn exec_set_branch(&self, ticket_id: String, branch: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, %branch, "v2: setting ticket branch");
+            let result = update_ticket_branch(port, &ticket_id, &branch).await;
+            let msg = TicketOpResultMsg::BranchSet {
+                result: result.map(|()| {
+                    if branch.is_empty() {
+                        format!("Branch cleared for {ticket_id}")
+                    } else {
+                        format!("Branch set to {branch} for {ticket_id}")
+                    }
+                }),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -907,6 +929,37 @@ async fn update_ticket_type(port: u16, ticket_id: &str, ticket_type: &str) -> Re
             ticket_type: Some(ticket_type.to_owned()),
             parent_id: None,
             branch: None,
+            project: None,
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Update a ticket's branch. Empty string clears the branch via the "NONE" sentinel.
+async fn update_ticket_branch(port: u16, ticket_id: &str, branch: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::UpdateTicketRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    let branch_value = if branch.is_empty() {
+        "NONE".to_owned()
+    } else {
+        branch.to_owned()
+    };
+    client
+        .update_ticket(UpdateTicketRequest {
+            id: ticket_id.to_owned(),
+            priority: None,
+            status: None,
+            title: None,
+            body: None,
+            force: false,
+            ticket_type: None,
+            parent_id: None,
+            branch: Some(branch_value),
             project: None,
         })
         .await

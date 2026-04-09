@@ -492,6 +492,8 @@ pub enum ActiveOverlay {
     ProjectInput { buffer: String },
     /// Title input text overlay.
     TitleInput { buffer: String },
+    /// Branch input text overlay for a specific ticket.
+    BranchInput { buffer: String, ticket_id: String },
     /// Settings overlay.
     Settings {
         level: SettingsLevel,

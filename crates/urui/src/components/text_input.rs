@@ -54,6 +54,7 @@ pub fn render_text_input(
 ) {
     let buffer = match &model.active_overlay {
         Some(ActiveOverlay::ProjectInput { buffer }) => buffer.as_str(),
+        Some(ActiveOverlay::BranchInput { buffer, .. }) => buffer.as_str(),
         _ => return,
     };
 

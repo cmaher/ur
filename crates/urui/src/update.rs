@@ -91,6 +91,16 @@ fn dispatch_overlay_key(overlay: &ActiveOverlay, key: crossterm::event::KeyEvent
         ActiveOverlay::ForceCloseConfirm { .. } => force_close_confirm::handle_key(key),
         ActiveOverlay::CreateActionMenu { .. } => create_action_menu::handle_key(key),
         ActiveOverlay::ProjectInput { .. } => text_input::handle_key(key),
+        ActiveOverlay::BranchInput { .. } => {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Esc => Msg::Overlay(OverlayMsg::BranchInputCancelled),
+                KeyCode::Enter => Msg::Overlay(OverlayMsg::BranchInputSubmitRequest),
+                KeyCode::Backspace => Msg::Overlay(OverlayMsg::BranchInputBackspace),
+                KeyCode::Char(c) => Msg::Overlay(OverlayMsg::BranchInputChar(c)),
+                _ => Msg::Overlay(OverlayMsg::Consumed),
+            }
+        }
         ActiveOverlay::TitleInput { .. } => title_input::handle_key(key),
         ActiveOverlay::Settings { .. } => settings_overlay::handle_key(key),
         ActiveOverlay::Help => help_overlay::handle_key(key),
@@ -577,6 +587,13 @@ fn handle_ticket_op(model: Model, op: TicketOpMsg) -> (Model, Vec<Cmd>) {
         }
         TicketOpMsg::Redrive { ticket_id } => format!("Moving {ticket_id} to Verify..."),
         TicketOpMsg::Open { ticket_id } => format!("Reopening {ticket_id}..."),
+        TicketOpMsg::SetBranch { ticket_id, branch } => {
+            if branch.is_empty() {
+                format!("Clearing branch on {ticket_id}...")
+            } else {
+                format!("Setting branch to {branch} on {ticket_id}...")
+            }
+        }
         TicketOpMsg::UpdateFields { ticket_id, .. } => {
             format!("Updating {ticket_id}...")
         }
@@ -604,6 +621,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
         TicketOpResultMsg::ForceClosed { result } => (result, true, None),
         TicketOpResultMsg::PrioritySet { result } => (result, true, None),
         TicketOpResultMsg::TypeSet { result } => (result, true, None),
+        TicketOpResultMsg::BranchSet { result } => (result, false, None),
         TicketOpResultMsg::Created { result, pending } => (result, false, pending),
         TicketOpResultMsg::DesignLaunched { result } => (result, false, None),
         TicketOpResultMsg::Redriven { result } => (result, false, None),

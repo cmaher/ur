@@ -250,6 +250,7 @@ pub fn handle_ticket_detail_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Ve
         NavMsg::TicketDetailOpenActivities => handle_open_activities(model),
         NavMsg::TicketDetailCreateChild => handle_create_child(model),
         NavMsg::TicketDetailEdit => handle_edit_parent(model),
+        NavMsg::TicketDetailBranch => handle_detail_branch(model),
         _ => (model, vec![]),
     }
 }
@@ -504,6 +505,19 @@ fn handle_create_child(model: Model) -> (Model, Vec<Cmd>) {
     crate::create_ticket::start_create_child_flow(model)
 }
 
+/// Open the branch input overlay for the selected child ticket.
+fn handle_detail_branch(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ticket) = selected_child(&model) {
+        let msg = Msg::Overlay(OverlayMsg::OpenBranchInput {
+            ticket_id: ticket.id.clone(),
+            current_branch: ticket.branch.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Get the currently selected child ticket, if any.
 fn selected_child(model: &Model) -> Option<ur_rpc::proto::ticket::Ticket> {
     model
@@ -572,6 +586,11 @@ impl InputHandler for TicketDetailHandler {
             FooterCommand {
                 key_label: "A".to_string(),
                 description: "Dispatch all".to_string(),
+                common: false,
+            },
+            FooterCommand {
+                key_label: "B".to_string(),
+                description: "Branch".to_string(),
                 common: false,
             },
             FooterCommand {
@@ -685,6 +704,7 @@ fn handle_detail_table_key(code: KeyCode) -> Option<Msg> {
 fn handle_detail_operation_key(key: KeyEvent) -> Option<Msg> {
     match key.code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::TicketDetailDispatchAll)),
+        KeyCode::Char('B') => Some(Msg::Nav(NavMsg::TicketDetailBranch)),
         KeyCode::Char('C') => Some(Msg::Nav(NavMsg::TicketDetailCreateChild)),
         KeyCode::Char('D') => Some(Msg::Nav(NavMsg::TicketDetailDispatch)),
         KeyCode::Char('E') => Some(Msg::Nav(NavMsg::TicketDetailEdit)),

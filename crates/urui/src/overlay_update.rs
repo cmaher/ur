@@ -80,6 +80,14 @@ pub fn handle_overlay(model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
         | OverlayMsg::TitleInputSubmitted(_)
         | OverlayMsg::TitleInputCancelled => handle_title_input_overlay(model, msg),
 
+        // === Branch Input ===
+        OverlayMsg::OpenBranchInput { .. }
+        | OverlayMsg::BranchInputChar(_)
+        | OverlayMsg::BranchInputBackspace
+        | OverlayMsg::BranchInputSubmitRequest
+        | OverlayMsg::BranchInputSubmitted { .. }
+        | OverlayMsg::BranchInputCancelled => handle_branch_input_overlay(model, msg),
+
         // === Settings Overlay ===
         OverlayMsg::OpenSettings { .. }
         | OverlayMsg::SettingsEsc
@@ -576,6 +584,57 @@ fn handle_settings_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd
 }
 
 /// Handle help overlay messages.
+/// Handle branch input overlay messages.
+///
+/// Opens a text input pre-filled with the current branch. On submit, fires
+/// a SetBranch ticket operation (empty string clears the branch).
+fn handle_branch_input_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
+    match msg {
+        OverlayMsg::OpenBranchInput {
+            ticket_id,
+            current_branch,
+        } => {
+            model.open_overlay(ActiveOverlay::BranchInput {
+                buffer: current_branch,
+                ticket_id,
+            });
+            (model, vec![])
+        }
+        OverlayMsg::BranchInputChar(c) => {
+            if let Some(ActiveOverlay::BranchInput { ref mut buffer, .. }) = model.active_overlay {
+                buffer.push(c);
+            }
+            (model, vec![])
+        }
+        OverlayMsg::BranchInputBackspace => {
+            if let Some(ActiveOverlay::BranchInput { ref mut buffer, .. }) = model.active_overlay {
+                buffer.pop();
+            }
+            (model, vec![])
+        }
+        OverlayMsg::BranchInputSubmitRequest => {
+            if let Some(ActiveOverlay::BranchInput {
+                ref buffer,
+                ref ticket_id,
+            }) = model.active_overlay
+            {
+                let ticket_id = ticket_id.clone();
+                let branch = buffer.clone();
+                model.close_overlay();
+                let op = super::msg::TicketOpMsg::SetBranch { ticket_id, branch };
+                return super::update::update(model, super::msg::Msg::TicketOp(op));
+            }
+            (model, vec![])
+        }
+        OverlayMsg::BranchInputSubmitted { .. } => (model, vec![]),
+        OverlayMsg::BranchInputCancelled => {
+            model.close_overlay();
+            (model, vec![])
+        }
+        _ => (model, vec![]),
+    }
+}
+
 fn handle_help_overlay(mut model: Model, msg: OverlayMsg) -> (Model, Vec<Cmd>) {
     match msg {
         OverlayMsg::OpenHelp => {
