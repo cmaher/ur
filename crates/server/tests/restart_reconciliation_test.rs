@@ -136,6 +136,7 @@ async fn make_components_with_db(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
+        node_id: "test-node".to_string(),
     };
     (worker_manager, worker_repo, handler)
 }

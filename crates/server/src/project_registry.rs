@@ -95,7 +95,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_toml(dir: &Path, content: &str) {
-        fs::write(dir.join("ur.toml"), content).unwrap();
+        let full = format!("node_id = \"n\"\n{content}");
+        fs::write(dir.join("ur.toml"), full).unwrap();
     }
 
     fn toml_with_project(key: &str) -> String {

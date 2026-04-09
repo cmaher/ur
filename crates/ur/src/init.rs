@@ -229,11 +229,15 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         // Modify a file to prove it won't be overwritten
-        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
+        fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 9999\n",
+        )
+        .unwrap();
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         let content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
-        assert_eq!(content, "server_port = 9999\n");
+        assert_eq!(content, "node_id = \"n\"\nserver_port = 9999\n");
     }
 
     #[test]
@@ -277,7 +281,11 @@ mod tests {
         run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
 
         fs::write(tmp.path().join("squid/allowlist.txt"), "custom.com\n").unwrap();
-        fs::write(tmp.path().join("ur.toml"), "server_port = 9999\n").unwrap();
+        fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 9999\n",
+        )
+        .unwrap();
         run_with_dir(tmp.path(), flags(false, false, true)).unwrap();
 
         let allowlist = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
@@ -292,7 +300,7 @@ mod tests {
 
         let toml_content = fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
         assert_eq!(
-            toml_content, "server_port = 9999\n",
+            toml_content, "node_id = \"n\"\nserver_port = 9999\n",
             "toml should be untouched"
         );
     }
