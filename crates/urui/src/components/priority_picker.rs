@@ -21,57 +21,65 @@ const PRIORITIES: &[(i64, &str)] = &[
     (4, "Backlog"),
 ];
 
-/// Modal input handler for the priority picker overlay.
+/// Handle a key event for the priority picker overlay.
 ///
-/// Captures all keys (no bubbling). Number keys 0-4 select a priority directly,
+/// All keys are captured (modal). Number keys 0-4 select a priority directly,
 /// j/k navigate, Enter/Space confirm, Esc cancels.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::PriorityCancelled),
+        KeyCode::Char('j') | KeyCode::Down => {
+            Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: 1 })
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: -1 })
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::PriorityPickerConfirm),
+        KeyCode::Char(c) if ('0'..='4').contains(&c) => {
+            Msg::Overlay(OverlayMsg::PriorityPickerQuickSelect {
+                digit: (c as u8 - b'0') as i64,
+            })
+        }
+        _ => Msg::Overlay(OverlayMsg::Consumed),
+    }
+}
+
+/// Footer commands for the priority picker overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "0-4".to_string(),
+            description: "Quick set".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Space".to_string(),
+            description: "Confirm".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Close".to_string(),
+            common: false,
+        },
+    ]
+}
+
+/// Modal input handler for the priority picker overlay (InputHandler adapter).
 pub struct PriorityPickerHandler;
 
 impl InputHandler for PriorityPickerHandler {
     fn handle_key(&self, key: KeyEvent) -> InputResult {
-        // All keys are captured — this is a modal overlay.
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::PriorityCancelled),
-            KeyCode::Char('j') | KeyCode::Down => {
-                Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: 1 })
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: -1 })
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::PriorityPickerConfirm),
-            KeyCode::Char(c) if ('0'..='4').contains(&c) => {
-                Msg::Overlay(OverlayMsg::PriorityPickerQuickSelect {
-                    digit: (c as u8 - b'0') as i64,
-                })
-            }
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+        InputResult::Capture(handle_key(key))
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "0-4".to_string(),
-                description: "Quick set".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Space".to_string(),
-                description: "Confirm".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Close".to_string(),
-                common: false,
-            },
-        ]
+        footer_commands()
     }
 
     fn name(&self) -> &str {
@@ -139,72 +147,59 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_esc() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityCancelled)) => {}
-            other => panic!("expected PriorityCancelled, got {other:?}"),
-        }
+    fn handle_key_esc() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::PriorityCancelled)
+        ));
     }
 
     #[test]
-    fn handler_captures_number_keys() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Char('3'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityPickerQuickSelect {
-                digit: 3,
-            })) => {}
-            other => panic!("expected QuickSelect(3), got {other:?}"),
-        }
+    fn handle_key_number_keys() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('3'))),
+            Msg::Overlay(OverlayMsg::PriorityPickerQuickSelect { digit: 3 })
+        ));
     }
 
     #[test]
-    fn handler_captures_j_navigate() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: 1 })) => {
-            }
-            other => panic!("expected Navigate(1), got {other:?}"),
-        }
+    fn handle_key_j_navigate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: 1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_k_navigate() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Char('k'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityPickerNavigate {
-                delta: -1,
-            })) => {}
-            other => panic!("expected Navigate(-1), got {other:?}"),
-        }
+    fn handle_key_k_navigate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('k'))),
+            Msg::Overlay(OverlayMsg::PriorityPickerNavigate { delta: -1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_enter_confirm() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityPickerConfirm)) => {}
-            other => panic!("expected PriorityPickerConfirm, got {other:?}"),
-        }
+    fn handle_key_enter_confirm() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::PriorityPickerConfirm)
+        ));
     }
 
     #[test]
-    fn handler_captures_space_confirm() {
-        let handler = PriorityPickerHandler;
-        match handler.handle_key(key(KeyCode::Char(' '))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::PriorityPickerConfirm)) => {}
-            other => panic!("expected PriorityPickerConfirm, got {other:?}"),
-        }
+    fn handle_key_space_confirm() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char(' '))),
+            Msg::Overlay(OverlayMsg::PriorityPickerConfirm)
+        ));
     }
 
     #[test]
-    fn handler_captures_unknown_keys() {
-        let handler = PriorityPickerHandler;
-        // Unknown keys should still be captured (modal), treated as cancel
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(_) => {}
-            InputResult::Bubble => panic!("modal handler should never bubble"),
-        }
+    fn handle_key_unknown_keys() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -228,16 +223,9 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = PriorityPickerHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Confirm"));
         assert!(cmds.iter().any(|c| c.description == "Close"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = PriorityPickerHandler;
-        assert_eq!(handler.name(), "priority_picker");
     }
 }

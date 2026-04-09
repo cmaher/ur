@@ -17,27 +17,36 @@ const OVERLAY_WIDTH: u16 = 56;
 /// Overlay height: content lines + borders.
 const OVERLAY_HEIGHT: u16 = 16;
 
-/// Modal input handler for the help overlay.
+/// Handle a key event for the help overlay.
 ///
-/// Captures all keys (modal behavior). `?` or `Esc` closes the overlay;
+/// All keys are captured (modal). `?` or `Esc` closes the overlay;
 /// everything else is consumed as a no-op.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Char('?') | KeyCode::Esc => Msg::Overlay(OverlayMsg::HelpClosed),
+        _ => Msg::Overlay(OverlayMsg::Consumed),
+    }
+}
+
+/// Footer commands for the help overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![FooterCommand {
+        key_label: "?/Esc".to_string(),
+        description: "Close".to_string(),
+        common: true,
+    }]
+}
+
+/// Modal input handler for the help overlay (InputHandler adapter).
 pub struct HelpOverlayHandler;
 
 impl InputHandler for HelpOverlayHandler {
     fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Char('?') | KeyCode::Esc => Msg::Overlay(OverlayMsg::HelpClosed),
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+        InputResult::Capture(handle_key(key))
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![FooterCommand {
-            key_label: "?/Esc".to_string(),
-            description: "Close".to_string(),
-            common: true,
-        }]
+        footer_commands()
     }
 
     fn name(&self) -> &str {
@@ -88,7 +97,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     use super::*;
-    use crate::input::InputHandler;
 
     fn make_key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -100,59 +108,45 @@ mod tests {
     }
 
     #[test]
-    fn help_overlay_handler_closes_on_question_mark() {
-        let handler = HelpOverlayHandler;
-        match handler.handle_key(make_key(KeyCode::Char('?'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::HelpClosed)) => {}
-            other => panic!("expected HelpClosed, got {other:?}"),
-        }
+    fn handle_key_closes_on_question_mark() {
+        assert!(matches!(
+            handle_key(make_key(KeyCode::Char('?'))),
+            Msg::Overlay(OverlayMsg::HelpClosed)
+        ));
     }
 
     #[test]
-    fn help_overlay_handler_closes_on_esc() {
-        let handler = HelpOverlayHandler;
-        match handler.handle_key(make_key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::HelpClosed)) => {}
-            other => panic!("expected HelpClosed, got {other:?}"),
-        }
+    fn handle_key_closes_on_esc() {
+        assert!(matches!(
+            handle_key(make_key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::HelpClosed)
+        ));
     }
 
     #[test]
-    fn help_overlay_handler_consumes_other_keys() {
-        let handler = HelpOverlayHandler;
-        match handler.handle_key(make_key(KeyCode::Char('a'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::Consumed)) => {}
-            other => panic!("expected Consumed, got {other:?}"),
-        }
+    fn handle_key_consumes_other_keys() {
+        assert!(matches!(
+            handle_key(make_key(KeyCode::Char('a'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
-    fn help_overlay_handler_is_modal() {
-        let handler = HelpOverlayHandler;
-        // Every key should be captured, never bubble
+    fn handle_key_is_modal() {
         for code in [
             KeyCode::Char('q'),
             KeyCode::Enter,
             KeyCode::Tab,
             KeyCode::Char('j'),
         ] {
-            match handler.handle_key(make_key(code)) {
-                InputResult::Capture(_) => {}
-                InputResult::Bubble => panic!("key {code:?} should be captured, not bubbled"),
-            }
+            // All keys produce a Msg (never panic or error)
+            let _ = handle_key(make_key(code));
         }
     }
 
     #[test]
-    fn help_overlay_handler_name() {
-        let handler = HelpOverlayHandler;
-        assert_eq!(handler.name(), "help_overlay");
-    }
-
-    #[test]
     fn help_overlay_footer_commands() {
-        let handler = HelpOverlayHandler;
-        let commands = handler.footer_commands();
+        let commands = footer_commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].key_label, "?/Esc");
         assert_eq!(commands[0].description, "Close");

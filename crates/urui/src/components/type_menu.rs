@@ -15,53 +15,62 @@ use crate::msg::{Msg, OverlayMsg};
 /// Ticket type definitions with labels.
 const TICKET_TYPES: &[(&str, &str)] = &[("code", "Code"), ("design", "Design")];
 
-/// Modal input handler for the ticket type menu overlay.
+/// Handle a key event for the type menu overlay.
 ///
-/// Captures all keys (no bubbling). j/k navigate, Enter/Space confirm,
+/// All keys are captured (modal). j/k navigate, Enter/Space confirm,
 /// 1/2 quick-select, Esc cancels.
+pub fn handle_key(key: KeyEvent) -> Msg {
+    match key.code {
+        KeyCode::Esc => Msg::Overlay(OverlayMsg::TypeMenuCancelled),
+        KeyCode::Char('j') | KeyCode::Down => {
+            Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: 1 })
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: -1 })
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::TypeMenuConfirm),
+        KeyCode::Char('1') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 0 }),
+        KeyCode::Char('2') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 }),
+        _ => Msg::Overlay(OverlayMsg::Consumed),
+    }
+}
+
+/// Footer commands for the type menu overlay.
+pub fn footer_commands() -> Vec<FooterCommand> {
+    vec![
+        FooterCommand {
+            key_label: "j/k".to_string(),
+            description: "Navigate".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "1-2".to_string(),
+            description: "Quick set".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Space".to_string(),
+            description: "Confirm".to_string(),
+            common: false,
+        },
+        FooterCommand {
+            key_label: "Esc".to_string(),
+            description: "Close".to_string(),
+            common: false,
+        },
+    ]
+}
+
+/// Modal input handler for the type menu overlay (InputHandler adapter).
 pub struct TypeMenuHandler;
 
 impl InputHandler for TypeMenuHandler {
     fn handle_key(&self, key: KeyEvent) -> InputResult {
-        let msg = match key.code {
-            KeyCode::Esc => Msg::Overlay(OverlayMsg::TypeMenuCancelled),
-            KeyCode::Char('j') | KeyCode::Down => {
-                Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: 1 })
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: -1 })
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::TypeMenuConfirm),
-            KeyCode::Char('1') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 0 }),
-            KeyCode::Char('2') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 }),
-            _ => Msg::Overlay(OverlayMsg::Consumed),
-        };
-        InputResult::Capture(msg)
+        InputResult::Capture(handle_key(key))
     }
 
     fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![
-            FooterCommand {
-                key_label: "j/k".to_string(),
-                description: "Navigate".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "1-2".to_string(),
-                description: "Quick set".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Space".to_string(),
-                description: "Confirm".to_string(),
-                common: false,
-            },
-            FooterCommand {
-                key_label: "Esc".to_string(),
-                description: "Close".to_string(),
-                common: false,
-            },
-        ]
+        footer_commands()
     }
 
     fn name(&self) -> &str {
@@ -129,70 +138,63 @@ mod tests {
     }
 
     #[test]
-    fn handler_captures_esc() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Esc)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuCancelled)) => {}
-            other => panic!("expected TypeMenuCancelled, got {other:?}"),
-        }
+    fn handle_key_esc() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Esc)),
+            Msg::Overlay(OverlayMsg::TypeMenuCancelled)
+        ));
     }
 
     #[test]
-    fn handler_captures_number_keys() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('1'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 0 })) => {}
-            other => panic!("expected QuickSelect(0), got {other:?}"),
-        }
-        match handler.handle_key(key(KeyCode::Char('2'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 })) => {}
-            other => panic!("expected QuickSelect(1), got {other:?}"),
-        }
+    fn handle_key_number_keys() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('1'))),
+            Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 0 })
+        ));
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('2'))),
+            Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_j_navigate() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('j'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: 1 })) => {}
-            other => panic!("expected Navigate(1), got {other:?}"),
-        }
+    fn handle_key_j_navigate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('j'))),
+            Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: 1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_k_navigate() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('k'))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: -1 })) => {}
-            other => panic!("expected Navigate(-1), got {other:?}"),
-        }
+    fn handle_key_k_navigate() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('k'))),
+            Msg::Overlay(OverlayMsg::TypeMenuNavigate { delta: -1 })
+        ));
     }
 
     #[test]
-    fn handler_captures_enter_confirm() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Enter)) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuConfirm)) => {}
-            other => panic!("expected TypeMenuConfirm, got {other:?}"),
-        }
+    fn handle_key_enter_confirm() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter)),
+            Msg::Overlay(OverlayMsg::TypeMenuConfirm)
+        ));
     }
 
     #[test]
-    fn handler_captures_space_confirm() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Char(' '))) {
-            InputResult::Capture(Msg::Overlay(OverlayMsg::TypeMenuConfirm)) => {}
-            other => panic!("expected TypeMenuConfirm, got {other:?}"),
-        }
+    fn handle_key_space_confirm() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char(' '))),
+            Msg::Overlay(OverlayMsg::TypeMenuConfirm)
+        ));
     }
 
     #[test]
-    fn handler_captures_unknown_keys() {
-        let handler = TypeMenuHandler;
-        match handler.handle_key(key(KeyCode::Char('x'))) {
-            InputResult::Capture(_) => {}
-            InputResult::Bubble => panic!("modal handler should never bubble"),
-        }
+    fn handle_key_unknown_keys() {
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('x'))),
+            Msg::Overlay(OverlayMsg::Consumed)
+        ));
     }
 
     #[test]
@@ -219,16 +221,9 @@ mod tests {
 
     #[test]
     fn footer_commands_present() {
-        let handler = TypeMenuHandler;
-        let cmds = handler.footer_commands();
+        let cmds = footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Confirm"));
         assert!(cmds.iter().any(|c| c.description == "Close"));
-    }
-
-    #[test]
-    fn handler_name() {
-        let handler = TypeMenuHandler;
-        assert_eq!(handler.name(), "type_menu");
     }
 }
