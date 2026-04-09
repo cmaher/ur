@@ -6,7 +6,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::BannerModel;
 use crate::msg::Msg;
 
@@ -38,30 +37,14 @@ pub enum BannerVariant {
     Error,
 }
 
-/// Input handler for an active banner.
+/// Dispatch a key event when a banner is active.
 ///
-/// Captures Enter and Esc to dismiss the banner, bubbles all other keys
-/// so underlying handlers can still process them.
-pub struct BannerHandler;
-
-impl InputHandler for BannerHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        match key.code {
-            KeyCode::Enter | KeyCode::Esc => InputResult::Capture(Msg::BannerDismiss),
-            _ => InputResult::Bubble,
-        }
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        vec![FooterCommand {
-            key_label: "Enter/Esc".to_string(),
-            description: "Dismiss".to_string(),
-            common: false,
-        }]
-    }
-
-    fn name(&self) -> &str {
-        "banner"
+/// Returns `Some(Msg::BannerDismiss)` for Enter/Esc, `None` for everything
+/// else (allowing fallthrough to the input stack and page handlers).
+pub fn dispatch_banner_key(key: KeyEvent) -> Option<Msg> {
+    match key.code {
+        KeyCode::Enter | KeyCode::Esc => Some(Msg::BannerDismiss),
+        _ => None,
     }
 }
 
@@ -100,59 +83,33 @@ mod tests {
     }
 
     #[test]
-    fn banner_handler_captures_enter() {
-        let handler = BannerHandler;
+    fn dispatch_banner_key_captures_enter() {
         let key = make_key(KeyCode::Enter, KeyModifiers::NONE);
-        match handler.handle_key(key) {
-            InputResult::Capture(Msg::BannerDismiss) => {}
-            other => panic!("expected Capture(BannerDismiss), got {other:?}"),
-        }
+        assert!(matches!(dispatch_banner_key(key), Some(Msg::BannerDismiss)));
     }
 
     #[test]
-    fn banner_handler_captures_esc() {
-        let handler = BannerHandler;
+    fn dispatch_banner_key_captures_esc() {
         let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
-        match handler.handle_key(key) {
-            InputResult::Capture(Msg::BannerDismiss) => {}
-            other => panic!("expected Capture(BannerDismiss), got {other:?}"),
-        }
+        assert!(matches!(dispatch_banner_key(key), Some(Msg::BannerDismiss)));
     }
 
     #[test]
-    fn banner_handler_bubbles_other_keys() {
-        let handler = BannerHandler;
+    fn dispatch_banner_key_returns_none_for_other_keys() {
         let key = make_key(KeyCode::Char('a'), KeyModifiers::NONE);
-        assert!(matches!(handler.handle_key(key), InputResult::Bubble));
+        assert!(dispatch_banner_key(key).is_none());
     }
 
     #[test]
-    fn banner_handler_bubbles_ctrl_c() {
-        let handler = BannerHandler;
+    fn dispatch_banner_key_returns_none_for_ctrl_c() {
         let key = make_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert!(matches!(handler.handle_key(key), InputResult::Bubble));
+        assert!(dispatch_banner_key(key).is_none());
     }
 
     #[test]
-    fn banner_handler_bubbles_tab() {
-        let handler = BannerHandler;
+    fn dispatch_banner_key_returns_none_for_tab() {
         let key = make_key(KeyCode::Tab, KeyModifiers::NONE);
-        assert!(matches!(handler.handle_key(key), InputResult::Bubble));
-    }
-
-    #[test]
-    fn banner_handler_footer_commands() {
-        let handler = BannerHandler;
-        let commands = handler.footer_commands();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].key_label, "Enter/Esc");
-        assert_eq!(commands[0].description, "Dismiss");
-    }
-
-    #[test]
-    fn banner_handler_name() {
-        let handler = BannerHandler;
-        assert_eq!(handler.name(), "banner");
+        assert!(dispatch_banner_key(key).is_none());
     }
 
     #[test]
@@ -179,33 +136,5 @@ mod tests {
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
         render_banner(area, &mut buf, &ctx, &banner);
-    }
-
-    #[test]
-    fn banner_handler_in_stack_captures_enter_before_global() {
-        use crate::input::{GlobalHandler, InputStack};
-
-        let mut stack = InputStack::default();
-        stack.push(Box::new(GlobalHandler));
-        stack.push(Box::new(BannerHandler));
-
-        // Enter should be captured by BannerHandler (top), not GlobalHandler
-        let key = make_key(KeyCode::Enter, KeyModifiers::NONE);
-        let result = stack.dispatch(key);
-        assert!(matches!(result, Some(Msg::BannerDismiss)));
-    }
-
-    #[test]
-    fn banner_handler_in_stack_bubbles_ctrl_c_to_global() {
-        use crate::input::{GlobalHandler, InputStack};
-
-        let mut stack = InputStack::default();
-        stack.push(Box::new(GlobalHandler));
-        stack.push(Box::new(BannerHandler));
-
-        // Ctrl+C should bubble past BannerHandler and be captured by GlobalHandler
-        let key = make_key(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        let result = stack.dispatch(key);
-        assert!(matches!(result, Some(Msg::Quit)));
     }
 }

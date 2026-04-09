@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::cmd::{Cmd, FetchCmd};
-use super::components::banner::BannerHandler;
+use super::components::banner::dispatch_banner_key;
 #[cfg(debug_assertions)]
 use super::model::expected_handler_name_for_overlay;
 use super::model::{
@@ -94,6 +94,13 @@ fn debug_assert_overlay_invariant(mut model: Model) -> Model {
 /// If a handler captures the key and produces a message, that message is
 /// fed back through update() recursively.
 fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>) {
+    // Banner gets first crack at keys before the input stack.
+    if model.banner.is_some() {
+        if let Some(msg) = dispatch_banner_key(key) {
+            return update(model, msg);
+        }
+    }
+
     match model.input_stack.dispatch(key) {
         Some(msg) => update(model, msg),
         None => dispatch_root_page_key(model, key),
@@ -413,7 +420,6 @@ fn handle_tick(mut model: Model) -> (Model, Vec<Cmd>) {
     // Check for banner auto-dismiss (success banners expire after timeout).
     if model.banner.as_ref().is_some_and(|b| b.is_expired()) {
         model.banner = None;
-        model.input_stack.pop();
     }
 
     if model.ui_event_throttle.should_flush() {
@@ -524,31 +530,23 @@ fn invalidate_tab(tab: TabId, model: &mut Model) {
     }
 }
 
-/// Show a banner: set the model's banner state and push a BannerHandler onto the input stack.
+/// Show a banner: set the model's banner state.
 fn handle_banner_show(
     mut model: Model,
     message: String,
     variant: super::components::banner::BannerVariant,
 ) -> (Model, Vec<Cmd>) {
-    // If there's already a banner, pop its handler first.
-    if model.banner.is_some() {
-        model.input_stack.pop();
-    }
     model.banner = Some(BannerModel {
         message,
         variant,
         created_at: Instant::now(),
     });
-    model.input_stack.push(Box::new(BannerHandler));
     (model, vec![])
 }
 
-/// Dismiss the active banner: clear the model state and pop the BannerHandler.
+/// Dismiss the active banner: clear the model state.
 fn handle_banner_dismiss(mut model: Model) -> (Model, Vec<Cmd>) {
-    if model.banner.is_some() {
-        model.banner = None;
-        model.input_stack.pop();
-    }
+    model.banner = None;
     (model, vec![])
 }
 
@@ -1385,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn banner_show_sets_banner_and_pushes_handler() {
+    fn banner_show_sets_banner() {
         use super::super::components::banner::BannerVariant;
         let model = Model::initial();
         let initial_stack_len = model.input_stack.len();
@@ -1400,7 +1398,8 @@ mod tests {
         let banner = new_model.banner.as_ref().unwrap();
         assert_eq!(banner.message, "Success!");
         assert_eq!(banner.variant, BannerVariant::Success);
-        assert_eq!(new_model.input_stack.len(), initial_stack_len + 1);
+        // Banner no longer touches the input stack.
+        assert_eq!(new_model.input_stack.len(), initial_stack_len);
         assert!(cmds.is_empty());
     }
 
@@ -1418,9 +1417,9 @@ mod tests {
                 variant: BannerVariant::Success,
             },
         );
-        assert_eq!(model.input_stack.len(), initial_stack_len + 1);
+        assert_eq!(model.input_stack.len(), initial_stack_len);
 
-        // Show second banner (should replace, not stack)
+        // Show second banner (should replace)
         let (new_model, _) = update(
             model,
             Msg::BannerShow {
@@ -1433,12 +1432,11 @@ mod tests {
             new_model.banner.as_ref().unwrap().variant,
             BannerVariant::Error
         );
-        // Stack size should remain the same (popped old, pushed new)
-        assert_eq!(new_model.input_stack.len(), initial_stack_len + 1);
+        assert_eq!(new_model.input_stack.len(), initial_stack_len);
     }
 
     #[test]
-    fn banner_dismiss_clears_banner_and_pops_handler() {
+    fn banner_dismiss_clears_banner() {
         use super::super::components::banner::BannerVariant;
         let model = Model::initial();
         let initial_stack_len = model.input_stack.len();
@@ -1480,12 +1478,9 @@ mod tests {
             variant: BannerVariant::Success,
             created_at: Instant::now() - std::time::Duration::from_secs(10),
         });
-        model.input_stack.push(Box::new(BannerHandler));
-        let initial_stack_len = model.input_stack.len();
 
         let (new_model, _) = update(model, Msg::Tick);
         assert!(new_model.banner.is_none());
-        assert_eq!(new_model.input_stack.len(), initial_stack_len - 1);
     }
 
     #[test]
@@ -1498,7 +1493,6 @@ mod tests {
             variant: BannerVariant::Error,
             created_at: Instant::now() - std::time::Duration::from_secs(10),
         });
-        model.input_stack.push(Box::new(BannerHandler));
 
         let (new_model, _) = update(model, Msg::Tick);
         // Error banners are sticky — should not be dismissed.
@@ -1515,7 +1509,6 @@ mod tests {
             variant: BannerVariant::Success,
             created_at: Instant::now(),
         });
-        model.input_stack.push(Box::new(BannerHandler));
 
         let (new_model, _) = update(model, Msg::Tick);
         // Not expired yet — should remain.
@@ -1561,7 +1554,7 @@ mod tests {
     fn enter_key_dismisses_banner_via_handler() {
         use super::super::components::banner::BannerVariant;
         let model = Model::initial();
-        // Show a banner (this pushes BannerHandler)
+        // Show a banner
         let (model, _) = update(
             model,
             Msg::BannerShow {
@@ -1571,7 +1564,7 @@ mod tests {
         );
         assert!(model.banner.is_some());
 
-        // Press Enter — BannerHandler should capture it and produce BannerDismiss
+        // Press Enter — dispatch_banner_key should produce BannerDismiss
         let key = make_key(KeyCode::Enter, KeyModifiers::NONE);
         let (new_model, _) = update(model, Msg::KeyPressed(key));
         assert!(new_model.banner.is_none());
@@ -1590,7 +1583,7 @@ mod tests {
             },
         );
 
-        // Press Esc — BannerHandler should capture it (not GlobalHandler's Esc→Pop)
+        // Press Esc — dispatch_banner_key should capture it (not GlobalHandler's Esc→Pop)
         let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
         let (new_model, _) = update(model, Msg::KeyPressed(key));
         assert!(new_model.banner.is_none());
