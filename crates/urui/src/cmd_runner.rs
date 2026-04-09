@@ -269,14 +269,13 @@ impl CmdRunner {
         tokio::spawn(async move {
             debug!(port, %ticket_id, %branch, "v2: setting ticket branch");
             let result = update_ticket_branch(port, &ticket_id, &branch).await;
+            let status_text = if branch.is_empty() {
+                format!("Branch cleared for {ticket_id}")
+            } else {
+                format!("Branch set to {branch} for {ticket_id}")
+            };
             let msg = TicketOpResultMsg::BranchSet {
-                result: result.map(|()| {
-                    if branch.is_empty() {
-                        format!("Branch cleared for {ticket_id}")
-                    } else {
-                        format!("Branch set to {branch} for {ticket_id}")
-                    }
-                }),
+                result: result.map(|()| status_text),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
