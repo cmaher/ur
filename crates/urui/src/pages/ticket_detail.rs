@@ -101,16 +101,25 @@ fn render_ticket_header(
 
     let id_part = format!("{} ", ticket.id);
     let status_part = format!(" [{}]", status_label);
+    let branch_part = if ticket.branch.is_empty() {
+        String::new()
+    } else {
+        format!(" ⌥ {}", ticket.branch)
+    };
+    let branch_style = Style::default().fg(ctx.theme.neutral_content);
     let title_budget = (header_text_width as usize)
-        .saturating_sub(id_part.len() + status_part.len())
+        .saturating_sub(id_part.len() + status_part.len() + branch_part.len())
         .max(1);
     let title_truncated = truncate_title(&ticket.title, title_budget);
 
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(id_part, id_style),
         Span::styled(title_truncated, title_style),
         Span::styled(status_part, status_style),
     ];
+    if !branch_part.is_empty() {
+        spans.push(Span::styled(branch_part, branch_style));
+    }
     let line = Line::from(spans);
 
     let text_area = Rect {
