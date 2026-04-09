@@ -41,8 +41,7 @@ When the ticket has no open descendants:
 @/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
 3. Implement the work directly in this context
 4. Before committing, run any verifications listed in the **Verification Hooks** section below
-5. Commit, close: `ur ticket --output json update <id> --status closed`
-6. Set a summary of the work done as ticket metadata:
+5. Commit and set a summary of the work done as ticket metadata:
    ```
    ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
    ```
