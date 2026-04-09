@@ -5,6 +5,7 @@ function transform(command, args, working_dir, worker_context)
     local blocked_exact = {
         ["--git-dir"] = true,
         ["--work-tree"] = true,
+        ["--no-verify"] = true,
     }
     local blocked_prefix = {
         "--git-dir=",

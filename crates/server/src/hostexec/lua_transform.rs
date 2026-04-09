@@ -329,6 +329,72 @@ mod tests {
     }
 
     #[test]
+    fn test_git_blocks_no_verify_on_commit() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec![
+            "commit".into(),
+            "--no-verify".into(),
+            "-m".into(),
+            "msg".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_on_push() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["push".into(), "--no-verify".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
+    fn test_git_allows_commit_without_no_verify() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "msg".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_blocks_no_verify_anywhere_in_args() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec![
+            "push".into(),
+            "origin".into(),
+            "main".into(),
+            "--no-verify".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --no-verify")
+        );
+    }
+
+    #[test]
     fn test_sandbox_no_io_access() {
         let mgr = LuaTransformManager::new();
         let script = r#"
