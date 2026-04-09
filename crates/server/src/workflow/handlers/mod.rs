@@ -3,6 +3,7 @@
 mod awaiting_dispatch;
 mod dispatch_implement;
 mod feedback_address;
+pub mod hook_log;
 mod merge;
 mod push;
 mod review_start;
