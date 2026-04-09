@@ -97,9 +97,17 @@ fn render_loaded_flows(
         page_info: Some(page_info),
     };
 
-    table.render(area, buf, ctx);
+    let scroll_offset = table.render(area, buf, ctx);
 
-    render_progress_bars(flow_model, &page_workflows, area, buf, ctx, &widths);
+    render_progress_bars(
+        flow_model,
+        &page_workflows,
+        area,
+        buf,
+        ctx,
+        &widths,
+        scroll_offset,
+    );
 }
 
 /// Build the column widths for the flows table (matching v1 layout).
@@ -237,6 +245,7 @@ fn render_progress_bars(
     buf: &mut Buffer,
     ctx: &TuiContext,
     widths: &[Constraint],
+    scroll_offset: usize,
 ) {
     let inner = Rect {
         x: area.x + 1,
@@ -255,8 +264,8 @@ fn render_progress_bars(
 
     let data_start_y = inner.y + 1;
 
-    for (i, wf) in page_workflows.iter().enumerate() {
-        let row_y = data_start_y + i as u16;
+    for (i, wf) in page_workflows.iter().enumerate().skip(scroll_offset) {
+        let row_y = data_start_y + (i - scroll_offset) as u16;
         if row_y >= inner.y + inner.height {
             break;
         }
