@@ -2297,7 +2297,7 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
     #[test]
     fn hostexec_defaults_to_empty_when_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(cfg.hostexec.commands.is_empty());
     }
@@ -2381,7 +2381,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn backup_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.backup.path, None);
         assert_eq!(
@@ -2395,7 +2395,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn backup_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[backup]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[backup]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.backup.path, None);
         assert_eq!(
@@ -2411,7 +2411,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2427,7 +2427,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2444,7 +2444,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn worker_port_defaults_to_server_port_plus_one() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, DEFAULT_SERVER_PORT + 1);
     }
@@ -2452,7 +2452,11 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn worker_port_follows_custom_server_port() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 9000\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, 9001);
     }
@@ -2462,7 +2466,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "server_port = 9000\nworker_port = 8000\n",
+            "node_id = \"n\"\nserver_port = 9000\nworker_port = 8000\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2474,7 +2478,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\nenabled = false\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nenabled = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2486,7 +2490,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2496,7 +2500,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn db_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.host, DEFAULT_DB_HOST);
         assert_eq!(cfg.db.port, DEFAULT_DB_PORT);
@@ -3036,7 +3040,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3062,7 +3066,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3088,7 +3092,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\nstale_worker_ttl_days = 14\npoll_interval_ms = 1000\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\nstale_worker_ttl_days = 14\npoll_interval_ms = 1000\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3135,7 +3139,7 @@ github_scan_interval_secs = 60
         let tmp = TempDir::new().unwrap();
         // SAFETY: serialized by ENV_MUTEX; no other test mutates this var concurrently.
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
@@ -3150,7 +3154,7 @@ github_scan_interval_secs = 60
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"podman\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"podman\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3162,7 +3166,7 @@ github_scan_interval_secs = 60
     #[test]
     fn tui_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
         assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
@@ -3173,7 +3177,7 @@ github_scan_interval_secs = 60
     #[test]
     fn tui_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[tui]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[tui]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
         assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
@@ -3186,7 +3190,7 @@ github_scan_interval_secs = 60
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui]\ntheme = \"solarized\"\nkeymap = \"vim\"\n",
+            "node_id = \"n\"\n[tui]\ntheme = \"solarized\"\nkeymap = \"vim\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3200,6 +3204,7 @@ github_scan_interval_secs = 60
         std::fs::write(
             tmp.path().join("ur.toml"),
             r##"
+node_id = "n"
 [tui.themes.tokyo]
 bg = "#1a1b26"
 fg = "#c0caf5"
@@ -3251,6 +3256,7 @@ scroll_down = ["j"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r##"
+node_id = "n"
 [tui]
 theme = "light"
 keymap = "emacs"
@@ -3285,7 +3291,7 @@ quit = ["q"]
     #[test]
     fn notification_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(cfg.tui.notifications.flow_stalled);
         assert!(cfg.tui.notifications.flow_in_review);
@@ -3296,7 +3302,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = true\nflow_in_review = true\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = true\nflow_in_review = true\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3309,7 +3315,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = false\nflow_in_review = false\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = false\nflow_in_review = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3322,7 +3328,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = false\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3333,7 +3339,7 @@ quit = ["q"]
     #[test]
     fn logs_dir_defaults_to_config_dir_logs() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, tmp.path().join("logs"));
     }
@@ -3341,7 +3347,11 @@ quit = ["q"]
     #[test]
     fn logs_dir_absolute_path_used_as_is() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"/var/log/ur\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nlogs_dir = \"/var/log/ur\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, PathBuf::from("/var/log/ur"));
     }
@@ -3349,7 +3359,11 @@ quit = ["q"]
     #[test]
     fn logs_dir_relative_path_joined_to_config_dir() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"custom/logs\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nlogs_dir = \"custom/logs\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, tmp.path().join("custom/logs"));
     }
