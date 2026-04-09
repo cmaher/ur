@@ -881,6 +881,71 @@ impl WorkflowRepo {
 
         Ok(())
     }
+
+    // ============================================================
+    // Node management
+    // ============================================================
+
+    /// List all distinct node_ids with workflow counts.
+    /// Returns a Vec of (node_id, workflow_count).
+    pub async fn list_node_ids(&self) -> Result<Vec<(String, i64)>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, i64)>(
+            "SELECT node_id, COUNT(*) AS cnt FROM workflow GROUP BY node_id ORDER BY node_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Delete all workflow-related rows for a given node_id.
+    /// Deletes from child tables first to respect FK constraints.
+    /// Returns the number of workflows deleted.
+    pub async fn delete_by_node_id(&self, node_id: &str) -> Result<i64, sqlx::Error> {
+        // Delete workflow_events (FK → workflow.id)
+        sqlx::query(
+            "DELETE FROM workflow_events WHERE workflow_id IN \
+             (SELECT id FROM workflow WHERE node_id = $1)",
+        )
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete workflow_intent (FK → ticket.id, but scoped via workflow.ticket_id)
+        sqlx::query(
+            "DELETE FROM workflow_intent WHERE ticket_id IN \
+             (SELECT ticket_id FROM workflow WHERE node_id = $1)",
+        )
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete workflow_comments (FK → ticket.id, scoped via workflow.ticket_id)
+        sqlx::query(
+            "DELETE FROM workflow_comments WHERE ticket_id IN \
+             (SELECT ticket_id FROM workflow WHERE node_id = $1)",
+        )
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete workflow_event (trigger-generated, FK → ticket.id)
+        sqlx::query(
+            "DELETE FROM workflow_event WHERE ticket_id IN \
+             (SELECT ticket_id FROM workflow WHERE node_id = $1)",
+        )
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+
+        // Delete workflows themselves
+        let result = sqlx::query("DELETE FROM workflow WHERE node_id = $1")
+            .bind(node_id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected() as i64)
+    }
 }
 
 fn build_paginated_sql(

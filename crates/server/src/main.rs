@@ -191,6 +191,7 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
+        node_id: cfg.node_id.clone(),
     };
 
     serve_grpc_servers(

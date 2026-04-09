@@ -11,12 +11,13 @@ use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
-    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
-    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
-    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
-    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
-    WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
+    LinkCommentTicketRequest, LinkCommentTicketResponse, NodeCleanupRequest, NodeCleanupResponse,
+    NodeInfo, NodeListRequest, NodeListResponse, PingRequest, PingResponse, ReloadProjectsRequest,
+    ReloadProjectsResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
+    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
+    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
+    WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
+    WorkflowStepCompleteResponse,
 };
 
 use ur_db::WorkerRepo;
@@ -149,6 +150,7 @@ pub struct CoreServiceHandler {
     pub network_config: ur_config::NetworkConfig,
     pub builderd_addr: String,
     pub config_dir: PathBuf,
+    pub node_id: String,
 }
 
 impl CoreServiceHandler {
@@ -638,6 +640,101 @@ impl CoreService for CoreServiceHandler {
             removed: report.removed,
         }))
     }
+
+    async fn node_list(
+        &self,
+        _req: Request<NodeListRequest>,
+    ) -> Result<Response<NodeListResponse>, Status> {
+        info!("node_list request received");
+        let worker_nodes = self
+            .worker_repo
+            .list_node_ids()
+            .await
+            .map_err(|e| Status::internal(format!("failed to list worker node_ids: {e}")))?;
+        let workflow_nodes = self
+            .workflow_repo
+            .list_node_ids()
+            .await
+            .map_err(|e| Status::internal(format!("failed to list workflow node_ids: {e}")))?;
+
+        let nodes = merge_node_counts(&worker_nodes, &workflow_nodes);
+        Ok(Response::new(NodeListResponse {
+            nodes,
+            local_node_id: self.node_id.clone(),
+        }))
+    }
+
+    async fn node_cleanup(
+        &self,
+        req: Request<NodeCleanupRequest>,
+    ) -> Result<Response<NodeCleanupResponse>, Status> {
+        let req = req.into_inner();
+        info!(node_id = %req.node_id, "node_cleanup request received");
+
+        if req.node_id.is_empty() {
+            return Err(Status::invalid_argument("node_id is required"));
+        }
+        if req.node_id == self.node_id {
+            return Err(Status::invalid_argument(
+                "cannot clean up the local node — this would delete active data",
+            ));
+        }
+
+        let (workers_deleted, slots_deleted) = self
+            .worker_repo
+            .delete_by_node_id(&req.node_id)
+            .await
+            .map_err(|e| Status::internal(format!("failed to delete workers/slots: {e}")))?;
+        let workflows_deleted = self
+            .workflow_repo
+            .delete_by_node_id(&req.node_id)
+            .await
+            .map_err(|e| Status::internal(format!("failed to delete workflows: {e}")))?;
+
+        info!(
+            node_id = %req.node_id,
+            workers_deleted,
+            slots_deleted,
+            workflows_deleted,
+            "node cleanup complete"
+        );
+
+        Ok(Response::new(NodeCleanupResponse {
+            workers_deleted: workers_deleted as i32,
+            slots_deleted: slots_deleted as i32,
+            workflows_deleted: workflows_deleted as i32,
+        }))
+    }
+}
+
+/// Merge worker/slot counts and workflow counts into a unified NodeInfo list.
+fn merge_node_counts(
+    worker_nodes: &[(String, i64, i64)],
+    workflow_nodes: &[(String, i64)],
+) -> Vec<NodeInfo> {
+    let mut map: HashMap<String, (i32, i32, i32)> = HashMap::new();
+    for (node_id, worker_count, slot_count) in worker_nodes {
+        let entry = map.entry(node_id.clone()).or_default();
+        entry.0 = *worker_count as i32;
+        entry.1 = *slot_count as i32;
+    }
+    for (node_id, workflow_count) in workflow_nodes {
+        let entry = map.entry(node_id.clone()).or_default();
+        entry.2 = *workflow_count as i32;
+    }
+    let mut nodes: Vec<NodeInfo> = map
+        .into_iter()
+        .map(
+            |(node_id, (worker_count, slot_count, workflow_count))| NodeInfo {
+                node_id,
+                worker_count,
+                slot_count,
+                workflow_count,
+            },
+        )
+        .collect();
+    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    nodes
 }
 
 /// Lightweight CoreService for the worker gRPC server.
@@ -849,6 +946,20 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         _req: Request<ReloadProjectsRequest>,
     ) -> Result<Response<ReloadProjectsResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn node_list(
+        &self,
+        _req: Request<NodeListRequest>,
+    ) -> Result<Response<NodeListResponse>, Status> {
+        Err(CoreError::Unimplemented.into())
+    }
+
+    async fn node_cleanup(
+        &self,
+        _req: Request<NodeCleanupRequest>,
+    ) -> Result<Response<NodeCleanupResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
 }
