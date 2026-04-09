@@ -192,7 +192,7 @@ impl TicketService for MockTicketStore {
         // Determine new ID if project is changing.
         let new_id = match req.project.filter(|s| !s.is_empty()) {
             Some(ref project) => {
-                let hash = req.id.splitn(2, '-').nth(1).unwrap_or(&req.id);
+                let hash = req.id.split_once('-').map(|x| x.1).unwrap_or(&req.id);
                 let candidate = format!("{project}-{hash}");
                 if candidate != req.id {
                     let mut t = state.tickets.remove(&req.id).unwrap();
