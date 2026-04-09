@@ -370,7 +370,7 @@ impl CmdRunner {
             )
             .await;
             let msg = TicketOpResultMsg::Updated {
-                result: result.map(|()| format!("Updated {ticket_id}")),
+                result: result.map(|final_id| format!("Updated {final_id}")),
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
         });
@@ -977,14 +977,14 @@ async fn update_ticket_fields(
     priority: i64,
     body: &str,
     branch: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     use ur_rpc::connection::connect;
     use ur_rpc::proto::ticket::UpdateTicketRequest;
     use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 
     let channel = connect(port).await.map_err(|e| e.to_string())?;
     let mut client = TicketServiceClient::new(channel);
-    client
+    let resp = client
         .update_ticket(UpdateTicketRequest {
             id: ticket_id.to_owned(),
             priority: Some(priority),
@@ -999,7 +999,12 @@ async fn update_ticket_fields(
         })
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    let new_id = resp.into_inner().new_id;
+    if new_id.is_empty() {
+        Ok(ticket_id.to_owned())
+    } else {
+        Ok(new_id)
+    }
 }
 
 /// Create a ticket, returning the new ticket ID.

@@ -146,15 +146,16 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<UpdateTicketResponse>, Status> {
         let req = req.into_inner();
         let mut state = self.inner.lock().unwrap();
-        let ticket = state.tickets.get_mut(&req.id).ok_or_else(|| {
-            error::status_with_info(
+        if !state.tickets.contains_key(&req.id) {
+            return Err(error::status_with_info(
                 Code::NotFound,
                 format!("ticket not found: {}", req.id),
                 DOMAIN_TICKET,
                 NOT_FOUND,
                 [("ticket_id".into(), req.id.clone())].into(),
-            )
-        })?;
+            ));
+        }
+        let ticket = state.tickets.get_mut(&req.id).unwrap();
         if let Some(status) = req.status
             && !status.is_empty()
         {
@@ -188,7 +189,26 @@ impl TicketService for MockTicketStore {
             Some(b) if !b.is_empty() => ticket.branch = b,
             _ => {}
         }
-        Ok(Response::new(UpdateTicketResponse {}))
+        // Determine new ID if project is changing.
+        let new_id = match req.project.filter(|s| !s.is_empty()) {
+            Some(ref project) => {
+                let hash = req.id.split_once('-').map(|x| x.1).unwrap_or(&req.id);
+                let candidate = format!("{project}-{hash}");
+                if candidate != req.id {
+                    let mut t = state.tickets.remove(&req.id).unwrap();
+                    t.project.clone_from(project);
+                    t.id.clone_from(&candidate);
+                    state.tickets.insert(candidate.clone(), t);
+                    candidate
+                } else {
+                    let ticket = state.tickets.get_mut(&req.id).unwrap();
+                    ticket.project.clone_from(project);
+                    String::new()
+                }
+            }
+            None => String::new(),
+        };
+        Ok(Response::new(UpdateTicketResponse { new_id }))
     }
 
     async fn set_meta(
