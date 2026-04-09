@@ -6,7 +6,6 @@ const SKILLS_ENV: &str = "UR_WORKER_SKILLS";
 const POTENTIAL_SKILLS_DIR: &str = ".claude/potential-skills";
 const SKILLS_DIR: &str = ".claude/skills";
 const CLAUDE_ENV: &str = "UR_WORKER_CLAUDE";
-const CAVEMAN_ENV: &str = "UR_WORKER_CAVEMAN";
 const POTENTIAL_CLAUDES_DIR: &str = ".claude/potential-claudes";
 const SHARED_CLAUDES_DIR: &str = ".claude/shared-claudes";
 const CLAUDE_MD_DEST: &str = ".claude/CLAUDE.md";
@@ -125,34 +124,6 @@ impl InitSkillsManager {
             content.push_str("\n\n");
             content.push_str(&shared_content);
             info!(path = %path.display(), "appended shared CLAUDE.md fragment");
-        }
-
-        // Append caveman fragment if UR_WORKER_CAVEMAN is set
-        if let Ok(level) = std::env::var(CAVEMAN_ENV)
-            && !level.trim().is_empty()
-        {
-            let caveman_src = self
-                .home
-                .join(POTENTIAL_CLAUDES_DIR)
-                .join(format!("caveman-{level}.md"));
-            match tokio::fs::read_to_string(&caveman_src).await {
-                Ok(caveman_content) => {
-                    content.push_str("\n\n");
-                    content.push_str(&caveman_content);
-                    info!(
-                        level = %level,
-                        path = %caveman_src.display(),
-                        "appended caveman fragment"
-                    );
-                }
-                Err(_) => {
-                    warn!(
-                        level = %level,
-                        path = %caveman_src.display(),
-                        "caveman fragment not found in potential-claudes"
-                    );
-                }
-            }
         }
 
         // If a project CLAUDE.md is provided, resolve %WORKSPACE% and append @ reference
@@ -405,136 +376,6 @@ mod tests {
         // CLAUDE.md should not contain @ reference
         let claude_content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
         assert_eq!(claude_content, "# Code Worker");
-    }
-
-    #[tokio::test]
-    async fn init_claude_md_caveman_appended() {
-        let _lock = ENV_LOCK.lock().await;
-        let tmp = TempDir::new().unwrap();
-        setup_claude_dir(&tmp, "code", "# Code Worker");
-
-        // Create caveman fragment
-        let potential_dir = tmp.path().join(POTENTIAL_CLAUDES_DIR);
-        std::fs::write(potential_dir.join("caveman-ultra.md"), "# Caveman Ultra").unwrap();
-
-        unsafe {
-            std::env::set_var(CLAUDE_ENV, "code");
-            std::env::set_var(CAVEMAN_ENV, "ultra");
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
-        };
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_claude_md().await.unwrap();
-
-        unsafe {
-            std::env::remove_var(CLAUDE_ENV);
-            std::env::remove_var(CAVEMAN_ENV);
-        };
-
-        let content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
-        assert_eq!(content, "# Code Worker\n\n# Caveman Ultra");
-    }
-
-    #[tokio::test]
-    async fn init_claude_md_caveman_skipped_when_unset() {
-        let _lock = ENV_LOCK.lock().await;
-        let tmp = TempDir::new().unwrap();
-        setup_claude_dir(&tmp, "code", "# Code Worker");
-
-        unsafe {
-            std::env::set_var(CLAUDE_ENV, "code");
-            std::env::remove_var(CAVEMAN_ENV);
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
-        };
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_claude_md().await.unwrap();
-
-        unsafe { std::env::remove_var(CLAUDE_ENV) };
-
-        let content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
-        assert_eq!(content, "# Code Worker");
-    }
-
-    #[tokio::test]
-    async fn init_claude_md_caveman_missing_file_warns_no_error() {
-        let _lock = ENV_LOCK.lock().await;
-        let tmp = TempDir::new().unwrap();
-        setup_claude_dir(&tmp, "code", "# Code Worker");
-
-        unsafe {
-            std::env::set_var(CLAUDE_ENV, "code");
-            std::env::set_var(CAVEMAN_ENV, "bogus");
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
-        };
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        let result = mgr.init_claude_md().await;
-
-        unsafe {
-            std::env::remove_var(CLAUDE_ENV);
-            std::env::remove_var(CAVEMAN_ENV);
-        };
-
-        assert!(
-            result.is_ok(),
-            "missing caveman file should not cause an error"
-        );
-        let content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
-        // No caveman content appended
-        assert_eq!(content, "# Code Worker");
-    }
-
-    #[tokio::test]
-    async fn init_claude_md_caveman_before_project_ref() {
-        let _lock = ENV_LOCK.lock().await;
-        let tmp = TempDir::new().unwrap();
-        setup_claude_dir(&tmp, "code", "# Code Worker");
-
-        // Create caveman fragment
-        let potential_dir = tmp.path().join(POTENTIAL_CLAUDES_DIR);
-        std::fs::write(potential_dir.join("caveman-lite.md"), "# Caveman Lite").unwrap();
-
-        // Create project CLAUDE.md
-        let project_dir = tmp.path().join("project-claude");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let project_path = project_dir.join("CLAUDE.md");
-        std::fs::write(&project_path, "# Project").unwrap();
-
-        unsafe {
-            std::env::set_var(CLAUDE_ENV, "code");
-            std::env::set_var(CAVEMAN_ENV, "lite");
-            std::env::set_var(
-                ur_config::UR_PROJECT_CLAUDE_ENV,
-                project_path.to_str().unwrap(),
-            );
-            std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
-        };
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_claude_md().await.unwrap();
-
-        unsafe {
-            std::env::remove_var(CLAUDE_ENV);
-            std::env::remove_var(CAVEMAN_ENV);
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
-        };
-
-        let content = std::fs::read_to_string(tmp.path().join(CLAUDE_MD_DEST)).unwrap();
-        let project_dest = tmp.path().join(PROJECT_CLAUDE_MD_DEST);
-        let expected_ref = format!("\n\n@{}", project_dest.display());
-
-        // Caveman should appear before the project @ reference
-        let caveman_pos = content
-            .find("# Caveman Lite")
-            .expect("caveman content should be present");
-        let ref_pos = content
-            .find(&expected_ref)
-            .expect("project ref should be present");
-        assert!(
-            caveman_pos < ref_pos,
-            "caveman content should appear before project @ reference"
-        );
     }
 
     #[tokio::test]
