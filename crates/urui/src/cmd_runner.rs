@@ -491,6 +491,12 @@ impl CmdRunner {
                     let _ = tx.send(Msg::Data(Box::new(DataMsg::NotificationFlowLoaded(result))));
                 });
             }
+            FetchCmd::FlowDetail { ticket_id } => {
+                tokio::spawn(async move {
+                    let result = fetch_workflow_for_notification(port, &ticket_id).await;
+                    let _ = tx.send(Msg::Data(Box::new(DataMsg::FlowDetailLoaded(result))));
+                });
+            }
         }
     }
 }
