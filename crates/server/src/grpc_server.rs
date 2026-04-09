@@ -47,6 +47,7 @@ pub async fn serve_worker_grpc(
     project_registry: ProjectRegistry,
     builderd_addr: String,
     host_workspace: std::path::PathBuf,
+    git_branch_prefix: String,
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
     remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
     transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
@@ -83,6 +84,7 @@ pub async fn serve_worker_grpc(
             worker_manager,
             builderd_client: hostexec_builderd_client,
             host_workspace,
+            git_branch_prefix,
         };
 
         routes.add_service(HostExecServiceServer::with_interceptor(

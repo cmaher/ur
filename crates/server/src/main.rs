@@ -367,6 +367,7 @@ async fn serve_grpc_servers(
         project_registry,
         builderd_addr,
         host_workspace,
+        config.git_branch_prefix.clone(),
         worker_ticket_handler,
         remote_repo_handler,
         wf.transition_tx,
