@@ -68,6 +68,32 @@ function transform(command, args, working_dir, worker_context)
         end
     end
 
+    -- Block checkout and switch subcommands (workers must not switch branches)
+    local blocked_subcommands = {
+        ["checkout"] = true,
+        ["switch"] = true,
+    }
+    -- Find the git subcommand: first positional arg (skip global flags and their values)
+    local global_flags_with_value = {
+        ["-C"] = true,
+        ["-c"] = true,
+    }
+    local sub_i = 1
+    while sub_i <= #args do
+        local a = args[sub_i]
+        if global_flags_with_value[a] then
+            sub_i = sub_i + 2  -- skip flag + its value
+        elseif a:sub(1, 1) == "-" then
+            sub_i = sub_i + 1  -- skip other flags
+        else
+            -- First positional arg is the subcommand
+            if blocked_subcommands[a] then
+                error("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
+            end
+            break
+        end
+    end
+
     -- Prepend ticket ID to commit messages when worker_context has a process_id
     if worker_context ~= nil and worker_context.process_id ~= "" then
         local ticket_id = worker_context.process_id

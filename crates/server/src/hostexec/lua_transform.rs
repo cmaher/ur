@@ -395,6 +395,119 @@ mod tests {
     }
 
     #[test]
+    fn test_git_blocks_checkout_main() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_new_branch() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "-b".into(), "new-branch".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_file() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["checkout".into(), "--".into(), "file.txt".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_switch_main() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["switch".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: switch")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_switch_create() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["switch".into(), "-c".into(), "new-branch".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: switch")
+        );
+    }
+
+    #[test]
+    fn test_git_allows_restore() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["restore".into(), "file.txt".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_blocks_checkout_after_global_flags() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec![
+            "-C".into(),
+            "/workspace".into(),
+            "checkout".into(),
+            "main".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    #[test]
     fn test_sandbox_no_io_access() {
         let mgr = LuaTransformManager::new();
         let script = r#"
