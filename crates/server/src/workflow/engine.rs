@@ -240,8 +240,8 @@ mod tests {
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool.clone());
-        let worker_repo = WorkerRepo::new(pool);
+        let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
+        let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
         (test_db, repo, workflow_repo, worker_repo)
     }
 
@@ -253,6 +253,7 @@ mod tests {
 
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
+            node_id: "test-node".to_string(),
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),

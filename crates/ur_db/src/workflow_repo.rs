@@ -21,11 +21,12 @@ pub struct PaginatedWorkflow {
 #[derive(Clone)]
 pub struct WorkflowRepo {
     pool: PgPool,
+    node_id: String,
 }
 
 impl WorkflowRepo {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, node_id: String) -> Self {
+        Self { pool, node_id }
     }
 
     // ============================================================
@@ -107,11 +108,12 @@ impl WorkflowRepo {
         let now = Utc::now().to_rfc3339();
 
         sqlx::query(
-            "INSERT INTO workflow (id, ticket_id, status, created_at) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO workflow (id, ticket_id, status, node_id, created_at) VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(&id)
         .bind(ticket_id)
         .bind(status.as_str())
+        .bind(&self.node_id)
         .bind(&now)
         .execute(&self.pool)
         .await?;
@@ -129,6 +131,7 @@ impl WorkflowRepo {
             ci_status: ur_rpc::workflow_condition::ci_status::PENDING.to_owned(),
             mergeable: ur_rpc::workflow_condition::mergeable::UNKNOWN.to_owned(),
             review_status: ur_rpc::workflow_condition::review_status::PENDING.to_owned(),
+            node_id: self.node_id.clone(),
             created_at: now,
         })
     }
@@ -155,10 +158,10 @@ impl WorkflowRepo {
         active_only: bool,
     ) -> Result<Option<Workflow>, sqlx::Error> {
         let query = if active_only {
-            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, node_id, created_at
              FROM workflow WHERE ticket_id = $1 AND status NOT IN ('done', 'cancelled')"
         } else {
-            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
+            "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, node_id, created_at
              FROM workflow WHERE ticket_id = $1 ORDER BY created_at DESC LIMIT 1"
         };
         let row = sqlx::query_as::<
@@ -172,6 +175,7 @@ impl WorkflowRepo {
                 i32,
                 String,
                 bool,
+                String,
                 String,
                 String,
                 String,
@@ -195,23 +199,25 @@ impl WorkflowRepo {
             Some(s) => {
                 sqlx::query_as::<
                     _,
-                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String),
+                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String, String),
                 >(
-                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
-                     FROM workflow WHERE status = $1 ORDER BY created_at",
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, node_id, created_at
+                     FROM workflow WHERE status = $1 AND node_id = $2 ORDER BY created_at",
                 )
                 .bind(s.as_str())
+                .bind(&self.node_id)
                 .fetch_all(&self.pool)
                 .await?
             }
             None => {
                 sqlx::query_as::<
                     _,
-                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String),
+                    (String, String, String, bool, String, i32, String, bool, String, String, String, String, String, String),
                 >(
-                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, created_at
-                     FROM workflow WHERE status NOT IN ('done', 'cancelled') ORDER BY created_at",
+                    "SELECT id, ticket_id, status, stalled, stall_reason, implement_cycles, worker_id, noverify, feedback_mode, ci_status, mergeable, review_status, node_id, created_at
+                     FROM workflow WHERE status NOT IN ('done', 'cancelled') AND node_id = $1 ORDER BY created_at",
                 )
+                .bind(&self.node_id)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -233,7 +239,8 @@ impl WorkflowRepo {
         project: Option<&str>,
     ) -> Result<(Vec<PaginatedWorkflow>, i32), sqlx::Error> {
         let sql = build_paginated_sql(page_size, offset, status.as_ref(), project);
-        let bind_values = build_paginated_binds(&status, project);
+        let mut bind_values = build_paginated_binds(&status, project);
+        bind_values.push(self.node_id.clone());
 
         // Safety: the SQL is built from trusted format strings with bind placeholders.
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.clone()));
@@ -611,8 +618,9 @@ impl WorkflowRepo {
 
         // Fetch all active workflows in a single query and filter client-side.
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT ticket_id, status FROM workflow WHERE status NOT IN ('done', 'cancelled')",
+            "SELECT ticket_id, status FROM workflow WHERE status NOT IN ('done', 'cancelled') AND node_id = $1",
         )
+        .bind(&self.node_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -651,10 +659,11 @@ impl WorkflowRepo {
             "SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at
              FROM ticket t
              INNER JOIN workflow w ON w.ticket_id = t.id
-             WHERE w.status = $1
+             WHERE w.status = $1 AND w.node_id = $2
              ORDER BY t.priority ASC, t.created_at ASC",
         )
         .bind(status.as_str())
+        .bind(&self.node_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -898,6 +907,10 @@ fn build_paginated_sql(
         ""
     };
 
+    // node_id filter is always the last bind parameter
+    param_idx += 1;
+    conditions.push(format!("w.node_id = ${param_idx}"));
+
     let _ = param_idx;
 
     let where_clause = format!("WHERE {}", conditions.join(" AND "));
@@ -910,7 +923,7 @@ fn build_paginated_sql(
     format!(
         "SELECT w.id, w.ticket_id, w.status, w.stalled, w.stall_reason, \
          w.implement_cycles, w.worker_id, w.noverify, w.feedback_mode, \
-         w.ci_status, w.mergeable, w.review_status, w.created_at, \
+         w.ci_status, w.mergeable, w.review_status, w.node_id, w.created_at, \
          (COUNT(*) OVER())::INT4 AS total_count, \
          COALESCE(tc.children_closed, 0)::INT8 AS children_closed, \
          (COALESCE(tc.children_total, 0) - COALESCE(tc.children_closed, 0))::INT8 AS children_open \
@@ -957,6 +970,7 @@ fn pg_row_to_paginated(r: &sqlx::postgres::PgRow) -> PaginatedWorkflow {
         ci_status: r.get("ci_status"),
         mergeable: r.get("mergeable"),
         review_status: r.get("review_status"),
+        node_id: r.get("node_id"),
         created_at: r.get("created_at"),
     };
     PaginatedWorkflow {
@@ -981,6 +995,7 @@ fn row_to_workflow(
         ci_status,
         mergeable,
         review_status,
+        node_id,
         created_at,
     ): (
         String,
@@ -991,6 +1006,7 @@ fn row_to_workflow(
         i32,
         String,
         bool,
+        String,
         String,
         String,
         String,
@@ -1011,6 +1027,7 @@ fn row_to_workflow(
         ci_status,
         mergeable,
         review_status,
+        node_id,
         created_at,
     }
 }
@@ -1030,7 +1047,7 @@ mod paginated_tests {
     }
 
     fn wf_repo(db: &TestDb) -> WorkflowRepo {
-        WorkflowRepo::new(db.db().pool().clone())
+        WorkflowRepo::new(db.db().pool().clone(), "test-node".to_string())
     }
 
     async fn create_test_ticket(repo: &TicketRepo, id: &str, project: &str) {

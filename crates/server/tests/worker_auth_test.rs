@@ -15,6 +15,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
         worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
     let config = ur_config::Config {
+        node_id: "test-node".to_string(),
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -75,10 +76,10 @@ async fn make_test_components(
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
-    let worker_repo = ur_db::WorkerRepo::new(pool.clone());
+    let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
     let graph_manager = ur_db::GraphManager::new(pool.clone());
     let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(pool);
+    let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {

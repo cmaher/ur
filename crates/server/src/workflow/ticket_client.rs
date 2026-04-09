@@ -174,7 +174,7 @@ mod tests {
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool);
+        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
 
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),

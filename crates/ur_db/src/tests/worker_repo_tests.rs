@@ -21,7 +21,7 @@ async fn set_worker_updated_at(pool: &PgPool, worker_id: &str, updated_at: &str)
 }
 
 fn repo(db: &TestDb) -> WorkerRepo {
-    WorkerRepo::new(db.db().pool().clone())
+    WorkerRepo::new(db.db().pool().clone(), "test-node".to_string())
 }
 
 fn test_slot(id: &str, project_key: &str) -> Slot {
@@ -30,6 +30,7 @@ fn test_slot(id: &str, project_key: &str) -> Slot {
         project_key: project_key.to_owned(),
         slot_name: format!("slot-{id}"),
         host_path: format!("/tmp/{id}"),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     }
@@ -46,6 +47,7 @@ fn test_worker(worker_id: &str, project_key: &str) -> Worker {
         container_status: "provisioning".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(format!("/workspace/{worker_id}")),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         idle_redispatch_count: 0,

@@ -463,6 +463,7 @@ mod tests {
     #[test]
     fn compose_manager_from_config_sets_env_vars() {
         let config = ur_config::Config {
+            node_id: "test-node".to_string(),
             config_dir: PathBuf::from("/test/config"),
             logs_dir: PathBuf::from("/test/config/logs"),
             workspace: PathBuf::from("/test/workspace"),

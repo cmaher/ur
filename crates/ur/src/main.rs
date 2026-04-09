@@ -60,6 +60,9 @@ enum Commands {
     },
     /// Bootstrap the ~/.ur/ config directory
     Init {
+        /// Unique node name for this ur installation
+        #[arg(long)]
+        node: String,
         /// Overwrite all files
         #[arg(long)]
         force: bool,
@@ -1311,6 +1314,7 @@ fn handle_proxy(
 async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     // Init bypasses config loading — it creates the config files.
     if let Commands::Init {
+        node,
         force,
         force_config,
         force_squid,
@@ -1321,6 +1325,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 force,
                 force_config,
                 force_squid,
+                node,
             },
             output,
         );
