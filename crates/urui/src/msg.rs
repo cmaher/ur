@@ -428,6 +428,8 @@ pub enum DataMsg {
     },
     /// A single workflow fetched for notification detection.
     NotificationFlowLoaded(Result<WorkflowInfo, String>),
+    /// A single workflow fetched for the flow detail page.
+    FlowDetailLoaded(Result<WorkflowInfo, String>),
 }
 
 /// Ticket operation request messages. Each variant carries the parameters needed

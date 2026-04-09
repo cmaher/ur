@@ -81,6 +81,8 @@ pub enum FetchCmd {
     },
     /// Fetch a single workflow by ticket ID for notification detection.
     WorkflowForNotification { ticket_id: String },
+    /// Fetch a single workflow by ticket ID for the flow detail page.
+    FlowDetail { ticket_id: String },
 }
 
 impl Cmd {

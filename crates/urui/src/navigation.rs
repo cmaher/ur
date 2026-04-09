@@ -258,8 +258,7 @@ fn init_page(page: &PageId, model: &mut Model) -> Vec<Cmd> {
             vec![cmd]
         }
         PageId::FlowDetail { ticket_id } => {
-            super::pages::flow_detail::init_flow_detail(model, ticket_id.clone());
-            vec![]
+            super::pages::flow_detail::init_flow_detail(model, ticket_id.clone())
         }
         PageId::WorkerList => {
             let cmd = start_worker_list_fetch(model);

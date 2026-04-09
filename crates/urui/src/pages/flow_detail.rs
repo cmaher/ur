@@ -16,11 +16,12 @@ use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{FlowDetailModel, Model};
 use crate::msg::{FlowOpMsg, GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
 
-/// Initialize the flow detail model from the currently loaded flow list data.
+/// Initialize the flow detail model for a given ticket.
 ///
-/// Finds the workflow by ticket_id in the flow list data and populates the
-/// flow detail model. If the workflow is not found, the model is not set.
-pub fn init_flow_detail(model: &mut Model, ticket_id: String) {
+/// First checks the already-loaded flow list data. If the workflow is found
+/// there, populates the model immediately. Otherwise, issues a gRPC fetch
+/// to load the workflow by ticket ID.
+pub fn init_flow_detail(model: &mut Model, ticket_id: String) -> Vec<Cmd> {
     if let Some(data) = model.flow_list.data.data()
         && let Some(wf) = data.workflows.iter().find(|w| w.ticket_id == ticket_id)
     {
@@ -28,6 +29,11 @@ pub fn init_flow_detail(model: &mut Model, ticket_id: String) {
             ticket_id: ticket_id.clone(),
             workflow: wf.clone(),
         });
+        vec![]
+    } else {
+        // Flow list not loaded or workflow not in current page — fetch directly.
+        model.flow_detail = None;
+        vec![Cmd::Fetch(crate::cmd::FetchCmd::FlowDetail { ticket_id })]
     }
 }
 
@@ -588,15 +594,16 @@ mod tests {
             total_count: 1,
         });
 
-        init_flow_detail(&mut model, "ur-abc".to_string());
+        let cmds = init_flow_detail(&mut model, "ur-abc".to_string());
 
         let detail = model.flow_detail.as_ref().unwrap();
         assert_eq!(detail.ticket_id, "ur-abc");
         assert_eq!(detail.workflow.id, "wf-123");
+        assert!(cmds.is_empty(), "should not fetch when found in cache");
     }
 
     #[test]
-    fn init_flow_detail_not_found() {
+    fn init_flow_detail_not_found_issues_fetch() {
         use crate::model::LoadState;
         let mut model = Model::initial();
         model.flow_list.data = LoadState::Loaded(crate::model::FlowListData {
@@ -604,7 +611,21 @@ mod tests {
             total_count: 0,
         });
 
-        init_flow_detail(&mut model, "ur-missing".to_string());
+        let cmds = init_flow_detail(&mut model, "ur-missing".to_string());
         assert!(model.flow_detail.is_none());
+        assert_eq!(cmds.len(), 1, "should issue a fetch command");
+        assert!(
+            matches!(&cmds[0], Cmd::Fetch(crate::cmd::FetchCmd::FlowDetail { ticket_id }) if ticket_id == "ur-missing"),
+            "should fetch the specific ticket"
+        );
+    }
+
+    #[test]
+    fn init_flow_detail_unloaded_issues_fetch() {
+        let mut model = Model::initial();
+        // flow_list.data is NotLoaded by default
+        let cmds = init_flow_detail(&mut model, "ur-xyz".to_string());
+        assert!(model.flow_detail.is_none());
+        assert_eq!(cmds.len(), 1);
     }
 }

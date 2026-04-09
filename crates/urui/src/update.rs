@@ -831,6 +831,14 @@ fn handle_data(mut model: Model, data_msg: DataMsg) -> (Model, Vec<Cmd>) {
                 return (model, cmds);
             }
         }
+        DataMsg::FlowDetailLoaded(result) => {
+            if let Ok(workflow) = result {
+                model.flow_detail = Some(crate::model::FlowDetailModel {
+                    ticket_id: workflow.ticket_id.clone(),
+                    workflow,
+                });
+            }
+        }
     }
     (model, vec![])
 }
