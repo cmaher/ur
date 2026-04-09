@@ -8,7 +8,7 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
@@ -68,23 +68,6 @@ pub fn footer_commands() -> Vec<FooterCommand> {
             common: false,
         },
     ]
-}
-
-/// Modal input handler for the priority picker overlay (InputHandler adapter).
-pub struct PriorityPickerHandler;
-
-impl InputHandler for PriorityPickerHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        InputResult::Capture(handle_key(key))
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        footer_commands()
-    }
-
-    fn name(&self) -> &str {
-        "priority_picker"
-    }
 }
 
 /// Render the priority picker overlay from the model state.

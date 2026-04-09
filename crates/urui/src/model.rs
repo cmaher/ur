@@ -6,7 +6,7 @@ use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
 
 use super::components::banner::BannerVariant;
-use super::input::{GlobalHandler, InputHandler, InputStack};
+use super::input::{GlobalHandler, InputStack};
 use super::navigation::{NavigationModel, TabId};
 use super::notifications::NotificationModel;
 
@@ -647,65 +647,18 @@ impl Model {
     /// The two fields must always move in lockstep; using this helper (rather
     /// than mutating them directly) guarantees they cannot drift apart.
     ///
-    /// Semantics when an overlay is already active: the new overlay state
-    /// **replaces** `active_overlay` and the new handler is **pushed on top**
-    /// of the input stack. The previously active handler remains on the stack
-    /// below the new one — this mirrors existing nesting flows (e.g. Settings
-    /// → ThemePicker, CreateActionMenu → ProjectInput) where the outer
-    /// overlay's handler stays in place so the inner overlay can return to it
-    /// on close.
-    pub fn open_overlay(&mut self, state: ActiveOverlay, handler: Box<dyn InputHandler>) {
+    /// Set the active overlay to the given state.
+    ///
+    /// When an overlay is already active the new state simply replaces it.
+    pub fn open_overlay(&mut self, state: ActiveOverlay) {
         self.active_overlay = Some(state);
-        self.input_stack.push(handler);
     }
 
-    /// Close the currently active overlay by clearing `active_overlay` and
-    /// popping the topmost input handler.
+    /// Close the currently active overlay by clearing `active_overlay`.
     ///
-    /// This is a no-op when no overlay is active (neither field is mutated).
-    /// When an overlay is active, both the state and the handler are removed
-    /// in a single call to keep the two fields consistent.
+    /// This is a no-op when no overlay is active.
     pub fn close_overlay(&mut self) {
-        if self.active_overlay.is_none() {
-            return;
-        }
         self.active_overlay = None;
-        self.input_stack.pop();
-    }
-
-    /// Return the name of the topmost handler on the input stack, if any.
-    ///
-    /// This implementation pops the top handler, reads its name, and pushes it
-    /// back. It is intended for debug-only invariant checking and is not on a
-    /// hot path.
-    #[cfg(debug_assertions)]
-    pub fn top_input_handler_name(&mut self) -> Option<String> {
-        let handler = self.input_stack.pop()?;
-        let name = handler.name().to_string();
-        self.input_stack.push(handler);
-        Some(name)
-    }
-}
-
-/// Map an [`ActiveOverlay`] variant to the name of the [`InputHandler`] that
-/// must sit on top of the input stack while that overlay is active.
-///
-/// The names returned here must match exactly the strings returned by each
-/// overlay handler's `InputHandler::name()` implementation. This mapping is the
-/// single source of truth used by the debug invariant check that runs after
-/// every `update()` call (see `crate::update::debug_assert_overlay_invariant`).
-pub fn expected_handler_name_for_overlay(overlay: &ActiveOverlay) -> &'static str {
-    match overlay {
-        ActiveOverlay::PriorityPicker { .. } => "priority_picker",
-        ActiveOverlay::TypeMenu { .. } => "type_menu",
-        ActiveOverlay::FilterMenu { .. } => "filter_menu",
-        ActiveOverlay::GotoMenu { .. } => "goto_menu",
-        ActiveOverlay::ForceCloseConfirm { .. } => "force_close_confirm",
-        ActiveOverlay::CreateActionMenu { .. } => "create_action_menu",
-        ActiveOverlay::ProjectInput { .. } => "project_input",
-        ActiveOverlay::TitleInput { .. } => "title_input",
-        ActiveOverlay::Settings { .. } => "settings_overlay",
-        ActiveOverlay::Help => "help_overlay",
     }
 }
 
@@ -946,137 +899,68 @@ mod tests {
 
     // --- open_overlay / close_overlay tests ---
 
-    use crate::input::{FooterCommand, InputHandler, InputResult};
-    use crossterm::event::KeyEvent;
-
-    /// A no-op input handler used to test overlay open/close lifecycle.
-    struct DummyOverlayHandler {
-        handler_name: &'static str,
-    }
-
-    impl InputHandler for DummyOverlayHandler {
-        fn handle_key(&self, _key: KeyEvent) -> InputResult {
-            InputResult::Bubble
-        }
-        fn footer_commands(&self) -> Vec<FooterCommand> {
-            vec![]
-        }
-        fn name(&self) -> &str {
-            self.handler_name
-        }
-    }
-
-    fn help_overlay() -> ActiveOverlay {
-        ActiveOverlay::Help
-    }
-
     #[test]
-    fn open_overlay_sets_state_and_pushes_handler() {
+    fn open_overlay_sets_state() {
         let mut model = Model::initial();
-        let baseline_stack_len = model.input_stack.len();
         assert!(model.active_overlay.is_none());
 
-        model.open_overlay(
-            help_overlay(),
-            Box::new(DummyOverlayHandler {
-                handler_name: "help",
-            }),
-        );
+        model.open_overlay(ActiveOverlay::Help);
 
         assert!(matches!(model.active_overlay, Some(ActiveOverlay::Help)));
-        assert_eq!(model.input_stack.len(), baseline_stack_len + 1);
     }
 
     #[test]
-    fn close_overlay_clears_state_and_pops_handler() {
+    fn close_overlay_clears_state() {
         let mut model = Model::initial();
-        let baseline_stack_len = model.input_stack.len();
 
-        model.open_overlay(
-            help_overlay(),
-            Box::new(DummyOverlayHandler {
-                handler_name: "help",
-            }),
-        );
+        model.open_overlay(ActiveOverlay::Help);
         model.close_overlay();
 
         assert!(model.active_overlay.is_none());
-        assert_eq!(model.input_stack.len(), baseline_stack_len);
     }
 
     #[test]
-    fn open_then_close_round_trip_returns_to_baseline() {
+    fn open_then_close_round_trip() {
         let mut model = Model::initial();
-        let baseline_stack_len = model.input_stack.len();
-        let baseline_overlay_is_none = model.active_overlay.is_none();
 
-        model.open_overlay(
-            help_overlay(),
-            Box::new(DummyOverlayHandler {
-                handler_name: "help",
-            }),
-        );
+        model.open_overlay(ActiveOverlay::Help);
         model.close_overlay();
 
-        assert_eq!(model.active_overlay.is_none(), baseline_overlay_is_none);
-        assert_eq!(model.input_stack.len(), baseline_stack_len);
+        assert!(model.active_overlay.is_none());
     }
 
     #[test]
     fn close_overlay_when_empty_is_noop() {
         let mut model = Model::initial();
-        let baseline_stack_len = model.input_stack.len();
         assert!(model.active_overlay.is_none());
 
         model.close_overlay();
 
-        // Neither field should have been mutated.
         assert!(model.active_overlay.is_none());
-        assert_eq!(model.input_stack.len(), baseline_stack_len);
     }
 
     #[test]
-    fn open_overlay_over_existing_overlay_pushes_on_top() {
+    fn open_overlay_replaces_existing() {
         let mut model = Model::initial();
-        let baseline_stack_len = model.input_stack.len();
 
-        // Open the first overlay (e.g. Settings).
-        model.open_overlay(
-            ActiveOverlay::Settings {
-                level: SettingsLevel::TopLevel,
-                top_cursor: 0,
-                active_column: 0,
-                column_cursors: [0, 0, 0],
-                light_themes: vec![],
-                dark_themes: vec![],
-                custom_themes: vec![],
-            },
-            Box::new(DummyOverlayHandler {
-                handler_name: "settings",
-            }),
-        );
-        assert_eq!(model.input_stack.len(), baseline_stack_len + 1);
+        model.open_overlay(ActiveOverlay::Settings {
+            level: SettingsLevel::TopLevel,
+            top_cursor: 0,
+            active_column: 0,
+            column_cursors: [0, 0, 0],
+            light_themes: vec![],
+            dark_themes: vec![],
+            custom_themes: vec![],
+        });
         assert!(matches!(
             model.active_overlay,
             Some(ActiveOverlay::Settings { .. })
         ));
 
-        // Open a nested overlay on top (e.g. Help). The new state replaces
-        // active_overlay; the new handler is pushed on top of the stack.
-        model.open_overlay(
-            help_overlay(),
-            Box::new(DummyOverlayHandler {
-                handler_name: "help",
-            }),
-        );
+        model.open_overlay(ActiveOverlay::Help);
         assert!(matches!(model.active_overlay, Some(ActiveOverlay::Help)));
-        assert_eq!(model.input_stack.len(), baseline_stack_len + 2);
 
-        // Closing the nested overlay pops one handler and clears the state.
-        // (Restoring the outer overlay's state is the caller's responsibility,
-        // matching today's manual sequencing.)
         model.close_overlay();
         assert!(model.active_overlay.is_none());
-        assert_eq!(model.input_stack.len(), baseline_stack_len + 1);
     }
 }

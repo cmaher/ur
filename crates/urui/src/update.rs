@@ -3,8 +3,6 @@ use std::time::Instant;
 use super::cmd::{Cmd, FetchCmd};
 use super::components::banner::dispatch_banner_key;
 use super::model::ActiveOverlay;
-#[cfg(debug_assertions)]
-use super::model::expected_handler_name_for_overlay;
 use super::model::{
     BannerModel, FlowListData, LoadState, Model, StatusModel, TicketActivitiesData,
     TicketDetailData, TicketDetailModel, TicketListData, TicketTableModel, WorkerListData,
@@ -21,16 +19,6 @@ use super::navigation::TabId;
 /// This function must remain pure — no I/O, no async, no side effects. All
 /// effects are expressed as `Cmd` values.
 pub fn update(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
-    let (model, cmds) = update_inner(model, msg);
-    #[cfg(debug_assertions)]
-    let model = debug_assert_overlay_invariant(model);
-    (model, cmds)
-}
-
-/// Inner update function: dispatches a message to its handler. The public
-/// `update` wrapper invokes this and then runs the debug-only overlay
-/// invariant check.
-fn update_inner(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
     match msg {
         Msg::Quit => {
             let mut model = model;
@@ -56,39 +44,6 @@ fn update_inner(model: Model, msg: Msg) -> (Model, Vec<Cmd>) {
     }
 }
 
-/// Debug-only invariant: when an overlay is active, the topmost handler on the
-/// input stack must be the handler that corresponds to the active overlay
-/// variant. This catches drift between `Model::active_overlay` and
-/// `Model::input_stack` the moment it happens, rather than as a mysterious
-/// downstream symptom.
-///
-/// Compiled out entirely in release builds — call sites are also gated by
-/// `#[cfg(debug_assertions)]` so there is zero runtime cost in release.
-#[cfg(debug_assertions)]
-fn debug_assert_overlay_invariant(mut model: Model) -> Model {
-    if let Some(overlay) = model.active_overlay.as_ref() {
-        let expected = expected_handler_name_for_overlay(overlay);
-        let overlay_label = format!("{overlay:?}");
-        let actual = model.top_input_handler_name();
-        match actual.as_deref() {
-            Some(actual_name) if actual_name == expected => {}
-            Some(actual_name) => {
-                panic!(
-                    "overlay/input_stack invariant violated: active_overlay = {overlay_label} \
-                     expects top input handler `{expected}`, but found `{actual_name}`"
-                );
-            }
-            None => {
-                panic!(
-                    "overlay/input_stack invariant violated: active_overlay = {overlay_label} \
-                     expects top input handler `{expected}`, but the input stack is empty"
-                );
-            }
-        }
-    }
-    model
-}
-
 /// Handle a key press event through the priority dispatch chain:
 ///
 /// 1. **Overlay** — if an overlay is active, its component `handle_key` captures
@@ -105,10 +60,10 @@ fn handle_key(model: Model, key: crossterm::event::KeyEvent) -> (Model, Vec<Cmd>
     }
 
     // 2. Banner gets next crack at keys.
-    if model.banner.is_some() {
-        if let Some(msg) = dispatch_banner_key(key) {
-            return update(model, msg);
-        }
+    if model.banner.is_some()
+        && let Some(msg) = dispatch_banner_key(key)
+    {
+        return update(model, msg);
     }
 
     // 3. Input stack (GlobalHandler, MarkdownScrollHandler, etc.).
@@ -2336,22 +2291,5 @@ mod tests {
         // Error result should be silently ignored.
         assert!(new_model.banner.is_none());
         assert!(cmds.is_empty());
-    }
-
-    /// Deliberately violate the overlay/input_stack invariant: set
-    /// `active_overlay` to `Help` without pushing the help handler. The
-    /// debug-only assertion in `update()` must fire and panic.
-    ///
-    /// This test only runs in debug builds, where `debug_assertions` is on.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "overlay/input_stack invariant violated")]
-    fn debug_invariant_fires_when_overlay_set_without_handler() {
-        let mut model = Model::initial();
-        // Mutate active_overlay directly, bypassing `open_overlay`. The top
-        // handler is still the GlobalHandler ("global"), not "help_overlay".
-        model.active_overlay = Some(crate::model::ActiveOverlay::Help);
-        // Send any benign message; update() must run the post-check and panic.
-        let _ = update(model, Msg::Tick);
     }
 }

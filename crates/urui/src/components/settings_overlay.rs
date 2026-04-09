@@ -9,7 +9,7 @@ use crate::context::TuiContext;
 use crate::theme;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model, SettingsLevel};
 use crate::msg::{Msg, OverlayMsg, SettingsDirection};
 
@@ -93,23 +93,6 @@ pub fn footer_commands() -> Vec<FooterCommand> {
             common: false,
         },
     ]
-}
-
-/// Modal input handler for the settings overlay (InputHandler adapter).
-pub struct SettingsOverlayHandler;
-
-impl InputHandler for SettingsOverlayHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        InputResult::Capture(handle_key(key))
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        footer_commands()
-    }
-
-    fn name(&self) -> &str {
-        "settings_overlay"
-    }
 }
 
 /// Render the settings overlay from the model state.

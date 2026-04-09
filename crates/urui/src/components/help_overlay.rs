@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 use crate::context::TuiContext;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
@@ -35,23 +35,6 @@ pub fn footer_commands() -> Vec<FooterCommand> {
         description: "Close".to_string(),
         common: true,
     }]
-}
-
-/// Modal input handler for the help overlay (InputHandler adapter).
-pub struct HelpOverlayHandler;
-
-impl InputHandler for HelpOverlayHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        InputResult::Capture(handle_key(key))
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        footer_commands()
-    }
-
-    fn name(&self) -> &str {
-        "help_overlay"
-    }
 }
 
 /// The help content lines displayed in the overlay.

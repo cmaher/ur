@@ -8,7 +8,7 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, Model};
 use crate::msg::{CreateAction, Msg, OverlayMsg};
 
@@ -66,23 +66,6 @@ pub fn footer_commands() -> Vec<FooterCommand> {
             common: false,
         },
     ]
-}
-
-/// Modal input handler for the create action menu overlay (InputHandler adapter).
-pub struct CreateActionMenuHandler;
-
-impl InputHandler for CreateActionMenuHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        InputResult::Capture(handle_key(key))
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        footer_commands()
-    }
-
-    fn name(&self) -> &str {
-        "create_action_menu"
-    }
 }
 
 /// Render the create action menu overlay from the model state.

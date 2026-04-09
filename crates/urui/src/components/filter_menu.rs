@@ -8,7 +8,7 @@ use ratatui::widgets::Widget;
 use crate::context::TuiContext;
 
 use super::overlay::render_overlay;
-use crate::input::{FooterCommand, InputHandler, InputResult};
+use crate::input::FooterCommand;
 use crate::model::{ActiveOverlay, FilterCategory, Model, TicketFilters};
 use crate::msg::{Msg, OverlayMsg};
 
@@ -63,23 +63,6 @@ pub fn footer_commands() -> Vec<FooterCommand> {
             common: false,
         },
     ]
-}
-
-/// Modal input handler for the filter menu overlay (InputHandler adapter).
-pub struct FilterMenuHandler;
-
-impl InputHandler for FilterMenuHandler {
-    fn handle_key(&self, key: KeyEvent) -> InputResult {
-        InputResult::Capture(handle_key(key))
-    }
-
-    fn footer_commands(&self) -> Vec<FooterCommand> {
-        footer_commands()
-    }
-
-    fn name(&self) -> &str {
-        "filter_menu"
-    }
 }
 
 /// Render the filter menu overlay from the model state.
