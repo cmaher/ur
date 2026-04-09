@@ -277,8 +277,7 @@ impl TicketRepo {
         let project_changed = project != existing.project;
         let new_id = if project_changed {
             let hash = extract_hash(id);
-            let candidate = self.rekey_ticket_id(id, project, &hash).await?;
-            candidate
+            self.rekey_ticket_id(id, project, &hash).await?
         } else {
             id.to_owned()
         };
@@ -1305,7 +1304,7 @@ fn random_base36_char() -> char {
 
 /// Extract the hash portion from a ticket ID (everything after the first `-`).
 fn extract_hash(id: &str) -> String {
-    id.splitn(2, '-').nth(1).unwrap_or(id).to_owned()
+    id.split_once('-').map(|x| x.1).unwrap_or(id).to_owned()
 }
 
 fn is_unique_violation(err: &dyn sqlx::error::DatabaseError) -> bool {
