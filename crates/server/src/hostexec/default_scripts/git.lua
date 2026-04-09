@@ -94,6 +94,40 @@ function transform(command, args, working_dir, worker_context)
         end
     end
 
+    -- Restrict push refspecs to the worker's own branch
+    if sub_i <= #args and args[sub_i] == "push" then
+        if worker_context ~= nil and worker_context.branch ~= "" then
+            local allowed_branch = worker_context.branch
+            -- Find refspec: positional args after "push" are remote and refspec
+            -- Skip flags (args starting with -)
+            local push_positionals = {}
+            local pi = sub_i + 1
+            while pi <= #args do
+                if args[pi]:sub(1, 1) ~= "-" then
+                    push_positionals[#push_positionals + 1] = args[pi]
+                end
+                pi = pi + 1
+            end
+            -- push_positionals[1] = remote (if any), push_positionals[2] = refspec (if any)
+            local refspec = push_positionals[2]
+            if refspec ~= nil and refspec ~= "HEAD" then
+                -- Split on colon to check destination
+                local colon_pos = refspec:find(":")
+                if colon_pos then
+                    local dst = refspec:sub(colon_pos + 1)
+                    if dst ~= allowed_branch then
+                        error("blocked push: destination branch '" .. dst .. "' does not match worker branch '" .. allowed_branch .. "'")
+                    end
+                else
+                    -- No colon: the whole refspec is the branch name
+                    if refspec ~= allowed_branch then
+                        error("blocked push: branch '" .. refspec .. "' does not match worker branch '" .. allowed_branch .. "'")
+                    end
+                end
+            end
+        end
+    end
+
     -- Prepend ticket ID to commit messages when worker_context has a process_id
     if worker_context ~= nil and worker_context.process_id ~= "" then
         local ticket_id = worker_context.process_id
