@@ -1179,6 +1179,7 @@ mod tests {
             ci_status: String::new(),
             mergeable: String::new(),
             review_status: String::new(),
+            node_id: String::new(),
             created_at: "2025-01-01T00:00:00Z".into(),
         }
     }
@@ -1224,7 +1225,7 @@ mod tests {
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool);
+        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
             crate::hostexec::HostExecConfigManager::empty(),

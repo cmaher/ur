@@ -15,7 +15,7 @@ fn ticket_repo(db: &TestDb) -> TicketRepo {
 
 /// Build a WorkflowRepo from a TestDb.
 fn wf_repo(db: &TestDb) -> WorkflowRepo {
-    WorkflowRepo::new(db.db().pool().clone())
+    WorkflowRepo::new(db.db().pool().clone(), "test-node".to_string())
 }
 
 // ============================================================

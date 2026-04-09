@@ -377,6 +377,7 @@ impl WorkerManager {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
+            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -528,6 +529,7 @@ impl WorkerManager {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
+            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -790,6 +792,7 @@ mod tests {
 
     fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
+            node_id: "test-node".to_string(),
             config_dir: workspace_path.to_path_buf(),
             logs_dir: workspace_path.join("logs"),
             workspace: workspace_path.to_path_buf(),
@@ -813,6 +816,7 @@ mod tests {
                 user: ur_config::DEFAULT_DB_USER.to_string(),
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
+                bind_address: None,
                 backup: ur_config::BackupConfig {
                     path: None,
                     interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -839,7 +843,7 @@ mod tests {
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.db().pool().clone());
+        let repo = WorkerRepo::new(test_db.db().pool().clone(), "test-node".to_string());
         (repo, test_db)
     }
 

@@ -285,6 +285,7 @@ pub struct Workflow {
     pub ci_status: String,
     pub mergeable: String,
     pub review_status: String,
+    pub node_id: String,
     pub created_at: String,
 }
 
@@ -342,6 +343,7 @@ pub struct Slot {
     pub project_key: String,
     pub slot_name: String,
     pub host_path: String,
+    pub node_id: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -356,6 +358,7 @@ pub struct Worker {
     pub container_status: String,
     pub agent_status: String,
     pub workspace_path: Option<String>,
+    pub node_id: String,
     pub created_at: String,
     pub updated_at: String,
     pub idle_redispatch_count: i32,

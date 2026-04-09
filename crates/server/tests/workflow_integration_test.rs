@@ -220,8 +220,8 @@ async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
     let pool = test_db.db().pool().clone();
     let graph = GraphManager::new(pool.clone());
     let ticket_repo = TicketRepo::new(pool.clone(), graph);
-    let workflow_repo = WorkflowRepo::new(pool.clone());
-    let worker_repo = WorkerRepo::new(pool);
+    let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
+    let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
     (test_db, ticket_repo, workflow_repo, worker_repo)
 }
 
@@ -267,6 +267,7 @@ fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
 
 fn dummy_config() -> Arc<ur_config::Config> {
     Arc::new(ur_config::Config {
+        node_id: "test-node".to_string(),
         config_dir: std::path::PathBuf::from("/tmp/test"),
         logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
         workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -291,6 +292,7 @@ fn dummy_config() -> Arc<ur_config::Config> {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -389,6 +391,7 @@ async fn seed_ticket_and_worker(
         container_status: "running".to_string(),
         agent_status: "starting".to_string(),
         workspace_path: Some("/tmp/test/workspace".to_string()),
+        node_id: "test-node".to_string(),
         created_at: now.clone(),
         updated_at: now,
         idle_redispatch_count: 0,

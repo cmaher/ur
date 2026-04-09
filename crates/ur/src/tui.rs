@@ -546,7 +546,8 @@ mod tests {
 
     fn setup_config(toml_content: &str) -> (TempDir, ur_config::Config) {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), toml_content).unwrap();
+        let full = format!("node_id = \"n\"\n{toml_content}");
+        std::fs::write(tmp.path().join("ur.toml"), full).unwrap();
         let config = ur_config::Config::load_from(tmp.path()).unwrap();
         (tmp, config)
     }

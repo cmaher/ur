@@ -291,6 +291,7 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
+    node_id: Option<String>,
     workspace: Option<PathBuf>,
     server_port: Option<u16>,
     worker_port: Option<u16>,
@@ -418,6 +419,8 @@ struct RawDatabaseConfig {
     user: Option<String>,
     password: Option<String>,
     name: Option<String>,
+    /// Network interface to bind the postgres container port on (e.g. Tailscale IP).
+    bind_address: Option<String>,
     backup: Option<RawBackupConfig>,
 }
 
@@ -832,6 +835,9 @@ pub struct DatabaseConfig {
     pub password: String,
     /// Database name (default: "ur").
     pub name: String,
+    /// Network interface to bind the postgres container port on (e.g. a Tailscale IP).
+    /// When set, the postgres service exposes `<bind_address>:<port>:<port>`.
+    pub bind_address: Option<String>,
     /// Periodic backup settings for the database.
     pub backup: BackupConfig,
 }
@@ -963,6 +969,8 @@ pub struct ProjectConfig {
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// Unique identifier for this ur installation, scoping workers/slots/workflows.
+    pub node_id: String,
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
     /// Worker workspace directory.
@@ -1034,6 +1042,12 @@ impl Config {
             Err(e) => return Err(e.into()),
         };
 
+        let node_id = raw.node_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "node_id is required in ur.toml — run 'ur init --node <name>' to set it"
+            )
+        })?;
+
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
@@ -1070,6 +1084,7 @@ impl Config {
         };
 
         Ok(Config {
+            node_id,
             config_dir: config_dir.to_path_buf(),
             workspace,
             server_port,
@@ -1385,6 +1400,7 @@ fn resolve_database(
             .password
             .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string()),
         name: raw.name.unwrap_or_else(|| DEFAULT_DB_NAME.to_string()),
+        bind_address: raw.bind_address,
         backup,
     }
 }
@@ -1565,10 +1581,23 @@ mod tests {
     }
 
     #[test]
-    fn defaults_when_empty_file() {
+    fn errors_when_node_id_missing() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_id is required"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn defaults_when_only_node_id() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"mybox\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.node_id, "mybox");
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
         assert_eq!(cfg.server_port, DEFAULT_SERVER_PORT);
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
@@ -1579,7 +1608,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "workspace = \"/custom/workspace\"\n",
+            "node_id = \"n\"\nworkspace = \"/custom/workspace\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -1596,7 +1625,11 @@ mod tests {
     #[test]
     fn reads_server_port_from_toml() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 9000\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.server_port, 9000);
     }
@@ -1616,7 +1649,7 @@ mod tests {
     #[test]
     fn proxy_section_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[proxy]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[proxy]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, default_proxy_allowlist());
@@ -1627,7 +1660,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[proxy]\nhostname = \"my-proxy\"\nallowlist = [\"example.com\", \"other.com\"]\n",
+            "node_id = \"n\"\n[proxy]\nhostname = \"my-proxy\"\nallowlist = [\"example.com\", \"other.com\"]\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -1639,7 +1672,11 @@ mod tests {
     #[test]
     fn proxy_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 5000\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
         assert_eq!(cfg.proxy.allowlist, default_proxy_allowlist());
@@ -1648,7 +1685,7 @@ mod tests {
     #[test]
     fn squid_dir_returns_correct_path() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.squid_dir(), tmp.path().join("squid"));
     }
@@ -1656,7 +1693,11 @@ mod tests {
     #[test]
     fn network_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 5000\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 5000\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
@@ -1667,7 +1708,7 @@ mod tests {
     #[test]
     fn network_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[network]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[network]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.network.name, DEFAULT_NETWORK_NAME);
         assert_eq!(cfg.network.worker_name, DEFAULT_WORKER_NETWORK_NAME);
@@ -1680,7 +1721,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\nworker_prefix = \"test-worker-\"\n",
+            "node_id = \"n\"\n[network]\nname = \"custom-net\"\nworker_name = \"custom-workers\"\nserver_hostname = \"my-server\"\nworker_prefix = \"test-worker-\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -1693,7 +1734,7 @@ mod tests {
     #[test]
     fn no_projects_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(cfg.projects.is_empty());
     }
@@ -1704,6 +1745,7 @@ mod tests {
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -1727,6 +1769,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.swa]
 repo = "git@github.com:cmaher/swa.git"
 name = "Swa App"
@@ -1750,6 +1793,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -1776,6 +1820,7 @@ image = "ur-worker-rust"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 hostexec = ["jq", "rg", "cargo"]
@@ -1795,6 +1840,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -1813,6 +1859,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.bad]
 name = "Missing Repo"
 "#,
@@ -1827,6 +1874,7 @@ name = "Missing Repo"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -1844,6 +1892,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%PROJECT%/.git-hooks"
@@ -1865,6 +1914,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%BADVAR%/hooks"
@@ -1885,6 +1935,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "/opt/hooks/ur"
@@ -1906,6 +1957,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 git_hooks_dir = "%URCONFIG%/hooks/ur"
@@ -1927,6 +1979,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -1944,6 +1997,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 claude_md = "%PROJECT%/CLAUDE.md"
@@ -1965,6 +2019,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 claude_md = "%BADVAR%/CLAUDE.md"
@@ -1985,6 +2040,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 claude_md = "/opt/claude/ur/CLAUDE.md"
@@ -2006,6 +2062,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
@@ -2027,6 +2084,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2044,6 +2102,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2078,6 +2137,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data", "/opt/tools:/workspace/.tools"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2098,6 +2158,7 @@ mounts = ["/opt/tools"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2118,6 +2179,7 @@ mounts = ["%PROJECT%/.cache:/workspace/.cache"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2138,6 +2200,7 @@ mounts = ["/opt/tools:relative/path"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2172,6 +2235,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data:ro", "/opt/tools:/workspace/.tools"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2193,6 +2257,7 @@ mounts = ["/opt/tools:/workspace/.tools:rw"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2214,6 +2279,7 @@ mounts = ["/opt/tools:/workspace/.tools:foo"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2231,7 +2297,7 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
     #[test]
     fn hostexec_defaults_to_empty_when_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(cfg.hostexec.commands.is_empty());
     }
@@ -2242,6 +2308,7 @@ mounts = ["%INVALID%/bad:/workspace/bad"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 cargo = {}
 "#,
@@ -2260,6 +2327,7 @@ cargo = {}
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 git = { lua = "my-git.lua" }
 "#,
@@ -2277,6 +2345,7 @@ git = { lua = "my-git.lua" }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 git = { default_script = true }
 "#,
@@ -2294,6 +2363,7 @@ git = { default_script = true }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 cargo = {}
 jq = {}
@@ -2311,7 +2381,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn backup_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.backup.path, None);
         assert_eq!(
@@ -2325,7 +2395,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn backup_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[backup]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[backup]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.backup.path, None);
         assert_eq!(
@@ -2341,7 +2411,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\ninterval_minutes = 60\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2357,7 +2427,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2374,7 +2444,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn worker_port_defaults_to_server_port_plus_one() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, DEFAULT_SERVER_PORT + 1);
     }
@@ -2382,7 +2452,11 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn worker_port_follows_custom_server_port() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nserver_port = 9000\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.worker_port, 9001);
     }
@@ -2392,7 +2466,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "server_port = 9000\nworker_port = 8000\n",
+            "node_id = \"n\"\nserver_port = 9000\nworker_port = 8000\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2404,7 +2478,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\nenabled = false\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nenabled = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2416,7 +2490,7 @@ rg = { lua = "rg-safe.lua" }
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
+            "node_id = \"n\"\n[backup]\npath = \"/backups/ur\"\nretain_count = 7\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2426,7 +2500,7 @@ rg = { lua = "rg-safe.lua" }
     #[test]
     fn db_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.db.host, DEFAULT_DB_HOST);
         assert_eq!(cfg.db.port, DEFAULT_DB_PORT);
@@ -2441,6 +2515,7 @@ rg = { lua = "rg-safe.lua" }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [db]
 host = "my-postgres"
 port = 5433
@@ -2456,6 +2531,24 @@ name = "mydb"
         assert_eq!(cfg.db.user, "myuser");
         assert_eq!(cfg.db.password, "mypass");
         assert_eq!(cfg.db.name, "mydb");
+        assert_eq!(cfg.db.bind_address, None);
+    }
+
+    #[test]
+    fn db_bind_address_parsed_from_toml() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[db]
+bind_address = "100.64.1.5"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.db.bind_address, Some("100.64.1.5".to_string()));
+        assert_eq!(cfg.db.host, DEFAULT_DB_HOST);
     }
 
     #[test]
@@ -2464,6 +2557,7 @@ name = "mydb"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [db.backup]
 path = "/backups/ur"
 interval_minutes = 45
@@ -2486,6 +2580,7 @@ retain_count = 5
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [backup]
 path = "/old/path"
 retain_count = 2
@@ -2512,6 +2607,7 @@ retain_count = 10
             user: "admin".to_string(),
             password: "secret".to_string(),
             name: "testdb".to_string(),
+            bind_address: None,
             backup: BackupConfig {
                 path: None,
                 interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -2533,6 +2629,7 @@ retain_count = 10
             user: DEFAULT_DB_USER.to_string(),
             password: DEFAULT_DB_PASSWORD.to_string(),
             name: DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: BackupConfig {
                 path: None,
                 interval_minutes: DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -2549,6 +2646,7 @@ retain_count = 10
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 cargo = {}
 "#,
@@ -2566,6 +2664,7 @@ cargo = {}
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 daemon = { long_lived = true }
 "#,
@@ -2583,6 +2682,7 @@ daemon = { long_lived = true }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 daemon = { long_lived = true, bidi = true }
 "#,
@@ -2600,6 +2700,7 @@ daemon = { long_lived = true, bidi = true }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 bad = { bidi = true }
 "#,
@@ -2619,6 +2720,7 @@ bad = { bidi = true }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
 [projects.myproj.container]
@@ -2639,6 +2741,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
 workflow_hooks_dir = "%PROJECT%/.workflow"
@@ -2665,6 +2768,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
 workflow_hooks_dir = "relative/path"
@@ -2687,6 +2791,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [hostexec.commands]
 tool = { long_lived = false, bidi = false }
 "#,
@@ -2704,6 +2809,7 @@ tool = { long_lived = false, bidi = false }
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2721,6 +2827,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2738,6 +2845,7 @@ image = "ur-worker-rust"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2758,6 +2866,7 @@ image = "myregistry/custom-image:v1.2.3"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2778,6 +2887,7 @@ image = "unknown"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 "#,
@@ -2793,6 +2903,7 @@ repo = "git@github.com:cmaher/ur.git"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 mounts = ["/opt/tools:/workspace/.tools"]
@@ -2815,6 +2926,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2832,6 +2944,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2864,6 +2977,7 @@ ports = ["8080:80", "3000:3000"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2884,6 +2998,7 @@ ports = ["8080"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2904,6 +3019,7 @@ ports = ["notaport:80"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -2924,7 +3040,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2950,7 +3066,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2976,7 +3092,7 @@ ports = ["8080:notaport"]
         // Set container_command explicitly to avoid env var race conditions
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"docker\"\nstale_worker_ttl_days = 14\npoll_interval_ms = 1000\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"docker\"\nstale_worker_ttl_days = 14\npoll_interval_ms = 1000\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2999,6 +3115,7 @@ ports = ["8080:notaport"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [server]
 container_command = "nerdctl"
 stale_worker_ttl_days = 30
@@ -3022,7 +3139,7 @@ github_scan_interval_secs = 60
         let tmp = TempDir::new().unwrap();
         // SAFETY: serialized by ENV_MUTEX; no other test mutates this var concurrently.
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONTAINER_ENV) };
@@ -3037,7 +3154,7 @@ github_scan_interval_secs = 60
         unsafe { std::env::set_var(UR_CONTAINER_ENV, "nerdctl") };
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[server]\ncontainer_command = \"podman\"\n",
+            "node_id = \"n\"\n[server]\ncontainer_command = \"podman\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3049,7 +3166,7 @@ github_scan_interval_secs = 60
     #[test]
     fn tui_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
         assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
@@ -3060,7 +3177,7 @@ github_scan_interval_secs = 60
     #[test]
     fn tui_defaults_when_present_but_empty() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "[tui]\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n[tui]\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.tui.theme_name, DEFAULT_TUI_THEME);
         assert_eq!(cfg.tui.keymap_name, DEFAULT_TUI_KEYMAP);
@@ -3073,7 +3190,7 @@ github_scan_interval_secs = 60
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui]\ntheme = \"solarized\"\nkeymap = \"vim\"\n",
+            "node_id = \"n\"\n[tui]\ntheme = \"solarized\"\nkeymap = \"vim\"\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3087,6 +3204,7 @@ github_scan_interval_secs = 60
         std::fs::write(
             tmp.path().join("ur.toml"),
             r##"
+node_id = "n"
 [tui.themes.tokyo]
 bg = "#1a1b26"
 fg = "#c0caf5"
@@ -3115,6 +3233,7 @@ error_fg = "#f7768e"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [tui.keymaps.vim]
 quit = ["q", "ctrl-c"]
 scroll_up = ["k"]
@@ -3137,6 +3256,7 @@ scroll_down = ["j"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r##"
+node_id = "n"
 [tui]
 theme = "light"
 keymap = "emacs"
@@ -3171,7 +3291,7 @@ quit = ["q"]
     #[test]
     fn notification_defaults_when_section_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert!(cfg.tui.notifications.flow_stalled);
         assert!(cfg.tui.notifications.flow_in_review);
@@ -3182,7 +3302,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = true\nflow_in_review = true\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = true\nflow_in_review = true\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3195,7 +3315,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = false\nflow_in_review = false\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = false\nflow_in_review = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3208,7 +3328,7 @@ quit = ["q"]
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
-            "[tui.notifications]\nflow_stalled = false\n",
+            "node_id = \"n\"\n[tui.notifications]\nflow_stalled = false\n",
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -3219,7 +3339,7 @@ quit = ["q"]
     #[test]
     fn logs_dir_defaults_to_config_dir_logs() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, tmp.path().join("logs"));
     }
@@ -3227,7 +3347,11 @@ quit = ["q"]
     #[test]
     fn logs_dir_absolute_path_used_as_is() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"/var/log/ur\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nlogs_dir = \"/var/log/ur\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, PathBuf::from("/var/log/ur"));
     }
@@ -3235,7 +3359,11 @@ quit = ["q"]
     #[test]
     fn logs_dir_relative_path_joined_to_config_dir() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "logs_dir = \"custom/logs\"\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nlogs_dir = \"custom/logs\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(cfg.logs_dir, tmp.path().join("custom/logs"));
     }
@@ -3421,6 +3549,7 @@ quit = ["q"]
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -3438,6 +3567,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -3458,6 +3588,7 @@ theme = "dracula"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 ignored_workflow_checks = ["bench"]
@@ -3476,6 +3607,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -3493,6 +3625,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -3527,6 +3660,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.container]
@@ -3548,6 +3682,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
 [projects.ur.tui]
@@ -3569,6 +3704,7 @@ image = "ur-worker"
         std::fs::write(
             tmp.path().join("ur.toml"),
             r#"
+node_id = "n"
 [tui]
 theme = "synthwave"
 

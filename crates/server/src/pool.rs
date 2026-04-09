@@ -174,6 +174,7 @@ impl RepoPoolManager {
             project_key: project_key.to_owned(),
             slot_name: slot_name.clone(),
             host_path: host_path.display().to_string(),
+            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -617,7 +618,7 @@ mod tests {
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.db().pool().clone());
+        let repo = WorkerRepo::new(test_db.db().pool().clone(), "test-node".to_string());
         (repo, test_db)
     }
 
@@ -689,6 +690,7 @@ mod tests {
             project_key: project_key.to_owned(),
             slot_name: slot_name.to_owned(),
             host_path: host_path.display().to_string(),
+            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -717,6 +719,7 @@ mod tests {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: Some(host_path.display().to_string()),
+            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -839,6 +842,7 @@ mod tests {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: None,
+            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,

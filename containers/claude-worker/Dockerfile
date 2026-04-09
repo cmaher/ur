@@ -35,11 +35,11 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.
 
-# Update Claude Code to latest when force-rebuilding.
+# Best-effort Claude Code update when force-rebuilding.
 # Pass --build-arg CACHEBUST=<timestamp> to bust the cache on this layer.
 ARG CACHEBUST=0
 USER worker
-RUN claude update
+RUN claude update || true
 WORKDIR /workspace
 
 HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \

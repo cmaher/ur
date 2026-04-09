@@ -160,7 +160,7 @@ async fn init_and_serve(
 ) -> anyhow::Result<()> {
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = WorkflowRepo::new(db.pool().clone());
+    let workflow_repo = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
     let fallback_interval =
@@ -191,6 +191,7 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
+        node_id: cfg.node_id.clone(),
     };
 
     serve_grpc_servers(
@@ -414,7 +415,7 @@ async fn init_managers(
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
-    let worker_repo = WorkerRepo::new(db.pool().clone());
+    let worker_repo = WorkerRepo::new(db.pool().clone(), cfg.node_id.clone());
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 

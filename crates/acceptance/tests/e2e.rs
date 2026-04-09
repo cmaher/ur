@@ -271,7 +271,8 @@ fn write_test_config(
     }
 
     let toml_content = format!(
-        "server_port = {server_port}\n\
+        "node_id = \"test\"\n\
+         server_port = {server_port}\n\
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
          \n\

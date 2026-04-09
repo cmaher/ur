@@ -21,7 +21,7 @@ async fn set_worker_updated_at(pool: &PgPool, worker_id: &str, updated_at: &str)
 }
 
 fn repo(db: &TestDb) -> WorkerRepo {
-    WorkerRepo::new(db.db().pool().clone())
+    WorkerRepo::new(db.db().pool().clone(), "test-node".to_string())
 }
 
 fn test_slot(id: &str, project_key: &str) -> Slot {
@@ -30,6 +30,7 @@ fn test_slot(id: &str, project_key: &str) -> Slot {
         project_key: project_key.to_owned(),
         slot_name: format!("slot-{id}"),
         host_path: format!("/tmp/{id}"),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     }
@@ -46,6 +47,7 @@ fn test_worker(worker_id: &str, project_key: &str) -> Worker {
         container_status: "provisioning".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(format!("/workspace/{worker_id}")),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         idle_redispatch_count: 0,
@@ -425,7 +427,7 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         id: "stale-slot".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-
+        node_id: String::new(),
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -443,6 +445,7 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         container_status: "stopped".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: None,
+        node_id: String::new(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         idle_redispatch_count: 0,
@@ -516,7 +519,7 @@ async fn reconcile_slots_mixed_stale_and_orphaned() {
         id: "slot-0".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-
+        node_id: String::new(),
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -708,7 +711,7 @@ async fn reconcile_slots_cleans_stale_project_slots() {
         id: "orphan-proj-slot".to_owned(),
         project_key: "deleted-proj".to_owned(),
         slot_name: "0".to_owned(),
-
+        node_id: String::new(),
         host_path: "/tmp/deleted-proj/0".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),

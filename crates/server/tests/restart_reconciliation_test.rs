@@ -19,6 +19,7 @@ use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
     ur_config::Config {
+        node_id: "test-node".to_string(),
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -37,6 +38,7 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
             user: ur_config::DEFAULT_DB_USER.to_string(),
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
+            bind_address: None,
             backup: ur_config::BackupConfig {
                 path: None,
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -87,10 +89,10 @@ async fn make_components_with_db(
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = test_config(dir, &workspace);
-    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone());
+    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone(), "test-node".to_string());
     let graph_manager = ur_db::GraphManager::new(db.pool().clone());
     let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone());
+    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone(), "test-node".to_string());
     let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -134,6 +136,7 @@ async fn make_components_with_db(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
+        node_id: "test-node".to_string(),
     };
     (worker_manager, worker_repo, handler)
 }
@@ -204,6 +207,7 @@ async fn restart_reclaims_worker_with_live_container() {
         slot_name: "0".to_owned(),
 
         host_path: slot_path.display().to_string(),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -220,6 +224,7 @@ async fn restart_reclaims_worker_with_live_container() {
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_path.display().to_string()),
+        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
@@ -320,6 +325,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         slot_name: "0".to_owned(),
 
         host_path: slot_dir.display().to_string(),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -335,6 +341,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_dir.display().to_string()),
+        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
@@ -416,6 +423,7 @@ async fn insert_worker_with_slot(
         project_key: "proj-mix".to_owned(),
         slot_name: slot_name.to_owned(),
         host_path: host_path.to_owned(),
+        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
@@ -431,6 +439,7 @@ async fn insert_worker_with_slot(
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: None,
+        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,

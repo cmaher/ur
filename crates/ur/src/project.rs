@@ -280,7 +280,8 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_config(tmp: &TempDir, toml_content: &str) -> ur_config::Config {
-        std::fs::write(tmp.path().join("ur.toml"), toml_content).unwrap();
+        let full = format!("node_id = \"n\"\n{toml_content}");
+        std::fs::write(tmp.path().join("ur.toml"), full).unwrap();
         ur_config::Config::load_from(tmp.path()).unwrap()
     }
 
