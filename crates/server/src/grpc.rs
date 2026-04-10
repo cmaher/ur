@@ -22,7 +22,7 @@ use ur_rpc::proto::core::{
 
 use ur_db::WorkerRepo;
 
-use crate::{ProjectRegistry, RepoPoolManager, WorkerManager};
+use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -423,14 +423,29 @@ impl LaunchManager {
         Ok(container_id)
     }
 
-    /// Stop a running worker by process_id.
-    pub async fn stop(&self, process_id: &str) -> Result<(), Status> {
-        self.worker_manager
-            .stop(process_id)
-            .await
-            .map_err(|e| CoreError::StopFailed {
-                reason: e.to_string(),
-            })?;
+    /// Stop a running worker.
+    ///
+    /// The request may contain either a worker_id (from workerd self-stop)
+    /// or a process_id (from CLI `ur worker stop`). Try worker_id lookup
+    /// first, then fall back to process_id lookup.
+    pub async fn stop(&self, id: &str) -> Result<(), Status> {
+        let stop_result = match WorkerId::parse(id) {
+            Ok(worker_id) => {
+                let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
+                if res.is_err() {
+                    // worker_id parse can false-positive on process_ids like
+                    // "ping-test" (suffix happens to be 4 lowercase chars).
+                    // Fall back to process_id lookup.
+                    self.worker_manager.stop(id).await
+                } else {
+                    res
+                }
+            }
+            Err(_) => self.worker_manager.stop(id).await,
+        };
+        stop_result.map_err(|e| CoreError::StopFailed {
+            reason: e.to_string(),
+        })?;
         Ok(())
     }
 }
