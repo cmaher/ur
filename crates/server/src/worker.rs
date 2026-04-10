@@ -1306,4 +1306,40 @@ skills = ["only-one"]
         let result = resolve_claude_md(&None, "myproj", tmp.path());
         assert_eq!(result, None);
     }
+
+    #[tokio::test]
+    async fn stop_by_worker_id_unknown_returns_error() {
+        let (mgr, _workspace, _test_db) = test_manager().await;
+        let wid = WorkerId::parse("nonexistent-ab12").unwrap();
+        let result = mgr.stop_by_worker_id(&wid).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown worker"));
+    }
+
+    #[tokio::test]
+    async fn stop_by_worker_id_finds_registered_worker() {
+        let (mgr, _workspace, _test_db) = test_manager().await;
+        let wid = WorkerId("self-stop-ab12".into());
+        mgr.register_worker(
+            wid.clone(),
+            "self-stop".into(),
+            String::new(),
+            None,
+            WorkerStrategy::Code,
+            "fake-container-id".into(),
+            Uuid::new_v4().to_string(),
+        )
+        .await;
+
+        // stop_by_worker_id will find the worker in the DB but fail at the
+        // Docker stop step (no real container). The important thing is that
+        // the lookup by worker_id succeeded — it didn't return "unknown worker".
+        let result = mgr.stop_by_worker_id(&wid).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("unknown worker"),
+            "expected Docker error, not lookup failure: {err}"
+        );
+    }
 }

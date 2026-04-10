@@ -22,7 +22,7 @@ use ur_rpc::proto::core::{
 
 use ur_db::WorkerRepo;
 
-use crate::{ProjectRegistry, RepoPoolManager, WorkerManager};
+use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -453,12 +453,26 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_stop request received");
-        self.worker_manager
-            .stop(&req.worker_id)
-            .await
-            .map_err(|e| CoreError::StopFailed {
-                reason: e.to_string(),
-            })?;
+        // The request may contain either a worker_id (from workerd self-stop)
+        // or a process_id (from CLI `ur worker stop`). Try worker_id lookup
+        // first, then fall back to process_id lookup.
+        let stop_result = match WorkerId::parse(&req.worker_id) {
+            Ok(worker_id) => {
+                let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
+                if res.is_err() {
+                    // worker_id parse can false-positive on process_ids like
+                    // "ping-test" (suffix happens to be 4 lowercase chars).
+                    // Fall back to process_id lookup.
+                    self.worker_manager.stop(&req.worker_id).await
+                } else {
+                    res
+                }
+            }
+            Err(_) => self.worker_manager.stop(&req.worker_id).await,
+        };
+        stop_result.map_err(|e| CoreError::StopFailed {
+            reason: e.to_string(),
+        })?;
         Ok(Response::new(WorkerStopResponse {}))
     }
 
