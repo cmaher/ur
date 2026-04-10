@@ -22,7 +22,7 @@ use ur_rpc::proto::core::{
 
 use ur_db::WorkerRepo;
 
-use crate::{ProjectRegistry, RepoPoolManager, WorkerManager};
+use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -52,6 +52,9 @@ pub enum CoreError {
 
     #[error("send message failed: {reason}")]
     SendMessageFailed { reason: String },
+
+    #[error("invalid worker_id format: {reason}")]
+    InvalidWorkerId { reason: String },
 
     #[error("operation not implemented on worker server")]
     Unimplemented,
@@ -131,6 +134,13 @@ impl From<CoreError> for Status {
                     meta,
                 )
             }
+            CoreError::InvalidWorkerId { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
             CoreError::Unimplemented => Status::unimplemented(err.to_string()),
         }
     }
@@ -453,8 +463,10 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_stop request received");
+        let worker_id = WorkerId::parse(&req.worker_id)
+            .map_err(|e| CoreError::InvalidWorkerId { reason: e })?;
         self.worker_manager
-            .stop(&req.worker_id)
+            .stop_by_worker_id(&worker_id)
             .await
             .map_err(|e| CoreError::StopFailed {
                 reason: e.to_string(),
