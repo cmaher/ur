@@ -136,6 +136,14 @@ impl TicketServiceHandler {
             .remove("pr_url")
             .unwrap_or_default();
 
+        let ticket_title = self
+            .ticket_repo
+            .get_ticket_by_id(&wf.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .map(|t| t.title)
+            .unwrap_or_default();
+
         let events = self
             .workflow_repo
             .get_workflow_events(&wf.id)
@@ -162,6 +170,7 @@ impl TicketServiceHandler {
             history,
             children_open,
             children_closed,
+            ticket_title,
         ))
     }
 
@@ -177,6 +186,14 @@ impl TicketServiceHandler {
             .await
             .unwrap_or_default()
             .remove("pr_url")
+            .unwrap_or_default();
+
+        let ticket_title = self
+            .ticket_repo
+            .get_ticket_by_id(&pw.workflow.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .map(|t| t.title)
             .unwrap_or_default();
 
         let events = self
@@ -199,6 +216,7 @@ impl TicketServiceHandler {
             history,
             pw.ticket_children_open,
             pw.ticket_children_closed,
+            ticket_title,
         ))
     }
 
@@ -1140,6 +1158,7 @@ fn workflow_to_proto(
     history: Vec<WorkflowHistoryEvent>,
     ticket_children_open: i64,
     ticket_children_closed: i64,
+    ticket_title: String,
 ) -> WorkflowInfo {
     WorkflowInfo {
         id: wf.id,
@@ -1155,6 +1174,7 @@ fn workflow_to_proto(
         history,
         ticket_children_open,
         ticket_children_closed,
+        ticket_title,
     }
 }
 
@@ -1198,7 +1218,14 @@ mod tests {
             },
         ];
 
-        let proto = workflow_to_proto(wf, "https://pr.url".into(), history, 3, 5);
+        let proto = workflow_to_proto(
+            wf,
+            "https://pr.url".into(),
+            history,
+            3,
+            5,
+            "Test ticket".into(),
+        );
 
         assert_eq!(proto.history.len(), 2);
         assert_eq!(proto.history[0].event, "implementing");
@@ -1213,7 +1240,7 @@ mod tests {
     fn workflow_to_proto_handles_empty_history() {
         let wf = test_workflow();
 
-        let proto = workflow_to_proto(wf, String::new(), vec![], 0, 0);
+        let proto = workflow_to_proto(wf, String::new(), vec![], 0, 0, String::new());
 
         assert!(proto.history.is_empty());
         assert_eq!(proto.ticket_children_open, 0);

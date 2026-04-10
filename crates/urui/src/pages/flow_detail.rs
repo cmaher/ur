@@ -65,9 +65,9 @@ fn render_flow_detail_content(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, c
 
 /// Returns the number of lines needed for the field list.
 fn field_line_count() -> u16 {
-    // ticket_id, workflow_id, status, feedback_mode, worker_id,
+    // ticket_id, ticket_title, workflow_id, status, feedback_mode, worker_id,
     // implement_cycles, pr_url, children, created_at, stall_info, blank separator
-    11
+    12
 }
 
 /// Render WorkflowInfo fields as label-value pairs.
@@ -98,6 +98,10 @@ fn render_field_list(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiC
         Line::from(vec![
             Span::styled("Ticket ID:      ", dim),
             Span::styled(&wf.ticket_id, normal),
+        ]),
+        Line::from(vec![
+            Span::styled("Ticket Title:   ", dim),
+            Span::styled(&wf.ticket_title, normal),
         ]),
         Line::from(vec![
             Span::styled("Workflow ID:    ", dim),
@@ -415,6 +419,7 @@ mod tests {
             history: vec![],
             ticket_children_open: 3,
             ticket_children_closed: 7,
+            ticket_title: "Test ticket".into(),
         }
     }
 

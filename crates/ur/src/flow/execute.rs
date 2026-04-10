@@ -51,7 +51,9 @@ where
         .into_inner()
         .workflow
         .context("server returned empty workflow")?;
-    Ok(FlowOutput::Shown { workflow })
+    Ok(FlowOutput::Shown {
+        workflow: Box::new(workflow),
+    })
 }
 
 async fn execute_list<T>(

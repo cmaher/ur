@@ -2243,6 +2243,7 @@ mod tests {
             history: vec![],
             ticket_children_open: 3,
             ticket_children_closed: 7,
+            ticket_title: "Test ticket".into(),
         }
     }
 

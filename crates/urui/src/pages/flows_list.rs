@@ -646,6 +646,7 @@ mod tests {
             history: vec![],
             ticket_children_open: 0,
             ticket_children_closed: 0,
+            ticket_title: String::new(),
         }
     }
 
