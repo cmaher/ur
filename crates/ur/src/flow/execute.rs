@@ -194,6 +194,15 @@ where
         .await
         .with_status_context("set feedback_mode metadata")?;
 
+    client
+        .set_meta(SetMetaRequest {
+            ticket_id: ticket_id.clone(),
+            key: ur_rpc::ticket_meta::AUTOAPPROVE.to_owned(),
+            value: "true".to_owned(),
+        })
+        .await
+        .with_status_context("set autoapprove metadata")?;
+
     Ok(FlowOutput::AutoapproveSet {
         id: ticket_id,
         feedback_mode,
