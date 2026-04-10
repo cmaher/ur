@@ -53,9 +53,6 @@ pub enum CoreError {
     #[error("send message failed: {reason}")]
     SendMessageFailed { reason: String },
 
-    #[error("invalid worker_id format: {reason}")]
-    InvalidWorkerId { reason: String },
-
     #[error("operation not implemented on worker server")]
     Unimplemented,
 }
@@ -134,13 +131,6 @@ impl From<CoreError> for Status {
                     meta,
                 )
             }
-            CoreError::InvalidWorkerId { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
             CoreError::Unimplemented => Status::unimplemented(err.to_string()),
         }
     }
@@ -463,14 +453,26 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_stop request received");
-        let worker_id = WorkerId::parse(&req.worker_id)
-            .map_err(|e| CoreError::InvalidWorkerId { reason: e })?;
-        self.worker_manager
-            .stop_by_worker_id(&worker_id)
-            .await
-            .map_err(|e| CoreError::StopFailed {
-                reason: e.to_string(),
-            })?;
+        // The request may contain either a worker_id (from workerd self-stop)
+        // or a process_id (from CLI `ur worker stop`). Try worker_id lookup
+        // first, then fall back to process_id lookup.
+        let stop_result = match WorkerId::parse(&req.worker_id) {
+            Ok(worker_id) => {
+                let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
+                if res.is_err() {
+                    // worker_id parse can false-positive on process_ids like
+                    // "ping-test" (suffix happens to be 4 lowercase chars).
+                    // Fall back to process_id lookup.
+                    self.worker_manager.stop(&req.worker_id).await
+                } else {
+                    res
+                }
+            }
+            Err(_) => self.worker_manager.stop(&req.worker_id).await,
+        };
+        stop_result.map_err(|e| CoreError::StopFailed {
+            reason: e.to_string(),
+        })?;
         Ok(Response::new(WorkerStopResponse {}))
     }
 
