@@ -226,6 +226,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::FlowsSelect
             | NavMsg::FlowsRefresh
             | NavMsg::FlowsCancel
+            | NavMsg::FlowsApprove
             | NavMsg::FlowsRedrive
             | NavMsg::FlowsGoto
     ) {
@@ -234,7 +235,10 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
 
     if matches!(
         nav_msg,
-        NavMsg::FlowDetailCancel | NavMsg::FlowDetailRedrive | NavMsg::FlowDetailGoto
+        NavMsg::FlowDetailCancel
+            | NavMsg::FlowDetailApprove
+            | NavMsg::FlowDetailRedrive
+            | NavMsg::FlowDetailGoto
     ) {
         return Some(super::pages::flow_detail::handle_flow_detail_nav(
             model, nav_msg,
@@ -669,6 +673,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
 fn handle_flow_op(model: Model, op: FlowOpMsg) -> (Model, Vec<Cmd>) {
     let status_text = match &op {
         FlowOpMsg::Cancel { ticket_id } => format!("Cancelling workflow for {ticket_id}..."),
+        FlowOpMsg::Approve { ticket_id } => format!("Approving workflow for {ticket_id}..."),
     };
 
     let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
@@ -684,6 +689,7 @@ fn handle_flow_op_result(model: Model, result_msg: FlowOpResultMsg) -> (Model, V
 
     let result = match result_msg {
         FlowOpResultMsg::Cancelled { result } => result,
+        FlowOpResultMsg::Approved { result } => result,
     };
 
     match result {

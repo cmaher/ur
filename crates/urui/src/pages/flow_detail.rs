@@ -243,6 +243,7 @@ fn compute_event_duration(
 pub fn handle_flow_detail_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
     match nav_msg {
         NavMsg::FlowDetailCancel => handle_cancel(model),
+        NavMsg::FlowDetailApprove => handle_approve(model),
         NavMsg::FlowDetailRedrive => handle_redrive(model),
         NavMsg::FlowDetailGoto => handle_goto(model),
         _ => (model, vec![]),
@@ -253,6 +254,18 @@ pub fn handle_flow_detail_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>
 fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ref detail) = model.flow_detail {
         let msg = Msg::FlowOp(FlowOpMsg::Cancel {
+            ticket_id: detail.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Approve the workflow shown in flow detail.
+fn handle_approve(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref detail) = model.flow_detail {
+        let msg = Msg::FlowOp(FlowOpMsg::Approve {
             ticket_id: detail.ticket_id.clone(),
         });
         crate::update::update(model, msg)

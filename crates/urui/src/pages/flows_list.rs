@@ -370,6 +370,7 @@ pub fn handle_flows_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) 
         }
         NavMsg::FlowsSelect => handle_select(model),
         NavMsg::FlowsCancel => handle_cancel(model),
+        NavMsg::FlowsApprove => handle_approve(model),
         NavMsg::FlowsRedrive => handle_redrive(model),
         NavMsg::FlowsGoto => handle_goto(model),
         _ => (model, vec![]),
@@ -442,6 +443,18 @@ fn handle_select(mut model: Model) -> (Model, Vec<Cmd>) {
 fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(wf) = selected_workflow(&model) {
         let msg = Msg::FlowOp(FlowOpMsg::Cancel {
+            ticket_id: wf.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Approve the selected flow's workflow.
+fn handle_approve(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(wf) = selected_workflow(&model) {
+        let msg = Msg::FlowOp(FlowOpMsg::Approve {
             ticket_id: wf.ticket_id.clone(),
         });
         crate::update::update(model, msg)
