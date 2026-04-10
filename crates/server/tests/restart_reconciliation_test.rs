@@ -124,7 +124,18 @@ async fn make_components_with_db(
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
     );
+    let launch_manager = ur_server::grpc::LaunchManager {
+        worker_manager: worker_manager.clone(),
+        repo_pool_manager: repo_pool_manager.clone(),
+        proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+        project_registry: project_registry.clone(),
+        worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        network_config: network_config.clone(),
+    };
     let handler = ur_server::grpc::CoreServiceHandler {
+        launch_manager,
         worker_manager: worker_manager.clone(),
         repo_pool_manager,
         workspace: workspace.clone(),

@@ -131,7 +131,18 @@ async fn make_grpc_handler(
         ur_server::worker::PromptModesConfig::default(),
         worker_repo.clone(),
     );
+    let launch_manager = ur_server::grpc::LaunchManager {
+        worker_manager: worker_manager.clone(),
+        repo_pool_manager: repo_pool_manager.clone(),
+        proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+        project_registry: project_registry.clone(),
+        worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        network_config: network_config.clone(),
+    };
     let handler = ur_server::grpc::CoreServiceHandler {
+        launch_manager,
         worker_manager,
         repo_pool_manager,
         workspace: workspace.clone(),
@@ -204,12 +215,65 @@ async fn make_worker_handler() -> (
     let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
+    let workspace = std::path::PathBuf::from("/tmp/test-worker-handler");
+    let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
+    let local_repo = local_repo::GitBackend {
+        client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+    };
+    let project_registry = ur_server::ProjectRegistry::new(
+        std::collections::HashMap::new(),
+        ur_server::hostexec::HostExecConfigManager::empty(),
+    );
+    let network_config = ur_config::NetworkConfig {
+        name: ur_config::DEFAULT_NETWORK_NAME.into(),
+        worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+        server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+        worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+    };
+    let (config, _network_config) = make_test_config(&workspace, &workspace);
+    let repo_pool_manager = ur_server::RepoPoolManager::new(
+        &config,
+        workspace.clone(),
+        workspace.clone(),
+        builderd_client,
+        local_repo,
+        worker_repo.clone(),
+        workspace.join("config"),
+        project_registry.clone(),
+    );
+    let network_manager =
+        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
+    let worker_manager = ur_server::WorkerManager::new(
+        workspace.clone(),
+        workspace.clone(),
+        workspace.join("logs"),
+        workspace.join("logs"),
+        repo_pool_manager.clone(),
+        network_manager,
+        network_config.clone(),
+        ur_config::DEFAULT_SERVER_PORT + 1,
+        ur_server::worker::PromptModesConfig::default(),
+        worker_repo.clone(),
+    );
+    let launch_manager = ur_server::grpc::LaunchManager {
+        worker_manager,
+        repo_pool_manager,
+        proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+        project_registry,
+        worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        network_config,
+    };
+
     let handler = ur_server::grpc::WorkerCoreServiceHandler {
         worker_repo,
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         worker_prefix: "ur-worker-".to_string(),
         transition_tx,
+        launch_manager,
     };
     (handler, ticket_repo, workflow_repo, test_db)
 }
