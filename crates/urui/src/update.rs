@@ -2078,6 +2078,64 @@ mod tests {
     }
 
     #[test]
+    fn flow_op_approve_sets_status_and_cmd() {
+        use crate::msg::FlowOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::FlowOp(FlowOpMsg::Approve {
+                ticket_id: "ur-abc".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Approving")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::FlowOp(_))));
+    }
+
+    #[test]
+    fn flow_op_result_approved_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Approved {
+                result: Ok("Approved workflow for ur-abc".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn flow_op_result_approved_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Approved {
+                result: Err("connection refused".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
     fn flow_op_result_clears_status_before_banner() {
         use crate::msg::FlowOpResultMsg;
         let model = Model::initial();
