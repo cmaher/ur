@@ -136,24 +136,21 @@ impl From<CoreError> for Status {
     }
 }
 
-/// gRPC implementation of the CoreService.
+/// Shared worker launch and stop logic used by both the host-facing
+/// `CoreServiceHandler` and the worker-facing `WorkerCoreServiceHandler`.
 #[derive(Clone)]
-pub struct CoreServiceHandler {
+pub struct LaunchManager {
     pub worker_manager: WorkerManager,
     pub repo_pool_manager: RepoPoolManager,
-    pub workspace: PathBuf,
     pub proxy_hostname: String,
     pub project_registry: ProjectRegistry,
     pub worker_repo: WorkerRepo,
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
     pub network_config: ur_config::NetworkConfig,
-    pub builderd_addr: String,
-    pub config_dir: PathBuf,
-    pub node_id: String,
 }
 
-impl CoreServiceHandler {
+impl LaunchManager {
     /// Validate context repo keys and acquire shared slots in parallel.
     ///
     /// Each key must be a configured project. Returns a list of (project_key, host_path)
@@ -183,7 +180,7 @@ impl CoreServiceHandler {
 
     /// Post-launch setup: bind workflow, persist branch, dispatch design command.
     ///
-    /// Extracted from `worker_launch` to keep method body within the line limit.
+    /// Extracted from `launch` to keep method body within the line limit.
     async fn post_launch_setup(
         &self,
         process_id: &str,
@@ -223,7 +220,7 @@ impl CoreServiceHandler {
 
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
     ///
-    /// Extracted from `worker_launch` to keep method body within the line limit.
+    /// Extracted from `launch` to keep method body within the line limit.
     async fn resolve_launch_workspace(
         &self,
         req: &WorkerLaunchRequest,
@@ -328,30 +325,9 @@ impl CoreServiceHandler {
             strategy,
         ))
     }
-}
 
-#[tonic::async_trait]
-impl CoreService for CoreServiceHandler {
-    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
-        Ok(Response::new(PingResponse {
-            message: "pong".into(),
-        }))
-    }
-
-    async fn worker_launch(
-        &self,
-        req: Request<WorkerLaunchRequest>,
-    ) -> Result<Response<WorkerLaunchResponse>, Status> {
-        let req = req.into_inner();
-
-        info!(
-            worker_id = req.worker_id,
-            image_id = req.image_id,
-            workspace_dir = req.workspace_dir,
-            project_key = req.project_key,
-            "worker_launch request received"
-        );
-
+    /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
+    pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<String, Status> {
         let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy) =
             self.resolve_launch_workspace(&req).await?;
 
@@ -377,7 +353,7 @@ impl CoreService for CoreServiceHandler {
         let skills = if req.skills.is_empty() {
             resolved_skills
         } else {
-            req.skills
+            req.skills.clone()
         };
 
         let (git_hooks_dir, skill_hooks_dir, claude_md, mounts, ports, resolved_image) =
@@ -402,7 +378,7 @@ impl CoreService for CoreServiceHandler {
                 resolved_image
             }
         } else {
-            req.image_id
+            req.image_id.clone()
         };
 
         let process_id = req.worker_id.clone();
@@ -444,6 +420,78 @@ impl CoreService for CoreServiceHandler {
         )
         .await?;
 
+        Ok(container_id)
+    }
+
+    /// Stop a running worker.
+    ///
+    /// The request may contain either a worker_id (from workerd self-stop)
+    /// or a process_id (from CLI `ur worker stop`). Try worker_id lookup
+    /// first, then fall back to process_id lookup.
+    pub async fn stop(&self, id: &str) -> Result<(), Status> {
+        let stop_result = match WorkerId::parse(id) {
+            Ok(worker_id) => {
+                let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
+                if res.is_err() {
+                    // worker_id parse can false-positive on process_ids like
+                    // "ping-test" (suffix happens to be 4 lowercase chars).
+                    // Fall back to process_id lookup.
+                    self.worker_manager.stop(id).await
+                } else {
+                    res
+                }
+            }
+            Err(_) => self.worker_manager.stop(id).await,
+        };
+        stop_result.map_err(|e| CoreError::StopFailed {
+            reason: e.to_string(),
+        })?;
+        Ok(())
+    }
+}
+
+/// gRPC implementation of the CoreService.
+#[derive(Clone)]
+pub struct CoreServiceHandler {
+    pub launch_manager: LaunchManager,
+    pub worker_manager: WorkerManager,
+    pub repo_pool_manager: RepoPoolManager,
+    pub workspace: PathBuf,
+    pub proxy_hostname: String,
+    pub project_registry: ProjectRegistry,
+    pub worker_repo: WorkerRepo,
+    pub ticket_repo: TicketRepo,
+    pub workflow_repo: WorkflowRepo,
+    pub network_config: ur_config::NetworkConfig,
+    pub builderd_addr: String,
+    pub config_dir: PathBuf,
+    pub node_id: String,
+}
+
+#[tonic::async_trait]
+impl CoreService for CoreServiceHandler {
+    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        Ok(Response::new(PingResponse {
+            message: "pong".into(),
+        }))
+    }
+
+    async fn worker_launch(
+        &self,
+        req: Request<WorkerLaunchRequest>,
+    ) -> Result<Response<WorkerLaunchResponse>, Status> {
+        let req = req.into_inner();
+
+        info!(
+            worker_id = req.worker_id,
+            image_id = req.image_id,
+            workspace_dir = req.workspace_dir,
+            project_key = req.project_key,
+            "worker_launch request received"
+        );
+
+        let container_id = self.launch_manager.launch(req).await?;
+
         Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
 
@@ -453,26 +501,7 @@ impl CoreService for CoreServiceHandler {
     ) -> Result<Response<WorkerStopResponse>, Status> {
         let req = req.into_inner();
         info!(worker_id = req.worker_id, "worker_stop request received");
-        // The request may contain either a worker_id (from workerd self-stop)
-        // or a process_id (from CLI `ur worker stop`). Try worker_id lookup
-        // first, then fall back to process_id lookup.
-        let stop_result = match WorkerId::parse(&req.worker_id) {
-            Ok(worker_id) => {
-                let res = self.worker_manager.stop_by_worker_id(&worker_id).await;
-                if res.is_err() {
-                    // worker_id parse can false-positive on process_ids like
-                    // "ping-test" (suffix happens to be 4 lowercase chars).
-                    // Fall back to process_id lookup.
-                    self.worker_manager.stop(&req.worker_id).await
-                } else {
-                    res
-                }
-            }
-            Err(_) => self.worker_manager.stop(&req.worker_id).await,
-        };
-        stop_result.map_err(|e| CoreError::StopFailed {
-            reason: e.to_string(),
-        })?;
+        self.launch_manager.stop(&req.worker_id).await?;
         Ok(Response::new(WorkerStopResponse {}))
     }
 
@@ -748,12 +777,12 @@ fn merge_node_counts(
     nodes
 }
 
-/// Lightweight CoreService for the worker gRPC server.
+/// CoreService for the worker gRPC server.
 ///
 /// Implements `Ping` (health check), `UpdateAgentStatus` (worker status
-/// updates), and `WorkflowStepComplete` (workerd-driven step completion);
-/// worker management RPCs return `Unimplemented` because they are
-/// host-only operations.
+/// updates), `WorkflowStepComplete` (workerd-driven step completion),
+/// `worker_launch` and `worker_stop` (so design workers can spawn
+/// implementation workers).
 #[derive(Clone)]
 pub struct WorkerCoreServiceHandler {
     pub worker_repo: WorkerRepo,
@@ -764,6 +793,8 @@ pub struct WorkerCoreServiceHandler {
     /// Channel sender for submitting transition requests to the
     /// WorkflowCoordinator.
     pub transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
+    /// Shared launch/stop logic — enables design workers to spawn implementation workers.
+    pub launch_manager: LaunchManager,
 }
 
 #[tonic::async_trait]
@@ -817,16 +848,34 @@ impl CoreService for WorkerCoreServiceHandler {
 
     async fn worker_launch(
         &self,
-        _req: Request<WorkerLaunchRequest>,
+        req: Request<WorkerLaunchRequest>,
     ) -> Result<Response<WorkerLaunchResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let req = req.into_inner();
+
+        info!(
+            worker_id = req.worker_id,
+            image_id = req.image_id,
+            workspace_dir = req.workspace_dir,
+            project_key = req.project_key,
+            "worker_launch request received (worker server)"
+        );
+
+        let container_id = self.launch_manager.launch(req).await?;
+
+        Ok(Response::new(WorkerLaunchResponse { container_id }))
     }
 
     async fn worker_stop(
         &self,
-        _req: Request<WorkerStopRequest>,
+        req: Request<WorkerStopRequest>,
     ) -> Result<Response<WorkerStopResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
+        let req = req.into_inner();
+        info!(
+            worker_id = req.worker_id,
+            "worker_stop request received (worker server)"
+        );
+        self.launch_manager.stop(&req.worker_id).await?;
+        Ok(Response::new(WorkerStopResponse {}))
     }
 
     async fn worker_info(

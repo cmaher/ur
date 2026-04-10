@@ -179,7 +179,19 @@ async fn init_and_serve(
         worker_manager: Some(worker_manager.clone()),
     };
 
+    let launch_manager = ur_server::grpc::LaunchManager {
+        worker_manager: worker_manager.clone(),
+        repo_pool_manager: repo_pool_manager.clone(),
+        proxy_hostname: cfg.proxy.hostname.clone(),
+        project_registry: project_registry.clone(),
+        worker_repo: worker_repo.clone(),
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        network_config: cfg.network.clone(),
+    };
+
     let grpc_handler = ur_server::grpc::CoreServiceHandler {
+        launch_manager: launch_manager.clone(),
         worker_manager: worker_manager.clone(),
         repo_pool_manager,
         workspace: cfg.workspace.clone(),
@@ -209,6 +221,7 @@ async fn init_and_serve(
         host_workspace,
         Arc::new(cfg.clone()),
         ui_event_poller,
+        launch_manager,
     )
     .await
 }
@@ -324,6 +337,7 @@ async fn serve_grpc_servers(
     host_workspace: PathBuf,
     config: Arc<ur_config::Config>,
     ui_event_poller: ur_server::UiEventPoller,
+    launch_manager: ur_server::grpc::LaunchManager,
 ) -> anyhow::Result<()> {
     let host_addr = SocketAddr::from(([0, 0, 0, 0], server_port));
     let worker_addr = SocketAddr::from(([0, 0, 0, 0], worker_port));
@@ -372,6 +386,7 @@ async fn serve_grpc_servers(
         worker_ticket_handler,
         remote_repo_handler,
         wf.transition_tx,
+        launch_manager,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());

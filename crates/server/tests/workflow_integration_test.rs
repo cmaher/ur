@@ -159,12 +159,18 @@ impl TestHarness {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let coord_handle = coordinator.spawn(shutdown_rx);
 
+        let launch_manager = dummy_launch_manager(
+            worker_repo.clone(),
+            ticket_repo.clone(),
+            workflow_repo.clone(),
+        );
         let worker_handler = ur_server::grpc::WorkerCoreServiceHandler {
             worker_repo,
             ticket_repo: ticket_repo.clone(),
             workflow_repo: workflow_repo.clone(),
             worker_prefix: "ur-worker-".to_string(),
             transition_tx: transition_tx.clone(),
+            launch_manager,
         };
 
         let (channel, _addr) = spawn_worker_server(worker_handler).await;
@@ -314,6 +320,55 @@ fn dummy_config() -> Arc<ur_config::Config> {
         projects: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
     })
+}
+
+fn dummy_launch_manager(
+    worker_repo: WorkerRepo,
+    ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
+) -> ur_server::grpc::LaunchManager {
+    let config = dummy_config();
+    let builderd_client = dummy_builderd_client();
+    let local_repo = local_repo::GitBackend {
+        client: dummy_builderd_client(),
+    };
+    let project_registry = ur_server::ProjectRegistry::new(
+        config.projects.clone(),
+        ur_server::hostexec::HostExecConfigManager::empty(),
+    );
+    let pool = ur_server::RepoPoolManager::new(
+        &config,
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        builderd_client,
+        local_repo,
+        worker_repo.clone(),
+        std::path::PathBuf::from("/tmp/test/config"),
+        project_registry.clone(),
+    );
+    let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+    let worker_manager = ur_server::WorkerManager::new(
+        std::path::PathBuf::from("/tmp/test/workspace"),
+        std::path::PathBuf::from("/tmp/test"),
+        std::path::PathBuf::from("/tmp/test/logs"),
+        std::path::PathBuf::from("/tmp/test/logs"),
+        pool.clone(),
+        network_manager,
+        config.network.clone(),
+        config.worker_port,
+        Default::default(),
+        worker_repo.clone(),
+    );
+    ur_server::grpc::LaunchManager {
+        worker_manager,
+        repo_pool_manager: pool,
+        proxy_hostname: ur_config::DEFAULT_PROXY_HOSTNAME.to_string(),
+        project_registry,
+        worker_repo,
+        ticket_repo,
+        workflow_repo,
+        network_config: config.network.clone(),
+    }
 }
 
 /// Spawn a worker gRPC server serving the WorkerCoreServiceHandler WITHOUT auth.

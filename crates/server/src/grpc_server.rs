@@ -8,7 +8,7 @@ use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
 use ur_rpc::proto::remote_repo::remote_repo_service_server::RemoteRepoServiceServer;
 use ur_rpc::proto::ticket::ticket_service_server::TicketServiceServer;
 
-use crate::grpc::CoreServiceHandler;
+use crate::grpc::{CoreServiceHandler, LaunchManager};
 use crate::{ProjectRegistry, WorkerManager};
 
 /// Start the host gRPC server on a TCP socket.
@@ -51,6 +51,7 @@ pub async fn serve_worker_grpc(
     ticket_handler: crate::grpc_ticket::TicketServiceHandler,
     remote_repo_handler: crate::grpc_remote_repo::RemoteRepoServiceHandler,
     transition_tx: tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
+    launch_manager: LaunchManager,
 ) -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "worker gRPC server listening");
 
@@ -60,6 +61,7 @@ pub async fn serve_worker_grpc(
         workflow_repo,
         worker_prefix,
         transition_tx,
+        launch_manager,
     };
     let interceptor = crate::auth::worker_auth_interceptor(worker_repo);
 
