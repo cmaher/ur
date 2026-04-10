@@ -336,6 +336,11 @@ impl InputHandler for FlowDetailHandler {
     fn footer_commands(&self) -> Vec<FooterCommand> {
         vec![
             FooterCommand {
+                key_label: "A".to_string(),
+                description: "Approve".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "V".to_string(),
                 description: "Redrive".to_string(),
                 common: false,
@@ -361,6 +366,7 @@ impl InputHandler for FlowDetailHandler {
 /// Handle Shift+letter keys on the flow detail page.
 fn handle_shift_key(code: KeyCode) -> Option<Msg> {
     match code {
+        KeyCode::Char('A') => Some(Msg::Nav(NavMsg::FlowDetailApprove)),
         KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowDetailCancel)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowDetailRedrive)),
         _ => None,
@@ -532,6 +538,16 @@ mod tests {
     // ── input handler ───────────────────────────────────────────────
 
     #[test]
+    fn handler_shift_a_captures_approve() {
+        let handler = FlowDetailHandler;
+        let key = make_key(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowDetailApprove)) => {}
+            other => panic!("expected approve, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_shift_x_captures_cancel() {
         let handler = FlowDetailHandler;
         let key = make_key(KeyCode::Char('X'), KeyModifiers::SHIFT);
@@ -573,10 +589,19 @@ mod tests {
     fn handler_footer_has_expected_commands() {
         let handler = FlowDetailHandler;
         let cmds = handler.footer_commands();
-        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds.len(), 4);
+        assert!(cmds.iter().any(|c| c.description == "Approve"));
         assert!(cmds.iter().any(|c| c.description == "Redrive"));
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));
+    }
+
+    #[test]
+    fn handler_footer_approve_comes_first() {
+        let handler = FlowDetailHandler;
+        let cmds = handler.footer_commands();
+        assert_eq!(cmds[0].key_label, "A");
+        assert_eq!(cmds[0].description, "Approve");
     }
 
     #[test]
