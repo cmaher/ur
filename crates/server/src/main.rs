@@ -431,6 +431,25 @@ async fn init_managers(
         client: builderd_client.clone(),
     };
     let worker_repo = WorkerRepo::new(db.pool().clone(), cfg.node_id.clone());
+    let workflow_repo_for_adopt = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
+
+    let (workers_adopted, slots_adopted) = worker_repo
+        .adopt_legacy_node_rows()
+        .await
+        .map_err(|e| anyhow::anyhow!("legacy node_id adoption failed: {e}"))?;
+    let workflows_adopted = workflow_repo_for_adopt
+        .adopt_legacy_node_rows()
+        .await
+        .map_err(|e| anyhow::anyhow!("legacy node_id adoption failed: {e}"))?;
+    if workers_adopted > 0 || slots_adopted > 0 || workflows_adopted > 0 {
+        info!(
+            workers = workers_adopted,
+            slots = slots_adopted,
+            workflows = workflows_adopted,
+            node_id = %cfg.node_id,
+            "adopted pre-multi-node rows"
+        );
+    }
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 

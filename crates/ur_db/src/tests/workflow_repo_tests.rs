@@ -844,3 +844,43 @@ async fn insert_ticket_comment_composite_pk() {
 
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn adopt_legacy_node_rows_claims_empty_node_id_workflows() {
+    let db = TestDb::new().await;
+    let repo = ticket_repo(&db);
+    let wf = wf_repo(&db);
+    let pool = db.db().pool();
+
+    repo.create_ticket(&NewTicket {
+        id: Some("legacy-wf".into()),
+        type_: "code".into(),
+        priority: 1,
+        title: "Legacy workflow".into(),
+        project: "test".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO workflow (id, ticket_id, status, node_id) VALUES ('legacy-wf-id', 'legacy-wf', 'open', '')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let adopted = wf.adopt_legacy_node_rows().await.unwrap();
+    assert_eq!(adopted, 1);
+
+    let row: (String,) = sqlx::query_as("SELECT node_id FROM workflow WHERE id = 'legacy-wf-id'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(row.0, "test-node");
+
+    let adopted = wf.adopt_legacy_node_rows().await.unwrap();
+    assert_eq!(adopted, 0);
+
+    db.cleanup().await;
+}

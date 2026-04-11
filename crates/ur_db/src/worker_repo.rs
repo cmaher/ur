@@ -448,6 +448,21 @@ impl WorkerRepo {
 
     // --- Reconciliation helpers ---
 
+    /// Claim worker and slot rows left with empty `node_id` by the pre-multi-node migration.
+    /// Safe for single-node upgrades — there's no other node to steal from.
+    /// Returns (workers_adopted, slots_adopted).
+    pub async fn adopt_legacy_node_rows(&self) -> Result<(i64, i64), sqlx::Error> {
+        let workers = sqlx::query("UPDATE worker SET node_id = $1 WHERE node_id = ''")
+            .bind(&self.node_id)
+            .execute(&self.pool)
+            .await?;
+        let slots = sqlx::query("UPDATE slot SET node_id = $1 WHERE node_id = ''")
+            .bind(&self.node_id)
+            .execute(&self.pool)
+            .await?;
+        Ok((workers.rows_affected() as i64, slots.rows_affected() as i64))
+    }
+
     /// List all slots across all projects for this node.
     pub async fn list_all_slots(&self) -> Result<Vec<Slot>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(

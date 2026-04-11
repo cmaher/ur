@@ -812,3 +812,47 @@ async fn cleanup_after_reconciliation_preserves_reclaimed_workers() {
 
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn adopt_legacy_node_rows_claims_empty_node_id_rows() {
+    let db = TestDb::new().await;
+    let r = repo(&db);
+    let pool = db.db().pool();
+
+    // Insert a slot row directly with empty node_id, simulating a pre-multi-node row.
+    sqlx::query(
+        "INSERT INTO slot (id, project_key, slot_name, host_path, node_id, created_at, updated_at)
+         VALUES ('legacy-slot', 'proj-a', '0', '/tmp/proj-a/0', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, node_id, created_at, updated_at, idle_redispatch_count)
+         VALUES ('legacy-worker', 'proc', 'proj-a', 'ctr', 'sec', 'default', 'stopped', 'starting', NULL, '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // A row already on the local node — should not be touched.
+    r.insert_slot(&test_slot("local-slot", "proj-a"))
+        .await
+        .unwrap();
+
+    let (workers, slots) = r.adopt_legacy_node_rows().await.unwrap();
+    assert_eq!(workers, 1);
+    assert_eq!(slots, 1);
+
+    let adopted_slot = r.get_slot("legacy-slot").await.unwrap().unwrap();
+    assert_eq!(adopted_slot.node_id, "test-node");
+    let adopted_worker = r.get_worker("legacy-worker").await.unwrap().unwrap();
+    assert_eq!(adopted_worker.node_id, "test-node");
+
+    // Re-running is a no-op — nothing left with empty node_id.
+    let (workers, slots) = r.adopt_legacy_node_rows().await.unwrap();
+    assert_eq!(workers, 0);
+    assert_eq!(slots, 0);
+
+    db.cleanup().await;
+}

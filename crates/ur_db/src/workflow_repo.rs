@@ -29,6 +29,17 @@ impl WorkflowRepo {
         Self { pool, node_id }
     }
 
+    /// Claim workflow rows left with empty `node_id` by the pre-multi-node migration.
+    /// Safe for single-node upgrades — there's no other node to steal from.
+    /// Returns the number of rows adopted.
+    pub async fn adopt_legacy_node_rows(&self) -> Result<i64, sqlx::Error> {
+        let result = sqlx::query("UPDATE workflow SET node_id = $1 WHERE node_id = ''")
+            .bind(&self.node_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
     // ============================================================
     // Workflow Event polling/deletion
     // ============================================================
