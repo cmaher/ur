@@ -98,17 +98,13 @@ impl CmdRunner {
     }
 
     /// Spawn a long-lived background task that subscribes to the server's UI
-    /// event stream and forwards batches as `Msg::UiEvent`.
+    /// event stream and forwards batches as `Msg::UiEvent`. Reconnects with
+    /// backoff if the stream drops (e.g., server restart) so the TUI keeps
+    /// receiving push updates without requiring a manual restart.
     fn subscribe_ui_events(&self) {
         let tx = self.msg_tx.clone();
         let port = self.port;
-
-        tokio::spawn(async move {
-            debug!(port, "v2: subscribing to UI event stream");
-            if let Err(e) = consume_ui_event_stream(port, &tx).await {
-                warn!(port, error = %e, "v2: UI event stream disconnected");
-            }
-        });
+        tokio::spawn(ui_event_subscription_loop(port, tx));
     }
 
     /// Spawn an async task to stop a worker via the `WorkerStop` gRPC call.
@@ -754,6 +750,30 @@ async fn fetch_activities(
             e.to_string()
         })?;
     Ok(resp.into_inner().activities)
+}
+
+/// Reconnect loop around `consume_ui_event_stream`. Exits when the message
+/// channel closes (TUI shutdown). Backoff doubles on consecutive errors,
+/// capped at 10s, and resets after a clean stream close.
+async fn ui_event_subscription_loop(port: u16, tx: mpsc::UnboundedSender<Msg>) {
+    let initial = std::time::Duration::from_millis(500);
+    let max_backoff = std::time::Duration::from_secs(10);
+    let mut backoff = initial;
+    loop {
+        debug!(port, "v2: subscribing to UI event stream");
+        let result = consume_ui_event_stream(port, &tx).await;
+        if result.is_ok() {
+            warn!(port, "v2: UI event stream closed by server, reconnecting");
+            backoff = initial;
+        } else if let Err(e) = result {
+            warn!(port, error = %e, "v2: UI event stream disconnected, reconnecting");
+        }
+        if tx.is_closed() {
+            return;
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
 }
 
 /// Connect to the UI event stream and forward batches as `Msg::UiEvent`.
