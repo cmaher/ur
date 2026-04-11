@@ -364,6 +364,8 @@ pub enum NavMsg {
     FlowsRefresh,
     /// Cancel the selected flow's workflow.
     FlowsCancel,
+    /// Approve the selected flow's workflow.
+    FlowsApprove,
     /// Redrive the selected flow's workflow.
     FlowsRedrive,
     /// Open the goto menu for the selected flow.
@@ -372,6 +374,8 @@ pub enum NavMsg {
     // ── Flow detail page messages ─────────────────────────────────────
     /// Cancel the workflow shown in flow detail.
     FlowDetailCancel,
+    /// Approve the workflow shown in flow detail.
+    FlowDetailApprove,
     /// Redrive the workflow shown in flow detail.
     FlowDetailRedrive,
     /// Open the goto menu from flow detail.
@@ -535,6 +539,8 @@ pub enum TicketOpResultMsg {
 pub enum FlowOpMsg {
     /// Cancel the active workflow for a ticket.
     Cancel { ticket_id: String },
+    /// Approve the active workflow for a ticket.
+    Approve { ticket_id: String },
 }
 
 /// Flow operation result messages. Each variant carries the outcome of a
@@ -543,6 +549,8 @@ pub enum FlowOpMsg {
 pub enum FlowOpResultMsg {
     /// Cancel completed.
     Cancelled { result: Result<String, String> },
+    /// Approve completed.
+    Approved { result: Result<String, String> },
 }
 
 /// Worker operation request messages. Each variant carries the parameters needed

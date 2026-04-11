@@ -380,7 +380,21 @@ impl CmdRunner {
     fn execute_flow_op(&self, op: FlowOpMsg) {
         match op {
             FlowOpMsg::Cancel { ticket_id } => self.exec_flow_cancel(ticket_id),
+            FlowOpMsg::Approve { ticket_id } => self.exec_flow_approve(ticket_id),
         }
+    }
+
+    fn exec_flow_approve(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: approving workflow");
+            let result = approve_workflow(port, &ticket_id).await;
+            let msg = FlowOpResultMsg::Approved {
+                result: result.map(|()| format!("Approved workflow for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::FlowOpResult(msg));
+        });
     }
 
     fn exec_flow_cancel(&self, ticket_id: String) {
@@ -1117,6 +1131,41 @@ async fn redrive_ticket(port: u16, ticket_id: &str) -> Result<(), String> {
         })
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Set a metadata key-value pair on a ticket via `SetMeta` gRPC.
+async fn set_ticket_meta(port: u16, ticket_id: &str, key: &str, value: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::SetMetaRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .set_meta(SetMetaRequest {
+            ticket_id: ticket_id.to_owned(),
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %ticket_id, %key, error = %e, "v2: set_ticket_meta failed");
+            e.to_string()
+        })?;
+    Ok(())
+}
+
+/// Approve the active workflow for a ticket.
+///
+/// Sets the `autoapprove` metadata key and `feedback_mode=now` on the ticket,
+/// which the github poller picks up to advance the workflow past the review gate.
+async fn approve_workflow(port: u16, ticket_id: &str) -> Result<(), String> {
+    use ur_rpc::feedback_mode;
+    use ur_rpc::ticket_meta::{AUTOAPPROVE, FEEDBACK_MODE};
+
+    set_ticket_meta(port, ticket_id, AUTOAPPROVE, "true").await?;
+    set_ticket_meta(port, ticket_id, FEEDBACK_MODE, feedback_mode::NOW).await?;
     Ok(())
 }
 

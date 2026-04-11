@@ -51,7 +51,9 @@ where
         .into_inner()
         .workflow
         .context("server returned empty workflow")?;
-    Ok(FlowOutput::Shown { workflow })
+    Ok(FlowOutput::Shown {
+        workflow: Box::new(workflow),
+    })
 }
 
 async fn execute_list<T>(
@@ -193,6 +195,15 @@ where
         })
         .await
         .with_status_context("set feedback_mode metadata")?;
+
+    client
+        .set_meta(SetMetaRequest {
+            ticket_id: ticket_id.clone(),
+            key: ur_rpc::ticket_meta::AUTOAPPROVE.to_owned(),
+            value: "true".to_owned(),
+        })
+        .await
+        .with_status_context("set autoapprove metadata")?;
 
     Ok(FlowOutput::AutoapproveSet {
         id: ticket_id,

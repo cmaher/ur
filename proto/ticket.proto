@@ -310,6 +310,7 @@ message WorkflowInfo {
   repeated WorkflowHistoryEvent history = 11;
   int64 ticket_children_open = 12;
   int64 ticket_children_closed = 13;
+  string ticket_title = 14;
 }
 
 // --- GetWorkflow ---

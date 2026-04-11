@@ -226,6 +226,7 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::FlowsSelect
             | NavMsg::FlowsRefresh
             | NavMsg::FlowsCancel
+            | NavMsg::FlowsApprove
             | NavMsg::FlowsRedrive
             | NavMsg::FlowsGoto
     ) {
@@ -234,7 +235,10 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
 
     if matches!(
         nav_msg,
-        NavMsg::FlowDetailCancel | NavMsg::FlowDetailRedrive | NavMsg::FlowDetailGoto
+        NavMsg::FlowDetailCancel
+            | NavMsg::FlowDetailApprove
+            | NavMsg::FlowDetailRedrive
+            | NavMsg::FlowDetailGoto
     ) {
         return Some(super::pages::flow_detail::handle_flow_detail_nav(
             model, nav_msg,
@@ -669,6 +673,7 @@ fn handle_ticket_op_result(model: Model, result_msg: TicketOpResultMsg) -> (Mode
 fn handle_flow_op(model: Model, op: FlowOpMsg) -> (Model, Vec<Cmd>) {
     let status_text = match &op {
         FlowOpMsg::Cancel { ticket_id } => format!("Cancelling workflow for {ticket_id}..."),
+        FlowOpMsg::Approve { ticket_id } => format!("Approving workflow for {ticket_id}..."),
     };
 
     let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
@@ -684,6 +689,7 @@ fn handle_flow_op_result(model: Model, result_msg: FlowOpResultMsg) -> (Model, V
 
     let result = match result_msg {
         FlowOpResultMsg::Cancelled { result } => result,
+        FlowOpResultMsg::Approved { result } => result,
     };
 
     match result {
@@ -2072,6 +2078,64 @@ mod tests {
     }
 
     #[test]
+    fn flow_op_approve_sets_status_and_cmd() {
+        use crate::msg::FlowOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::FlowOp(FlowOpMsg::Approve {
+                ticket_id: "ur-abc".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(
+            new_model
+                .status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("Approving")
+        );
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::FlowOp(_))));
+    }
+
+    #[test]
+    fn flow_op_result_approved_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Approved {
+                result: Ok("Approved workflow for ur-abc".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn flow_op_result_approved_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Approved {
+                result: Err("connection refused".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
+    }
+
+    #[test]
     fn flow_op_result_clears_status_before_banner() {
         use crate::msg::FlowOpResultMsg;
         let model = Model::initial();
@@ -2179,6 +2243,7 @@ mod tests {
             history: vec![],
             ticket_children_open: 3,
             ticket_children_closed: 7,
+            ticket_title: "Test ticket".into(),
         }
     }
 

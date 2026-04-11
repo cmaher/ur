@@ -16,7 +16,7 @@ use crate::output::OutputManager;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlowOutput {
     Shown {
-        workflow: WorkflowInfo,
+        workflow: Box<WorkflowInfo>,
     },
     Listed {
         workflows: Vec<WorkflowInfo>,
