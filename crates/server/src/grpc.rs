@@ -384,12 +384,22 @@ impl LaunchManager {
         let process_id = req.worker_id.clone();
         let worker_id_str = worker_id.to_string();
         let has_pool_slot = slot_id.is_some();
+        let cpus = if req.cpus == 0 {
+            ur_config::DEFAULT_WORKER_CPUS
+        } else {
+            req.cpus
+        };
+        let memory = if req.memory.is_empty() {
+            ur_config::DEFAULT_WORKER_MEMORY.to_owned()
+        } else {
+            req.memory
+        };
         let config = crate::WorkerConfig {
             process_id: req.worker_id,
             worker_id,
             image_id,
-            cpus: req.cpus,
-            memory: req.memory,
+            cpus,
+            memory,
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,

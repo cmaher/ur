@@ -272,6 +272,12 @@ pub const DEFAULT_WORKER_PREFIX: &str = "ur-worker-";
 /// Default maximum number of cached repo clones per project.
 pub const DEFAULT_POOL_LIMIT: u32 = 10;
 
+/// Default CPU count for a worker container (used when the launch request omits it).
+pub const DEFAULT_WORKER_CPUS: u32 = 2;
+
+/// Default memory limit for a worker container (used when the launch request omits it).
+pub const DEFAULT_WORKER_MEMORY: &str = "8G";
+
 /// Domains required by Claude Code for normal operation.
 fn default_proxy_allowlist() -> Vec<String> {
     vec![
