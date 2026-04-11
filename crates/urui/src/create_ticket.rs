@@ -66,10 +66,61 @@ pub fn serialize_to_template(
 }
 
 /// Returns `true` if the title is the placeholder or empty.
-#[allow(dead_code)]
 pub fn is_title_placeholder(title: &str) -> bool {
     let trimmed = title.trim();
     trimmed.is_empty() || trimmed == TITLE_PLACEHOLDER
+}
+
+/// Resolve a ticket title from the body by running `claude --model haiku --print`.
+///
+/// Falls back to a truncated body (first line, max 80 chars) if the command fails.
+/// Returns an error only if the body is also empty.
+pub async fn resolve_title(body: &str) -> anyhow::Result<String> {
+    let prompt = format!(
+        "Generate a concise ticket title (under 80 chars) for this description. \
+         Output ONLY the title, nothing else:\n\n{body}"
+    );
+    let output = tokio::process::Command::new("claude")
+        .args(["--model", "haiku", "--print", "-p", &prompt])
+        .output()
+        .await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let title = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !title.is_empty() {
+                return Ok(title);
+            }
+        }
+        Ok(o) => {
+            tracing::debug!(
+                status = %o.status,
+                stderr = %String::from_utf8_lossy(&o.stderr),
+                "claude title generation failed, falling back to truncation"
+            );
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "claude command not available, falling back to truncation");
+        }
+    }
+
+    fallback_title(body)
+}
+
+/// Truncate the body to produce a fallback title (first line, max 80 chars).
+///
+/// Returns an error if the body is empty.
+fn fallback_title(body: &str) -> anyhow::Result<String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("Cannot resolve title: body is empty and claude command failed");
+    }
+    let first_line = trimmed.lines().next().unwrap_or(trimmed);
+    if first_line.len() <= 80 {
+        Ok(first_line.to_string())
+    } else {
+        Ok(format!("{}...", &first_line[..77]))
+    }
 }
 
 /// Parse editor output into a `PendingTicket`.
@@ -261,6 +312,33 @@ mod tests {
             let ticket = parse_ticket_file(&content).unwrap();
             assert_eq!(ticket.priority, expected, "failed for input {input}");
         }
+    }
+
+    #[test]
+    fn fallback_title_short_body_passthrough() {
+        let title = fallback_title("This is a short body").unwrap();
+        assert_eq!(title, "This is a short body");
+    }
+
+    #[test]
+    fn fallback_title_long_body_truncates_with_ellipsis() {
+        let body = "A".repeat(200);
+        let title = fallback_title(&body).unwrap();
+        assert_eq!(title.len(), 80);
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn fallback_title_uses_first_line_only() {
+        let body = "First line title\nSecond line detail\nMore detail";
+        let title = fallback_title(body).unwrap();
+        assert_eq!(title, "First line title");
+    }
+
+    #[test]
+    fn fallback_title_empty_body_errors() {
+        assert!(fallback_title("").is_err());
+        assert!(fallback_title("   \n  ").is_err());
     }
 
     #[test]
