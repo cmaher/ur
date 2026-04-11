@@ -277,7 +277,15 @@ async fn handle_create_editor_cmd(
         editor_req.content,
     );
     let pending = pending?;
-    let new_model = if let Some(pending) = pending {
+    let new_model = if let Some(mut pending) = pending {
+        if create_ticket::is_title_placeholder(&pending.title) {
+            match create_ticket::resolve_title(&pending.body).await {
+                Ok(title) => pending.title = title,
+                Err(e) => {
+                    tracing::debug!(error = %e, "title resolution failed; leaving placeholder");
+                }
+            }
+        }
         let open_msg = Msg::Overlay(msg::OverlayMsg::OpenCreateActionMenu { pending });
         let (new_model, cmds) = update(model, open_msg);
         cmd_runner.execute_all(cmds);
