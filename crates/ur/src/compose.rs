@@ -385,7 +385,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     }
     writeln!(
         out,
-        "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-42070}}"
+        "      - UR_BUILDERD_ADDR=http://host.docker.internal:${{UR_BUILDERD_PORT:-12323}}"
     )
     .unwrap();
     writeln!(out, "      - GH_TOKEN=${{GH_TOKEN:-}}").unwrap();
@@ -399,7 +399,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    healthcheck:").unwrap();
     writeln!(
         out,
-        "      test: [\"CMD-SHELL\", \"nc -z 127.0.0.1 ${{UR_SERVER_PORT:-42069}} || exit 1\"]"
+        "      test: [\"CMD-SHELL\", \"nc -z 127.0.0.1 ${{UR_SERVER_PORT:-12321}} || exit 1\"]"
     )
     .unwrap();
     writeln!(out, "      interval: 1s").unwrap();
@@ -411,7 +411,7 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
     writeln!(out, "    ports:").unwrap();
     writeln!(
         out,
-        "      - \"${{UR_SERVER_PORT:-42069}}:${{UR_SERVER_PORT:-42069}}\""
+        "      - \"${{UR_SERVER_PORT:-12321}}:${{UR_SERVER_PORT:-12321}}\""
     )
     .unwrap();
 

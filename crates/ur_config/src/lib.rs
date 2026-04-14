@@ -224,11 +224,11 @@ pub const BACKUP_CONTAINER_PATH: &str = "/backup";
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
-pub const DEFAULT_SERVER_PORT: u16 = 42069;
+pub const DEFAULT_SERVER_PORT: u16 = 12321;
 
 /// Default TCP port for the builder daemon (builderd).
 /// Kept for documentation; the actual default is derived as `server_port + 2`.
-pub const DEFAULT_BUILDERD_PORT: u16 = 42070;
+pub const DEFAULT_BUILDERD_PORT: u16 = 12323;
 
 /// PID file for the builderd process, stored in the config directory.
 pub const BUILDERD_PID_FILE: &str = "builderd.pid";
@@ -981,7 +981,7 @@ pub struct Config {
     pub config_dir: PathBuf,
     /// Worker workspace directory.
     pub workspace: PathBuf,
-    /// TCP port the server listens on (default: 42069).
+    /// TCP port the server listens on (default: 12321).
     pub server_port: u16,
     /// TCP port the shared worker gRPC server listens on (default: `server_port + 1`).
     pub worker_port: u16,

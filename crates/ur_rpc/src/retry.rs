@@ -123,7 +123,7 @@ pub struct RetryChannel {
 impl RetryChannel {
     /// Create a new retry-capable channel that connects lazily to the given address.
     ///
-    /// The address should be a full URI, e.g. `"http://localhost:42070"`.
+    /// The address should be a full URI, e.g. `"http://localhost:12323"`.
     pub fn new(addr: &str, config: RetryConfig) -> Result<Self, tonic::transport::Error> {
         let endpoint = tonic::transport::Endpoint::try_from(addr.to_string())?;
         let channel = endpoint.connect_lazy();
@@ -320,7 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn retry_channel_creates_successfully() {
-        let channel = RetryChannel::new("http://localhost:42070", RetryConfig::default());
+        let channel = RetryChannel::new("http://localhost:12323", RetryConfig::default());
         assert!(channel.is_ok());
     }
 

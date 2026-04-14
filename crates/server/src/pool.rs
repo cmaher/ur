@@ -655,7 +655,7 @@ mod tests {
         );
         let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
-            tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
             client: BuilderdClient::new(channel),
@@ -958,7 +958,7 @@ mod tests {
             },
         );
         let channel =
-            tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
             client: BuilderdClient::new(channel),
