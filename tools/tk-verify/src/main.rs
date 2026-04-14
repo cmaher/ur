@@ -338,7 +338,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     let mut tickets_dir = PathBuf::from(".tickets");
-    let mut server_addr = "http://127.0.0.1:42069".to_string();
+    let mut server_addr = "http://127.0.0.1:12321".to_string();
 
     let mut i = 1;
     while i < args.len() {
@@ -359,7 +359,7 @@ async fn main() {
                 println!("Options:");
                 println!("  -t, --tickets <DIR>    Tickets directory (default: .tickets)");
                 println!(
-                    "  -s, --server <ADDR>    Server address (default: http://127.0.0.1:42069)"
+                    "  -s, --server <ADDR>    Server address (default: http://127.0.0.1:12321)"
                 );
                 println!("  -h, --help             Show this help");
                 return;

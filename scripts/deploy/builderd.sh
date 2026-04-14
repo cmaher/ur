@@ -22,7 +22,7 @@ fi
 
 # Start via ur start (which handles PID tracking)
 echo "Starting builderd..."
-target/debug/builderd --port "${UR_BUILDERD_PORT:-42070}" &
+target/debug/builderd --port "${UR_BUILDERD_PORT:-12323}" &
 BUILDERD_PID=$!
 echo "$BUILDERD_PID" > "$PID_FILE"
 echo "builderd restarted (pid $BUILDERD_PID)"

@@ -100,7 +100,7 @@ async fn make_grpc_handler(
     let graph_manager = ur_db::GraphManager::new(pool.clone());
     let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
     let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
-    let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+    let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
         client: ur_rpc::proto::builder::BuilderdClient::new(channel),
@@ -216,7 +216,7 @@ async fn make_worker_handler() -> (
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
     let workspace = std::path::PathBuf::from("/tmp/test-worker-handler");
-    let channel = tonic::transport::Channel::from_static("http://localhost:42070").connect_lazy();
+    let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
         client: ur_rpc::proto::builder::BuilderdClient::new(channel),

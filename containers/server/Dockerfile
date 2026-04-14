@@ -13,7 +13,7 @@ COPY ur-server /usr/local/bin/ur-server
 RUN chmod +x /usr/local/bin/ur-server
 
 # Default gRPC port (ur_config::DEFAULT_SERVER_PORT)
-EXPOSE 42069
+EXPOSE 12321
 
 ENTRYPOINT ["tini", "--"]
 CMD ["ur-server"]
