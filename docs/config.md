@@ -8,9 +8,9 @@ Run `ur init` to generate the file with sensible defaults. All fields are option
 
 ```toml
 workspace = "~/.ur/workspace"
-server_port = 42069
-worker_port = 42070
-builderd_port = 42071
+server_port = 12321
+worker_port = 12322
+builderd_port = 12323
 compose_file = "~/.ur/docker-compose.yml"
 logs_dir = "~/.ur/logs"
 git_branch_prefix = ""
@@ -19,7 +19,7 @@ git_branch_prefix = ""
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
-| `server_port` | u16 | `42069` | TCP port for ur→server gRPC |
+| `server_port` | u16 | `12321` | TCP port for ur→server gRPC |
 | `worker_port` | u16 | `server_port + 1` | TCP port for shared worker gRPC server |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
@@ -347,7 +347,7 @@ Template paths are validated at config load time. Unrecognized `%VAR%` patterns 
 
 ```toml
 workspace = "/Users/me/.ur/workspace"
-server_port = 42069
+server_port = 12321
 git_branch_prefix = "ur-"
 
 [proxy]

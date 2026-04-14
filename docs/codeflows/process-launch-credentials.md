@@ -23,7 +23,7 @@ ur CLI: CredentialManager.ensure_credentials(max_age) [crates/ur/src/credential.
 ur CLI: process_launch()                              [crates/ur/src/main.rs]
     │   sends WorkerLaunchRequest via gRPC
     │
-    ▼  gRPC (TCP → 127.0.0.1:42069 → ur-server container)
+    ▼  gRPC (TCP → 127.0.0.1:12321 → ur-server container)
     │
 ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.rs]
     │   bind-mounts ~/.ur/claude/.credentials.json

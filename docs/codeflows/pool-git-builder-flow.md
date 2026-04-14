@@ -19,7 +19,7 @@ are routed through builderd, which runs on the host with full credential access.
    a. Creates parent directory locally (`create_dir_all` on container-side bind mount)
    b. Calls `BuilderdClient::exec_and_check("git", ["clone", url, slot_path], parent_dir)`
 4. `BuilderdClient` (shared helper):
-   a. Connects to builderd gRPC at `http://host.docker.internal:42070`
+   a. Connects to builderd gRPC at `http://host.docker.internal:12323`
    b. Sends `BuilderDaemonExecRequest { command: "git", args, working_dir }` with `%WORKSPACE%`-prefixed CWD
    c. builderd resolves `%WORKSPACE%` to its local workspace path, streams response
    d. Collects stderr, checks exit code

@@ -20,7 +20,7 @@ ur-server (container)
 │                                                  │
 │                                                  ▼
 │                                     ┌─────────────────────┐
-│                                     │  builderd [:42071]   │
+│                                     │  builderd [:12323]   │
 │                                     │  (host, native)      │
 │                                     │                      │
 │                                     │  1. Resolve %WORKSPACE% │
@@ -105,7 +105,7 @@ message BuilderExecRequest {
 
 ```
 ur-server container
-  → UR_BUILDERD_ADDR env var (e.g., http://host.docker.internal:42071)
+  → UR_BUILDERD_ADDR env var (e.g., http://host.docker.internal:12323)
     → Docker host gateway resolves to host IP
       → builderd listening on 127.0.0.1:<builderd_port>
 ```
