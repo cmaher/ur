@@ -49,9 +49,9 @@ ur stop
 
 | Service | Default Port | Config Field | Derivation |
 |---------|-------------|-------------|------------|
-| ur-server (gRPC) | 42069 | `server_port` | Explicit or default |
-| Worker gRPC | 42070 | `worker_port` | `server_port + 1` |
-| builderd (gRPC) | 42071 | `builderd_port` | `server_port + 2` |
+| ur-server (gRPC) | 12321 | `server_port` | Explicit or default |
+| Worker gRPC | 12322 | `worker_port` | `server_port + 1` |
+| builderd (gRPC) | 12323 | `builderd_port` | `server_port + 2` |
 
 All ports derive from `server_port` when not explicitly set, ensuring test isolation
 when using a custom `server_port`.
@@ -79,12 +79,12 @@ If backup is configured, the host backup path is mounted at `/backup` in the pos
 
 ```
 Host (macOS / Linux)
-├── builderd [:42071] ← gRPC from server container
+├── builderd [:12323] ← gRPC from server container
 │
 └── Docker
     ├── infra network (bridge)
     │   ├── ur-postgres [:5432] ← Postgres connections from ur-server
-    │   ├── ur-server [:42069] ← gRPC from CLI + workers
+    │   ├── ur-server [:12321] ← gRPC from CLI + workers
     │   └── ur-squid [:3128] ← HTTP proxy for workers
     │
     └── workers network (bridge, internal)

@@ -13,7 +13,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
-| `server_port` | u16 | 42069 | TCP port for ur→server gRPC |
+| `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
 
@@ -130,7 +130,7 @@ WorkerConfig
 
 ```toml
 workspace = "/Users/me/.ur/workspace"
-server_port = 42069
+server_port = 12321
 
 [proxy]
 hostname = "ur-squid"
