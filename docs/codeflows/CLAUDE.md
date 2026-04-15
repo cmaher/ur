@@ -8,6 +8,7 @@ Detailed flow diagrams for cross-cutting concerns. Consult these before modifyin
 - `docs/codeflows/config.md` — Unified project configuration (`ur.toml` parsing, template paths, config flow through the launch pipeline)
 - `docs/codeflows/database.md` — Database lifecycle (Postgres connection, PgPool, migration, TicketRepo queries, pg_dump/pg_restore backup, BackupTaskManager scheduling, shutdown)
 - `docs/codeflows/host-exec-flow.md` — Host execution flow (three-hop gRPC pipeline for git, gh commands from workers)
+- `docs/codeflows/osc8-url-injection.md` — Worker OSC 8 URL injection (ur-osc8 PTY filter wrapping Claude → tmux so wrapped URLs stay ctrl+clickable in WezTerm/iTerm2)
 - `docs/codeflows/lifecycle-workflow.md` — Workflow coordinator (state machine, WorkflowCoordinator, WorkerdNextStepRouter, GithubPollerManager, workflow/intent tables, WorkflowStepComplete RPC)
 - `docs/codeflows/pool-git-builder-flow.md` — Pool git operations via builderd (clone, fetch, reset through builder daemon)
 - `docs/codeflows/process-launch-credentials.md` — Process launch and credential injection (how containers get Claude Code credentials)

@@ -16,6 +16,7 @@ members = [
     "crates/urui",
     "crates/server",
     "crates/tmux",
+    "crates/ur-osc8",
     "crates/ur-ping",
     "crates/workerd",
     "crates/workertools",

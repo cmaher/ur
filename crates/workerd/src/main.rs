@@ -127,7 +127,7 @@ async fn run_daemon_only() -> Result<()> {
     session.set_status_left(&status_left).await?;
 
     // 3. Launch Claude Code via send-keys
-    session.send_keys("claude").await?;
+    session.send_keys("ur-osc8 -- claude").await?;
     info!("claude launched in tmux session");
 
     // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when Claude exits

@@ -1,0 +1,18 @@
+[package]
+name = "ur-osc8"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "ur-osc8"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+portable-pty = "0.8"
+regex = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "signal", "sync", "time"] }
+
+[lints]
+workspace = true
