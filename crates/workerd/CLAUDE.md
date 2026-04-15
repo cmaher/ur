@@ -10,7 +10,7 @@ Three modes:
 
 Startup sequence (daemon mode):
 1. Creates tmux session `agent` (220x55), sets status line with worker ID
-2. Launches Claude Code via `tmux send-keys`
+2. Launches Claude Code via `tmux send-keys "ur-osc8 -- claude"` (OSC 8 hyperlink injector wraps Claude so tmux — with `terminal-features` hyperlinks enabled — forwards clickable links)
 3. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK)
 4. Starts gRPC server on port 9120 (long-lived, keeps the process alive)
 
