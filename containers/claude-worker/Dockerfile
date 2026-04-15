@@ -12,6 +12,9 @@ RUN chmod +x /usr/local/bin/workertools
 COPY bin/workerd /usr/local/bin/workerd
 RUN chmod +x /usr/local/bin/workerd
 
+COPY bin/ur-osc8 /usr/local/bin/ur-osc8
+RUN chmod +x /usr/local/bin/ur-osc8
+
 # Shim directory — workerd writes shims here at startup
 RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
