@@ -3220,6 +3220,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ur-osc8"
+version = "0.1.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "ur-ping"
 version = "0.1.0"
 dependencies = [

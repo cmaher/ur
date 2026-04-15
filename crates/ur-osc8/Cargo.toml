@@ -1,0 +1,10 @@
+[package]
+name = "ur-osc8"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+regex = "1"
+
+[lints]
+workspace = true
