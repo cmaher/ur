@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use chrono::Utc;
 use rand::Rng;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use ur_config::NetworkConfig;
@@ -566,12 +566,31 @@ impl WorkerManager {
             "stopping container"
         );
 
-        // 1. Stop + remove container (scoped so rt is dropped before await)
+        // 1. Stop + remove container (scoped so rt is dropped before await).
+        // Tolerate already-missing containers: external forces (docker restart,
+        // manual `docker rm`, machine reboot) can delete the container out from
+        // under us, but the DB still shows it running. Bailing on "No such
+        // container" here would leave the worker row stuck as running forever,
+        // blocking every future `ur worker kill`.
         {
             let rt = container::runtime_from_env();
             let cid = container::ContainerId(worker.container_id.clone());
-            rt.stop(&cid).map_err(|e| e.to_string())?;
-            rt.rm(&cid).map_err(|e| e.to_string())?;
+            if let Err(e) = rt.stop(&cid) {
+                let msg = e.to_string();
+                if is_missing_container_err(&msg) {
+                    warn!(container_id = %cid.0, "container already gone, skipping stop");
+                } else {
+                    return Err(msg);
+                }
+            }
+            if let Err(e) = rt.rm(&cid) {
+                let msg = e.to_string();
+                if is_missing_container_err(&msg) {
+                    warn!(container_id = %cid.0, "container already gone, skipping rm");
+                } else {
+                    return Err(msg);
+                }
+            }
         }
 
         // 2. Release pool slot if this was a project-based launch
@@ -661,6 +680,12 @@ impl WorkerManager {
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
     }
+}
+
+/// Returns true if a container runtime error indicates the container no longer exists.
+/// Both `docker` and `nerdctl` surface this as "No such container" in stderr.
+fn is_missing_container_err(msg: &str) -> bool {
+    msg.contains("No such container")
 }
 
 /// Build the environment variables for a worker container launch.
@@ -1317,29 +1342,43 @@ skills = ["only-one"]
     }
 
     #[tokio::test]
-    async fn stop_by_worker_id_finds_registered_worker() {
-        let (mgr, _workspace, _test_db) = test_manager().await;
+    async fn stop_by_worker_id_tolerates_missing_container() {
+        let (mgr, _workspace, test_db) = test_manager().await;
         let wid = WorkerId("self-stop-ab12".into());
         mgr.register_worker(
             wid.clone(),
             "self-stop".into(),
             String::new(),
             None,
-            WorkerStrategy::Code,
-            "fake-container-id".into(),
+            WorkerStrategy::Design,
+            "nonexistent-container-id-deadbeef".into(),
             Uuid::new_v4().to_string(),
         )
         .await;
 
-        // stop_by_worker_id will find the worker in the DB but fail at the
-        // Docker stop step (no real container). The important thing is that
-        // the lookup by worker_id succeeded — it didn't return "unknown worker".
-        let result = mgr.stop_by_worker_id(&wid).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            !err.contains("unknown worker"),
-            "expected Docker error, not lookup failure: {err}"
-        );
+        // The registered container_id doesn't exist in Docker, so `docker stop`
+        // returns "No such container". Previously this left the worker row stuck
+        // as `running` forever. Now stop_by_worker_id should treat the missing
+        // container as a no-op and still flip the DB to stopped.
+        mgr.stop_by_worker_id(&wid)
+            .await
+            .expect("stop should tolerate missing container");
+
+        let worker = mgr.worker_repo.get_worker(&wid.0).await.unwrap().unwrap();
+        assert_eq!(worker.container_status, "stopped");
+        drop(test_db);
+    }
+
+    #[test]
+    fn is_missing_container_err_matches_docker_stderr() {
+        // Real stderr shape from `docker stop <missing>`:
+        // "docker stop failed: Error response from daemon: No such container: <id>"
+        assert!(is_missing_container_err(
+            "docker stop failed: Error response from daemon: No such container: abc123"
+        ));
+        assert!(is_missing_container_err(
+            "nerdctl rm failed: No such container: abc123"
+        ));
+        assert!(!is_missing_container_err("some unrelated docker error"));
     }
 }
