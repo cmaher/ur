@@ -128,7 +128,7 @@ async fn make_grpc_handler(
         network_manager,
         network_config.clone(),
         ur_config::DEFAULT_SERVER_PORT + 1,
-        ur_server::worker::PromptModesConfig::default(),
+        ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -253,7 +253,7 @@ async fn make_worker_handler() -> (
         network_manager,
         network_config.clone(),
         ur_config::DEFAULT_SERVER_PORT + 1,
-        ur_server::worker::PromptModesConfig::default(),
+        ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {

@@ -288,6 +288,11 @@ fn write_test_config(
          [db]\n\
          host = \"{postgres}\"\n\
          \n\
+         [worker_modes.custommodel]\n\
+         base = \"code\"\n\
+         skills = [\"implement\"]\n\
+         model = \"my-custom-model\"\n\
+         \n\
          {projects_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
@@ -573,6 +578,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_workspace_mount(&env);
         scenario_pool_launch(&env);
         scenario_design_mode_pool_launch(&env);
+        scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
@@ -588,6 +594,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "pool-test",
         "design-test-1",
         "design-test-2",
+        "custom-model-test",
         "rust-image-test",
         "hotreload-test",
     ] {
@@ -686,6 +693,59 @@ fn exec_in_container(runtime: &str, container: &str, args: &[&str]) -> std::proc
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("failed to exec {args:?} in container {container}: {e}"))
+}
+
+/// Read a single env var from a running container via `printenv`.
+/// Returns the trimmed value, panicking if the var is unset or the exec fails.
+fn container_env_var(runtime: &str, container: &str, var: &str) -> String {
+    let output = exec_in_container(runtime, container, &["printenv", var]);
+    assert_exec_success(
+        &output,
+        &format!("printenv {var} should succeed in container {container}"),
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Read `~/.claude/settings.json` from inside a running container and parse it
+/// as JSON. Panics if the file cannot be read or parsed.
+fn read_container_settings_json(runtime: &str, container: &str) -> serde_json::Value {
+    // Use the worker's HOME to locate settings.json; `ur-worker` images use
+    // `/home/worker/.claude/settings.json`, so we rely on $HOME expansion via a shell.
+    let output = exec_in_container(
+        runtime,
+        container,
+        &["sh", "-c", "cat \"$HOME/.claude/settings.json\""],
+    );
+    assert_exec_success(
+        &output,
+        &format!("reading ~/.claude/settings.json from container {container}"),
+    );
+    let body = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&body).unwrap_or_else(|e| {
+        panic!(
+            "failed to parse ~/.claude/settings.json from container {container}: {e}\n\
+             contents: {body}"
+        )
+    })
+}
+
+/// Assert that a running container has `UR_WORKER_MODEL=<expected>` and that
+/// `~/.claude/settings.json` inside the container contains `"model": "<expected>"`.
+fn assert_worker_model(runtime: &str, container: &str, expected: &str) {
+    let env_val = container_env_var(runtime, container, "UR_WORKER_MODEL");
+    assert_eq!(
+        env_val, expected,
+        "container {container} should have UR_WORKER_MODEL={expected}, got {env_val:?}"
+    );
+
+    let settings = read_container_settings_json(runtime, container);
+    let model = settings.get("model").and_then(|v| v.as_str());
+    assert_eq!(
+        model,
+        Some(expected),
+        "container {container} ~/.claude/settings.json should contain \"model\": \"{expected}\", \
+         got full settings: {settings}"
+    );
 }
 
 /// Assert that a container exec exited with code 0, panicking with stdout/stderr on failure.
@@ -827,6 +887,9 @@ fn scenario_pool_launch(env: &TestEnv) {
         // ---- exec ur-ping inside container ----
         assert_ping_pong(&env.runtime, &container_name);
 
+        // ---- Verify code mode resolves UR_WORKER_MODEL=sonnet and settings.json "model": "sonnet" ----
+        assert_worker_model(&env.runtime, &container_name, "sonnet");
+
         // ---- Test hostexec: git commands and Lua validation ----
         assert_git_hostexec(&env.runtime, &container_name);
 
@@ -911,6 +974,9 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name_1);
 
+        // ---- Verify design mode resolves UR_WORKER_MODEL=opus and settings.json "model": "opus" ----
+        assert_worker_model(&env.runtime, &container_name_1, "opus");
+
         // ---- Verify worker has cloned content ----
         let ls_output = Command::new(&env.runtime)
             .args(["exec", &container_name_1, "ls", "/workspace/README.md"])
@@ -982,6 +1048,64 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name_1);
         force_remove_container(&env.runtime, &container_name_2);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Custom mode with explicit `model` override: verify `UR_WORKER_MODEL` and
+/// settings.json inside the container reflect the custom model value from ur.toml.
+fn scenario_custom_mode_model_override(env: &TestEnv) {
+    let ticket_id = "custom-model-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch worker with custom mode (defined in ur.toml as "custommodel") ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &[
+                "worker",
+                "launch",
+                "-p",
+                env.project_key,
+                "-m",
+                "custommodel",
+                ticket_id,
+            ],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} -m custommodel failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify custom model flows through ----
+        assert_worker_model(&env.runtime, &container_name, "my-custom-model");
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
 }
