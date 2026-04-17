@@ -232,10 +232,11 @@ impl LaunchManager {
             crate::WorkerId,
             Vec<String>,
             crate::WorkerStrategy,
+            String,
         ),
         Status,
     > {
-        let (strategy, resolved_skills, _model) = self
+        let (strategy, resolved_skills, model) = self
             .worker_manager
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
@@ -323,12 +324,13 @@ impl LaunchManager {
             worker_id,
             resolved_skills,
             strategy,
+            model,
         ))
     }
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
     pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<String, Status> {
-        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy) =
+        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model) =
             self.resolve_launch_workspace(&req).await?;
 
         // Acquire shared slots for context repos in parallel.
@@ -405,6 +407,7 @@ impl LaunchManager {
             project_key,
             strategy,
             skills,
+            model,
             git_hooks_dir,
             skill_hooks_dir,
             claude_md,

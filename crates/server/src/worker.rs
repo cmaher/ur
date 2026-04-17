@@ -267,6 +267,10 @@ pub struct WorkerConfig {
     pub strategy: WorkerStrategy,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
+    /// Resolved Claude Code model name to pass as `UR_WORKER_MODEL` env var.
+    /// Empty string means no `UR_WORKER_MODEL` env var is set (falls back to
+    /// `claude`'s built-in default).
+    pub model: String,
     /// Optional git hooks directory template string from project config.
     pub git_hooks_dir: Option<String>,
     /// Optional skill hooks directory template string from project config.
@@ -776,6 +780,12 @@ fn build_worker_env_vars(
         config.strategy.claude_md_name().into(),
     ));
 
+    // Inject resolved Claude Code model name (only when non-empty — empty
+    // means fall back to claude's built-in default)
+    if !config.model.is_empty() {
+        env_vars.push(("UR_WORKER_MODEL".into(), config.model.clone()));
+    }
+
     // Inject project key so workers can resolve project context via env
     if !config.project_key.is_empty() {
         env_vars.push(("UR_PROJECT".into(), config.project_key.clone()));
@@ -1123,6 +1133,72 @@ mod tests {
         assert!(
             https_val.starts_with("http://"),
             "HTTPS_PROXY must use http:// scheme (proxy speaks plain HTTP, tunnels via CONNECT)"
+        );
+    }
+
+    fn test_worker_config(strategy: WorkerStrategy, model: &str) -> WorkerConfig {
+        WorkerConfig {
+            process_id: "test-proc".into(),
+            worker_id: WorkerId("test-proc-ab12".into()),
+            image_id: "ur-worker-rust:latest".into(),
+            cpus: 1,
+            memory: "512m".into(),
+            workspace_dir: None,
+            proxy_hostname: "ur-squid".into(),
+            project_key: String::new(),
+            strategy,
+            skills: Vec::new(),
+            model: model.into(),
+            git_hooks_dir: None,
+            skill_hooks_dir: None,
+            claude_md: None,
+            mounts: Vec::new(),
+            ports: Vec::new(),
+            slot_id: None,
+            context_mounts: Vec::new(),
+        }
+    }
+
+    fn test_network_config() -> ur_config::NetworkConfig {
+        NetworkConfig {
+            name: ur_config::DEFAULT_NETWORK_NAME.into(),
+            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+        }
+    }
+
+    #[test]
+    fn build_worker_env_vars_design_mode_sets_opus_model() {
+        let cfg = WorkerModesConfig::default();
+        let (strategy, _skills, model) = cfg.resolve_mode("design").unwrap();
+        let config = test_worker_config(strategy, &model);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&("UR_WORKER_MODEL".into(), "opus".into())),
+            "design mode should inject UR_WORKER_MODEL=opus; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_code_mode_sets_sonnet_model() {
+        let cfg = WorkerModesConfig::default();
+        let (strategy, _skills, model) = cfg.resolve_mode("code").unwrap();
+        let config = test_worker_config(strategy, &model);
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            vars.contains(&("UR_WORKER_MODEL".into(), "sonnet".into())),
+            "code mode should inject UR_WORKER_MODEL=sonnet; got {vars:?}"
+        );
+    }
+
+    #[test]
+    fn build_worker_env_vars_empty_model_omits_env_var() {
+        let config = test_worker_config(WorkerStrategy::Code, "");
+        let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
+        assert!(
+            !vars.iter().any(|(k, _)| k == "UR_WORKER_MODEL"),
+            "empty model should NOT inject UR_WORKER_MODEL; got {vars:?}"
         );
     }
 
