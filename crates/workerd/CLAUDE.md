@@ -21,6 +21,7 @@ itself. This keeps workerd image-agnostic.
 Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var
 - Copies strategy-specific CLAUDE.md from potential-claudes based on `$UR_WORKER_CLAUDE` env var
+- Composes `~/.claude/settings.json` from the baked-in `~/.claude/potential-settings.json`, merging `"model": "$UR_WORKER_MODEL"` when the env var is non-empty (omitted otherwise)
 - Copies git hooks from `$UR_GIT_HOOKS_DIR` (or default `/workspace/ur-hooks/git/`) into `/workspace/.git/hooks/`
 - Copies skill hooks from `$UR_SKILL_HOOKS_DIR` (or default `/workspace/ur-hooks/skills/`) into `~/.claude/skill-hooks/`
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)

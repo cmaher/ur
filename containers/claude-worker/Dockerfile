@@ -24,7 +24,7 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Bake in minimal Claude Code config to skip onboarding/login prompts.
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
-COPY claude-settings.json /home/worker/.claude/settings.json
+COPY claude-settings.json /home/worker/.claude/potential-settings.json
 COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
 COPY all-skills/ /home/worker/.claude/potential-skills/
 RUN mkdir -p /home/worker/.claude/skills
