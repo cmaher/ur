@@ -12,7 +12,7 @@ use ur_db::{
     DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo,
     WorkflowRepo,
 };
-use ur_server::worker::PromptModesConfig;
+use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
     BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, ProjectRegistry,
@@ -57,12 +57,12 @@ async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
     Ok(db)
 }
 
-fn load_prompt_modes(cfg: &Config) -> anyhow::Result<PromptModesConfig> {
+fn load_worker_modes(cfg: &Config) -> anyhow::Result<WorkerModesConfig> {
     let toml_path = cfg.config_dir.join("ur.toml");
     match std::fs::read_to_string(&toml_path) {
-        Ok(contents) => PromptModesConfig::from_toml(&contents)
-            .map_err(|e| anyhow::anyhow!("failed to parse prompt_modes: {e}")),
-        Err(_) => Ok(PromptModesConfig::default()),
+        Ok(contents) => WorkerModesConfig::from_toml(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse worker_modes: {e}")),
+        Err(_) => Ok(WorkerModesConfig::default()),
     }
 }
 
@@ -409,7 +409,7 @@ async fn init_managers(
     host_workspace: &Path,
     host_config_dir: &Path,
     logs_dir: &Path,
-    prompt_modes: PromptModesConfig,
+    worker_modes: WorkerModesConfig,
     network_manager: NetworkManager,
     docker_command: &str,
 ) -> anyhow::Result<(
@@ -480,7 +480,7 @@ async fn init_managers(
         network_manager,
         cfg.network.clone(),
         cfg.worker_port,
-        prompt_modes,
+        worker_modes,
         worker_repo.clone(),
     );
 
@@ -545,7 +545,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| cfg.config_dir.clone());
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
-    let prompt_modes = load_prompt_modes(&cfg)?;
+    let worker_modes = load_worker_modes(&cfg)?;
     let db = init_database(&cfg).await?;
     let (shutdown_tx, backup_handle) = init_backup(&cfg)?;
 
@@ -559,7 +559,7 @@ async fn main() -> anyhow::Result<()> {
             &host_workspace,
             &host_config_dir,
             &logs_dir,
-            prompt_modes,
+            worker_modes,
             network_manager,
             &docker_command,
         )

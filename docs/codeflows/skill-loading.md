@@ -32,8 +32,8 @@ WorkerLaunchRequest { mode, skills }
 WorkerManager::resolve_skills()                [crates/server/src/worker.rs]
     │   Priority:
     │     1. If `skills` is non-empty → use directly
-    │     2. If `mode` is non-empty → look up prompt_modes.<mode>.skills
-    │     3. Otherwise → use prompt_modes.code (default)
+    │     2. If `mode` is non-empty → look up worker_modes.<mode>.skills
+    │     3. Otherwise → use worker_modes.code (default)
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
@@ -46,10 +46,10 @@ Default skill lists for each mode are defined in `crates/server/src/strategy.rs`
 ### ur.toml Override
 
 ```toml
-[prompt_modes.code]
+[worker_modes.code]
 skills = ["tickets", "custom-skill"]
 
-[prompt_modes.my-mode]
+[worker_modes.my-mode]
 skills = ["a", "b", "c"]
 ```
 
