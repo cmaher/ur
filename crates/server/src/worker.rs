@@ -575,22 +575,8 @@ impl WorkerManager {
         {
             let rt = container::runtime_from_env();
             let cid = container::ContainerId(worker.container_id.clone());
-            if let Err(e) = rt.stop(&cid) {
-                let msg = e.to_string();
-                if is_missing_container_err(&msg) {
-                    warn!(container_id = %cid.0, "container already gone, skipping stop");
-                } else {
-                    return Err(msg);
-                }
-            }
-            if let Err(e) = rt.rm(&cid) {
-                let msg = e.to_string();
-                if is_missing_container_err(&msg) {
-                    warn!(container_id = %cid.0, "container already gone, skipping rm");
-                } else {
-                    return Err(msg);
-                }
-            }
+            tolerate_missing(rt.stop(&cid), &cid, "stop")?;
+            tolerate_missing(rt.rm(&cid), &cid, "rm")?;
         }
 
         // 2. Release pool slot if this was a project-based launch
@@ -686,6 +672,27 @@ impl WorkerManager {
 /// Both `docker` and `nerdctl` surface this as "No such container" in stderr.
 fn is_missing_container_err(msg: &str) -> bool {
     msg.contains("No such container")
+}
+
+/// Swallow "No such container" errors from a container runtime call, logging a
+/// warning instead. All other errors bubble up as-is.
+fn tolerate_missing(
+    res: anyhow::Result<()>,
+    cid: &container::ContainerId,
+    op: &str,
+) -> Result<(), String> {
+    match res {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let msg = e.to_string();
+            if is_missing_container_err(&msg) {
+                warn!(container_id = %cid.0, op, "container already gone, skipping");
+                Ok(())
+            } else {
+                Err(msg)
+            }
+        }
+    }
 }
 
 /// Build the environment variables for a worker container launch.
