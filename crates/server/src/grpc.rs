@@ -235,7 +235,7 @@ impl LaunchManager {
         ),
         Status,
     > {
-        let (strategy, resolved_skills) = self
+        let (strategy, resolved_skills, _model) = self
             .worker_manager
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;

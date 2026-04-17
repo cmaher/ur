@@ -76,6 +76,18 @@ impl WorkerStrategy {
         self.name()
     }
 
+    /// Returns the default Claude Code model alias for this strategy.
+    ///
+    /// Values are short aliases passed through verbatim to Claude Code, which
+    /// resolves them to a specific model version at runtime. This keeps the
+    /// config stable across model releases.
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            Self::Code => "sonnet",
+            Self::Design => "opus",
+        }
+    }
+
     /// Returns the default skill list for this strategy.
     pub fn skills(&self) -> Vec<String> {
         let mut skills = common_skills();
@@ -149,6 +161,16 @@ mod tests {
     fn claude_md_name_matches_strategy_name() {
         assert_eq!(WorkerStrategy::Code.claude_md_name(), "code");
         assert_eq!(WorkerStrategy::Design.claude_md_name(), "design");
+    }
+
+    #[test]
+    fn default_model_code_is_sonnet() {
+        assert_eq!(WorkerStrategy::Code.default_model(), "sonnet");
+    }
+
+    #[test]
+    fn default_model_design_is_opus() {
+        assert_eq!(WorkerStrategy::Design.default_model(), "opus");
     }
 
     #[test]

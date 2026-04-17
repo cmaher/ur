@@ -85,21 +85,31 @@ struct RawWorkerModes {
     modes: HashMap<String, RawModeEntry>,
 }
 
-/// A single worker mode entry with its base strategy and skills list.
+/// A single worker mode entry with its base strategy, skills list, and optional
+/// model override.
 #[derive(Debug, Deserialize)]
 struct RawModeEntry {
     /// The base worker strategy name (e.g. "code" or "design"). Required for custom modes.
     base: String,
     skills: Vec<String>,
+    /// Optional Claude Code model alias override. When omitted, the mode
+    /// inherits `default_model()` from its base strategy.
+    #[serde(default)]
+    model: Option<String>,
 }
 
-/// Resolved worker modes configuration mapping mode names to skill lists and strategies.
+/// Resolved worker modes configuration mapping mode names to skill lists, strategies,
+/// and Claude Code model aliases.
 #[derive(Debug, Clone)]
 pub struct WorkerModesConfig {
     modes: HashMap<String, Vec<String>>,
     /// Maps mode names to their worker strategy. Built-in modes ("code", "design")
     /// map to their corresponding variants; custom modes map via their `base` field.
     strategies: HashMap<String, WorkerStrategy>,
+    /// Maps mode names to their resolved Claude Code model alias. Defaults come
+    /// from `WorkerStrategy::default_model()`; custom modes may override via
+    /// `worker_modes.<name>.model`.
+    models: HashMap<String, String>,
 }
 
 impl Default for WorkerModesConfig {
@@ -107,9 +117,16 @@ impl Default for WorkerModesConfig {
         let mut strategies = HashMap::new();
         strategies.insert("code".into(), WorkerStrategy::Code);
         strategies.insert("design".into(), WorkerStrategy::Design);
+        let mut models = HashMap::new();
+        models.insert("code".into(), WorkerStrategy::Code.default_model().into());
+        models.insert(
+            "design".into(),
+            WorkerStrategy::Design.default_model().into(),
+        );
         Self {
             modes: default_worker_modes(),
             strategies,
+            models,
         }
     }
 }
@@ -136,6 +153,12 @@ impl WorkerModesConfig {
         let mut strategies = HashMap::new();
         strategies.insert("code".into(), WorkerStrategy::Code);
         strategies.insert("design".into(), WorkerStrategy::Design);
+        let mut models = HashMap::new();
+        models.insert("code".into(), WorkerStrategy::Code.default_model().into());
+        models.insert(
+            "design".into(),
+            WorkerStrategy::Design.default_model().into(),
+        );
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -143,10 +166,18 @@ impl WorkerModesConfig {
                     entry.base, name
                 )
             })?;
+            let model = entry
+                .model
+                .unwrap_or_else(|| strategy.default_model().to_owned());
             strategies.insert(name.clone(), strategy);
+            models.insert(name.clone(), model);
             modes.insert(name, entry.skills);
         }
-        Ok(Self { modes, strategies })
+        Ok(Self {
+            modes,
+            strategies,
+            models,
+        })
     }
 
     /// Resolve skills for a launch request.
@@ -168,13 +199,18 @@ impl WorkerModesConfig {
             .ok_or_else(|| format!("unknown worker mode: {mode_name}"))
     }
 
-    /// Resolve a mode name to its worker strategy and skill list.
+    /// Resolve a mode name to its worker strategy, skill list, and Claude Code model.
     ///
     /// For built-in modes ("code", "design"), returns the corresponding
-    /// `WorkerStrategy` variant and its default skills. For custom modes,
-    /// returns the strategy determined by the `base` field and the custom skills.
+    /// `WorkerStrategy` variant, its default skills, and its default model.
+    /// For custom modes, returns the strategy determined by the `base` field,
+    /// the custom skills, and the resolved model (either the explicit
+    /// `worker_modes.<name>.model` override or the base strategy's default).
     /// An empty mode name defaults to "code".
-    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
+    pub fn resolve_mode(
+        &self,
+        mode: &str,
+    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
         let mode_name = if mode.is_empty() { "code" } else { mode };
         let strategy = self
             .strategies
@@ -186,7 +222,12 @@ impl WorkerModesConfig {
             .get(mode_name)
             .cloned()
             .ok_or_else(|| format!("unknown worker mode: {mode_name}"))?;
-        Ok((strategy, skills))
+        let model = self
+            .models
+            .get(mode_name)
+            .cloned()
+            .ok_or_else(|| format!("unknown worker mode: {mode_name}"))?;
+        Ok((strategy, skills, model))
     }
 }
 
@@ -301,8 +342,11 @@ impl WorkerManager {
         self.worker_modes.resolve_skills(mode, skills)
     }
 
-    /// Resolve a mode name to its worker strategy and skill list.
-    pub fn resolve_mode(&self, mode: &str) -> Result<(WorkerStrategy, Vec<String>), String> {
+    /// Resolve a mode name to its worker strategy, skill list, and Claude Code model alias.
+    pub fn resolve_mode(
+        &self,
+        mode: &str,
+    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
         self.worker_modes.resolve_mode(mode)
     }
 
@@ -1139,17 +1183,19 @@ skills = ["a", "b"]
     #[test]
     fn resolve_mode_default_returns_code_strategy() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, skills) = cfg.resolve_mode("").unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert!(skills.contains(&"implement".to_string()));
+        assert_eq!(model, "sonnet");
     }
 
     #[test]
     fn resolve_mode_design_returns_design_strategy() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, skills) = cfg.resolve_mode("design").unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1160,9 +1206,11 @@ base = "design"
 skills = ["tickets", "my-custom-skill"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills) = cfg.resolve_mode("my-docs").unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("my-docs").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
+        // Model inherits from base strategy (design -> opus) when not overridden.
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1192,9 +1240,65 @@ base = "code"
 skills = ["only-one"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills) = cfg.resolve_mode("code").unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("code").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
+        // No explicit model override; inherits code's default ("sonnet").
+        assert_eq!(model, "sonnet");
+    }
+
+    #[test]
+    fn resolve_mode_code_default_model_is_sonnet() {
+        let cfg = WorkerModesConfig::default();
+        let (_, _, model) = cfg.resolve_mode("code").unwrap();
+        assert_eq!(model, "sonnet");
+    }
+
+    #[test]
+    fn resolve_mode_design_default_model_is_opus() {
+        let cfg = WorkerModesConfig::default();
+        let (_, _, model) = cfg.resolve_mode("design").unwrap();
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn resolve_mode_code_explicit_model_overrides_default() {
+        let toml = r#"
+[worker_modes.code]
+base = "code"
+skills = ["only-one"]
+model = "opus"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, _, model) = cfg.resolve_mode("code").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Code);
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn resolve_mode_custom_inherits_design_model() {
+        let toml = r#"
+[worker_modes.x]
+base = "design"
+skills = ["tickets"]
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, _, model) = cfg.resolve_mode("x").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Design);
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn resolve_mode_custom_explicit_haiku_model() {
+        let toml = r#"
+[worker_modes.x]
+base = "design"
+skills = ["tickets"]
+model = "haiku"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (_, _, model) = cfg.resolve_mode("x").unwrap();
+        assert_eq!(model, "haiku");
     }
 
     #[tokio::test]
