@@ -167,15 +167,15 @@ mod tests {
     use super::*;
 
     use ticket_db::{GraphManager, TicketRepo};
-    use ur_db::WorkflowRepo;
     use ur_db_test::TestDb;
+    use workflow_db::WorkflowRepo;
 
     async fn setup() -> (TicketClient, TicketRepo, TestDb) {
         let test_db = TestDb::new().await;
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
+        let workflow_repo = WorkflowRepo::new(pool);
 
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),

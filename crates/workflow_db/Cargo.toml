@@ -4,12 +4,17 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
-tokio = { workspace = true }
+ticket_db = { path = "../ticket_db" }
+tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+ur_rpc = { path = "../ur_rpc" }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 
 [lints]

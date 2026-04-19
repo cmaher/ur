@@ -6,21 +6,21 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{error, info, warn};
 
 use ticket_db::TicketRepo;
-use ur_db::WorkflowRepo;
-use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
     LinkCommentTicketRequest, LinkCommentTicketResponse, NodeCleanupRequest, NodeCleanupResponse,
-    NodeInfo, NodeListRequest, NodeListResponse, PingRequest, PingResponse, ReloadProjectsRequest,
+    NodeListRequest, NodeListResponse, PingRequest, PingResponse, ReloadProjectsRequest,
     ReloadProjectsResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
     UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
     WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
     WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
     WorkflowStepCompleteResponse,
 };
+use workflow_db::WorkflowRepo;
+use workflow_db::model::AgentStatus;
 
-use ur_db::WorkerRepo;
+use workflow_db::WorkerRepo;
 
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
@@ -478,7 +478,6 @@ pub struct CoreServiceHandler {
     pub network_config: ur_config::NetworkConfig,
     pub builderd_addr: String,
     pub config_dir: PathBuf,
-    pub node_id: String,
 }
 
 #[tonic::async_trait]
@@ -699,21 +698,10 @@ impl CoreService for CoreServiceHandler {
         _req: Request<NodeListRequest>,
     ) -> Result<Response<NodeListResponse>, Status> {
         info!("node_list request received");
-        let worker_nodes = self
-            .worker_repo
-            .list_node_ids()
-            .await
-            .map_err(|e| Status::internal(format!("failed to list worker node_ids: {e}")))?;
-        let workflow_nodes = self
-            .workflow_repo
-            .list_node_ids()
-            .await
-            .map_err(|e| Status::internal(format!("failed to list workflow node_ids: {e}")))?;
-
-        let nodes = merge_node_counts(&worker_nodes, &workflow_nodes);
+        // Node system removed — no per-node data exists.
         Ok(Response::new(NodeListResponse {
-            nodes,
-            local_node_id: self.node_id.clone(),
+            nodes: Vec::new(),
+            local_node_id: String::new(),
         }))
     }
 
@@ -722,72 +710,13 @@ impl CoreService for CoreServiceHandler {
         req: Request<NodeCleanupRequest>,
     ) -> Result<Response<NodeCleanupResponse>, Status> {
         let req = req.into_inner();
-        info!(node_id = %req.node_id, "node_cleanup request received");
-
-        if req.node_id.is_empty() {
-            return Err(Status::invalid_argument("node_id is required"));
-        }
-        if req.node_id == self.node_id {
-            return Err(Status::invalid_argument(
-                "cannot clean up the local node — this would delete active data",
-            ));
-        }
-
-        let (workers_deleted, slots_deleted) = self
-            .worker_repo
-            .delete_by_node_id(&req.node_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to delete workers/slots: {e}")))?;
-        let workflows_deleted = self
-            .workflow_repo
-            .delete_by_node_id(&req.node_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to delete workflows: {e}")))?;
-
-        info!(
-            node_id = %req.node_id,
-            workers_deleted,
-            slots_deleted,
-            workflows_deleted,
-            "node cleanup complete"
-        );
-
+        info!(node_id = %req.node_id, "node_cleanup request received (no-op: node system removed)");
         Ok(Response::new(NodeCleanupResponse {
-            workers_deleted: workers_deleted as i32,
-            slots_deleted: slots_deleted as i32,
-            workflows_deleted: workflows_deleted as i32,
+            workers_deleted: 0,
+            slots_deleted: 0,
+            workflows_deleted: 0,
         }))
     }
-}
-
-/// Merge worker/slot counts and workflow counts into a unified NodeInfo list.
-fn merge_node_counts(
-    worker_nodes: &[(String, i64, i64)],
-    workflow_nodes: &[(String, i64)],
-) -> Vec<NodeInfo> {
-    let mut map: HashMap<String, (i32, i32, i32)> = HashMap::new();
-    for (node_id, worker_count, slot_count) in worker_nodes {
-        let entry = map.entry(node_id.clone()).or_default();
-        entry.0 = *worker_count as i32;
-        entry.1 = *slot_count as i32;
-    }
-    for (node_id, workflow_count) in workflow_nodes {
-        let entry = map.entry(node_id.clone()).or_default();
-        entry.2 = *workflow_count as i32;
-    }
-    let mut nodes: Vec<NodeInfo> = map
-        .into_iter()
-        .map(
-            |(node_id, (worker_count, slot_count, workflow_count))| NodeInfo {
-                node_id,
-                worker_count,
-                slot_count,
-                workflow_count,
-            },
-        )
-        .collect();
-    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
-    nodes
 }
 
 /// CoreService for the worker gRPC server.
@@ -1076,7 +1005,7 @@ async fn persist_pool_branch(
 
 /// Spawn a background task to dispatch the /design command once the worker is idle.
 fn spawn_design_dispatch(
-    worker_repo: ur_db::WorkerRepo,
+    worker_repo: workflow_db::WorkerRepo,
     network_config: ur_config::NetworkConfig,
     process_id: String,
     worker_id: String,

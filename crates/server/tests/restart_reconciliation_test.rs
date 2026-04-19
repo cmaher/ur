@@ -18,8 +18,13 @@ use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 
 fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
+    let backup = ur_config::BackupConfig {
+        path: None,
+        interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+        enabled: true,
+        retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+    };
     ur_config::Config {
-        node_id: "test-node".to_string(),
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -39,12 +44,25 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            backup: backup.clone(),
+        },
+        ticket_db: ur_config::TicketDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+            bind_address: None,
+            backup: backup.clone(),
+        },
+        workflow_db: ur_config::WorkflowDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
+            bind_address: None,
+            backup,
         },
         worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
         git_branch_prefix: String::new(),
@@ -79,7 +97,7 @@ async fn make_components_with_db(
     db: &ur_db::DatabaseManager,
 ) -> (
     ur_server::WorkerManager,
-    ur_db::WorkerRepo,
+    workflow_db::WorkerRepo,
     ur_server::grpc::CoreServiceHandler,
 ) {
     let workspace = dir.join("workspace");
@@ -89,10 +107,10 @@ async fn make_components_with_db(
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = test_config(dir, &workspace);
-    let worker_repo = ur_db::WorkerRepo::new(db.pool().clone(), "test-node".to_string());
+    let worker_repo = workflow_db::WorkerRepo::new(db.pool().clone());
     let graph_manager = ticket_db::GraphManager::new(db.pool().clone());
     let ticket_repo = ticket_db::TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone(), "test-node".to_string());
+    let workflow_repo = workflow_db::WorkflowRepo::new(db.pool().clone());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -147,14 +165,13 @@ async fn make_components_with_db(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
-        node_id: "test-node".to_string(),
     };
     (worker_manager, worker_repo, handler)
 }
 
 /// Spawn a gRPC server with worker auth interceptor, return channel.
 async fn spawn_authed_server(
-    worker_repo: ur_db::WorkerRepo,
+    worker_repo: workflow_db::WorkerRepo,
     handler: ur_server::grpc::CoreServiceHandler,
 ) -> tonic::transport::Channel {
     let interceptor = ur_server::auth::worker_auth_interceptor(worker_repo);
@@ -212,20 +229,18 @@ async fn restart_reclaims_worker_with_live_container() {
     std::fs::create_dir_all(&slot_path).unwrap();
 
     // Insert a slot so we can verify the worker_slot link stays after reclamation.
-    let slot = ur_db::model::Slot {
+    let slot = workflow_db::model::Slot {
         id: "slot-restart-1".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_name: "0".to_owned(),
-
         host_path: slot_path.display().to_string(),
-        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
     worker_repo1.insert_slot(&slot).await.unwrap();
 
     // Register the worker (simulates a launched worker).
-    let worker = ur_db::model::Worker {
+    let worker = workflow_db::model::Worker {
         worker_id: worker_id_str.to_owned(),
         process_id: "restart-test".to_owned(),
         project_key: "test-proj".to_owned(),
@@ -235,7 +250,6 @@ async fn restart_reclaims_worker_with_live_container() {
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_path.display().to_string()),
-        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
@@ -330,19 +344,17 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     let slot_dir = pool_dir.join("0");
     std::fs::create_dir_all(&slot_dir).unwrap();
 
-    let slot = ur_db::model::Slot {
+    let slot = workflow_db::model::Slot {
         id: "slot-deleted-1".to_owned(),
         project_key: "test-proj".to_owned(),
         slot_name: "0".to_owned(),
-
         host_path: slot_dir.display().to_string(),
-        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
     worker_repo1.insert_slot(&slot).await.unwrap();
 
-    let worker = ur_db::model::Worker {
+    let worker = workflow_db::model::Worker {
         worker_id: "worker-deleted-slot".to_owned(),
         process_id: "proc-deleted".to_owned(),
         project_key: "test-proj".to_owned(),
@@ -352,7 +364,6 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_dir.display().to_string()),
-        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,
@@ -420,7 +431,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_worker_with_slot(
-    worker_repo: &ur_db::WorkerRepo,
+    worker_repo: &workflow_db::WorkerRepo,
     slot_id: &str,
     slot_name: &str,
     host_path: &str,
@@ -429,18 +440,17 @@ async fn insert_worker_with_slot(
     process_id: &str,
     container_id: &str,
 ) {
-    let slot = ur_db::model::Slot {
+    let slot = workflow_db::model::Slot {
         id: slot_id.to_owned(),
         project_key: "proj-mix".to_owned(),
         slot_name: slot_name.to_owned(),
         host_path: host_path.to_owned(),
-        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     };
     worker_repo.insert_slot(&slot).await.unwrap();
 
-    let worker = ur_db::model::Worker {
+    let worker = workflow_db::model::Worker {
         worker_id: worker_id.to_owned(),
         process_id: process_id.to_owned(),
         project_key: "proj-mix".to_owned(),
@@ -450,7 +460,6 @@ async fn insert_worker_with_slot(
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: None,
-        node_id: "test-node".to_owned(),
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         idle_redispatch_count: 0,

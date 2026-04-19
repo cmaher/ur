@@ -8,7 +8,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use ur_config::NetworkConfig;
-use ur_db::WorkerRepo;
+use workflow_db::WorkerRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
@@ -415,7 +415,7 @@ impl WorkerManager {
         worker_secret: String,
     ) {
         let now = Utc::now().to_rfc3339();
-        let worker = ur_db::model::Worker {
+        let worker = workflow_db::model::Worker {
             worker_id: worker_id.0,
             process_id,
             project_key,
@@ -425,7 +425,6 @@ impl WorkerManager {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
-            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -567,7 +566,7 @@ impl WorkerManager {
 
         // Record in database
         let now = Utc::now().to_rfc3339();
-        let worker = ur_db::model::Worker {
+        let worker = workflow_db::model::Worker {
             worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
@@ -577,7 +576,6 @@ impl WorkerManager {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
-            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -956,7 +954,7 @@ mod tests {
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.db().pool().clone(), "test-node".to_string());
+        let repo = WorkerRepo::new(test_db.db().pool().clone());
         (repo, test_db)
     }
 

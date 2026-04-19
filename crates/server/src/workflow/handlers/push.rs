@@ -638,7 +638,7 @@ async fn stall_agent(
     worker_id: &str,
 ) -> anyhow::Result<()> {
     ctx.worker_repo
-        .update_worker_agent_status(worker_id, ur_db::AgentStatus::Stalled)
+        .update_worker_agent_status(worker_id, workflow_db::AgentStatus::Stalled)
         .await
         .map_err(|e| {
             anyhow::anyhow!(

@@ -7,7 +7,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use ticket_db::LifecycleStatus;
-use ur_db::WorkflowRepo;
+use workflow_db::WorkflowRepo;
 
 use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 
@@ -469,16 +469,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
-    use ur_db::{WorkerRepo, WorkflowRepo};
     use ur_db_test::TestDb;
+    use workflow_db::{WorkerRepo, WorkflowRepo};
 
     async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
         let test_db = TestDb::new().await;
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
-        let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
+        let workflow_repo = WorkflowRepo::new(pool.clone());
+        let worker_repo = WorkerRepo::new(pool);
         (test_db, repo, workflow_repo, worker_repo)
     }
 

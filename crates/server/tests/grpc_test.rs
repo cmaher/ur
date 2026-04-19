@@ -39,8 +39,13 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
         server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.to_string(),
         worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.to_string(),
     };
+    let backup = ur_config::BackupConfig {
+        path: None,
+        interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+        enabled: true,
+        retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+    };
     let config = ur_config::Config {
-        node_id: "test-node".to_string(),
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),
@@ -60,12 +65,25 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            backup: backup.clone(),
+        },
+        ticket_db: ur_config::TicketDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+            bind_address: None,
+            backup: backup.clone(),
+        },
+        workflow_db: ur_config::WorkflowDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
+            bind_address: None,
+            backup,
         },
         worker_port: ur_config::DEFAULT_SERVER_PORT + 1,
         git_branch_prefix: String::new(),
@@ -96,10 +114,10 @@ async fn make_grpc_handler(
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
-    let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
+    let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
     let graph_manager = ticket_db::GraphManager::new(pool.clone());
     let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
+    let workflow_repo = workflow_db::WorkflowRepo::new(pool);
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -154,7 +172,6 @@ async fn make_grpc_handler(
         network_config,
         builderd_addr: format!("http://127.0.0.1:{}", ur_config::DEFAULT_SERVER_PORT + 2),
         config_dir: workspace,
-        node_id: "test-node".to_string(),
     };
     (handler, test_db)
 }
@@ -204,15 +221,15 @@ async fn spawn_worker_grpc_server(
 async fn make_worker_handler() -> (
     ur_server::grpc::WorkerCoreServiceHandler,
     ticket_db::TicketRepo,
-    ur_db::WorkflowRepo,
+    workflow_db::WorkflowRepo,
     ur_db_test::TestDb,
 ) {
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
-    let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
+    let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
     let graph_manager = ticket_db::GraphManager::new(pool.clone());
     let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
-    let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
+    let workflow_repo = workflow_db::WorkflowRepo::new(pool);
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
     let workspace = std::path::PathBuf::from("/tmp/test-worker-handler");

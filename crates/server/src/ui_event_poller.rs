@@ -5,8 +5,8 @@ use sqlx::postgres::PgListener;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{error, info, warn};
 
-use ur_db::UiEventRepo;
 use ur_rpc::proto::ticket::{UiEvent, UiEventBatch, UiEventType};
+use workflow_db::UiEventRepo;
 
 /// Channel name used by Postgres triggers to notify of new UI events.
 const LISTEN_CHANNEL: &str = "ui_events";

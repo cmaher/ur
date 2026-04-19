@@ -5,7 +5,6 @@ use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
 use ticket_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
-use ur_db::WorkflowRepo;
 use ur_rpc::error::{
     self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_ACTIVE_WORKFLOW,
     TICKET_HAS_OPEN_CHILDREN,
@@ -23,6 +22,7 @@ use ur_rpc::proto::ticket::{
     SubscribeUiEventsRequest, UiEventBatch, UpdateTicketRequest, UpdateTicketResponse,
     WorkflowHistoryEvent, WorkflowInfo,
 };
+use workflow_db::WorkflowRepo;
 
 use crate::UiEventPoller;
 use crate::WorkerManager;
@@ -126,7 +126,7 @@ pub struct TicketServiceHandler {
 
 impl TicketServiceHandler {
     /// Enrich a workflow with history events, ticket progress, and PR URL.
-    async fn enrich_workflow(&self, wf: ur_db::Workflow) -> Result<WorkflowInfo, Status> {
+    async fn enrich_workflow(&self, wf: workflow_db::Workflow) -> Result<WorkflowInfo, Status> {
         let pr_url = self
             .ticket_repo
             .get_meta(&wf.ticket_id, "ticket")
@@ -177,7 +177,7 @@ impl TicketServiceHandler {
     /// with history events and PR URL.
     async fn enrich_paginated_workflow(
         &self,
-        pw: ur_db::workflow_repo::PaginatedWorkflow,
+        pw: workflow_db::workflow_repo::PaginatedWorkflow,
     ) -> Result<WorkflowInfo, Status> {
         let pr_url = self
             .ticket_repo
@@ -1152,7 +1152,7 @@ impl TicketService for TicketServiceHandler {
 }
 
 fn workflow_to_proto(
-    wf: ur_db::Workflow,
+    wf: workflow_db::Workflow,
     pr_url: String,
     history: Vec<WorkflowHistoryEvent>,
     ticket_children_open: i64,
@@ -1184,8 +1184,8 @@ mod tests {
     use tonic::Request;
     use ur_db_test::TestDb;
 
-    fn test_workflow() -> ur_db::Workflow {
-        ur_db::Workflow {
+    fn test_workflow() -> workflow_db::Workflow {
+        workflow_db::Workflow {
             id: "wf-id".into(),
             ticket_id: "t-1".into(),
             status: LifecycleStatus::Implementing,
@@ -1198,7 +1198,6 @@ mod tests {
             ci_status: String::new(),
             mergeable: String::new(),
             review_status: String::new(),
-            node_id: String::new(),
             created_at: "2025-01-01T00:00:00Z".into(),
         }
     }
@@ -1251,7 +1250,7 @@ mod tests {
         let pool = test_db.db().pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
+        let workflow_repo = WorkflowRepo::new(pool);
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
             crate::hostexec::HostExecConfigManager::empty(),

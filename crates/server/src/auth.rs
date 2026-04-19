@@ -1,7 +1,7 @@
 use tokio::runtime::Handle;
 use tonic::{Request, Status};
 use ur_config::{WORKER_ID_HEADER, WORKER_SECRET_HEADER};
-use ur_db::WorkerRepo;
+use workflow_db::WorkerRepo;
 
 /// Creates a tonic interceptor that validates worker requests by checking
 /// `ur-worker-id` and `ur-worker-secret` metadata headers against the

@@ -21,7 +21,7 @@ async fn set_worker_updated_at(pool: &PgPool, worker_id: &str, updated_at: &str)
 }
 
 fn repo(db: &TestDb) -> WorkerRepo {
-    WorkerRepo::new(db.db().pool().clone(), "test-node".to_string())
+    WorkerRepo::new(db.db().pool().clone())
 }
 
 fn test_slot(id: &str, project_key: &str) -> Slot {
@@ -30,7 +30,6 @@ fn test_slot(id: &str, project_key: &str) -> Slot {
         project_key: project_key.to_owned(),
         slot_name: format!("slot-{id}"),
         host_path: format!("/tmp/{id}"),
-        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
     }
@@ -47,7 +46,6 @@ fn test_worker(worker_id: &str, project_key: &str) -> Worker {
         container_status: "provisioning".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(format!("/workspace/{worker_id}")),
-        node_id: "test-node".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         idle_redispatch_count: 0,
@@ -427,7 +425,6 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         id: "stale-slot".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-        node_id: String::new(),
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -445,7 +442,6 @@ async fn reconcile_slots_deletes_stale_db_rows() {
         container_status: "stopped".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: None,
-        node_id: String::new(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
         idle_redispatch_count: 0,
@@ -519,7 +515,6 @@ async fn reconcile_slots_mixed_stale_and_orphaned() {
         id: "slot-0".to_owned(),
         project_key: "proj-a".to_owned(),
         slot_name: "0".to_owned(),
-        node_id: String::new(),
         host_path: pool_dir.join("0").display().to_string(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -711,7 +706,6 @@ async fn reconcile_slots_cleans_stale_project_slots() {
         id: "orphan-proj-slot".to_owned(),
         project_key: "deleted-proj".to_owned(),
         slot_name: "0".to_owned(),
-        node_id: String::new(),
         host_path: "/tmp/deleted-proj/0".to_owned(),
         created_at: "2026-01-01T00:00:00Z".to_owned(),
         updated_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -809,50 +803,6 @@ async fn cleanup_after_reconciliation_preserves_reclaimed_workers() {
 
     let fetched = r.get_worker("reclaimed").await.unwrap().unwrap();
     assert_eq!(fetched.container_status, "running");
-
-    db.cleanup().await;
-}
-
-#[tokio::test]
-async fn adopt_legacy_node_rows_claims_empty_node_id_rows() {
-    let db = TestDb::new().await;
-    let r = repo(&db);
-    let pool = db.db().pool();
-
-    // Insert a slot row directly with empty node_id, simulating a pre-multi-node row.
-    sqlx::query(
-        "INSERT INTO slot (id, project_key, slot_name, host_path, node_id, created_at, updated_at)
-         VALUES ('legacy-slot', 'proj-a', '0', '/tmp/proj-a/0', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO worker (worker_id, process_id, project_key, container_id, worker_secret, strategy, container_status, agent_status, workspace_path, node_id, created_at, updated_at, idle_redispatch_count)
-         VALUES ('legacy-worker', 'proc', 'proj-a', 'ctr', 'sec', 'default', 'stopped', 'starting', NULL, '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0)",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-
-    // A row already on the local node — should not be touched.
-    r.insert_slot(&test_slot("local-slot", "proj-a"))
-        .await
-        .unwrap();
-
-    let (workers, slots) = r.adopt_legacy_node_rows().await.unwrap();
-    assert_eq!(workers, 1);
-    assert_eq!(slots, 1);
-
-    let adopted_slot = r.get_slot("legacy-slot").await.unwrap().unwrap();
-    assert_eq!(adopted_slot.node_id, "test-node");
-    let adopted_worker = r.get_worker("legacy-worker").await.unwrap().unwrap();
-    assert_eq!(adopted_worker.node_id, "test-node");
-
-    // Re-running is a no-op — nothing left with empty node_id.
-    let (workers, slots) = r.adopt_legacy_node_rows().await.unwrap();
-    assert_eq!(workers, 0);
-    assert_eq!(slots, 0);
 
     db.cleanup().await;
 }

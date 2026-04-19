@@ -116,7 +116,7 @@ async fn execute_merge(
 /// Verify ci_status=succeeded, mergeable=mergeable, and review_status=approved.
 /// Returns an error if any condition is not met (race between poller and handler).
 fn check_pre_merge_conditions(
-    workflow: &ur_db::Workflow,
+    workflow: &workflow_db::Workflow,
     ticket_id: &str,
 ) -> Result<(), anyhow::Error> {
     let mut failures = Vec::new();

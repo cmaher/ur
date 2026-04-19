@@ -1,6 +1,19 @@
 // workflow_db: Postgres-backed workflow database crate.
 
+pub mod model;
+pub mod ui_event_repo;
+pub mod worker_repo;
+pub mod workflow_repo;
+
 use sqlx::PgPool;
+
+pub use model::{
+    AgentStatus, Slot, Worker, WorkerSlot, Workflow, WorkflowEvent, WorkflowEventRow,
+    WorkflowIntent,
+};
+pub use ui_event_repo::UiEventRepo;
+pub use worker_repo::{SlotReconcileResult, WorkerReconcileResult, WorkerRepo};
+pub use workflow_repo::{PaginatedWorkflow, WorkflowRepo};
 
 /// Run all pending workflow_db migrations against the given pool.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {

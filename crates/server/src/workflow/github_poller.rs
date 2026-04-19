@@ -7,12 +7,12 @@ use tracing::{error, info, warn};
 
 use ticket_db::{LifecycleStatus, Ticket, TicketRepo};
 use ur_config::Config;
-use ur_db::WorkflowRepo;
-use ur_db::model::Workflow;
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
 use ur_rpc::workflow_condition;
 use ur_rpc::workflow_event::WorkflowEvent;
+use workflow_db::WorkflowRepo;
+use workflow_db::model::Workflow;
 
 use crate::WorkerManager;
 use crate::worker::WorkerId;

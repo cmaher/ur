@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use ticket_db::TicketRepo;
 use tonic::transport::Server;
-use ur_db::{WorkerRepo, WorkflowRepo};
+use workflow_db::{WorkerRepo, WorkflowRepo};
 
 use ur_rpc::proto::core::core_service_server::CoreServiceServer;
 use ur_rpc::proto::hostexec::host_exec_service_server::HostExecServiceServer;
