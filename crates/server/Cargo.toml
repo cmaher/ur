@@ -21,6 +21,7 @@ tracing-subscriber = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 local_repo = { path = "../local_repo" }
 ur_config = { path = "../ur_config" }
+db_events = { path = "../db_events" }
 ticket_db = { path = "../ticket_db" }
 workflow_db = { path = "../workflow_db" }
 mlua = { workspace = true }

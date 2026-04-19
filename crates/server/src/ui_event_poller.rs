@@ -1,36 +1,38 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::postgres::PgListener;
+use sqlx::PgPool;
 use tokio::sync::{Mutex, mpsc, watch};
-use tracing::{error, info, warn};
+use tracing::info;
 
+use db_events::PgEventPoller;
 use ur_rpc::proto::ticket::{UiEvent, UiEventBatch, UiEventType};
-use workflow_db::UiEventRepo;
 
-/// Channel name used by Postgres triggers to notify of new UI events.
-const LISTEN_CHANNEL: &str = "ui_events";
-
-/// Polls the `ui_events` table, waking on Postgres LISTEN/NOTIFY
-/// notifications with a configurable fallback timeout.
+/// Polls two `ui_events` tables (ticket DB and workflow DB) via dedicated
+/// `PgEventPoller` tasks and merges their event streams into a single
+/// `UiEventBatch` channel consumed by the gRPC `SubscribeUiEvents` RPC.
 ///
-/// Holds a dedicated Postgres LISTEN connection separate from the pool.
-/// When the LISTEN connection drops, falls back to periodic polling at
-/// the fallback interval and attempts to reconnect.
+/// Each database gets its own `PgEventPoller` with its own LISTEN/NOTIFY
+/// connection. Events from both are forwarded to all registered listeners
+/// over a single merged stream, so TUI consumers see no behavioral change.
 #[derive(Clone)]
 pub struct UiEventPoller {
-    repo: UiEventRepo,
-    fallback_interval: Duration,
-    database_url: String,
+    ticket_poller: PgEventPoller,
+    workflow_poller: PgEventPoller,
     listeners: Arc<Mutex<Vec<mpsc::Sender<UiEventBatch>>>>,
 }
 
 impl UiEventPoller {
-    pub fn new(repo: UiEventRepo, fallback_interval: Duration, database_url: String) -> Self {
+    pub fn new(
+        ticket_pool: PgPool,
+        ticket_url: String,
+        workflow_pool: PgPool,
+        workflow_url: String,
+        fallback_interval: Duration,
+    ) -> Self {
         Self {
-            repo,
-            fallback_interval,
-            database_url,
+            ticket_poller: PgEventPoller::new(ticket_pool, fallback_interval, ticket_url),
+            workflow_poller: PgEventPoller::new(workflow_pool, fallback_interval, workflow_url),
             listeners: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -42,134 +44,68 @@ impl UiEventPoller {
         rx
     }
 
-    /// Spawn the polling loop as a background tokio task.
+    /// Spawn the merge loop and both underlying pollers as background tasks.
     pub fn spawn(&self, shutdown_rx: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
-        tokio::spawn(this.run(shutdown_rx))
+        let shutdown_rx_clone = shutdown_rx.clone();
+        tokio::spawn(async move {
+            this.run(shutdown_rx, shutdown_rx_clone).await;
+        })
     }
 
-    async fn run(self, mut shutdown_rx: watch::Receiver<bool>) {
-        info!("ui event poller started");
+    async fn run(
+        self,
+        shutdown_rx_ticket: watch::Receiver<bool>,
+        shutdown_rx_workflow: watch::Receiver<bool>,
+    ) {
+        info!("ui event poller started (ticket + workflow)");
 
-        let mut pg_listener = self.try_connect_listener().await;
-        if pg_listener.is_some() {
-            info!("ui event poller: LISTEN connection established");
-        } else {
-            warn!("ui event poller: LISTEN connection failed, using fallback polling");
-        }
+        // Each poller gets its own internal mpsc channel.
+        let mut ticket_rx = self.ticket_poller.subscribe().await;
+        let mut workflow_rx = self.workflow_poller.subscribe().await;
+
+        // Spawn the two underlying pollers.
+        self.ticket_poller.spawn(shutdown_rx_ticket.clone());
+        self.workflow_poller.spawn(shutdown_rx_workflow.clone());
+
+        let mut shutdown_rx = shutdown_rx_ticket;
 
         loop {
-            self.poll_once().await;
-
-            match self.wait_for_wake(&mut pg_listener, &mut shutdown_rx).await {
-                WakeReason::Shutdown => {
-                    info!("ui event poller shutting down");
-                    return;
-                }
-                WakeReason::Notification => {}
-                WakeReason::Timeout => {}
-                WakeReason::ListenError => {
-                    self.handle_listen_error(&mut pg_listener).await;
-                }
-            }
-        }
-    }
-
-    /// Wait for a notification, fallback timeout, or shutdown signal.
-    async fn wait_for_wake(
-        &self,
-        pg_listener: &mut Option<PgListener>,
-        shutdown_rx: &mut watch::Receiver<bool>,
-    ) -> WakeReason {
-        match pg_listener {
-            Some(listener) => {
-                tokio::select! {
-                    result = listener.recv() => {
-                        match result {
-                            Ok(_notification) => WakeReason::Notification,
-                            Err(e) => {
-                                warn!(error = %e, "LISTEN connection error");
-                                WakeReason::ListenError
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep(self.fallback_interval) => {
-                        WakeReason::Timeout
-                    }
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            WakeReason::Shutdown
-                        } else {
-                            WakeReason::Timeout
+            tokio::select! {
+                batch = ticket_rx.recv() => {
+                    match batch {
+                        Some(events) => self.dispatch_batch(events).await,
+                        None => {
+                            info!("ticket ui event poller channel closed, shutting down merge loop");
+                            return;
                         }
                     }
                 }
-            }
-            None => {
-                tokio::select! {
-                    _ = tokio::time::sleep(self.fallback_interval) => {
-                        WakeReason::Timeout
-                    }
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
-                            WakeReason::Shutdown
-                        } else {
-                            WakeReason::Timeout
+                batch = workflow_rx.recv() => {
+                    match batch {
+                        Some(events) => self.dispatch_batch(events).await,
+                        None => {
+                            info!("workflow ui event poller channel closed, shutting down merge loop");
+                            return;
                         }
+                    }
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        info!("ui event merge loop shutting down");
+                        return;
                     }
                 }
             }
         }
     }
 
-    /// Handle a LISTEN connection error: drop the broken connection and
-    /// attempt to reconnect. If reconnection fails, the next loop iteration
-    /// will fall back to periodic polling.
-    async fn handle_listen_error(&self, pg_listener: &mut Option<PgListener>) {
-        *pg_listener = None;
-        let new_listener = self.try_connect_listener().await;
-        if new_listener.is_some() {
-            info!("ui event poller: LISTEN connection re-established");
-        } else {
-            warn!("ui event poller: LISTEN reconnect failed, continuing with fallback polling");
-        }
-        *pg_listener = new_listener;
-    }
-
-    /// Attempt to create a new PgListener and subscribe to the channel.
-    /// Returns `None` on failure.
-    async fn try_connect_listener(&self) -> Option<PgListener> {
-        let mut listener = match PgListener::connect(&self.database_url).await {
-            Ok(l) => l,
-            Err(e) => {
-                warn!(error = %e, "failed to create PgListener");
-                return None;
-            }
-        };
-
-        if let Err(e) = listener.listen(LISTEN_CHANNEL).await {
-            warn!(error = %e, "failed to LISTEN on channel {}", LISTEN_CHANNEL);
-            return None;
-        }
-
-        Some(listener)
-    }
-
-    /// Run one poll cycle: read events, delete by max ID, send batch to listeners.
-    async fn poll_once(&self) {
-        let events = match self.repo.poll_ui_events().await {
-            Ok(rows) => rows,
-            Err(e) => {
-                error!(error = %e, "failed to poll ui_events");
-                return;
-            }
-        };
-
+    /// Convert raw `db_events::UiEvent` rows into a proto `UiEventBatch`
+    /// and send to all registered listeners, pruning dead channels.
+    async fn dispatch_batch(&self, events: Vec<db_events::UiEvent>) {
         if events.is_empty() {
             return;
         }
-
-        let max_id = events.iter().map(|e| e.id).max().unwrap_or(0);
 
         let batch = UiEventBatch {
             events: events
@@ -181,16 +117,6 @@ impl UiEventPoller {
                 .collect(),
         };
 
-        // Delete processed events regardless of listener count.
-        if let Err(e) = self.repo.delete_ui_events(max_id).await {
-            error!(error = %e, max_id = max_id, "failed to delete ui_events");
-        }
-
-        self.dispatch_batch(batch).await;
-    }
-
-    /// Send a batch to all listeners, removing dead channels.
-    async fn dispatch_batch(&self, batch: UiEventBatch) {
         let mut listeners = self.listeners.lock().await;
         if listeners.is_empty() {
             return;
@@ -204,13 +130,6 @@ impl UiEventPoller {
         }
         *listeners = alive;
     }
-}
-
-enum WakeReason {
-    Notification,
-    Timeout,
-    Shutdown,
-    ListenError,
 }
 
 /// Map a database `entity_type` string to the proto `UiEventType` enum.

@@ -105,23 +105,53 @@ impl GithubPollerManager {
 
     /// Run one full scan: check all in_review tickets, then post pending comment replies.
     async fn poll_once(&self) {
-        match self
+        // Fetch ticket IDs from workflow_db, then look up ticket data from ticket_db
+        // separately to avoid cross-DB JOINs.
+        let ticket_ids = match self
             .workflow_repo
-            .tickets_by_workflow_status(LifecycleStatus::InReview)
+            .ticket_ids_by_workflow_status(LifecycleStatus::InReview)
             .await
         {
-            Ok(tickets) => {
-                for ticket in &tickets {
-                    self.check_in_review_ticket(ticket).await;
-                    tokio::time::sleep(API_CALL_DELAY).await;
-                }
-            }
+            Ok(ids) => ids,
             Err(e) => {
-                error!(error = %e, "failed to query in_review workflows");
+                error!(error = %e, "failed to query in_review workflow ticket IDs");
+                return;
             }
+        };
+
+        if !ticket_ids.is_empty() {
+            self.check_in_review_tickets(&ticket_ids).await;
         }
 
         self.scan_pending_replies().await;
+    }
+
+    /// Fetch ticket data for the given IDs and run per-ticket in_review checks.
+    async fn check_in_review_tickets(&self, ticket_ids: &[String]) {
+        let tickets = match self.ticket_repo.get_tickets_by_ids(ticket_ids).await {
+            Ok(t) => t,
+            Err(e) => {
+                error!(error = %e, "failed to fetch ticket data for in_review workflows");
+                return;
+            }
+        };
+
+        // Log any ticket IDs that are missing from ticket_db (dropped workflows).
+        let fetched_ids: std::collections::HashSet<&str> =
+            tickets.iter().map(|t| t.id.as_str()).collect();
+        for missing_id in ticket_ids {
+            if !fetched_ids.contains(missing_id.as_str()) {
+                info!(
+                    ticket_id = %missing_id,
+                    "in_review workflow references deleted ticket — skipping"
+                );
+            }
+        }
+
+        for ticket in &tickets {
+            self.check_in_review_ticket(ticket).await;
+            tokio::time::sleep(API_CALL_DELAY).await;
+        }
     }
 
     /// Post auto-replies for comments linked to tickets via the `ticket_comments` table.

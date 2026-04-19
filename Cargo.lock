@@ -3263,6 +3263,7 @@ dependencies = [
  "chrono",
  "clap",
  "container",
+ "db_events",
  "futures",
  "local_repo",
  "mlua",

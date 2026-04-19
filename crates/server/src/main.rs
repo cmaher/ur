@@ -19,7 +19,7 @@ use ur_server::{
     BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, ProjectRegistry,
     RepoPoolManager, WorkerManager, WorkflowEngine,
 };
-use workflow_db::{UiEventRepo, WorkerRepo, WorkflowRepo};
+use workflow_db::{WorkerRepo, WorkflowRepo};
 
 /// Both database pools opened at server startup.
 struct DatabasePools {
@@ -231,13 +231,19 @@ async fn init_and_serve(
     let ticket_repo = TicketRepo::new(ticket_pool.clone(), graph_manager);
     let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
 
-    let ui_event_repo = UiEventRepo::new(workflow_pool.clone());
     let fallback_interval =
         std::time::Duration::from_millis(cfg.server.ui_event_fallback_interval_ms);
+    let ticket_url = std::env::var(ur_config::UR_TICKET_DB_URL_ENV)
+        .unwrap_or_else(|_| cfg.ticket_db.database_url());
     let workflow_url = std::env::var(ur_config::UR_WORKFLOW_DB_URL_ENV)
         .unwrap_or_else(|_| cfg.workflow_db.database_url());
-    let ui_event_poller =
-        ur_server::UiEventPoller::new(ui_event_repo, fallback_interval, workflow_url);
+    let ui_event_poller = ur_server::UiEventPoller::new(
+        ticket_pool.clone(),
+        ticket_url,
+        workflow_pool.clone(),
+        workflow_url,
+        fallback_interval,
+    );
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
