@@ -271,8 +271,7 @@ fn write_test_config(
     }
 
     let toml_content = format!(
-        "node_id = \"test\"\n\
-         server_port = {server_port}\n\
+        "server_port = {server_port}\n\
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
          \n\
@@ -285,7 +284,10 @@ fn write_test_config(
          server_hostname = \"{server}\"\n\
          worker_prefix = \"{worker_prefix}\"\n\
          \n\
-         [db]\n\
+         [ticket_db]\n\
+         host = \"{postgres}\"\n\
+         \n\
+         [workflow_db]\n\
          host = \"{postgres}\"\n\
          \n\
          [worker_modes.custommodel]\n\
