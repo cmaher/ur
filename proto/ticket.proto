@@ -24,6 +24,11 @@ service TicketService {
   rpc SubscribeUiEvents(SubscribeUiEventsRequest) returns (stream UiEventBatch);
   // Stream all ticket-domain rows as JSONL records for export/migration.
   rpc TicketExport(TicketExportRequest) returns (stream TicketExportRecord);
+  // Client-streaming import: send TicketExportRecord messages to import them
+  // into the current ticket_db. Fails with ALREADY_EXISTS if any ticket id
+  // collides with an existing row. Import is transactional — on failure, no
+  // partial rows remain.
+  rpc TicketImport(stream TicketExportRecord) returns (TicketImportResponse);
 }
 
 // --- Shared messages ---
@@ -377,4 +382,11 @@ message TicketExportRequest {}
 message TicketExportRecord {
   string kind = 1;
   string json = 2;
+}
+
+// --- TicketImport ---
+
+message TicketImportResponse {
+  // Total number of records inserted (tickets + edges + meta + activities + comments).
+  int64 records_inserted = 1;
 }

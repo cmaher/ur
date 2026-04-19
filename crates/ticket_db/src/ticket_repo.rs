@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::graph::GraphManager;
 use crate::model::{
-    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Ticket, TicketFilter, TicketUpdate,
+    Activity, DispatchableTicket, Edge, EdgeKind, ImportError, LifecycleStatus,
+    MetadataMatchTicket, NewTicket, Ticket, TicketFilter, TicketUpdate,
 };
 
 type TicketRow = (
@@ -1467,6 +1467,61 @@ impl TicketRepo {
         Ok((total - closed, closed))
     }
 
+    /// Import a batch of rows into the database within a single transaction.
+    ///
+    /// Tickets are inserted first, then edges, meta, activities, and
+    /// ticket_comments.  If any ticket id already exists the transaction is
+    /// rolled back and an error is returned listing the conflicting ids.
+    ///
+    /// Returns the total number of rows inserted across all tables.
+    pub async fn import_records(
+        &self,
+        tickets: Vec<crate::model::ExportTicket>,
+        edges: Vec<crate::model::ExportEdge>,
+        meta: Vec<crate::model::ExportMeta>,
+        activities: Vec<crate::model::ExportActivity>,
+        comments: Vec<crate::model::ExportTicketComment>,
+    ) -> Result<i64, ImportError> {
+        self.check_ticket_id_collisions(&tickets).await?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        let count = insert_import_rows(&mut tx, tickets, edges, meta, activities, comments).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        Ok(count)
+    }
+
+    /// Check whether any of the incoming ticket ids already exist in the DB.
+    async fn check_ticket_id_collisions(
+        &self,
+        tickets: &[crate::model::ExportTicket],
+    ) -> Result<(), ImportError> {
+        if tickets.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+        let existing: Vec<(String,)> = sqlx::query_as("SELECT id FROM ticket WHERE id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        if existing.is_empty() {
+            Ok(())
+        } else {
+            let conflicting: Vec<String> = existing.into_iter().map(|(id,)| id).collect();
+            Err(ImportError::IdCollision(conflicting))
+        }
+    }
+
     /// Return all tickets with the given lifecycle status.
     /// Used by GithubPoller to find tickets in pushing/in_review states.
     pub async fn tickets_by_lifecycle_status(
@@ -1541,6 +1596,140 @@ impl TicketRepo {
             )
             .collect())
     }
+}
+
+/// Insert tickets, edges, meta, activities, and comments into a transaction.
+///
+/// Returns the total number of rows inserted.
+async fn insert_import_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tickets: Vec<crate::model::ExportTicket>,
+    edges: Vec<crate::model::ExportEdge>,
+    meta: Vec<crate::model::ExportMeta>,
+    activities: Vec<crate::model::ExportActivity>,
+    comments: Vec<crate::model::ExportTicketComment>,
+) -> Result<i64, ImportError> {
+    let mut count: i64 = 0;
+    count += insert_tickets(tx, tickets).await?;
+    count += insert_edges(tx, edges).await?;
+    count += insert_meta(tx, meta).await?;
+    count += insert_activities(tx, activities).await?;
+    count += insert_ticket_comments(tx, comments).await?;
+    Ok(count)
+}
+
+async fn insert_tickets(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tickets: Vec<crate::model::ExportTicket>,
+) -> Result<i64, ImportError> {
+    for t in &tickets {
+        sqlx::query(
+            "INSERT INTO ticket \
+             (id, project, type, status, lifecycle_status, lifecycle_managed, priority, \
+              parent_id, title, body, branch, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        )
+        .bind(&t.id)
+        .bind(&t.project)
+        .bind(&t.type_)
+        .bind(&t.status)
+        .bind(&t.lifecycle_status)
+        .bind(t.lifecycle_managed)
+        .bind(t.priority)
+        .bind(&t.parent_id)
+        .bind(&t.title)
+        .bind(&t.body)
+        .bind(&t.branch)
+        .bind(&t.created_at)
+        .bind(&t.updated_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(tickets.len() as i64)
+}
+
+async fn insert_edges(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    edges: Vec<crate::model::ExportEdge>,
+) -> Result<i64, ImportError> {
+    for e in &edges {
+        sqlx::query(
+            "INSERT INTO edge (source_id, target_id, kind) VALUES ($1,$2,$3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&e.source_id)
+        .bind(&e.target_id)
+        .bind(&e.kind)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(edges.len() as i64)
+}
+
+async fn insert_meta(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    meta: Vec<crate::model::ExportMeta>,
+) -> Result<i64, ImportError> {
+    for m in &meta {
+        sqlx::query(
+            "INSERT INTO meta (entity_id, entity_type, key, value) VALUES ($1,$2,$3,$4) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&m.entity_id)
+        .bind(&m.entity_type)
+        .bind(&m.key)
+        .bind(&m.value)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(meta.len() as i64)
+}
+
+async fn insert_activities(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    activities: Vec<crate::model::ExportActivity>,
+) -> Result<i64, ImportError> {
+    for a in &activities {
+        sqlx::query(
+            "INSERT INTO activity (id, ticket_id, timestamp, author, message) \
+             VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+        )
+        .bind(&a.id)
+        .bind(&a.ticket_id)
+        .bind(&a.timestamp)
+        .bind(&a.author)
+        .bind(&a.message)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(activities.len() as i64)
+}
+
+async fn insert_ticket_comments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    comments: Vec<crate::model::ExportTicketComment>,
+) -> Result<i64, ImportError> {
+    for c in &comments {
+        sqlx::query(
+            "INSERT INTO ticket_comments \
+             (comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(&c.comment_id)
+        .bind(&c.ticket_id)
+        .bind(c.pr_number)
+        .bind(&c.gh_repo)
+        .bind(c.reply_posted)
+        .bind(&c.created_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(comments.len() as i64)
 }
 
 const BASE36_CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";

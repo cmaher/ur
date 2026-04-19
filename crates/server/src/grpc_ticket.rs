@@ -19,8 +19,8 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    SubscribeUiEventsRequest, TicketExportRecord, TicketExportRequest, UiEventBatch,
-    UpdateTicketRequest, UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
+    SubscribeUiEventsRequest, TicketExportRecord, TicketExportRequest, TicketImportResponse,
+    UiEventBatch, UpdateTicketRequest, UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
 };
 use workflow_db::WorkflowRepo;
 
@@ -1237,6 +1237,22 @@ impl TicketService for TicketServiceHandler {
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn ticket_import(
+        &self,
+        req: Request<tonic::Streaming<TicketExportRecord>>,
+    ) -> Result<Response<TicketImportResponse>, Status> {
+        info!("ticket_import request");
+
+        let mut stream = req.into_inner();
+        let mut records: Vec<TicketExportRecord> = Vec::new();
+        while let Some(record) = stream.message().await? {
+            records.push(record);
+        }
+
+        let records_inserted = crate::ticket_import::run_import(&self.ticket_repo, records).await?;
+        Ok(Response::new(TicketImportResponse { records_inserted }))
     }
 }
 

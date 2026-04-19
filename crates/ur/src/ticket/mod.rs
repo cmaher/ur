@@ -2,6 +2,7 @@ pub mod args;
 mod execute;
 pub mod export;
 pub mod format;
+pub mod import;
 
 pub use args::TicketArgs;
 pub use execute::execute;
@@ -255,6 +256,29 @@ pub async fn handle(
             });
         } else {
             println!("Exported to {path}");
+        }
+        return Ok(());
+    }
+
+    // Import is handled separately: reads from a JSONL file and streams to
+    // the server, then reports the number of rows inserted.
+    if let TicketArgs::Import { path } = &args {
+        let mut client = connect_ticket(port).await?;
+        let records_inserted = import::execute_import(path, &mut client).await?;
+        if output.is_json() {
+            #[derive(serde::Serialize)]
+            struct ImportDone<'a> {
+                kind: &'a str,
+                path: &'a str,
+                records_inserted: i64,
+            }
+            output.print_success(&ImportDone {
+                kind: "imported",
+                path,
+                records_inserted,
+            });
+        } else {
+            println!("Imported {records_inserted} records from {path}");
         }
         return Ok(());
     }

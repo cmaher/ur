@@ -251,6 +251,12 @@ pub enum TicketArgs {
         /// Output file path ("-" for stdout)
         path: String,
     },
+
+    /// Import ticket-domain rows from a JSONL export file
+    Import {
+        /// Path to the JSONL file produced by `ur ticket export`
+        path: String,
+    },
 }
 
 /// A parsed key=value pair for activity metadata.

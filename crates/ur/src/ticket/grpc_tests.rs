@@ -403,6 +403,13 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<Self::TicketExportStream>, Status> {
         Err(Status::unimplemented("not implemented in mock"))
     }
+
+    async fn ticket_import(
+        &self,
+        _req: Request<tonic::Streaming<ur_rpc::proto::ticket::TicketExportRecord>>,
+    ) -> Result<Response<ur_rpc::proto::ticket::TicketImportResponse>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
 }
 
 // --- Test helpers ---

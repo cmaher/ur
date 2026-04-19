@@ -272,6 +272,17 @@ pub struct UiEventRow {
     pub created_at: String,
 }
 
+/// Error type returned by `TicketRepo::import_records`.
+#[derive(Debug, thiserror::Error)]
+pub enum ImportError {
+    /// One or more ticket ids already exist in the database.
+    #[error("id collision: {}", .0.join(", "))]
+    IdCollision(Vec<String>),
+    /// A database error occurred.
+    #[error("database error: {0}")]
+    Db(String),
+}
+
 /// A raw ticket row for export purposes.
 pub struct ExportTicket {
     pub id: String,
