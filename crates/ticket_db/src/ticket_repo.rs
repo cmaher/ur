@@ -400,34 +400,6 @@ impl TicketRepo {
         .execute(&self.pool)
         .await?;
 
-        // workflow
-        sqlx::query("UPDATE workflow SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_event
-        sqlx::query("UPDATE workflow_event SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_intent
-        sqlx::query("UPDATE workflow_intent SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_comments
-        sqlx::query("UPDATE workflow_comments SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
         // ticket_comments
         sqlx::query("UPDATE ticket_comments SET ticket_id = $1 WHERE ticket_id = $2")
             .bind(new_id)
@@ -1338,6 +1310,70 @@ impl TicketRepo {
                 },
             )
             .collect())
+    }
+
+    pub async fn insert_ticket_comment(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+        pr_number: i64,
+        gh_repo: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO ticket_comments (comment_id, ticket_id, pr_number, gh_repo) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .bind(pr_number)
+        .bind(gh_repo)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_pending_replies(
+        &self,
+    ) -> Result<Vec<crate::model::TicketComment>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
+            "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
+             FROM ticket_comments WHERE reply_posted = false \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at)| {
+                    crate::model::TicketComment {
+                        comment_id,
+                        ticket_id,
+                        pr_number,
+                        gh_repo,
+                        reply_posted,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn mark_reply_posted(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE ticket_comments SET reply_posted = true \
+             WHERE comment_id = $1 AND ticket_id = $2",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Return all ticket_comments rows ordered by (ticket_id, comment_id) for deterministic export.

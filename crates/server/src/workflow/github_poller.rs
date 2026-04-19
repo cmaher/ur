@@ -156,7 +156,7 @@ impl GithubPollerManager {
 
     /// Post auto-replies for comments linked to tickets via the `ticket_comments` table.
     async fn scan_pending_replies(&self) {
-        let pending = match self.workflow_repo.get_pending_replies().await {
+        let pending = match self.ticket_repo.get_pending_replies().await {
             Ok(rows) => rows,
             Err(e) => {
                 warn!(error = %e, "failed to query pending comment replies");
@@ -243,7 +243,7 @@ impl GithubPollerManager {
     async fn mark_replies_posted(&self, comment_id: &str, ticket_ids: &[String]) {
         for ticket_id in ticket_ids {
             if let Err(e) = self
-                .workflow_repo
+                .ticket_repo
                 .mark_reply_posted(comment_id, ticket_id)
                 .await
             {

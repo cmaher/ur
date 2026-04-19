@@ -90,11 +90,12 @@ fn test_network_config() -> ur_config::NetworkConfig {
     }
 }
 
-/// Build test components backed by the given database pool.
+/// Build test components backed by the given database pools.
 /// Returns (WorkerManager, WorkerRepo, CoreServiceHandler).
 async fn make_components_with_db(
     dir: &Path,
-    pool: &sqlx::PgPool,
+    ticket_pool: &sqlx::PgPool,
+    workflow_pool: &sqlx::PgPool,
 ) -> (
     ur_server::WorkerManager,
     workflow_db::WorkerRepo,
@@ -107,10 +108,10 @@ async fn make_components_with_db(
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = test_config(dir, &workspace);
-    let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
-    let graph_manager = ticket_db::GraphManager::new(pool.clone());
-    let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
-    let workflow_repo = workflow_db::WorkflowRepo::new(pool.clone());
+    let worker_repo = workflow_db::WorkerRepo::new(workflow_pool.clone());
+    let graph_manager = ticket_db::GraphManager::new(ticket_pool.clone());
+    let ticket_repo = ticket_db::TicketRepo::new(ticket_pool.clone(), graph_manager);
+    let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool.clone());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
@@ -218,10 +219,12 @@ async fn authed_ping(
 async fn restart_reclaims_worker_with_live_container() {
     let dir = tempfile::tempdir().unwrap();
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.pool();
+    let ticket_pool = test_db.ticket_pool();
+    let workflow_pool = test_db.workflow_pool();
 
     // --- Phase 1: "Original server" registers a worker ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), pool).await;
+    let (_pm1, worker_repo1, _handler1) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     let worker_id_str = "restart-test-worker-1";
     let secret = "test-secret-reclaim";
@@ -268,8 +271,9 @@ async fn restart_reclaims_worker_with_live_container() {
         .unwrap();
     assert_eq!(pre.container_status, "running");
 
-    // --- Phase 2: "Server restart" — rebuild components with the same DB ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), pool).await;
+    // --- Phase 2: "Server restart" — rebuild components with the same DBs ---
+    let (_pm2, worker_repo2, handler2) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     // Run reconciliation with container alive (simulates docker inspect returning true).
     let reconcile_result = worker_repo2
@@ -331,13 +335,15 @@ async fn restart_reclaims_worker_with_live_container() {
 async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     let dir = tempfile::tempdir().unwrap();
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.pool();
+    let ticket_pool = test_db.ticket_pool();
+    let workflow_pool = test_db.workflow_pool();
 
     let workspace = dir.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
     // --- Phase 1: "Original server" registers worker with a slot ---
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), pool).await;
+    let (_pm1, worker_repo1, _handler1) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     // Create pool directory structure with a slot directory on disk.
     let pool_dir = workspace.join("pool").join("test-proj");
@@ -394,8 +400,9 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
     std::fs::remove_dir_all(&slot_dir).unwrap();
     assert!(!slot_dir.exists());
 
-    // --- Phase 3: "Server restart" — rebuild with same DB, run reconciliation ---
-    let (_pm2, worker_repo2, _handler2) = make_components_with_db(dir.path(), pool).await;
+    // --- Phase 3: "Server restart" — rebuild with same DBs, run reconciliation ---
+    let (_pm2, worker_repo2, _handler2) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     // Run slot reconciliation (as main.rs does on startup).
     let mut project_configs = HashMap::new();
@@ -478,9 +485,11 @@ async fn insert_worker_with_slot(
 async fn restart_mixed_live_and_dead_workers() {
     let dir = tempfile::tempdir().unwrap();
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.pool();
+    let ticket_pool = test_db.ticket_pool();
+    let workflow_pool = test_db.workflow_pool();
 
-    let (_pm1, worker_repo1, _handler1) = make_components_with_db(dir.path(), pool).await;
+    let (_pm1, worker_repo1, _handler1) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     let live_worker_id = "worker-mix-live";
     let live_secret = "secret-live";
@@ -512,7 +521,8 @@ async fn restart_mixed_live_and_dead_workers() {
     .await;
 
     // --- Phase 2: "Restart" with reconciliation ---
-    let (_pm2, worker_repo2, handler2) = make_components_with_db(dir.path(), pool).await;
+    let (_pm2, worker_repo2, handler2) =
+        make_components_with_db(dir.path(), ticket_pool, workflow_pool).await;
 
     let reconcile_result = worker_repo2
         .reconcile_workers(|cid| async move { cid == "container-alive" })

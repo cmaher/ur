@@ -313,14 +313,16 @@ mod tests {
         let mut rx = poller.subscribe().await;
         poller.spawn(shutdown_rx);
 
-        // Insert a row and send pg_notify to wake the poller.
-        sqlx::query(
-            "INSERT INTO ui_events (entity_type, entity_id) VALUES ('ticket', 'test-1');
-             SELECT pg_notify('ui_events', '');",
-        )
-        .execute(&pool)
-        .await
-        .expect("failed to insert ui event");
+        // Insert a row, then explicitly notify to wake the poller.
+        // Two separate execute calls because sqlx only runs the first statement.
+        sqlx::query("INSERT INTO ui_events (entity_type, entity_id) VALUES ('ticket', 'test-1')")
+            .execute(&pool)
+            .await
+            .expect("failed to insert ui event");
+        sqlx::query("SELECT pg_notify('ui_events', '')")
+            .execute(&pool)
+            .await
+            .expect("failed to send pg_notify");
 
         // Wait up to 3 seconds for the poller to deliver the event.
         let batch = tokio::time::timeout(Duration::from_secs(3), rx.recv())

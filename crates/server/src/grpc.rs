@@ -746,7 +746,7 @@ impl CoreService for WorkerCoreServiceHandler {
             resolve_gh_repo_for_worker(&worker_id, &self.ticket_repo, &self.workflow_repo).await?;
 
         let comment_id_str = inner.comment_id.to_string();
-        self.workflow_repo
+        self.ticket_repo
             .insert_ticket_comment(&comment_id_str, &inner.ticket_id, inner.pr_number, &gh_repo)
             .await
             .map_err(|e| Status::internal(format!("failed to insert ticket comment: {e}")))?;

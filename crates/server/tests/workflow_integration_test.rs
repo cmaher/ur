@@ -224,11 +224,12 @@ impl TestHarness {
 
 async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
     let test_db = TestDb::new().await;
-    let pool = test_db.pool().clone();
-    let graph = GraphManager::new(pool.clone());
-    let ticket_repo = TicketRepo::new(pool.clone(), graph);
-    let workflow_repo = WorkflowRepo::new(pool.clone());
-    let worker_repo = WorkerRepo::new(pool);
+    let ticket_pool = test_db.ticket_pool().clone();
+    let workflow_pool = test_db.workflow_pool().clone();
+    let graph = GraphManager::new(ticket_pool.clone());
+    let ticket_repo = TicketRepo::new(ticket_pool, graph);
+    let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
+    let worker_repo = WorkerRepo::new(workflow_pool);
     (test_db, ticket_repo, workflow_repo, worker_repo)
 }
 

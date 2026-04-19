@@ -94,11 +94,12 @@ async fn make_test_components(
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.pool().clone();
-    let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
-    let graph_manager = ticket_db::GraphManager::new(pool.clone());
-    let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
-    let workflow_repo = workflow_db::WorkflowRepo::new(pool);
+    let ticket_pool = test_db.ticket_pool().clone();
+    let workflow_pool = test_db.workflow_pool().clone();
+    let worker_repo = workflow_db::WorkerRepo::new(workflow_pool.clone());
+    let graph_manager = ticket_db::GraphManager::new(ticket_pool.clone());
+    let ticket_repo = ticket_db::TicketRepo::new(ticket_pool, graph_manager);
+    let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool);
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
