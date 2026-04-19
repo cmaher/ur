@@ -221,8 +221,10 @@ struct ComposeParams {
     db_password: String,
     /// Postgres database name for env vars (the bootstrap database created by POSTGRES_DB).
     db_name: String,
-    /// Full DATABASE_URL for the server service.
-    database_url: String,
+    /// Full UR_TICKET_DB_URL for the server service.
+    ticket_db_url: String,
+    /// Full UR_WORKFLOW_DB_URL for the server service.
+    workflow_db_url: String,
     /// Whether to include the postgres service in the compose file.
     /// False when connecting to a remote database (host != DEFAULT_DB_HOST).
     include_postgres: bool,
@@ -244,37 +246,42 @@ struct ComposeParams {
 /// `config_dir` is the host-side ur config directory (e.g. `~/.ur`). It is used to
 /// resolve the path of the Postgres init scripts directory that is mounted into the
 /// Postgres container at `/docker-entrypoint-initdb.d`.
+///
+/// Both `ticket_db` and `workflow_db` must point to the same Postgres host since
+/// a single postgres container serves both logical databases.
 #[instrument(fields(network_name = %network.name, worker_network = %network.worker_name))]
 pub fn generate_compose(
     network: &ur_config::NetworkConfig,
     proxy: &ur_config::ProxyConfig,
-    db: &ur_config::DatabaseConfig,
+    ticket_db: &ur_config::TicketDbConfig,
+    workflow_db: &ur_config::WorkflowDbConfig,
     config_dir: &std::path::Path,
 ) -> String {
     // Compose service names are bare hostnames (no dots). External addresses
     // (IPs, FQDNs) always contain dots. Use this to decide whether postgres
     // should be included as a compose-managed service.
-    let include_postgres = !db.host.contains('.');
+    let include_postgres = !ticket_db.host.contains('.');
     let params = ComposeParams {
         server_container_name: network.server_hostname.clone(),
         squid_container_name: proxy.hostname.clone(),
-        postgres_container_name: db.host.clone(),
+        postgres_container_name: ticket_db.host.clone(),
         infra_network_name: network.name.clone(),
         worker_network_name: network.worker_name.clone(),
-        backup_path: if db.backup.enabled {
-            db.backup.path.clone()
+        backup_path: if ticket_db.backup.enabled {
+            ticket_db.backup.path.clone()
         } else {
             None
         },
-        db_user: db.user.clone(),
-        db_password: db.password.clone(),
+        db_user: ticket_db.user.clone(),
+        db_password: ticket_db.password.clone(),
         // POSTGRES_DB sets the default database the server connects to on startup.
         // The application databases (ur_tickets, ur_workflow) are created by the init script.
-        db_name: db.user.clone(),
-        database_url: db.database_url(),
+        db_name: ticket_db.user.clone(),
+        ticket_db_url: ticket_db.database_url(),
+        workflow_db_url: workflow_db.database_url(),
         include_postgres,
-        postgres_bind_address: db.bind_address.clone(),
-        postgres_port: db.port,
+        postgres_bind_address: ticket_db.bind_address.clone(),
+        postgres_port: ticket_db.port,
         postgres_init_dir: config_dir.join(POSTGRES_INIT_SUBDIR),
     };
 
@@ -451,7 +458,20 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
         "      - UR_HOST_LOGS_DIR=${{UR_LOGS_DIR:-${{HOME}}/.ur/logs}}"
     )
     .unwrap();
-    writeln!(out, "      - DATABASE_URL={}", params.database_url).unwrap();
+    writeln!(
+        out,
+        "      - {}={}",
+        ur_config::UR_TICKET_DB_URL_ENV,
+        params.ticket_db_url
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "      - {}={}",
+        ur_config::UR_WORKFLOW_DB_URL_ENV,
+        params.workflow_db_url
+    )
+    .unwrap();
     if params.backup_path.is_some() {
         writeln!(
             out,
@@ -550,7 +570,8 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
     let compose_content = generate_compose(
         &config.network,
         &config.proxy,
-        &config.db,
+        &config.ticket_db,
+        &config.workflow_db,
         &config.config_dir,
     );
 
@@ -558,7 +579,7 @@ pub fn compose_manager_from_config(config: &ur_config::Config) -> ComposeManager
         .config_dir
         .join(POSTGRES_INIT_SUBDIR)
         .join(POSTGRES_INIT_SQL_FILE);
-    let init_sql = generate_postgres_init_sql(&config.db.user);
+    let init_sql = generate_postgres_init_sql(&config.ticket_db.user);
 
     ComposeManager::new(config.compose_file.clone(), env_vars, compose_content)
         .with_init_file(init_sql_path, init_sql)
@@ -684,6 +705,40 @@ mod tests {
         );
     }
 
+    fn default_ticket_db() -> ur_config::TicketDbConfig {
+        ur_config::TicketDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+            bind_address: None,
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        }
+    }
+
+    fn default_workflow_db() -> ur_config::WorkflowDbConfig {
+        ur_config::WorkflowDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
+            bind_address: None,
+            backup: ur_config::BackupConfig {
+                path: None,
+                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                enabled: true,
+                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+            },
+        }
+    }
+
     #[test]
     fn generate_compose_contains_all_services() {
         let network = ur_config::NetworkConfig {
@@ -696,22 +751,15 @@ mod tests {
             hostname: "test-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let ticket_db = default_ticket_db();
+        let workflow_db = default_workflow_db();
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &ticket_db,
+            &workflow_db,
+            std::path::Path::new("/test/config"),
+        );
 
         // Verify services are present
         assert!(generated.contains("  ur-squid:"));
@@ -723,7 +771,7 @@ mod tests {
         assert!(generated.contains("container_name: test-squid"));
         assert!(
             generated.contains("container_name: ur-postgres"),
-            "postgres container_name should match db.host"
+            "postgres container_name should match ticket_db.host"
         );
 
         // Verify postgres image
@@ -754,8 +802,13 @@ mod tests {
         assert!(generated.contains("depends_on:"));
         assert!(generated.contains("condition: service_healthy"));
 
-        // Verify server has DATABASE_URL
-        assert!(generated.contains("DATABASE_URL=postgres://ur:ur@ur-postgres:5432/ur"));
+        // Verify server has UR_TICKET_DB_URL and UR_WORKFLOW_DB_URL
+        assert!(
+            generated.contains("UR_TICKET_DB_URL=postgres://ur:ur@ur-postgres:5432/ur_tickets")
+        );
+        assert!(
+            generated.contains("UR_WORKFLOW_DB_URL=postgres://ur:ur@ur-postgres:5432/ur_workflow")
+        );
 
         // Verify network names
         assert!(generated.contains("name: test-net"));
@@ -805,22 +858,13 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &default_ticket_db(),
+            &default_workflow_db(),
+            std::path::Path::new("/test/config"),
+        );
 
         // Verify top-level structure: starts with comment, then services, then networks
         assert!(generated.starts_with("# Auto-generated"));
@@ -845,22 +889,22 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
+        let ticket_db = ur_config::TicketDbConfig {
             backup: ur_config::BackupConfig {
                 path: Some(PathBuf::from("/home/user/.ur/backup")),
                 interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
                 enabled: true,
                 retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
             },
+            ..default_ticket_db()
         };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &ticket_db,
+            &default_workflow_db(),
+            std::path::Path::new("/test/config"),
+        );
 
         // Backup volume should be on postgres container
         let postgres_section = generated
@@ -899,22 +943,13 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &default_ticket_db(),
+            &default_workflow_db(),
+            std::path::Path::new("/test/config"),
+        );
 
         // Extract postgres section and verify it only has infra network
         let postgres_section = generated
@@ -941,22 +976,17 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
+        let ticket_db = ur_config::TicketDbConfig {
             bind_address: Some("100.64.1.5".to_string()),
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            ..default_ticket_db()
         };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &ticket_db,
+            &default_workflow_db(),
+            std::path::Path::new("/test/config"),
+        );
 
         // Postgres should be present with ports exposed
         assert!(generated.contains("  ur-postgres:"));
@@ -977,30 +1007,36 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
+        let ticket_db = ur_config::TicketDbConfig {
             host: "192.168.1.50".to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+            ..default_ticket_db()
         };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let workflow_db = ur_config::WorkflowDbConfig {
+            host: "192.168.1.50".to_string(),
+            name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
+            ..default_workflow_db()
+        };
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &ticket_db,
+            &workflow_db,
+            std::path::Path::new("/test/config"),
+        );
 
         // No postgres service
         assert!(!generated.contains("  192.168.1.50:"));
         assert!(!generated.contains("image: postgres"));
         // No depends_on on server
         assert!(!generated.contains("depends_on:"));
-        // DATABASE_URL uses remote host
-        assert!(generated.contains("DATABASE_URL=postgres://ur:ur@192.168.1.50:5432/ur"));
+        // UR_TICKET_DB_URL and UR_WORKFLOW_DB_URL use remote host
+        assert!(
+            generated.contains("UR_TICKET_DB_URL=postgres://ur:ur@192.168.1.50:5432/ur_tickets")
+        );
+        assert!(
+            generated.contains("UR_WORKFLOW_DB_URL=postgres://ur:ur@192.168.1.50:5432/ur_workflow")
+        );
         // Server and squid still present
         assert!(generated.contains("  ur-server:"));
         assert!(generated.contains("  ur-squid:"));
@@ -1018,22 +1054,13 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
-        let generated =
-            generate_compose(&network, &proxy, &db, std::path::Path::new("/test/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &default_ticket_db(),
+            &default_workflow_db(),
+            std::path::Path::new("/test/config"),
+        );
 
         // Postgres present, no ports section on it
         assert!(generated.contains("  ur-postgres:"));
@@ -1109,21 +1136,13 @@ mod tests {
             hostname: "ur-squid".to_string(),
             allowlist: vec![],
         };
-        let db = ur_config::DatabaseConfig {
-            host: ur_config::DEFAULT_DB_HOST.to_string(),
-            port: ur_config::DEFAULT_DB_PORT,
-            user: ur_config::DEFAULT_DB_USER.to_string(),
-            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
-            name: ur_config::DEFAULT_DB_NAME.to_string(),
-            bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
-        };
-        let generated = generate_compose(&network, &proxy, &db, std::path::Path::new("/my/config"));
+        let generated = generate_compose(
+            &network,
+            &proxy,
+            &default_ticket_db(),
+            &default_workflow_db(),
+            std::path::Path::new("/my/config"),
+        );
 
         // The postgres-init directory must be mounted into the postgres container
         let postgres_section = generated
