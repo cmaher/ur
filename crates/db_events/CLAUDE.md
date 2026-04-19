@@ -1,13 +1,22 @@
 # db_events
 
-Shared Postgres event infrastructure consumed by both `ticket_db` and `workflow_db`.
+Shared Postgres event infrastructure consumed by both `ticket_db` and `workflow_db`. Contains no domain logic — purely infrastructure for LISTEN/NOTIFY-based UI event polling.
 
 ## Responsibilities
 
 - `UI_EVENTS_CHANNEL` constant: the Postgres LISTEN/NOTIFY channel name (`"ui_events"`).
-- `UI_EVENTS_DDL` constant: the `ui_events` table DDL as a `&'static str`, exported for documentation and reference.
+- `UI_EVENTS_DDL` constant: the `ui_events` table DDL as a `&'static str`, exported as the canonical definition. Both `ticket_db` and `workflow_db` embed this verbatim in their own migration files.
 - `UiEvent`: the raw database row type for events read from the `ui_events` table.
-- `PgEventPoller`: generic LISTEN/NOTIFY poller. Each DB crate instantiates one against its own pool. Yields `Vec<UiEvent>` batches via `mpsc::Receiver`.
+- `PgEventPoller`: generic LISTEN/NOTIFY poller. The server instantiates one per database pool (one for `ticket_db`, one for `workflow_db`). Yields `Vec<UiEvent>` batches via an mpsc channel, which the server merges into a single fan-out for gRPC subscribers.
+
+## Two-Poller Architecture
+
+The server runs **two `PgEventPoller` instances**:
+
+1. One connected to `ticket_db` (`ur_tickets`) — wakes on ticket and worker mutations
+2. One connected to `workflow_db` (`ur_workflow`) — wakes on workflow mutations
+
+The server merges both mpsc receivers into a unified event stream that is dispatched to all registered gRPC subscribers. Clients receive a single `SubscribeUiEvents` stream containing events from both databases.
 
 ## ui_events DDL Sharing Strategy
 
@@ -21,8 +30,8 @@ The `ui_events` table DDL must be identical in both `ticket_db/migrations/001_in
 ## Conventions
 
 - No domain logic — purely infrastructure.
-- Channel name constants are defined here and imported by `ticket_db` and `workflow_db`.
-- `PgEventPoller` mirrors the `UiEventPoller` in `crates/server/src/ui_event_poller.rs` but is generic over any database with the `ui_events` table.
+- Channel name and DDL constants are defined here and imported by `ticket_db` and `workflow_db`.
+- `PgEventPoller` is generic over any database that has the `ui_events` table.
 
 ## Testing
 

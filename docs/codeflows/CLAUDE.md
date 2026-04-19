@@ -6,7 +6,7 @@ Detailed flow diagrams for cross-cutting concerns. Consult these before modifyin
 
 - `docs/codeflows/builderd.md` — Builderd architecture (%WORKSPACE% resolution, two client paths, proto definition, connection path)
 - `docs/codeflows/config.md` — Unified project configuration (`ur.toml` parsing, template paths, config flow through the launch pipeline)
-- `docs/codeflows/database.md` — Database lifecycle (Postgres connection, PgPool, migration, TicketRepo queries, pg_dump/pg_restore backup, BackupTaskManager scheduling, shutdown)
+- `docs/codeflows/database.md` — Database lifecycle (two-pool architecture: ticket_db + workflow_db, per-crate migrations, cross-DB soft references, two independent BackupTaskManagers, shutdown order)
 - `docs/codeflows/host-exec-flow.md` — Host execution flow (three-hop gRPC pipeline for git, gh commands from workers)
 - `docs/codeflows/lifecycle-workflow.md` — Workflow coordinator (state machine, WorkflowCoordinator, WorkerdNextStepRouter, GithubPollerManager, workflow/intent tables, WorkflowStepComplete RPC)
 - `docs/codeflows/pool-git-builder-flow.md` — Pool git operations via builderd (clone, fetch, reset through builder daemon)

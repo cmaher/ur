@@ -9,6 +9,9 @@ Cargo workspace:
 - `crates/server/` - Server (`ur-server`, orchestration, gRPC server, container management)
 - `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
 - `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
+- `crates/ticket_db/` - Postgres ticket database (tickets, edges, activities, workers, slots; `ur_tickets` DB)
+- `crates/workflow_db/` - Postgres workflow database (workflow state, events, intents, comments; `ur_workflow` DB)
+- `crates/db_events/` - Shared LISTEN/NOTIFY infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`)
 
 ## Code Style
 
