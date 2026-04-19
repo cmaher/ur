@@ -9,13 +9,12 @@ use ticket_db::TicketRepo;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    LinkCommentTicketRequest, LinkCommentTicketResponse, NodeCleanupRequest, NodeCleanupResponse,
-    NodeListRequest, NodeListResponse, PingRequest, PingResponse, ReloadProjectsRequest,
-    ReloadProjectsResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
-    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
-    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
-    WorkflowStepCompleteResponse,
+    LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
+    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
+    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
+    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
 use workflow_db::WorkflowRepo;
 use workflow_db::model::AgentStatus;
@@ -692,31 +691,6 @@ impl CoreService for CoreServiceHandler {
             removed: report.removed,
         }))
     }
-
-    async fn node_list(
-        &self,
-        _req: Request<NodeListRequest>,
-    ) -> Result<Response<NodeListResponse>, Status> {
-        info!("node_list request received");
-        // Node system removed — no per-node data exists.
-        Ok(Response::new(NodeListResponse {
-            nodes: Vec::new(),
-            local_node_id: String::new(),
-        }))
-    }
-
-    async fn node_cleanup(
-        &self,
-        req: Request<NodeCleanupRequest>,
-    ) -> Result<Response<NodeCleanupResponse>, Status> {
-        let req = req.into_inner();
-        info!(node_id = %req.node_id, "node_cleanup request received (no-op: node system removed)");
-        Ok(Response::new(NodeCleanupResponse {
-            workers_deleted: 0,
-            slots_deleted: 0,
-            workflows_deleted: 0,
-        }))
-    }
 }
 
 /// CoreService for the worker gRPC server.
@@ -948,20 +922,6 @@ impl CoreService for WorkerCoreServiceHandler {
         &self,
         _req: Request<ReloadProjectsRequest>,
     ) -> Result<Response<ReloadProjectsResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
-    }
-
-    async fn node_list(
-        &self,
-        _req: Request<NodeListRequest>,
-    ) -> Result<Response<NodeListResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
-    }
-
-    async fn node_cleanup(
-        &self,
-        _req: Request<NodeCleanupRequest>,
-    ) -> Result<Response<NodeCleanupResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
 }
