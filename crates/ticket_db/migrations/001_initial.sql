@@ -228,3 +228,126 @@ CREATE TRIGGER ui_events_worker_update
 AFTER UPDATE ON worker
 FOR EACH ROW
 EXECUTE FUNCTION ui_events_worker_update_fn();
+
+-- Edge insert/update/delete
+CREATE OR REPLACE FUNCTION ui_events_edge_fn() RETURNS TRIGGER AS $$
+DECLARE
+    affected_id TEXT;
+BEGIN
+    affected_id := COALESCE(NEW.source_id, OLD.source_id);
+    INSERT INTO ui_events (entity_type, entity_id)
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT affected_id
+            UNION ALL
+            SELECT t.parent_id
+            FROM ticket t
+            JOIN ancestors a ON t.id = a.id
+            WHERE t.parent_id IS NOT NULL
+        )
+        SELECT 'ticket', id FROM ancestors;
+    PERFORM pg_notify('ui_events', '');
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_edge_insert
+AFTER INSERT ON edge
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_edge_fn();
+
+CREATE TRIGGER ui_events_edge_update
+AFTER UPDATE ON edge
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_edge_fn();
+
+CREATE TRIGGER ui_events_edge_delete
+AFTER DELETE ON edge
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_edge_fn();
+
+-- Meta insert/update/delete
+CREATE OR REPLACE FUNCTION ui_events_meta_fn() RETURNS TRIGGER AS $$
+DECLARE
+    affected_id TEXT;
+BEGIN
+    affected_id := COALESCE(NEW.entity_id, OLD.entity_id);
+    INSERT INTO ui_events (entity_type, entity_id)
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT affected_id
+            UNION ALL
+            SELECT t.parent_id
+            FROM ticket t
+            JOIN ancestors a ON t.id = a.id
+            WHERE t.parent_id IS NOT NULL
+        )
+        SELECT 'ticket', id FROM ancestors;
+    PERFORM pg_notify('ui_events', '');
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_meta_insert
+AFTER INSERT ON meta
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_meta_fn();
+
+CREATE TRIGGER ui_events_meta_update
+AFTER UPDATE ON meta
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_meta_fn();
+
+CREATE TRIGGER ui_events_meta_delete
+AFTER DELETE ON meta
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_meta_fn();
+
+-- Activity insert
+CREATE OR REPLACE FUNCTION ui_events_activity_fn() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO ui_events (entity_type, entity_id)
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT NEW.ticket_id
+            UNION ALL
+            SELECT t.parent_id
+            FROM ticket t
+            JOIN ancestors a ON t.id = a.id
+            WHERE t.parent_id IS NOT NULL
+        )
+        SELECT 'ticket', id FROM ancestors;
+    PERFORM pg_notify('ui_events', '');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_activity_insert
+AFTER INSERT ON activity
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_activity_fn();
+
+-- ticket_comments insert/update
+CREATE OR REPLACE FUNCTION ui_events_ticket_comments_fn() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO ui_events (entity_type, entity_id)
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT NEW.ticket_id
+            UNION ALL
+            SELECT t.parent_id
+            FROM ticket t
+            JOIN ancestors a ON t.id = a.id
+            WHERE t.parent_id IS NOT NULL
+        )
+        SELECT 'ticket', id FROM ancestors;
+    PERFORM pg_notify('ui_events', '');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_ticket_comments_insert
+AFTER INSERT ON ticket_comments
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_ticket_comments_fn();
+
+CREATE TRIGGER ui_events_ticket_comments_update
+AFTER UPDATE ON ticket_comments
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_ticket_comments_fn();
