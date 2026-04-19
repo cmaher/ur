@@ -53,14 +53,14 @@ async fn write_export_stream<W: Write>(
     Ok(())
 }
 
-/// Inject `"kind": "<kind>"` as the first field of a JSON object string.
+/// Inject `"_kind": "<kind>"` as the first field of a JSON object string.
 ///
 /// Assumes `json_obj` is a valid JSON object starting with `{`.
-/// Returns the modified JSON string with `kind` prepended.
-fn inject_kind(kind: &str, json_obj: &str) -> Result<String> {
+/// Returns the modified JSON string with `_kind` prepended.
+pub(crate) fn inject_kind(kind: &str, json_obj: &str) -> Result<String> {
     // Fast path: empty object
     if json_obj == "{}" {
-        return Ok(format!("{{\"kind\":\"{kind}\"}}"));
+        return Ok(format!("{{\"_kind\":\"{kind}\"}}"));
     }
 
     // Insert after the opening brace
@@ -70,7 +70,7 @@ fn inject_kind(kind: &str, json_obj: &str) -> Result<String> {
 
     let kind_escaped = serde_json::to_string(kind).context("failed to serialize kind")?;
     // kind_escaped includes the surrounding quotes, e.g. "\"ticket\""
-    Ok(format!("{{\"kind\":{kind_escaped},{after_brace}"))
+    Ok(format!("{{\"_kind\":{kind_escaped},{after_brace}"))
 }
 
 #[cfg(test)]
@@ -81,18 +81,30 @@ mod tests {
     fn inject_kind_normal() {
         let json = r#"{"id":"ur-abc","title":"foo"}"#;
         let result = inject_kind("ticket", json).unwrap();
-        assert_eq!(result, r#"{"kind":"ticket","id":"ur-abc","title":"foo"}"#);
+        assert_eq!(result, r#"{"_kind":"ticket","id":"ur-abc","title":"foo"}"#);
     }
 
     #[test]
     fn inject_kind_empty_object() {
         let result = inject_kind("meta", "{}").unwrap();
-        assert_eq!(result, r#"{"kind":"meta"}"#);
+        assert_eq!(result, r#"{"_kind":"meta"}"#);
     }
 
     #[test]
     fn inject_kind_escapes_special_chars() {
         let result = inject_kind("ticket_comment", r#"{"x":1}"#).unwrap();
-        assert_eq!(result, r#"{"kind":"ticket_comment","x":1}"#);
+        assert_eq!(result, r#"{"_kind":"ticket_comment","x":1}"#);
+    }
+
+    #[test]
+    fn export_then_extract_preserves_edge_kind() {
+        let payload = r#"{"source_id":"a","target_id":"b","kind":"blocks"}"#;
+        let line = super::inject_kind("edge", payload).unwrap();
+
+        let (record_kind, payload_out) = crate::ticket::import::extract_kind(&line).unwrap();
+        assert_eq!(record_kind, "edge");
+
+        let v: serde_json::Value = serde_json::from_str(&payload_out).unwrap();
+        assert_eq!(v["kind"], "blocks");
     }
 }

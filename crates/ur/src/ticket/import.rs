@@ -13,10 +13,10 @@ use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 
 /// Run the import: read JSONL from `path` and stream records to the server.
 ///
-/// Each line of the file must be a JSON object with at minimum a `"kind"` field
-/// (identical to the format produced by `ur ticket export`).  The `kind` field
+/// Each line of the file must be a JSON object with at minimum a `"_kind"` field
+/// (identical to the format produced by `ur ticket export`).  The `_kind` field
 /// is extracted and used as the `TicketExportRecord::kind`, and the full line
-/// (minus the `kind` field) is forwarded as `TicketExportRecord::json`.
+/// (minus the `_kind` field) is forwarded as `TicketExportRecord::json`.
 ///
 /// Returns the number of rows inserted as reported by the server.
 pub async fn execute_import<T>(path: &str, client: &mut TicketServiceClient<T>) -> Result<i64>
@@ -55,8 +55,8 @@ where
 /// Read all JSONL lines from `path` and convert them into `TicketExportRecord`
 /// messages.
 ///
-/// Each line is expected to be a JSON object containing a `"kind"` field.  The
-/// `kind` field is stripped from the object and placed into the proto `kind`
+/// Each line is expected to be a JSON object containing a `"_kind"` field.  The
+/// `_kind` field is stripped from the object and placed into the proto `kind`
 /// field; the remaining object is placed into the proto `json` field.
 fn read_jsonl_records(path: &str) -> Result<Vec<TicketExportRecord>> {
     let file =
@@ -80,27 +80,27 @@ fn read_jsonl_records(path: &str) -> Result<Vec<TicketExportRecord>> {
     Ok(records)
 }
 
-/// Extract the `kind` field from a JSON object string and return `(kind, json_without_kind)`.
+/// Extract the `_kind` field from a JSON object string and return `(kind, json_without_kind)`.
 ///
-/// The `json_without_kind` is a valid JSON object with the `kind` key removed.
-/// If the object only contained the `kind` key the result is `"{}"`.
-fn extract_kind(json_obj: &str) -> Result<(String, String)> {
+/// The `json_without_kind` is a valid JSON object with the `_kind` key removed.
+/// If the object only contained the `_kind` key the result is `"{}"`.
+pub(crate) fn extract_kind(json_obj: &str) -> Result<(String, String)> {
     let mut value: serde_json::Value =
         serde_json::from_str(json_obj).context("line is not valid JSON")?;
 
     let obj = value.as_object_mut().context("line is not a JSON object")?;
 
     let kind = obj
-        .remove("kind")
-        .context("missing 'kind' field in record")?;
+        .remove("_kind")
+        .context("missing '_kind' field in record")?;
 
     let kind_str = kind
         .as_str()
-        .context("'kind' field is not a string")?
+        .context("'_kind' field is not a string")?
         .to_owned();
 
     if kind_str.is_empty() {
-        bail!("'kind' field is empty");
+        bail!("'_kind' field is empty");
     }
 
     let json = serde_json::to_string(&value).context("failed to re-serialize record")?;
@@ -113,17 +113,17 @@ mod tests {
 
     #[test]
     fn extract_kind_normal() {
-        let line = r#"{"kind":"ticket","id":"ur-abc","title":"foo"}"#;
+        let line = r#"{"_kind":"ticket","id":"ur-abc","title":"foo"}"#;
         let (kind, json) = extract_kind(line).unwrap();
         assert_eq!(kind, "ticket");
-        // json must contain the id but not the kind
+        // json must contain the id but not _kind
         assert!(json.contains("\"id\""));
-        assert!(!json.contains("\"kind\""));
+        assert!(!json.contains("\"_kind\""));
     }
 
     #[test]
     fn extract_kind_only_kind() {
-        let line = r#"{"kind":"meta"}"#;
+        let line = r#"{"_kind":"meta"}"#;
         let (kind, json) = extract_kind(line).unwrap();
         assert_eq!(kind, "meta");
         assert_eq!(json, "{}");
