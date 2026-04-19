@@ -392,6 +392,17 @@ impl TicketService for MockTicketStore {
     ) -> Result<Response<Self::SubscribeUiEventsStream>, Status> {
         Err(Status::unimplemented("not implemented in mock"))
     }
+
+    type TicketExportStream = tokio_stream::wrappers::ReceiverStream<
+        Result<ur_rpc::proto::ticket::TicketExportRecord, Status>,
+    >;
+
+    async fn ticket_export(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::TicketExportRequest>,
+    ) -> Result<Response<Self::TicketExportStream>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
 }
 
 // --- Test helpers ---

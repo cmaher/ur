@@ -272,6 +272,57 @@ pub struct UiEventRow {
     pub created_at: String,
 }
 
+/// A raw ticket row for export purposes.
+pub struct ExportTicket {
+    pub id: String,
+    pub project: String,
+    pub type_: String,
+    pub status: String,
+    pub lifecycle_status: String,
+    pub lifecycle_managed: bool,
+    pub priority: i32,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub branch: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A raw edge row for export purposes.
+pub struct ExportEdge {
+    pub source_id: String,
+    pub target_id: String,
+    pub kind: String,
+}
+
+/// A raw metadata row for export purposes.
+pub struct ExportMeta {
+    pub entity_id: String,
+    pub entity_type: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// A raw activity row for export purposes.
+pub struct ExportActivity {
+    pub id: String,
+    pub ticket_id: String,
+    pub timestamp: String,
+    pub author: String,
+    pub message: String,
+}
+
+/// A raw ticket_comments row for export purposes.
+pub struct ExportTicketComment {
+    pub comment_id: String,
+    pub ticket_id: String,
+    pub pr_number: i64,
+    pub gh_repo: String,
+    pub reply_posted: bool,
+    pub created_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

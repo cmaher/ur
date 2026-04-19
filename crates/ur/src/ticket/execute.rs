@@ -72,6 +72,8 @@ where
         TicketArgs::Dispatchable { epic_id, project } => {
             execute_dispatchable(client, epic_id, project).await
         }
+        // Export is handled before execute() is called in mod.rs::handle().
+        TicketArgs::Export { .. } => unreachable!("Export is handled in handle()"),
     }
 }
 

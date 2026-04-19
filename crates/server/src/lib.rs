@@ -16,6 +16,7 @@ pub mod run_opts_builder;
 pub mod snapshot;
 pub mod strategy;
 pub mod stream;
+pub mod ticket_export;
 pub mod ui_event_poller;
 pub mod worker;
 pub mod workerd_client;

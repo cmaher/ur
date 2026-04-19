@@ -22,6 +22,8 @@ service TicketService {
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   rpc SubscribeUiEvents(SubscribeUiEventsRequest) returns (stream UiEventBatch);
+  // Stream all ticket-domain rows as JSONL records for export/migration.
+  rpc TicketExport(TicketExportRequest) returns (stream TicketExportRecord);
 }
 
 // --- Shared messages ---
@@ -359,3 +361,20 @@ message UiEventBatch {
 }
 
 message SubscribeUiEventsRequest {}
+
+// --- TicketExport ---
+
+message TicketExportRequest {}
+
+// A single exported row. The `kind` field identifies the record type, and
+// the `json` field contains the row serialized as a JSON object string.
+// Consumers should parse `json` according to `kind`:
+//   ticket        — ticket row
+//   edge          — edge row (source_id, target_id, kind)
+//   meta          — metadata row (entity_id, entity_type, key, value)
+//   activity      — activity row
+//   ticket_comment — ticket_comments row
+message TicketExportRecord {
+  string kind = 1;
+  string json = 2;
+}

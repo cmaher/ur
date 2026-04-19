@@ -245,6 +245,12 @@ pub enum TicketArgs {
         /// Ticket ID
         id: String,
     },
+
+    /// Export all ticket-domain rows as JSONL
+    Export {
+        /// Output file path ("-" for stdout)
+        path: String,
+    },
 }
 
 /// A parsed key=value pair for activity metadata.

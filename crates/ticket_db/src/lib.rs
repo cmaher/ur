@@ -6,8 +6,9 @@ pub mod ticket_repo;
 
 pub use graph::GraphManager;
 pub use model::{
-    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Ticket, TicketComment, TicketFilter, TicketStatus, TicketType, TicketUpdate, UiEventRow,
+    Activity, DispatchableTicket, Edge, EdgeKind, ExportActivity, ExportEdge, ExportMeta,
+    ExportTicket, ExportTicketComment, LifecycleStatus, MetadataMatchTicket, NewTicket, Ticket,
+    TicketComment, TicketFilter, TicketStatus, TicketType, TicketUpdate, UiEventRow,
 };
 pub use ticket_repo::TicketRepo;
 

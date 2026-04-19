@@ -1,5 +1,6 @@
 pub mod args;
 mod execute;
+pub mod export;
 pub mod format;
 
 pub use args::TicketArgs;
@@ -237,6 +238,27 @@ pub async fn handle(
     output: &OutputManager,
     projects: &HashMap<String, ProjectConfig>,
 ) -> Result<()> {
+    // Export is handled separately: it writes directly to a file/stdout and
+    // does not go through the standard TicketOutput path.
+    if let TicketArgs::Export { path } = &args {
+        let mut client = connect_ticket(port).await?;
+        export::execute_export(path, &mut client).await?;
+        if output.is_json() {
+            #[derive(serde::Serialize)]
+            struct ExportDone<'a> {
+                kind: &'a str,
+                path: &'a str,
+            }
+            output.print_success(&ExportDone {
+                kind: "exported",
+                path,
+            });
+        } else {
+            println!("Exported to {path}");
+        }
+        return Ok(());
+    }
+
     let args = resolve_args_project(args, projects)?;
     let mut client = connect_ticket(port).await?;
     let result = execute(args, &mut client).await?;
