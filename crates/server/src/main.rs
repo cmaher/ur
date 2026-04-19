@@ -8,8 +8,11 @@ use tracing::info;
 
 use container::NetworkManager;
 
+use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::str::FromStr;
 use ticket_db::{GraphManager, TicketRepo};
-use ur_db::{DatabaseManager, SnapshotManager};
+use ur_server::SnapshotManager;
 use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
@@ -47,13 +50,23 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
     (host_workspace, local_workspace)
 }
 
-async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
+async fn init_database(cfg: &Config) -> anyhow::Result<PgPool> {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
-    let db = DatabaseManager::open(&url)
+    let options = PgConnectOptions::from_str(&url)
+        .map_err(|e| anyhow::anyhow!("invalid database URL: {e}"))?;
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
         .await
         .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
+    ticket_db::migrate(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("ticket_db migration failed: {e}"))?;
+    workflow_db::migrate(&pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("workflow_db migration failed: {e}"))?;
     info!(url = %url, "database initialized");
-    Ok(db)
+    Ok(pool)
 }
 
 fn load_worker_modes(cfg: &Config) -> anyhow::Result<WorkerModesConfig> {
@@ -149,7 +162,7 @@ async fn reconcile_workers(worker_repo: &WorkerRepo, docker_command: &str) -> an
 #[allow(clippy::too_many_arguments)]
 async fn init_and_serve(
     cfg: &Config,
-    db: &DatabaseManager,
+    pool: &PgPool,
     worker_manager: WorkerManager,
     repo_pool_manager: RepoPoolManager,
     worker_repo: WorkerRepo,
@@ -157,11 +170,11 @@ async fn init_and_serve(
     host_workspace: PathBuf,
     project_registry: ProjectRegistry,
 ) -> anyhow::Result<()> {
-    let graph_manager = GraphManager::new(db.pool().clone());
-    let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = WorkflowRepo::new(db.pool().clone());
+    let graph_manager = GraphManager::new(pool.clone());
+    let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
+    let workflow_repo = WorkflowRepo::new(pool.clone());
 
-    let ui_event_repo = UiEventRepo::new(db.pool().clone());
+    let ui_event_repo = UiEventRepo::new(pool.clone());
     let fallback_interval =
         std::time::Duration::from_millis(cfg.server.ui_event_fallback_interval_ms);
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
@@ -402,7 +415,7 @@ async fn serve_grpc_servers(
 #[allow(clippy::too_many_arguments)]
 async fn init_managers(
     cfg: &Config,
-    db: &DatabaseManager,
+    pool: &PgPool,
     local_workspace: &Path,
     host_workspace: &Path,
     host_config_dir: &Path,
@@ -428,7 +441,7 @@ async fn init_managers(
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
-    let worker_repo = WorkerRepo::new(db.pool().clone());
+    let worker_repo = WorkerRepo::new(pool.clone());
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 
@@ -525,7 +538,7 @@ async fn main() -> anyhow::Result<()> {
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
     let worker_modes = load_worker_modes(&cfg)?;
-    let db = init_database(&cfg).await?;
+    let pool = init_database(&cfg).await?;
     let (shutdown_tx, backup_handle) = init_backup(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
@@ -533,7 +546,7 @@ async fn main() -> anyhow::Result<()> {
     let (builderd_addr, worker_repo, repo_pool_manager, worker_manager, project_registry) =
         init_managers(
             &cfg,
-            &db,
+            &pool,
             &local_workspace,
             &host_workspace,
             &host_config_dir,
@@ -546,7 +559,7 @@ async fn main() -> anyhow::Result<()> {
 
     let result = init_and_serve(
         &cfg,
-        &db,
+        &pool,
         worker_manager,
         repo_pool_manager,
         worker_repo,

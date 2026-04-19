@@ -3241,7 +3241,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ur_config",
- "ur_db",
  "ur_rpc",
 ]
 
@@ -3284,7 +3283,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ur_config",
- "ur_db",
  "ur_db_test",
  "ur_rpc",
  "ur_utils",
@@ -3304,27 +3302,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "ur_db"
-version = "0.1.0"
-dependencies = [
- "petgraph",
- "rand 0.8.5",
- "sqlx 0.9.0-alpha.1",
- "tempfile",
- "ticket_db",
- "tokio",
- "ur_db_test",
- "workflow_db",
-]
-
-[[package]]
 name = "ur_db_test"
 version = "0.1.0"
 dependencies = [
  "sqlx 0.9.0-alpha.1",
+ "ticket_db",
  "tokio",
- "ur_db",
  "uuid",
+ "workflow_db",
 ]
 
 [[package]]

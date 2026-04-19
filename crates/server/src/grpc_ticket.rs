@@ -1247,7 +1247,7 @@ mod tests {
 
     async fn setup_handler() -> (TestDb, TicketServiceHandler) {
         let test_db = TestDb::new().await;
-        let pool = test_db.db().pool().clone();
+        let pool = test_db.pool().clone();
         let graph_manager = GraphManager::new(pool.clone());
         let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
         let workflow_repo = WorkflowRepo::new(pool);

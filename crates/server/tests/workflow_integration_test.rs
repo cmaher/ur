@@ -11,8 +11,6 @@ use tokio::sync::{Mutex, Notify, watch};
 use tonic::transport::{Endpoint, Server};
 
 use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
-use ur_db::model::Worker;
-use ur_db::{WorkerRepo, WorkflowRepo};
 use ur_db_test::TestDb;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{UpdateAgentStatusRequest, WorkflowStepCompleteRequest};
@@ -20,6 +18,8 @@ use ur_server::workflow::{
     HandlerEntry, HandlerFuture, TransitionRequest, WorkflowContext, WorkflowCoordinator,
     WorkflowHandler, coordinator_cancel_channel, coordinator_channel,
 };
+use workflow_db::model::Worker;
+use workflow_db::{WorkerRepo, WorkflowRepo};
 
 // ---------------------------------------------------------------------------
 // Mock handler: records calls, optionally auto-advances to a next state
@@ -224,7 +224,7 @@ impl TestHarness {
 
 async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
     let test_db = TestDb::new().await;
-    let pool = test_db.db().pool().clone();
+    let pool = test_db.pool().clone();
     let graph = GraphManager::new(pool.clone());
     let ticket_repo = TicketRepo::new(pool.clone(), graph);
     let workflow_repo = WorkflowRepo::new(pool.clone());

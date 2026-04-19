@@ -22,7 +22,6 @@ uuid = { version = "1", features = ["v4"] }
 local_repo = { path = "../local_repo" }
 ur_config = { path = "../ur_config" }
 ticket_db = { path = "../ticket_db" }
-ur_db = { path = "../ur_db" }
 workflow_db = { path = "../workflow_db" }
 mlua = { workspace = true }
 serde = { workspace = true }

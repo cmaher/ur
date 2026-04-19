@@ -113,7 +113,7 @@ async fn make_grpc_handler(
     let network_manager =
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.db().pool().clone();
+    let pool = test_db.pool().clone();
     let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
     let graph_manager = ticket_db::GraphManager::new(pool.clone());
     let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
@@ -225,7 +225,7 @@ async fn make_worker_handler() -> (
     ur_db_test::TestDb,
 ) {
     let test_db = ur_db_test::TestDb::new().await;
-    let pool = test_db.db().pool().clone();
+    let pool = test_db.pool().clone();
     let worker_repo = workflow_db::WorkerRepo::new(pool.clone());
     let graph_manager = ticket_db::GraphManager::new(pool.clone());
     let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);

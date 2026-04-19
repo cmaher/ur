@@ -1,13 +1,12 @@
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr;
-use ur_db::DatabaseManager;
 use uuid::Uuid;
 
 const CI_POSTGRES_URL: &str = "postgres://ur:ur@localhost:5433/postgres";
 
 pub struct TestDb {
-    db: DatabaseManager,
+    pool: PgPool,
     db_name: String,
     admin_pool: PgPool,
 }
@@ -25,23 +24,34 @@ impl TestDb {
         .expect("failed to create test database");
 
         let db_url = format!("postgres://ur:ur@localhost:5433/{db_name}");
-        let db = DatabaseManager::open(&db_url)
+        let options =
+            PgConnectOptions::from_str(&db_url).expect("invalid test database connection string");
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options)
             .await
-            .expect("failed to open test database");
+            .expect("failed to connect to test database");
+
+        ticket_db::migrate(&pool)
+            .await
+            .expect("failed to run ticket_db migrations");
+        workflow_db::migrate(&pool)
+            .await
+            .expect("failed to run workflow_db migrations");
 
         Self {
-            db,
+            pool,
             db_name,
             admin_pool,
         }
     }
 
-    pub fn db(&self) -> &DatabaseManager {
-        &self.db
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     pub async fn cleanup(self) {
-        self.db.pool().close().await;
+        self.pool.close().await;
 
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",

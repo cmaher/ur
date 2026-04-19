@@ -1,7 +1,75 @@
 use std::path::Path;
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
+use tokio::process::Command;
 use tracing::{debug, info};
+
+/// Manages pg_dump/pg_restore via docker exec into the postgres container.
+struct SnapshotManager {
+    container_command: String,
+    container_name: String,
+    db_name: String,
+}
+
+impl SnapshotManager {
+    fn new(container_command: String, container_name: String, db_name: String) -> Self {
+        Self {
+            container_command,
+            container_name,
+            db_name,
+        }
+    }
+
+    async fn dump_to(&self, filename: &str) -> Result<(), String> {
+        let backup_path = format!("/backup/{filename}");
+        let output = Command::new(&self.container_command)
+            .args([
+                "exec",
+                &self.container_name,
+                "pg_dump",
+                "-Fc",
+                "-f",
+                &backup_path,
+                &self.db_name,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("failed to run {}: {e}", self.container_command))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("pg_dump failed: {stderr}"));
+        }
+        Ok(())
+    }
+
+    async fn restore_from(&self, filename: &str) -> Result<(), String> {
+        let backup_path = format!("/backup/{filename}");
+        let output = Command::new(&self.container_command)
+            .args([
+                "exec",
+                &self.container_name,
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "-d",
+                &self.db_name,
+                &backup_path,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("failed to run {}: {e}", self.container_command))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("pg_restore failed: {stderr}"));
+        }
+        Ok(())
+    }
+}
 
 use crate::output::{BackupCreated, BackupEntry, BackupList, OutputManager};
 
@@ -23,7 +91,7 @@ pub async fn backup(config: &ur_config::Config, output: &OutputManager) -> Resul
 
     info!(backup_dir = %backup_path.display(), "creating on-demand backup via pg_dump");
 
-    let snapshot_manager = ur_db::SnapshotManager::new(
+    let snapshot_manager = SnapshotManager::new(
         config.server.container_command.clone(),
         ur_config::DEFAULT_DB_HOST.to_string(),
         config.db.name.clone(),
@@ -72,7 +140,7 @@ pub async fn restore(
         "restoring database from backup via pg_restore"
     );
 
-    let snapshot_manager = ur_db::SnapshotManager::new(
+    let snapshot_manager = SnapshotManager::new(
         config.server.container_command.clone(),
         ur_config::DEFAULT_DB_HOST.to_string(),
         config.db.name.clone(),

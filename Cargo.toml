@@ -10,7 +10,6 @@ members = [
     "crates/ticket_db",
     "crates/ur",
     "crates/ur_config",
-    "crates/ur_db",
     "crates/workflow_db",
     "crates/ur_db_test",
     "crates/ur_markdown",

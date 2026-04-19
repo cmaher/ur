@@ -954,7 +954,7 @@ mod tests {
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.db().pool().clone());
+        let repo = WorkerRepo::new(test_db.pool().clone());
         (repo, test_db)
     }
 

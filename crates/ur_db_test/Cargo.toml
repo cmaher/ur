@@ -5,9 +5,10 @@ version.workspace = true
 
 [dependencies]
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+ticket_db = { path = "../ticket_db" }
 tokio = { version = "1", features = ["full"] }
-ur_db = { path = "../ur_db" }
 uuid = { version = "1", features = ["v4"] }
+workflow_db = { path = "../workflow_db" }
 
 [lints]
 workspace = true
