@@ -1,7 +1,56 @@
 -- workflow_db initial schema.
--- Owns the workflow domain: workflow state, events, intents, and comments.
+-- Owns the workflow domain: worker/slot lifecycle, workflow state, events, intents, and comments.
+-- No node_id columns anywhere. ticket_id columns are plain TEXT with no FK constraints.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+--------------------------------------------------------------------------------
+-- slot
+--------------------------------------------------------------------------------
+CREATE TABLE slot (
+    id TEXT PRIMARY KEY NOT NULL,
+    project_key TEXT NOT NULL,
+    slot_name TEXT NOT NULL,
+    host_path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+    updated_at TEXT NOT NULL DEFAULT (now()::TEXT),
+    UNIQUE(project_key, slot_name)
+);
+
+CREATE INDEX idx_slot_project ON slot(project_key);
+
+--------------------------------------------------------------------------------
+-- worker
+--------------------------------------------------------------------------------
+CREATE TABLE worker (
+    worker_id TEXT PRIMARY KEY NOT NULL,
+    process_id TEXT NOT NULL,
+    project_key TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    worker_secret TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    container_status TEXT NOT NULL DEFAULT 'provisioning',
+    agent_status TEXT NOT NULL DEFAULT 'starting',
+    workspace_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+    updated_at TEXT NOT NULL DEFAULT (now()::TEXT),
+    idle_redispatch_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_worker_container_status ON worker(container_status);
+CREATE INDEX idx_worker_process_id ON worker(process_id);
+
+--------------------------------------------------------------------------------
+-- worker_slot
+--------------------------------------------------------------------------------
+CREATE TABLE worker_slot (
+    worker_id TEXT NOT NULL,
+    slot_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (now()::TEXT),
+    PRIMARY KEY (worker_id, slot_id),
+    FOREIGN KEY (worker_id) REFERENCES worker(worker_id) ON DELETE CASCADE,
+    FOREIGN KEY (slot_id) REFERENCES slot(id) ON DELETE CASCADE
+);
 
 --------------------------------------------------------------------------------
 -- workflow
@@ -124,3 +173,31 @@ CREATE TRIGGER ui_events_workflow_update
 AFTER UPDATE ON workflow
 FOR EACH ROW
 EXECUTE FUNCTION ui_events_workflow_update_fn();
+
+-- Worker insert
+CREATE OR REPLACE FUNCTION ui_events_worker_insert_fn() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO ui_events (entity_type, entity_id) VALUES ('worker', NEW.worker_id);
+    PERFORM pg_notify('ui_events', '');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_worker_insert
+AFTER INSERT ON worker
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_worker_insert_fn();
+
+-- Worker update
+CREATE OR REPLACE FUNCTION ui_events_worker_update_fn() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO ui_events (entity_type, entity_id) VALUES ('worker', NEW.worker_id);
+    PERFORM pg_notify('ui_events', '');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER ui_events_worker_update
+AFTER UPDATE ON worker
+FOR EACH ROW
+EXECUTE FUNCTION ui_events_worker_update_fn();
