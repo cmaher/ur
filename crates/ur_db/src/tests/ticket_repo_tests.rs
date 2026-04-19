@@ -1,9 +1,7 @@
 // Tests for TicketRepo.
 
-use crate::graph::GraphManager;
-use crate::model::{EdgeKind, NewTicket, TicketFilter, TicketUpdate};
 use crate::tests::TestDb;
-use crate::ticket_repo::TicketRepo;
+use ticket_db::{EdgeKind, GraphManager, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
 
 /// Build a TicketRepo from a TestDb.
 fn repo(db: &TestDb) -> TicketRepo {

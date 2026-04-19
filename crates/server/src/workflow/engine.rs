@@ -5,11 +5,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
-use ur_db::TicketRepo;
+use ticket_db::{LifecycleStatus, TicketRepo};
 use ur_db::WorkerRepo;
 use ur_db::WorkflowRepo;
-
-use ur_db::model::LifecycleStatus;
 
 use crate::WorkerManager;
 
@@ -194,7 +192,7 @@ impl WorkflowEngine {
     /// Handle a failed handler: stall the workflow immediately.
     async fn handle_failure(
         &self,
-        event: &ur_db::model::WorkflowEvent,
+        event: &ur_db::WorkflowEvent,
         target: LifecycleStatus,
         handler_err: anyhow::Error,
     ) {
@@ -231,8 +229,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
+    use ur_db::{WorkerRepo, WorkflowRepo};
     use ur_db_test::TestDb;
 
     async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
@@ -408,7 +406,7 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: Some(true),
             status: None,
@@ -479,7 +477,7 @@ mod tests {
             .await
             .unwrap();
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: Some(true),
             status: None,
@@ -550,7 +548,7 @@ mod tests {
         repo.create_ticket(&ticket).await.unwrap();
 
         // Enable lifecycle management and transition to AwaitingDispatch.
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
             lifecycle_managed: Some(true),
             status: None,
@@ -624,7 +622,7 @@ mod tests {
         repo.create_ticket(&ticket).await.unwrap();
 
         // First transition: Open → AwaitingDispatch (enable lifecycle management).
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
             lifecycle_managed: Some(true),
             status: None,
@@ -662,7 +660,7 @@ mod tests {
         noop_engine.poll_once().await;
 
         // Second transition: AwaitingDispatch → Implementing.
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: None,
             status: None,
@@ -734,7 +732,7 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: Some(true),
             status: None,

@@ -4,10 +4,14 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+petgraph = "0.7"
+rand = "0.8"
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 uuid = { version = "1", features = ["v4"] }

@@ -8,6 +8,7 @@ chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.7"
 rand = "0.8"
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+ticket_db = { path = "../ticket_db" }
 tokio = { version = "1", features = ["fs", "process"] }
 ur_rpc = { path = "../ur_rpc" }
 uuid = { version = "1", features = ["v4"] }

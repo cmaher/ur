@@ -1,4 +1,4 @@
-use ur_db::model::LifecycleStatus;
+use ticket_db::LifecycleStatus;
 
 /// Pure-function router for workerd-driven lifecycle states.
 ///

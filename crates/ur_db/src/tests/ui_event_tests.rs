@@ -1,10 +1,8 @@
 // Tests for ancestor UI event propagation triggers.
 
-use crate::graph::GraphManager;
-use crate::model::{NewTicket, TicketUpdate};
 use crate::tests::TestDb;
-use crate::ticket_repo::TicketRepo;
 use crate::ui_event_repo::UiEventRepo;
+use ticket_db::{GraphManager, NewTicket, TicketRepo, TicketUpdate};
 
 fn repo(db: &TestDb) -> TicketRepo {
     let pool = db.db().pool().clone();

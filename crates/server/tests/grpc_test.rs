@@ -97,8 +97,8 @@ async fn make_grpc_handler(
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
     let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
-    let graph_manager = ur_db::GraphManager::new(pool.clone());
-    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let graph_manager = ticket_db::GraphManager::new(pool.clone());
+    let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
     let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
@@ -203,15 +203,15 @@ async fn spawn_worker_grpc_server(
 
 async fn make_worker_handler() -> (
     ur_server::grpc::WorkerCoreServiceHandler,
-    ur_db::TicketRepo,
+    ticket_db::TicketRepo,
     ur_db::WorkflowRepo,
     ur_db_test::TestDb,
 ) {
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
     let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
-    let graph_manager = ur_db::GraphManager::new(pool.clone());
-    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let graph_manager = ticket_db::GraphManager::new(pool.clone());
+    let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
     let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
     let (transition_tx, _transition_rx) = tokio::sync::mpsc::channel(16);
 
@@ -280,7 +280,7 @@ async fn make_worker_handler() -> (
 
 #[tokio::test]
 async fn link_comment_ticket_writes_row() {
-    use ur_db::model::{LifecycleStatus, NewTicket};
+    use ticket_db::{LifecycleStatus, NewTicket};
     use ur_rpc::proto::core::LinkCommentTicketRequest;
     use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 
@@ -357,7 +357,7 @@ async fn link_comment_ticket_writes_row() {
 
 #[tokio::test]
 async fn link_comment_ticket_missing_gh_repo_returns_not_found() {
-    use ur_db::model::{LifecycleStatus, NewTicket};
+    use ticket_db::{LifecycleStatus, NewTicket};
     use ur_rpc::proto::core::LinkCommentTicketRequest;
     use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 

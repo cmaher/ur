@@ -78,8 +78,8 @@ async fn make_test_components(
     let test_db = ur_db_test::TestDb::new().await;
     let pool = test_db.db().pool().clone();
     let worker_repo = ur_db::WorkerRepo::new(pool.clone(), "test-node".to_string());
-    let graph_manager = ur_db::GraphManager::new(pool.clone());
-    let ticket_repo = ur_db::TicketRepo::new(pool.clone(), graph_manager);
+    let graph_manager = ticket_db::GraphManager::new(pool.clone());
+    let ticket_repo = ticket_db::TicketRepo::new(pool.clone(), graph_manager);
     let workflow_repo = ur_db::WorkflowRepo::new(pool, "test-node".to_string());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());

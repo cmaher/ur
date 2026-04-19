@@ -115,7 +115,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
 /// it on the ticket if not already set.
 async fn ensure_ticket_branch(
     ctx: &WorkflowContext,
-    ticket: &ur_db::model::Ticket,
+    ticket: &ticket_db::Ticket,
     ticket_id: &str,
     worker_id: &str,
 ) -> anyhow::Result<String> {
@@ -134,7 +134,7 @@ async fn ensure_ticket_branch(
         branch = %branch,
         "no branch set — read current branch from worker checkout"
     );
-    let update = ur_db::model::TicketUpdate {
+    let update = ticket_db::TicketUpdate {
         branch: Some(Some(branch.clone())),
         ..Default::default()
     };

@@ -6,8 +6,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
+use ticket_db::LifecycleStatus;
 use ur_db::WorkflowRepo;
-use ur_db::model::LifecycleStatus;
 
 use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 
@@ -285,7 +285,7 @@ async fn run_handler(
     // Sync ticket lifecycle to match workflow status. This fires a SQLite trigger
     // that creates a workflow_event, so we immediately delete it to prevent the
     // engine from re-dispatching a transition we're already handling.
-    let update = ur_db::model::TicketUpdate {
+    let update = ticket_db::TicketUpdate {
         lifecycle_status: Some(target_status),
         ..Default::default()
     };
@@ -468,8 +468,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
+    use ur_db::{WorkerRepo, WorkflowRepo};
     use ur_db_test::TestDb;
 
     async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {

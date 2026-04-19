@@ -2763,6 +2763,9 @@ dependencies = [
 name = "ticket_db"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "petgraph",
+ "rand 0.8.5",
  "sqlx 0.9.0-alpha.1",
  "thiserror",
  "tokio",
@@ -3226,6 +3229,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ticket_db",
  "tmux",
  "tokio",
  "tokio-stream",
@@ -3271,6 +3275,7 @@ dependencies = [
  "sqlx 0.9.0-alpha.1",
  "tempfile",
  "thiserror",
+ "ticket_db",
  "tokio",
  "tokio-stream",
  "toml",
@@ -3306,6 +3311,7 @@ dependencies = [
  "rand 0.8.5",
  "sqlx 0.9.0-alpha.1",
  "tempfile",
+ "ticket_db",
  "tokio",
  "ur_db_test",
  "ur_rpc",

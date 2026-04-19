@@ -5,10 +5,10 @@ use remote_repo::{CheckRun, GhBackend, RemoteRepo};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
+use ticket_db::{LifecycleStatus, Ticket, TicketRepo};
 use ur_config::Config;
-use ur_db::TicketRepo;
 use ur_db::WorkflowRepo;
-use ur_db::model::{LifecycleStatus, Ticket, Workflow};
+use ur_db::model::Workflow;
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
 use ur_rpc::workflow_condition;
@@ -914,7 +914,7 @@ impl GithubPollerManager {
             }
         }
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             status: Some("open".to_string()),
             ..Default::default()
         };
@@ -1308,7 +1308,7 @@ fn parse_review_command(text: &str) -> Option<ReviewSignal> {
 
 /// Group pending replies by (gh_repo, pr_number, comment_id), collecting ticket IDs.
 fn group_pending_replies(
-    pending: &[ur_db::model::TicketComment],
+    pending: &[ticket_db::TicketComment],
 ) -> HashMap<(String, i64, String), Vec<String>> {
     let mut grouped: HashMap<(String, i64, String), Vec<String>> = HashMap::new();
     for row in pending {
@@ -1489,7 +1489,7 @@ mod tests {
     #[test]
     fn group_pending_replies_groups_by_comment() {
         let pending = vec![
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "111".to_string(),
                 ticket_id: "ur-t1".to_string(),
                 pr_number: 42,
@@ -1497,7 +1497,7 @@ mod tests {
                 reply_posted: false,
                 created_at: String::new(),
             },
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "111".to_string(),
                 ticket_id: "ur-t2".to_string(),
                 pr_number: 42,
@@ -1505,7 +1505,7 @@ mod tests {
                 reply_posted: false,
                 created_at: String::new(),
             },
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "222".to_string(),
                 ticket_id: "ur-t3".to_string(),
                 pr_number: 42,

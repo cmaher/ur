@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use local_repo::LocalRepo;
 use tracing::{info, warn};
 
+use ticket_db::LifecycleStatus;
 use ur_config::{ResolvedTemplatePath, resolve_template_path};
-use ur_db::model::LifecycleStatus;
 
 use crate::workflow::handlers::hook_log::write_hook_failure_log;
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};

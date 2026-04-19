@@ -6,10 +6,9 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::model::{
-    LifecycleStatus, MetadataMatchTicket, Ticket, TicketComment, Workflow, WorkflowEvent,
-    WorkflowEventRow, WorkflowIntent,
-};
+use ticket_db::{LifecycleStatus, MetadataMatchTicket, Ticket, TicketComment};
+
+use crate::model::{Workflow, WorkflowEvent, WorkflowEventRow, WorkflowIntent};
 
 /// A workflow with pre-joined ticket children counts, returned by paginated queries.
 pub struct PaginatedWorkflow {
@@ -1110,11 +1109,9 @@ fn row_to_workflow(
 
 #[cfg(test)]
 mod paginated_tests {
-    use crate::graph::GraphManager;
-    use crate::model::{LifecycleStatus, NewTicket};
     use crate::tests::TestDb;
-    use crate::ticket_repo::TicketRepo;
     use crate::workflow_repo::WorkflowRepo;
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
 
     fn ticket_repo(db: &TestDb) -> TicketRepo {
         let pool = db.db().pool().clone();
@@ -1339,7 +1336,7 @@ mod paginated_tests {
         // Close one child.
         tr.update_ticket(
             "pg-cc1-c3",
-            &crate::TicketUpdate {
+            &ticket_db::TicketUpdate {
                 status: Some("closed".into()),
                 ..Default::default()
             },

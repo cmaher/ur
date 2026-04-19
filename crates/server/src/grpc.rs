@@ -5,7 +5,7 @@ use futures::future::try_join_all;
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info, warn};
 
-use ur_db::TicketRepo;
+use ticket_db::TicketRepo;
 use ur_db::WorkflowRepo;
 use ur_db::model::AgentStatus;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
@@ -1056,7 +1056,7 @@ async fn persist_pool_branch(
     if ticket.is_none() {
         return Ok(());
     }
-    let branch_update = ur_db::model::TicketUpdate {
+    let branch_update = ticket_db::TicketUpdate {
         branch: Some(Some(branch.to_owned())),
         ..Default::default()
     };
@@ -1122,7 +1122,7 @@ async fn handle_workflow_step_complete(
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
     use crate::workflow::{NextStepResult, WorkerdNextStepRouter};
-    use ur_db::model::LifecycleStatus;
+    use ticket_db::LifecycleStatus;
 
     // 1. Find the ticket assigned to this worker via workflow table.
     // Don't filter by ticket status — closed tickets still need their workflow
@@ -1247,7 +1247,7 @@ async fn handle_awaiting_dispatch_readiness(
     workflow_repo: &WorkflowRepo,
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
-    use ur_db::model::LifecycleStatus;
+    use ticket_db::LifecycleStatus;
 
     let matched = workflow_repo
         .tickets_by_workflow_worker_id(worker_id)
@@ -1280,7 +1280,7 @@ async fn handle_awaiting_dispatch_readiness(
 async fn send_transition(
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
     ticket_id: &str,
-    to: ur_db::model::LifecycleStatus,
+    to: ticket_db::LifecycleStatus,
 ) -> Result<(), anyhow::Error> {
     transition_tx
         .send(crate::workflow::TransitionRequest {

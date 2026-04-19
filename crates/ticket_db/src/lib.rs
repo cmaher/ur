@@ -1,5 +1,16 @@
 // ticket_db: Postgres-backed ticket database crate.
 
+pub mod graph;
+pub mod model;
+pub mod ticket_repo;
+
+pub use graph::GraphManager;
+pub use model::{
+    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
+    Ticket, TicketComment, TicketFilter, TicketStatus, TicketType, TicketUpdate, UiEventRow,
+};
+pub use ticket_repo::TicketRepo;
+
 use sqlx::PgPool;
 
 /// Run all pending ticket_db migrations against the given pool.

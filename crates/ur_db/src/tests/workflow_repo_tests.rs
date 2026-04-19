@@ -1,10 +1,8 @@
 // Tests for WorkflowRepo.
 
-use crate::graph::GraphManager;
-use crate::model::{LifecycleStatus, NewTicket};
 use crate::tests::TestDb;
-use crate::ticket_repo::TicketRepo;
 use crate::workflow_repo::WorkflowRepo;
+use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
 
 /// Build a TicketRepo from a TestDb (used only to create test tickets).
 fn ticket_repo(db: &TestDb) -> TicketRepo {
@@ -668,7 +666,7 @@ async fn get_ticket_children_counts_returns_correct_counts() {
     // Close one child.
     repo.update_ticket(
         "wf-child3",
-        &crate::TicketUpdate {
+        &ticket_db::TicketUpdate {
             status: Some("closed".into()),
             ..Default::default()
         },

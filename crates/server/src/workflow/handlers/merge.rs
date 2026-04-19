@@ -1,7 +1,7 @@
 use anyhow::bail;
 use remote_repo::{GhBackend, MergeStrategy, RemoteRepo};
+use ticket_db::{LifecycleStatus, TicketUpdate};
 use tracing::{error, info, warn};
-use ur_db::model::{LifecycleStatus, TicketUpdate};
 use ur_rpc::workflow_condition;
 
 use crate::WorkerId;
@@ -116,7 +116,7 @@ async fn execute_merge(
 /// Verify ci_status=succeeded, mergeable=mergeable, and review_status=approved.
 /// Returns an error if any condition is not met (race between poller and handler).
 fn check_pre_merge_conditions(
-    workflow: &ur_db::model::Workflow,
+    workflow: &ur_db::Workflow,
     ticket_id: &str,
 ) -> Result<(), anyhow::Error> {
     let mut failures = Vec::new();

@@ -4,9 +4,8 @@ use std::pin::Pin;
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
-use ur_db::{
-    EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate, WorkflowRepo,
-};
+use ticket_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
+use ur_db::WorkflowRepo;
 use ur_rpc::error::{
     self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_ACTIVE_WORKFLOW,
     TICKET_HAS_OPEN_CHILDREN,
@@ -290,7 +289,7 @@ impl TicketServiceHandler {
 
     /// Convert metadata query results to minimal proto tickets.
     fn meta_tickets_to_proto(
-        matches: Vec<ur_db::MetadataMatchTicket>,
+        matches: Vec<ticket_db::MetadataMatchTicket>,
     ) -> Vec<ur_rpc::proto::ticket::Ticket> {
         matches
             .into_iter()
@@ -1181,8 +1180,8 @@ fn workflow_to_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ticket_db::{GraphManager, NewTicket};
     use tonic::Request;
-    use ur_db::{GraphManager, NewTicket};
     use ur_db_test::TestDb;
 
     fn test_workflow() -> ur_db::Workflow {

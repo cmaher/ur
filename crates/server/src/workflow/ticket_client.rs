@@ -166,7 +166,8 @@ impl TicketClient {
 mod tests {
     use super::*;
 
-    use ur_db::{GraphManager, TicketRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, TicketRepo};
+    use ur_db::WorkflowRepo;
     use ur_db_test::TestDb;
 
     async fn setup() -> (TicketClient, TicketRepo, TestDb) {
@@ -199,7 +200,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create a parent ticket first.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),
@@ -244,7 +245,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create parent.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent2".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),
@@ -289,7 +290,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create parent.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent3".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),

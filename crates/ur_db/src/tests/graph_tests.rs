@@ -1,9 +1,7 @@
 // Tests for GraphManager.
 
-use crate::graph::GraphManager;
-use crate::model::{EdgeKind, NewTicket};
 use crate::tests::TestDb;
-use crate::ticket_repo::TicketRepo;
+use ticket_db::{EdgeKind, GraphManager, NewTicket, TicketRepo};
 
 /// Build a TicketRepo and GraphManager from a TestDb.
 fn managers(db: &TestDb) -> (TicketRepo, GraphManager) {

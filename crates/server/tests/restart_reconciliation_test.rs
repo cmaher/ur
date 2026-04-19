@@ -90,8 +90,8 @@ async fn make_components_with_db(
         container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = test_config(dir, &workspace);
     let worker_repo = ur_db::WorkerRepo::new(db.pool().clone(), "test-node".to_string());
-    let graph_manager = ur_db::GraphManager::new(db.pool().clone());
-    let ticket_repo = ur_db::TicketRepo::new(db.pool().clone(), graph_manager);
+    let graph_manager = ticket_db::GraphManager::new(db.pool().clone());
+    let ticket_repo = ticket_db::TicketRepo::new(db.pool().clone(), graph_manager);
     let workflow_repo = ur_db::WorkflowRepo::new(db.pool().clone(), "test-node".to_string());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());

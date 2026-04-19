@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, builder::PossibleValuesParser};
-use ur_db::model::TicketType;
+use ticket_db::TicketType;
 
 /// Ticket management subcommands matching all TicketService RPCs.
 #[derive(Debug, Subcommand)]

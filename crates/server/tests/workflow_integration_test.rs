@@ -10,8 +10,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, Notify, watch};
 use tonic::transport::{Endpoint, Server};
 
-use ur_db::model::{LifecycleStatus, NewTicket, Worker};
-use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
+use ur_db::model::Worker;
+use ur_db::{WorkerRepo, WorkflowRepo};
 use ur_db_test::TestDb;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{UpdateAgentStatusRequest, WorkflowStepCompleteRequest};
