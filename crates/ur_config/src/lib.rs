@@ -221,6 +221,16 @@ pub const UR_PROJECT_CLAUDE_ENV: &str = "UR_PROJECT_CLAUDE";
 /// Container-side mount point for the backup directory.
 pub const BACKUP_CONTAINER_PATH: &str = "/backup";
 
+/// Environment variable: override the ticket database connection URL.
+///
+/// When set, takes precedence over the `[ticket_db]` config section.
+pub const UR_TICKET_DB_URL_ENV: &str = "UR_TICKET_DB_URL";
+
+/// Environment variable: override the workflow database connection URL.
+///
+/// When set, takes precedence over the `[workflow_db]` config section.
+pub const UR_WORKFLOW_DB_URL_ENV: &str = "UR_WORKFLOW_DB_URL";
+
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
