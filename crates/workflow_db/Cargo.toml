@@ -15,6 +15,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+ur_db_test = { path = "../ur_db_test" }
 uuid = { version = "1", features = ["v4"] }
 
 [lints]

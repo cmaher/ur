@@ -1016,19 +1016,19 @@ async fn handle_workflow_step_complete(
     // 1. Find the ticket assigned to this worker via workflow table.
     // Don't filter by ticket status — closed tickets still need their workflow
     // advanced (e.g., implementing → pushing) so the branch gets pushed and PR'd.
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        info!(
-            worker_id = %worker_id,
-            "workflow_step_complete: worker has no assigned ticket — no-op"
-        );
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            info!(
+                worker_id = %worker_id,
+                "workflow_step_complete: worker has no assigned ticket — no-op"
+            );
+            return Ok(());
+        }
+    };
+    let ticket_id = &ticket_id;
 
     // 2. Look up the workflow status for this ticket.
     let workflow = workflow_repo
@@ -1138,15 +1138,13 @@ async fn handle_awaiting_dispatch_readiness(
 ) -> Result<(), anyhow::Error> {
     use ticket_db::LifecycleStatus;
 
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+    let ticket_id = &ticket_id;
 
     // Check the workflow table for an awaiting_dispatch workflow.
     let workflow = workflow_repo.get_workflow_by_ticket(ticket_id).await?;
@@ -1246,19 +1244,19 @@ async fn handle_request_human_activity(
     workflow_repo: &WorkflowRepo,
     message: &str,
 ) -> Result<(), anyhow::Error> {
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        warn!(
-            worker_id = %worker_id,
-            "request-human: worker has no assigned ticket — cannot record activity"
-        );
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            warn!(
+                worker_id = %worker_id,
+                "request-human: worker has no assigned ticket — cannot record activity"
+            );
+            return Ok(());
+        }
+    };
+    let ticket_id = &ticket_id;
 
     let activity = ticket_repo
         .add_activity(ticket_id, "agent", message)
@@ -1291,22 +1289,24 @@ async fn resolve_gh_repo_for_worker(
     ticket_repo: &TicketRepo,
     workflow_repo: &WorkflowRepo,
 ) -> Result<String, Status> {
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
+    let ticket_id_opt = workflow_repo
+        .ticket_id_by_worker_id(worker_id)
         .await
         .map_err(|e| Status::internal(format!("failed to look up worker ticket: {e}")))?;
 
-    if matched.is_empty() {
-        return Err(error::status_with_info(
-            Code::NotFound,
-            format!("no ticket assigned to worker {worker_id}"),
-            DOMAIN_CORE,
-            NOT_FOUND,
-            HashMap::new(),
-        ));
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            return Err(error::status_with_info(
+                Code::NotFound,
+                format!("no ticket assigned to worker {worker_id}"),
+                DOMAIN_CORE,
+                NOT_FOUND,
+                HashMap::new(),
+            ));
+        }
+    };
+    let ticket_id = &ticket_id;
     let meta = ticket_repo
         .get_meta(ticket_id, "ticket")
         .await

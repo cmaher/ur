@@ -1212,6 +1212,261 @@ impl TicketRepo {
         Ok(result.rows_affected())
     }
 
+    /// Return all tickets ordered by id for deterministic export.
+    pub async fn export_tickets(&self) -> Result<Vec<crate::model::ExportTicket>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, \
+             parent_id, title, body, branch, created_at, updated_at \
+             FROM ticket ORDER BY id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| crate::model::ExportTicket {
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Return all edges ordered by (source_id, target_id, kind) for deterministic export.
+    pub async fn export_edges(&self) -> Result<Vec<crate::model::ExportEdge>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT source_id, target_id, kind FROM edge ORDER BY source_id ASC, target_id ASC, kind ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source_id, target_id, kind)| crate::model::ExportEdge {
+                source_id,
+                target_id,
+                kind,
+            })
+            .collect())
+    }
+
+    /// Return all meta rows ordered by (entity_type, entity_id, key) for deterministic export.
+    pub async fn export_meta(&self) -> Result<Vec<crate::model::ExportMeta>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT entity_id, entity_type, key, value FROM meta \
+             ORDER BY entity_type ASC, entity_id ASC, key ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(entity_id, entity_type, key, value)| crate::model::ExportMeta {
+                    entity_id,
+                    entity_type,
+                    key,
+                    value,
+                },
+            )
+            .collect())
+    }
+
+    /// Return all activities ordered by (ticket_id, timestamp) for deterministic export.
+    pub async fn export_activities(
+        &self,
+    ) -> Result<Vec<crate::model::ExportActivity>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT id, ticket_id, timestamp, author, message FROM activity \
+             ORDER BY ticket_id ASC, timestamp ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ticket_id, timestamp, author, message)| crate::model::ExportActivity {
+                    id,
+                    ticket_id,
+                    timestamp,
+                    author,
+                    message,
+                },
+            )
+            .collect())
+    }
+
+    /// Return all ticket_comments rows ordered by (ticket_id, comment_id) for deterministic export.
+    pub async fn export_ticket_comments(
+        &self,
+    ) -> Result<Vec<crate::model::ExportTicketComment>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
+            "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
+             FROM ticket_comments ORDER BY ticket_id ASC, comment_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at)| {
+                    crate::model::ExportTicketComment {
+                        comment_id,
+                        ticket_id,
+                        pr_number,
+                        gh_repo,
+                        reply_posted,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Fetch multiple tickets by their IDs in a single query.
+    ///
+    /// Returns only tickets that exist. Callers should treat missing IDs as
+    /// dropped (e.g., deleted while a workflow still references them).
+    pub async fn get_tickets_by_ids(&self, ids: &[String]) -> Result<Vec<Ticket>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
+             FROM ticket
+             WHERE id = ANY($1)
+             ORDER BY priority ASC, created_at ASC",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ticket {
+                        id,
+                        project,
+                        type_,
+                        status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
+                        lifecycle_managed,
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        branch,
+                        created_at,
+                        updated_at,
+                        children_completed: 0,
+                        children_total: 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Get the open and closed children counts for a ticket.
+    /// Returns (open_count, closed_count).
+    pub async fn get_ticket_children_counts(
+        &self,
+        ticket_id: &str,
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = $1")
+            .bind(ticket_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let closed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ticket WHERE parent_id = $1 AND status = 'closed'",
+        )
+        .bind(ticket_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((total - closed, closed))
+    }
+
     /// Return all tickets with the given lifecycle status.
     /// Used by GithubPoller to find tickets in pushing/in_review states.
     pub async fn tickets_by_lifecycle_status(

@@ -3947,6 +3947,7 @@ dependencies = [
  "ticket_db",
  "tokio",
  "tracing",
+ "ur_db_test",
  "ur_rpc",
  "uuid",
 ]

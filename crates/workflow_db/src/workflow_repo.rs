@@ -6,7 +6,7 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use ticket_db::{LifecycleStatus, MetadataMatchTicket, Ticket, TicketComment};
+use ticket_db::{LifecycleStatus, TicketComment};
 
 use crate::model::{Workflow, WorkflowEvent, WorkflowEventRow, WorkflowIntent};
 
@@ -219,20 +219,22 @@ impl WorkflowRepo {
         Ok(rows.into_iter().map(row_to_workflow).collect())
     }
 
-    /// List workflows with pagination, optional status/project filters, and pre-joined
-    /// ticket children counts. Returns (workflows, total_count).
+    /// List workflows with pagination and an optional status filter.
+    /// Returns (workflows, total_count).
     ///
     /// When `page_size` is `None`, all matching rows are returned.
-    /// Project filtering JOINs on the ticket table via `workflow.ticket_id`.
+    ///
+    /// Note: `ticket_children_open` and `ticket_children_closed` in returned
+    /// `PaginatedWorkflow` values are always 0 — callers must fetch children
+    /// counts from `TicketRepo::get_ticket_children_counts` separately.
     pub async fn list_workflows_paginated(
         &self,
         page_size: Option<i32>,
         offset: i32,
         status: Option<LifecycleStatus>,
-        project: Option<&str>,
     ) -> Result<(Vec<PaginatedWorkflow>, i32), sqlx::Error> {
-        let sql = build_paginated_sql(page_size, offset, status.as_ref(), project);
-        let bind_values = build_paginated_binds(&status, project);
+        let sql = build_paginated_sql(page_size, offset, status.as_ref());
+        let bind_values = build_paginated_binds(&status);
 
         // Safety: the SQL is built from trusted format strings with bind placeholders.
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.clone()));
@@ -474,27 +476,6 @@ impl WorkflowRepo {
             .collect())
     }
 
-    /// Get the open and closed children counts for a ticket.
-    /// Returns (open_count, closed_count).
-    pub async fn get_ticket_children_counts(
-        &self,
-        ticket_id: &str,
-    ) -> Result<(i64, i64), sqlx::Error> {
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = $1")
-            .bind(ticket_id)
-            .fetch_one(&self.pool)
-            .await?;
-
-        let closed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM ticket WHERE parent_id = $1 AND status = 'closed'",
-        )
-        .bind(ticket_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok((total - closed, closed))
-    }
-
     // ============================================================
     // WorkflowIntent CRUD
     // ============================================================
@@ -623,110 +604,41 @@ impl WorkflowRepo {
             .collect())
     }
 
-    /// Return all tickets that have a workflow with the given status.
-    /// Used by GithubPoller to find tickets in pushing/in_review workflow states.
-    pub async fn tickets_by_workflow_status(
+    /// Return ticket IDs that have a workflow with the given status.
+    ///
+    /// Returns only the ticket IDs from the workflow table. Callers must
+    /// query `ticket_db` separately for full ticket data, and treat missing
+    /// tickets as dropped workflows (log at info level, skip).
+    pub async fn ticket_ids_by_workflow_status(
         &self,
         status: LifecycleStatus,
-    ) -> Result<Vec<Ticket>, sqlx::Error> {
-        let rows = sqlx::query_as::<
-            _,
-            (
-                String,
-                String,
-                String,
-                String,
-                String,
-                bool,
-                i32,
-                Option<String>,
-                String,
-                String,
-                Option<String>,
-                String,
-                String,
-            ),
-        >(
-            "SELECT t.id, t.project, t.type, t.status, t.lifecycle_status, t.lifecycle_managed, t.priority, t.parent_id, t.title, t.body, t.branch, t.created_at, t.updated_at
-             FROM ticket t
-             INNER JOIN workflow w ON w.ticket_id = t.id
-             WHERE w.status = $1
-             ORDER BY t.priority ASC, t.created_at ASC",
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT ticket_id FROM workflow WHERE status = $1 ORDER BY created_at ASC",
         )
         .bind(status.as_str())
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    project,
-                    type_,
-                    status,
-                    lifecycle_status_str,
-                    lifecycle_managed,
-                    priority,
-                    parent_id,
-                    title,
-                    body,
-                    branch,
-                    created_at,
-                    updated_at,
-                )| {
-                    Ticket {
-                        id,
-                        project,
-                        type_,
-                        status,
-                        lifecycle_status: lifecycle_status_str
-                            .parse::<LifecycleStatus>()
-                            .unwrap_or_default(),
-                        lifecycle_managed,
-                        priority,
-                        parent_id,
-                        title,
-                        body,
-                        branch,
-                        created_at,
-                        updated_at,
-                        children_completed: 0,
-                        children_total: 0,
-                    }
-                },
-            )
-            .collect())
+        Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
-    /// Return all tickets that have a workflow with the given worker_id.
-    /// Used to look up which ticket is assigned to a specific worker.
-    pub async fn tickets_by_workflow_worker_id(
+    /// Return the ticket ID assigned to the given worker, if any.
+    ///
+    /// Returns only the ticket_id from the workflow table. Callers must
+    /// query `ticket_db` separately for full ticket data if needed.
+    pub async fn ticket_id_by_worker_id(
         &self,
         worker_id: &str,
-    ) -> Result<Vec<MetadataMatchTicket>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT t.id, t.title, t.type, t.status
-             FROM ticket t
-             INNER JOIN workflow w ON w.ticket_id = t.id
-             WHERE w.worker_id = $1
-             ORDER BY t.priority ASC",
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT ticket_id FROM workflow WHERE worker_id = $1 AND status NOT IN ('done', 'cancelled') LIMIT 1",
         )
         .bind(worker_id)
-        .fetch_all(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|(id, title, type_, status)| MetadataMatchTicket {
-                id,
-                title,
-                type_,
-                status,
-                key: "worker_id".to_string(),
-                value: worker_id.to_string(),
-            })
-            .collect())
+        Ok(row.map(|(id,)| id))
     }
 
     // ============================================================
@@ -877,29 +789,12 @@ fn build_paginated_sql(
     page_size: Option<i32>,
     offset: i32,
     status: Option<&LifecycleStatus>,
-    project: Option<&str>,
 ) -> String {
-    let mut conditions = Vec::new();
-    let mut param_idx = 0usize;
-
-    if status.is_some() {
-        param_idx += 1;
-        conditions.push(format!("w.status = ${param_idx}"));
+    let where_clause = if status.is_some() {
+        "WHERE w.status = $1"
     } else {
-        conditions.push("w.status NOT IN ('done', 'cancelled')".to_string());
-    }
-
-    let ticket_join = if project.is_some() {
-        param_idx += 1;
-        conditions.push(format!("t.project = ${param_idx}"));
-        "INNER JOIN ticket t ON t.id = w.ticket_id"
-    } else {
-        ""
+        "WHERE w.status NOT IN ('done', 'cancelled')"
     };
-
-    let _ = param_idx;
-
-    let where_clause = format!("WHERE {}", conditions.join(" AND "));
 
     let limit_clause = match page_size {
         Some(ps) => format!("LIMIT {} OFFSET {}", ps, offset),
@@ -910,30 +805,18 @@ fn build_paginated_sql(
         "SELECT w.id, w.ticket_id, w.status, w.stalled, w.stall_reason, \
          w.implement_cycles, w.worker_id, w.noverify, w.feedback_mode, \
          w.ci_status, w.mergeable, w.review_status, w.created_at, \
-         (COUNT(*) OVER())::INT4 AS total_count, \
-         COALESCE(tc.children_closed, 0)::INT8 AS children_closed, \
-         (COALESCE(tc.children_total, 0) - COALESCE(tc.children_closed, 0))::INT8 AS children_open \
+         (COUNT(*) OVER())::INT4 AS total_count \
          FROM workflow w \
-         {ticket_join} \
-         LEFT JOIN ( \
-           SELECT parent_id, \
-             SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END)::INT8 AS children_closed, \
-             COUNT(*)::INT8 AS children_total \
-           FROM ticket WHERE parent_id != '' GROUP BY parent_id \
-         ) tc ON tc.parent_id = w.ticket_id \
          {where_clause} \
          ORDER BY w.created_at \
          {limit_clause}"
     )
 }
 
-fn build_paginated_binds(status: &Option<LifecycleStatus>, project: Option<&str>) -> Vec<String> {
+fn build_paginated_binds(status: &Option<LifecycleStatus>) -> Vec<String> {
     let mut binds = Vec::new();
     if let Some(s) = status {
         binds.push(s.as_str().to_string());
-    }
-    if let Some(p) = project {
-        binds.push(p.to_string());
     }
     binds
 }
@@ -958,10 +841,12 @@ fn pg_row_to_paginated(r: &sqlx::postgres::PgRow) -> PaginatedWorkflow {
         review_status: r.get("review_status"),
         created_at: r.get("created_at"),
     };
+    // Children counts are not joined here — callers must fetch from TicketRepo
+    // to avoid cross-DB queries.
     PaginatedWorkflow {
         workflow,
-        ticket_children_open: r.get("children_open"),
-        ticket_children_closed: r.get("children_closed"),
+        ticket_children_open: 0,
+        ticket_children_closed: 0,
     }
 }
 
@@ -1011,5 +896,131 @@ fn row_to_workflow(
         mergeable,
         review_status,
         created_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
+    use ur_db_test::TestDb;
+
+    async fn setup(test_db: &TestDb) -> (TicketRepo, WorkflowRepo) {
+        let pool = test_db.pool().clone();
+        let graph_manager = GraphManager::new(pool.clone());
+        let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
+        let workflow_repo = WorkflowRepo::new(pool);
+        (ticket_repo, workflow_repo)
+    }
+
+    async fn create_ticket(ticket_repo: &TicketRepo, id: &str) {
+        ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some(id.to_string()),
+                project: "ur".to_string(),
+                type_: "code".to_string(),
+                title: "test ticket".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
+    /// When a workflow references a ticket that no longer exists in ticket_db,
+    /// `ticket_ids_by_workflow_status` still returns the ticket_id (the workflow
+    /// row is intact). The caller (GithubPollerManager) is responsible for
+    /// detecting the missing ticket via `get_tickets_by_ids` and skipping it.
+    #[tokio::test]
+    async fn ticket_ids_by_workflow_status_returns_orphaned_ids() {
+        let test_db = TestDb::new().await;
+        let (_ticket_repo, workflow_repo) = setup(&test_db).await;
+
+        // Insert a workflow row with a ticket_id that has no corresponding ticket
+        // in ticket_db — simulating a ticket that was deleted after the workflow
+        // was created (or created by an external tool). Since ticket_id is TEXT
+        // with no FK in workflow_db, this is a valid orphan scenario.
+        sqlx::query(
+            "INSERT INTO workflow (id, ticket_id, status, created_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind("wf-orphan-id")
+        .bind("ur-orphan1")
+        .bind(LifecycleStatus::InReview.as_str())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let ids = workflow_repo
+            .ticket_ids_by_workflow_status(LifecycleStatus::InReview)
+            .await
+            .unwrap();
+
+        // The workflow row exists — the orphaned ticket_id should be returned.
+        assert!(
+            ids.contains(&"ur-orphan1".to_string()),
+            "orphaned ticket_id should still appear in workflow query: {ids:?}"
+        );
+    }
+
+    /// `get_tickets_by_ids` on ticket_db returns only tickets that exist.
+    /// This is the second half of the two-pool pattern: after getting ticket IDs
+    /// from workflow_db, the caller queries ticket_db and handles the missing ones.
+    #[tokio::test]
+    async fn get_tickets_by_ids_skips_missing_tickets() {
+        let test_db = TestDb::new().await;
+        let (ticket_repo, _workflow_repo) = setup(&test_db).await;
+
+        create_ticket(&ticket_repo, "ur-exists1").await;
+
+        let ids = vec![
+            "ur-exists1".to_string(),
+            "ur-deleted1".to_string(), // does not exist
+        ];
+
+        let tickets = ticket_repo.get_tickets_by_ids(&ids).await.unwrap();
+
+        assert_eq!(tickets.len(), 1, "only existing ticket should be returned");
+        assert_eq!(tickets[0].id, "ur-exists1");
+    }
+
+    /// `ticket_id_by_worker_id` returns None when no active workflow has the
+    /// given worker_id — covers the case where the worker's ticket was deleted
+    /// or the workflow completed before the worker reported back.
+    #[tokio::test]
+    async fn ticket_id_by_worker_id_returns_none_for_unknown_worker() {
+        let test_db = TestDb::new().await;
+        let (_ticket_repo, workflow_repo) = setup(&test_db).await;
+
+        let result = workflow_repo
+            .ticket_id_by_worker_id("worker-that-does-not-exist")
+            .await
+            .unwrap();
+
+        assert!(result.is_none(), "should return None for unknown worker_id");
+    }
+
+    /// `ticket_id_by_worker_id` returns the ticket_id from the active workflow
+    /// for a known worker.
+    #[tokio::test]
+    async fn ticket_id_by_worker_id_returns_correct_ticket() {
+        let test_db = TestDb::new().await;
+        let (ticket_repo, workflow_repo) = setup(&test_db).await;
+
+        create_ticket(&ticket_repo, "ur-wkr1").await;
+        workflow_repo
+            .create_workflow("ur-wkr1", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+        workflow_repo
+            .set_workflow_worker_id("ur-wkr1", "worker-abc")
+            .await
+            .unwrap();
+
+        let result = workflow_repo
+            .ticket_id_by_worker_id("worker-abc")
+            .await
+            .unwrap();
+
+        assert_eq!(result, Some("ur-wkr1".to_string()));
     }
 }
