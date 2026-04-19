@@ -59,11 +59,25 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
 async fn open_pool(url: &str, label: &str) -> anyhow::Result<PgPool> {
     let options = PgConnectOptions::from_str(url)
         .map_err(|e| anyhow::anyhow!("invalid {label} database URL: {e}"))?;
-    PgPoolOptions::new()
-        .max_connections(5)
-        .connect_with(options)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to open {label} database: {e}"))
+    let mut last_err = None;
+    for attempt in 1..=10u32 {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options.clone())
+            .await
+        {
+            Ok(pool) => return Ok(pool),
+            Err(e) => {
+                tracing::warn!("attempt {attempt}/10: failed to open {label} database: {e}");
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "failed to open {label} database after 10 attempts: {}",
+        last_err.unwrap()
+    ))
 }
 
 async fn init_databases(cfg: &Config) -> anyhow::Result<DatabasePools> {

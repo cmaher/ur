@@ -235,6 +235,10 @@ struct ComposeParams {
     /// Host-side path to the postgres init scripts directory.
     /// Mounted at `/docker-entrypoint-initdb.d` so Postgres runs scripts on first start.
     postgres_init_dir: PathBuf,
+    /// Logical name of the ticket database (e.g. `ur_tickets`). Used in the healthcheck.
+    ticket_db_name: String,
+    /// Logical name of the workflow database (e.g. `ur_workflow`). Used in the healthcheck.
+    workflow_db_name: String,
 }
 
 /// Generate the docker compose YAML programmatically.
@@ -283,6 +287,8 @@ pub fn generate_compose(
         postgres_bind_address: ticket_db.bind_address.clone(),
         postgres_port: ticket_db.port,
         postgres_init_dir: config_dir.join(POSTGRES_INIT_SUBDIR),
+        ticket_db_name: ticket_db.name.clone(),
+        workflow_db_name: workflow_db.name.clone(),
     };
 
     let mut out = String::with_capacity(2048);
@@ -394,18 +400,22 @@ fn write_postgres_service(out: &mut String, params: &ComposeParams) {
     // The application databases (ur_tickets, ur_workflow) are created by the init script.
     writeln!(out, "      - POSTGRES_DB={}", params.db_name).unwrap();
 
-    // Healthcheck
+    // Healthcheck: verify postgres is ready AND both application databases exist.
+    // pg_isready passes during postgres's temporary startup phase (before init scripts run),
+    // so we additionally query pg_database to confirm both logical DBs were created.
     writeln!(out, "    healthcheck:").unwrap();
     writeln!(
         out,
-        "      test: [\"CMD-SHELL\", \"pg_isready -U {}\"]",
-        params.db_user
+        "      test: [\"CMD-SHELL\", \"pg_isready -U {user} && psql -U {user} -tAc \\\"SELECT COUNT(*)=2 FROM pg_database WHERE datname IN ('{ticket}','{workflow}')\\\" | grep -q t\"]",
+        user = params.db_user,
+        ticket = params.ticket_db_name,
+        workflow = params.workflow_db_name,
     )
     .unwrap();
-    writeln!(out, "      interval: 1s").unwrap();
-    writeln!(out, "      timeout: 2s").unwrap();
-    writeln!(out, "      retries: 10").unwrap();
-    writeln!(out, "      start_period: 3s").unwrap();
+    writeln!(out, "      interval: 2s").unwrap();
+    writeln!(out, "      timeout: 5s").unwrap();
+    writeln!(out, "      retries: 15").unwrap();
+    writeln!(out, "      start_period: 5s").unwrap();
 
     // Ports (only when bind_address is configured)
     if let Some(addr) = &params.postgres_bind_address {
