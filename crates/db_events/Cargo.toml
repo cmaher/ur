@@ -1,0 +1,17 @@
+[package]
+name = "db_events"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

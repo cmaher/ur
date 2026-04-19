@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use ur_config::Config;
-use ur_db::WorkerRepo;
+use workflow_db::WorkerRepo;
 
 use local_repo::LocalRepo;
 use ur_rpc::proto::builder::BuilderdClient;
@@ -169,12 +169,11 @@ impl RepoPoolManager {
         // Insert new slot row in DB
         let now = Utc::now().to_rfc3339();
         let slot_id = Uuid::new_v4().to_string();
-        let new_slot = ur_db::model::Slot {
+        let new_slot = workflow_db::model::Slot {
             id: slot_id.clone(),
             project_key: project_key.to_owned(),
             slot_name: slot_name.clone(),
             host_path: host_path.display().to_string(),
-            node_id: String::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -618,7 +617,7 @@ mod tests {
 
     async fn test_worker_repo() -> (WorkerRepo, ur_db_test::TestDb) {
         let test_db = ur_db_test::TestDb::new().await;
-        let repo = WorkerRepo::new(test_db.db().pool().clone(), "test-node".to_string());
+        let repo = WorkerRepo::new(test_db.workflow_pool().clone());
         (repo, test_db)
     }
 
@@ -685,12 +684,11 @@ mod tests {
     ) -> String {
         let now = Utc::now().to_rfc3339();
         let id = Uuid::new_v4().to_string();
-        let slot = ur_db::model::Slot {
+        let slot = workflow_db::model::Slot {
             id: id.clone(),
             project_key: project_key.to_owned(),
             slot_name: slot_name.to_owned(),
             host_path: host_path.display().to_string(),
-            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -709,7 +707,7 @@ mod tests {
         // Create a fake running worker linked to this slot
         let worker_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        let worker = ur_db::model::Worker {
+        let worker = workflow_db::model::Worker {
             worker_id: worker_id.clone(),
             process_id: format!("proc-{slot_name}"),
             project_key: project_key.to_owned(),
@@ -719,7 +717,6 @@ mod tests {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: Some(host_path.display().to_string()),
-            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,
@@ -832,7 +829,7 @@ mod tests {
 
         // Create a worker and link it
         let now = Utc::now().to_rfc3339();
-        let worker = ur_db::model::Worker {
+        let worker = workflow_db::model::Worker {
             worker_id: "test-worker-1".to_owned(),
             process_id: "proc-1".to_owned(),
             project_key: "testproj".to_owned(),
@@ -842,7 +839,6 @@ mod tests {
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: None,
-            node_id: "test-node".to_owned(),
             created_at: now.clone(),
             updated_at: now,
             idle_redispatch_count: 0,

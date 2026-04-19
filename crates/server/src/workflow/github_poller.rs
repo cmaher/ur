@@ -5,14 +5,14 @@ use remote_repo::{CheckRun, GhBackend, RemoteRepo};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
+use ticket_db::{LifecycleStatus, Ticket, TicketRepo};
 use ur_config::Config;
-use ur_db::TicketRepo;
-use ur_db::WorkflowRepo;
-use ur_db::model::{LifecycleStatus, Ticket, Workflow};
 use ur_rpc::proto::builder::BuilderdClient;
 use ur_rpc::stream::CompletedExec;
 use ur_rpc::workflow_condition;
 use ur_rpc::workflow_event::WorkflowEvent;
+use workflow_db::WorkflowRepo;
+use workflow_db::model::Workflow;
 
 use crate::WorkerManager;
 use crate::worker::WorkerId;
@@ -105,28 +105,58 @@ impl GithubPollerManager {
 
     /// Run one full scan: check all in_review tickets, then post pending comment replies.
     async fn poll_once(&self) {
-        match self
+        // Fetch ticket IDs from workflow_db, then look up ticket data from ticket_db
+        // separately to avoid cross-DB JOINs.
+        let ticket_ids = match self
             .workflow_repo
-            .tickets_by_workflow_status(LifecycleStatus::InReview)
+            .ticket_ids_by_workflow_status(LifecycleStatus::InReview)
             .await
         {
-            Ok(tickets) => {
-                for ticket in &tickets {
-                    self.check_in_review_ticket(ticket).await;
-                    tokio::time::sleep(API_CALL_DELAY).await;
-                }
-            }
+            Ok(ids) => ids,
             Err(e) => {
-                error!(error = %e, "failed to query in_review workflows");
+                error!(error = %e, "failed to query in_review workflow ticket IDs");
+                return;
             }
+        };
+
+        if !ticket_ids.is_empty() {
+            self.check_in_review_tickets(&ticket_ids).await;
         }
 
         self.scan_pending_replies().await;
     }
 
+    /// Fetch ticket data for the given IDs and run per-ticket in_review checks.
+    async fn check_in_review_tickets(&self, ticket_ids: &[String]) {
+        let tickets = match self.ticket_repo.get_tickets_by_ids(ticket_ids).await {
+            Ok(t) => t,
+            Err(e) => {
+                error!(error = %e, "failed to fetch ticket data for in_review workflows");
+                return;
+            }
+        };
+
+        // Log any ticket IDs that are missing from ticket_db (dropped workflows).
+        let fetched_ids: std::collections::HashSet<&str> =
+            tickets.iter().map(|t| t.id.as_str()).collect();
+        for missing_id in ticket_ids {
+            if !fetched_ids.contains(missing_id.as_str()) {
+                info!(
+                    ticket_id = %missing_id,
+                    "in_review workflow references deleted ticket — skipping"
+                );
+            }
+        }
+
+        for ticket in &tickets {
+            self.check_in_review_ticket(ticket).await;
+            tokio::time::sleep(API_CALL_DELAY).await;
+        }
+    }
+
     /// Post auto-replies for comments linked to tickets via the `ticket_comments` table.
     async fn scan_pending_replies(&self) {
-        let pending = match self.workflow_repo.get_pending_replies().await {
+        let pending = match self.ticket_repo.get_pending_replies().await {
             Ok(rows) => rows,
             Err(e) => {
                 warn!(error = %e, "failed to query pending comment replies");
@@ -213,7 +243,7 @@ impl GithubPollerManager {
     async fn mark_replies_posted(&self, comment_id: &str, ticket_ids: &[String]) {
         for ticket_id in ticket_ids {
             if let Err(e) = self
-                .workflow_repo
+                .ticket_repo
                 .mark_reply_posted(comment_id, ticket_id)
                 .await
             {
@@ -914,7 +944,7 @@ impl GithubPollerManager {
             }
         }
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             status: Some("open".to_string()),
             ..Default::default()
         };
@@ -1308,7 +1338,7 @@ fn parse_review_command(text: &str) -> Option<ReviewSignal> {
 
 /// Group pending replies by (gh_repo, pr_number, comment_id), collecting ticket IDs.
 fn group_pending_replies(
-    pending: &[ur_db::model::TicketComment],
+    pending: &[ticket_db::TicketComment],
 ) -> HashMap<(String, i64, String), Vec<String>> {
     let mut grouped: HashMap<(String, i64, String), Vec<String>> = HashMap::new();
     for row in pending {
@@ -1489,7 +1519,7 @@ mod tests {
     #[test]
     fn group_pending_replies_groups_by_comment() {
         let pending = vec![
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "111".to_string(),
                 ticket_id: "ur-t1".to_string(),
                 pr_number: 42,
@@ -1497,7 +1527,7 @@ mod tests {
                 reply_posted: false,
                 created_at: String::new(),
             },
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "111".to_string(),
                 ticket_id: "ur-t2".to_string(),
                 pr_number: 42,
@@ -1505,7 +1535,7 @@ mod tests {
                 reply_posted: false,
                 created_at: String::new(),
             },
-            ur_db::model::TicketComment {
+            ticket_db::TicketComment {
                 comment_id: "222".to_string(),
                 ticket_id: "ur-t3".to_string(),
                 pr_number: 42,

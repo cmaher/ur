@@ -221,6 +221,16 @@ pub const UR_PROJECT_CLAUDE_ENV: &str = "UR_PROJECT_CLAUDE";
 /// Container-side mount point for the backup directory.
 pub const BACKUP_CONTAINER_PATH: &str = "/backup";
 
+/// Environment variable: override the ticket database connection URL.
+///
+/// When set, takes precedence over the `[ticket_db]` config section.
+pub const UR_TICKET_DB_URL_ENV: &str = "UR_TICKET_DB_URL";
+
+/// Environment variable: override the workflow database connection URL.
+///
+/// When set, takes precedence over the `[workflow_db]` config section.
+pub const UR_WORKFLOW_DB_URL_ENV: &str = "UR_WORKFLOW_DB_URL";
+
 // ---- Defaults ----
 
 /// Default TCP port for the server (ur→server communication).
@@ -297,7 +307,6 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
-    node_id: Option<String>,
     workspace: Option<PathBuf>,
     server_port: Option<u16>,
     worker_port: Option<u16>,
@@ -308,6 +317,8 @@ struct RawConfig {
     network: Option<RawNetworkConfig>,
     hostexec: Option<RawHostExecConfig>,
     db: Option<RawDatabaseConfig>,
+    ticket_db: Option<RawTicketDbConfig>,
+    workflow_db: Option<RawWorkflowDbConfig>,
     /// Deprecated: use `[db.backup]` instead. Kept for backward compatibility.
     backup: Option<RawBackupConfig>,
     server: Option<RawServerConfig>,
@@ -420,6 +431,32 @@ struct RawNetworkConfig {
 /// Raw TOML representation for the `[db]` section.
 #[derive(Debug, Default, Deserialize)]
 struct RawDatabaseConfig {
+    host: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    name: Option<String>,
+    /// Network interface to bind the postgres container port on (e.g. Tailscale IP).
+    bind_address: Option<String>,
+    backup: Option<RawBackupConfig>,
+}
+
+/// Raw TOML representation for the `[ticket_db]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawTicketDbConfig {
+    host: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
+    name: Option<String>,
+    /// Network interface to bind the postgres container port on (e.g. Tailscale IP).
+    bind_address: Option<String>,
+    backup: Option<RawBackupConfig>,
+}
+
+/// Raw TOML representation for the `[workflow_db]` section.
+#[derive(Debug, Default, Deserialize)]
+struct RawWorkflowDbConfig {
     host: Option<String>,
     port: Option<u16>,
     user: Option<String>,
@@ -826,6 +863,80 @@ pub const DEFAULT_DB_PASSWORD: &str = "ur";
 /// Default database name.
 pub const DEFAULT_DB_NAME: &str = "ur";
 
+/// Default database name for the ticket database.
+pub const DEFAULT_TICKET_DB_NAME: &str = "ur_tickets";
+
+/// Default database name for the workflow database.
+pub const DEFAULT_WORKFLOW_DB_NAME: &str = "ur_workflow";
+
+/// Environment variable: override the ticket database password.
+pub const UR_TICKET_DB_PASSWORD_ENV: &str = "UR_TICKET_DB_PASSWORD";
+
+/// Environment variable: override the workflow database password.
+pub const UR_WORKFLOW_DB_PASSWORD_ENV: &str = "UR_WORKFLOW_DB_PASSWORD";
+
+/// Ticket database configuration, including connection details and backup settings.
+///
+/// Configured via the `[ticket_db]` section of `ur.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketDbConfig {
+    /// Database hostname (default: "ur-postgres").
+    pub host: String,
+    /// Database port (default: 5432).
+    pub port: u16,
+    /// Database user (default: "ur").
+    pub user: String,
+    /// Database password (default: "ur", overridden by `UR_TICKET_DB_PASSWORD`).
+    pub password: String,
+    /// Database name (default: "ur_tickets").
+    pub name: String,
+    /// Network interface to bind the postgres container port on (e.g. a Tailscale IP).
+    pub bind_address: Option<String>,
+    /// Periodic backup settings for the database.
+    pub backup: BackupConfig,
+}
+
+impl TicketDbConfig {
+    /// Construct a Postgres connection URL from the configured fields.
+    pub fn database_url(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.user, self.password, self.host, self.port, self.name
+        )
+    }
+}
+
+/// Workflow database configuration, including connection details and backup settings.
+///
+/// Configured via the `[workflow_db]` section of `ur.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowDbConfig {
+    /// Database hostname (default: "ur-postgres").
+    pub host: String,
+    /// Database port (default: 5432).
+    pub port: u16,
+    /// Database user (default: "ur").
+    pub user: String,
+    /// Database password (default: "ur", overridden by `UR_WORKFLOW_DB_PASSWORD`).
+    pub password: String,
+    /// Database name (default: "ur_workflow").
+    pub name: String,
+    /// Network interface to bind the postgres container port on (e.g. a Tailscale IP).
+    pub bind_address: Option<String>,
+    /// Periodic backup settings for the database.
+    pub backup: BackupConfig,
+}
+
+impl WorkflowDbConfig {
+    /// Construct a Postgres connection URL from the configured fields.
+    pub fn database_url(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.user, self.password, self.host, self.port, self.name
+        )
+    }
+}
+
 /// Database configuration, including connection details and backup settings.
 ///
 /// The `backup` field nests the existing `BackupConfig` under `[db.backup]`.
@@ -975,8 +1086,6 @@ pub struct ProjectConfig {
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Unique identifier for this ur installation, scoping workers/slots/workflows.
-    pub node_id: String,
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
     /// Worker workspace directory.
@@ -997,6 +1106,10 @@ pub struct Config {
     pub hostexec: HostExecConfig,
     /// Database configuration (connection details + backup settings).
     pub db: DatabaseConfig,
+    /// Ticket database configuration (connection details + backup settings).
+    pub ticket_db: TicketDbConfig,
+    /// Workflow database configuration (connection details + backup settings).
+    pub workflow_db: WorkflowDbConfig,
     /// Server runtime settings (container command, polling intervals, etc.).
     pub server: ServerConfig,
     /// TUI display settings (theme, keymap).
@@ -1048,12 +1161,6 @@ impl Config {
             Err(e) => return Err(e.into()),
         };
 
-        let node_id = raw.node_id.ok_or_else(|| {
-            anyhow::anyhow!(
-                "node_id is required in ur.toml — run 'ur init --node <name>' to set it"
-            )
-        })?;
-
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
@@ -1072,6 +1179,8 @@ impl Config {
         };
 
         let db = resolve_database(raw.db, raw.backup);
+        let ticket_db = resolve_ticket_db(raw.ticket_db);
+        let workflow_db = resolve_workflow_db(raw.workflow_db);
         let server = resolve_server(raw.server);
         let tui = resolve_tui(raw.tui);
 
@@ -1090,7 +1199,6 @@ impl Config {
         };
 
         Ok(Config {
-            node_id,
             config_dir: config_dir.to_path_buf(),
             workspace,
             server_port,
@@ -1101,6 +1209,8 @@ impl Config {
             network,
             hostexec,
             db,
+            ticket_db,
+            workflow_db,
             server,
             tui,
             logs_dir,
@@ -1411,6 +1521,46 @@ fn resolve_database(
     }
 }
 
+fn resolve_ticket_db(raw: Option<RawTicketDbConfig>) -> TicketDbConfig {
+    let raw = raw.unwrap_or_default();
+    let backup = resolve_backup(raw.backup);
+    let password = std::env::var(UR_TICKET_DB_PASSWORD_ENV).unwrap_or_else(|_| {
+        raw.password
+            .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string())
+    });
+    TicketDbConfig {
+        host: raw.host.unwrap_or_else(|| DEFAULT_DB_HOST.to_string()),
+        port: raw.port.unwrap_or(DEFAULT_DB_PORT),
+        user: raw.user.unwrap_or_else(|| DEFAULT_DB_USER.to_string()),
+        password,
+        name: raw
+            .name
+            .unwrap_or_else(|| DEFAULT_TICKET_DB_NAME.to_string()),
+        bind_address: raw.bind_address,
+        backup,
+    }
+}
+
+fn resolve_workflow_db(raw: Option<RawWorkflowDbConfig>) -> WorkflowDbConfig {
+    let raw = raw.unwrap_or_default();
+    let backup = resolve_backup(raw.backup);
+    let password = std::env::var(UR_WORKFLOW_DB_PASSWORD_ENV).unwrap_or_else(|_| {
+        raw.password
+            .unwrap_or_else(|| DEFAULT_DB_PASSWORD.to_string())
+    });
+    WorkflowDbConfig {
+        host: raw.host.unwrap_or_else(|| DEFAULT_DB_HOST.to_string()),
+        port: raw.port.unwrap_or(DEFAULT_DB_PORT),
+        user: raw.user.unwrap_or_else(|| DEFAULT_DB_USER.to_string()),
+        password,
+        name: raw
+            .name
+            .unwrap_or_else(|| DEFAULT_WORKFLOW_DB_NAME.to_string()),
+        bind_address: raw.bind_address,
+        backup,
+    }
+}
+
 fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
     match raw {
         Some(t) => {
@@ -1587,25 +1737,22 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_node_id_missing() {
+    fn loads_with_empty_toml() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("ur.toml"), "").unwrap();
-        let err = Config::load_from(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("node_id is required"),
-            "unexpected error: {msg}"
-        );
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.workspace, tmp.path().join("workspace"));
+        assert_eq!(cfg.server_port, DEFAULT_SERVER_PORT);
+        assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
     }
 
     #[test]
-    fn defaults_when_only_node_id() {
+    fn defaults_when_minimal_toml() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"mybox\"\n").unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "server_port = 9000\n").unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.node_id, "mybox");
         assert_eq!(cfg.workspace, tmp.path().join("workspace"));
-        assert_eq!(cfg.server_port, DEFAULT_SERVER_PORT);
+        assert_eq!(cfg.server_port, 9000);
         assert_eq!(cfg.proxy.hostname, DEFAULT_PROXY_HOSTNAME);
     }
 

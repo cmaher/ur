@@ -5,22 +5,21 @@ use futures::future::try_join_all;
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info, warn};
 
-use ur_db::TicketRepo;
-use ur_db::WorkflowRepo;
-use ur_db::model::AgentStatus;
+use ticket_db::TicketRepo;
 use ur_rpc::error::{self, DOMAIN_CORE, INTERNAL, INVALID_ARGUMENT, NOT_FOUND};
 use ur_rpc::proto::core::core_service_server::CoreService;
 use ur_rpc::proto::core::{
-    LinkCommentTicketRequest, LinkCommentTicketResponse, NodeCleanupRequest, NodeCleanupResponse,
-    NodeInfo, NodeListRequest, NodeListResponse, PingRequest, PingResponse, ReloadProjectsRequest,
-    ReloadProjectsResponse, SendWorkerMessageRequest, SendWorkerMessageResponse,
-    UpdateAgentStatusRequest, UpdateAgentStatusResponse, WorkerInfoRequest, WorkerInfoResponse,
-    WorkerLaunchRequest, WorkerLaunchResponse, WorkerListRequest, WorkerListResponse,
-    WorkerStopRequest, WorkerStopResponse, WorkerSummary, WorkflowStepCompleteRequest,
-    WorkflowStepCompleteResponse,
+    LinkCommentTicketRequest, LinkCommentTicketResponse, PingRequest, PingResponse,
+    ReloadProjectsRequest, ReloadProjectsResponse, SendWorkerMessageRequest,
+    SendWorkerMessageResponse, UpdateAgentStatusRequest, UpdateAgentStatusResponse,
+    WorkerInfoRequest, WorkerInfoResponse, WorkerLaunchRequest, WorkerLaunchResponse,
+    WorkerListRequest, WorkerListResponse, WorkerStopRequest, WorkerStopResponse, WorkerSummary,
+    WorkflowStepCompleteRequest, WorkflowStepCompleteResponse,
 };
+use workflow_db::WorkflowRepo;
+use workflow_db::model::AgentStatus;
 
-use ur_db::WorkerRepo;
+use workflow_db::WorkerRepo;
 
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
@@ -478,7 +477,6 @@ pub struct CoreServiceHandler {
     pub network_config: ur_config::NetworkConfig,
     pub builderd_addr: String,
     pub config_dir: PathBuf,
-    pub node_id: String,
 }
 
 #[tonic::async_trait]
@@ -693,101 +691,6 @@ impl CoreService for CoreServiceHandler {
             removed: report.removed,
         }))
     }
-
-    async fn node_list(
-        &self,
-        _req: Request<NodeListRequest>,
-    ) -> Result<Response<NodeListResponse>, Status> {
-        info!("node_list request received");
-        let worker_nodes = self
-            .worker_repo
-            .list_node_ids()
-            .await
-            .map_err(|e| Status::internal(format!("failed to list worker node_ids: {e}")))?;
-        let workflow_nodes = self
-            .workflow_repo
-            .list_node_ids()
-            .await
-            .map_err(|e| Status::internal(format!("failed to list workflow node_ids: {e}")))?;
-
-        let nodes = merge_node_counts(&worker_nodes, &workflow_nodes);
-        Ok(Response::new(NodeListResponse {
-            nodes,
-            local_node_id: self.node_id.clone(),
-        }))
-    }
-
-    async fn node_cleanup(
-        &self,
-        req: Request<NodeCleanupRequest>,
-    ) -> Result<Response<NodeCleanupResponse>, Status> {
-        let req = req.into_inner();
-        info!(node_id = %req.node_id, "node_cleanup request received");
-
-        if req.node_id.is_empty() {
-            return Err(Status::invalid_argument("node_id is required"));
-        }
-        if req.node_id == self.node_id {
-            return Err(Status::invalid_argument(
-                "cannot clean up the local node — this would delete active data",
-            ));
-        }
-
-        let (workers_deleted, slots_deleted) = self
-            .worker_repo
-            .delete_by_node_id(&req.node_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to delete workers/slots: {e}")))?;
-        let workflows_deleted = self
-            .workflow_repo
-            .delete_by_node_id(&req.node_id)
-            .await
-            .map_err(|e| Status::internal(format!("failed to delete workflows: {e}")))?;
-
-        info!(
-            node_id = %req.node_id,
-            workers_deleted,
-            slots_deleted,
-            workflows_deleted,
-            "node cleanup complete"
-        );
-
-        Ok(Response::new(NodeCleanupResponse {
-            workers_deleted: workers_deleted as i32,
-            slots_deleted: slots_deleted as i32,
-            workflows_deleted: workflows_deleted as i32,
-        }))
-    }
-}
-
-/// Merge worker/slot counts and workflow counts into a unified NodeInfo list.
-fn merge_node_counts(
-    worker_nodes: &[(String, i64, i64)],
-    workflow_nodes: &[(String, i64)],
-) -> Vec<NodeInfo> {
-    let mut map: HashMap<String, (i32, i32, i32)> = HashMap::new();
-    for (node_id, worker_count, slot_count) in worker_nodes {
-        let entry = map.entry(node_id.clone()).or_default();
-        entry.0 = *worker_count as i32;
-        entry.1 = *slot_count as i32;
-    }
-    for (node_id, workflow_count) in workflow_nodes {
-        let entry = map.entry(node_id.clone()).or_default();
-        entry.2 = *workflow_count as i32;
-    }
-    let mut nodes: Vec<NodeInfo> = map
-        .into_iter()
-        .map(
-            |(node_id, (worker_count, slot_count, workflow_count))| NodeInfo {
-                node_id,
-                worker_count,
-                slot_count,
-                workflow_count,
-            },
-        )
-        .collect();
-    nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
-    nodes
 }
 
 /// CoreService for the worker gRPC server.
@@ -843,7 +746,7 @@ impl CoreService for WorkerCoreServiceHandler {
             resolve_gh_repo_for_worker(&worker_id, &self.ticket_repo, &self.workflow_repo).await?;
 
         let comment_id_str = inner.comment_id.to_string();
-        self.workflow_repo
+        self.ticket_repo
             .insert_ticket_comment(&comment_id_str, &inner.ticket_id, inner.pr_number, &gh_repo)
             .await
             .map_err(|e| Status::internal(format!("failed to insert ticket comment: {e}")))?;
@@ -1021,20 +924,6 @@ impl CoreService for WorkerCoreServiceHandler {
     ) -> Result<Response<ReloadProjectsResponse>, Status> {
         Err(CoreError::Unimplemented.into())
     }
-
-    async fn node_list(
-        &self,
-        _req: Request<NodeListRequest>,
-    ) -> Result<Response<NodeListResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
-    }
-
-    async fn node_cleanup(
-        &self,
-        _req: Request<NodeCleanupRequest>,
-    ) -> Result<Response<NodeCleanupResponse>, Status> {
-        Err(CoreError::Unimplemented.into())
-    }
 }
 
 /// Handle a WorkflowStepComplete signal from a worker.
@@ -1056,7 +945,7 @@ async fn persist_pool_branch(
     if ticket.is_none() {
         return Ok(());
     }
-    let branch_update = ur_db::model::TicketUpdate {
+    let branch_update = ticket_db::TicketUpdate {
         branch: Some(Some(branch.to_owned())),
         ..Default::default()
     };
@@ -1076,7 +965,7 @@ async fn persist_pool_branch(
 
 /// Spawn a background task to dispatch the /design command once the worker is idle.
 fn spawn_design_dispatch(
-    worker_repo: ur_db::WorkerRepo,
+    worker_repo: workflow_db::WorkerRepo,
     network_config: ur_config::NetworkConfig,
     process_id: String,
     worker_id: String,
@@ -1122,24 +1011,24 @@ async fn handle_workflow_step_complete(
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
     use crate::workflow::{NextStepResult, WorkerdNextStepRouter};
-    use ur_db::model::LifecycleStatus;
+    use ticket_db::LifecycleStatus;
 
     // 1. Find the ticket assigned to this worker via workflow table.
     // Don't filter by ticket status — closed tickets still need their workflow
     // advanced (e.g., implementing → pushing) so the branch gets pushed and PR'd.
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        info!(
-            worker_id = %worker_id,
-            "workflow_step_complete: worker has no assigned ticket — no-op"
-        );
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            info!(
+                worker_id = %worker_id,
+                "workflow_step_complete: worker has no assigned ticket — no-op"
+            );
+            return Ok(());
+        }
+    };
+    let ticket_id = &ticket_id;
 
     // 2. Look up the workflow status for this ticket.
     let workflow = workflow_repo
@@ -1247,17 +1136,15 @@ async fn handle_awaiting_dispatch_readiness(
     workflow_repo: &WorkflowRepo,
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
 ) -> Result<(), anyhow::Error> {
-    use ur_db::model::LifecycleStatus;
+    use ticket_db::LifecycleStatus;
 
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => return Ok(()),
+    };
+    let ticket_id = &ticket_id;
 
     // Check the workflow table for an awaiting_dispatch workflow.
     let workflow = workflow_repo.get_workflow_by_ticket(ticket_id).await?;
@@ -1280,7 +1167,7 @@ async fn handle_awaiting_dispatch_readiness(
 async fn send_transition(
     transition_tx: &tokio::sync::mpsc::Sender<crate::workflow::TransitionRequest>,
     ticket_id: &str,
-    to: ur_db::model::LifecycleStatus,
+    to: ticket_db::LifecycleStatus,
 ) -> Result<(), anyhow::Error> {
     transition_tx
         .send(crate::workflow::TransitionRequest {
@@ -1357,19 +1244,19 @@ async fn handle_request_human_activity(
     workflow_repo: &WorkflowRepo,
     message: &str,
 ) -> Result<(), anyhow::Error> {
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
-        .await?;
+    let ticket_id_opt = workflow_repo.ticket_id_by_worker_id(worker_id).await?;
 
-    if matched.is_empty() {
-        warn!(
-            worker_id = %worker_id,
-            "request-human: worker has no assigned ticket — cannot record activity"
-        );
-        return Ok(());
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            warn!(
+                worker_id = %worker_id,
+                "request-human: worker has no assigned ticket — cannot record activity"
+            );
+            return Ok(());
+        }
+    };
+    let ticket_id = &ticket_id;
 
     let activity = ticket_repo
         .add_activity(ticket_id, "agent", message)
@@ -1402,22 +1289,24 @@ async fn resolve_gh_repo_for_worker(
     ticket_repo: &TicketRepo,
     workflow_repo: &WorkflowRepo,
 ) -> Result<String, Status> {
-    let matched = workflow_repo
-        .tickets_by_workflow_worker_id(worker_id)
+    let ticket_id_opt = workflow_repo
+        .ticket_id_by_worker_id(worker_id)
         .await
         .map_err(|e| Status::internal(format!("failed to look up worker ticket: {e}")))?;
 
-    if matched.is_empty() {
-        return Err(error::status_with_info(
-            Code::NotFound,
-            format!("no ticket assigned to worker {worker_id}"),
-            DOMAIN_CORE,
-            NOT_FOUND,
-            HashMap::new(),
-        ));
-    }
-
-    let ticket_id = &matched[0].id;
+    let ticket_id = match ticket_id_opt {
+        Some(id) => id,
+        None => {
+            return Err(error::status_with_info(
+                Code::NotFound,
+                format!("no ticket assigned to worker {worker_id}"),
+                DOMAIN_CORE,
+                NOT_FOUND,
+                HashMap::new(),
+            ));
+        }
+    };
+    let ticket_id = &ticket_id;
     let meta = ticket_repo
         .get_meta(ticket_id, "ticket")
         .await

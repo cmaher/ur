@@ -4,7 +4,7 @@ use tracing::{error, info, warn};
 
 use super::hook_log::write_hook_failure_log;
 
-use ur_db::model::LifecycleStatus;
+use ticket_db::LifecycleStatus;
 use ur_rpc::workflow_condition;
 use ur_rpc::workflow_event::WorkflowEvent;
 
@@ -638,7 +638,7 @@ async fn stall_agent(
     worker_id: &str,
 ) -> anyhow::Result<()> {
     ctx.worker_repo
-        .update_worker_agent_status(worker_id, ur_db::model::AgentStatus::Stalled)
+        .update_worker_agent_status(worker_id, workflow_db::AgentStatus::Stalled)
         .await
         .map_err(|e| {
             anyhow::anyhow!(

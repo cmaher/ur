@@ -4,9 +4,7 @@ use std::pin::Pin;
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
-use ur_db::{
-    EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate, WorkflowRepo,
-};
+use ticket_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
 use ur_rpc::error::{
     self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_ACTIVE_WORKFLOW,
     TICKET_HAS_OPEN_CHILDREN,
@@ -21,9 +19,10 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    SubscribeUiEventsRequest, UiEventBatch, UpdateTicketRequest, UpdateTicketResponse,
-    WorkflowHistoryEvent, WorkflowInfo,
+    SubscribeUiEventsRequest, TicketExportRecord, TicketExportRequest, TicketImportResponse,
+    UiEventBatch, UpdateTicketRequest, UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
 };
+use workflow_db::WorkflowRepo;
 
 use crate::UiEventPoller;
 use crate::WorkerManager;
@@ -127,7 +126,7 @@ pub struct TicketServiceHandler {
 
 impl TicketServiceHandler {
     /// Enrich a workflow with history events, ticket progress, and PR URL.
-    async fn enrich_workflow(&self, wf: ur_db::Workflow) -> Result<WorkflowInfo, Status> {
+    async fn enrich_workflow(&self, wf: workflow_db::Workflow) -> Result<WorkflowInfo, Status> {
         let pr_url = self
             .ticket_repo
             .get_meta(&wf.ticket_id, "ticket")
@@ -159,10 +158,10 @@ impl TicketServiceHandler {
             .collect();
 
         let (children_open, children_closed) = self
-            .workflow_repo
+            .ticket_repo
             .get_ticket_children_counts(&wf.ticket_id)
             .await
-            .map_err(|e| TicketError::Db(e.to_string()))?;
+            .map_err(|e: sqlx::Error| TicketError::Db(e.to_string()))?;
 
         Ok(workflow_to_proto(
             wf,
@@ -174,11 +173,13 @@ impl TicketServiceHandler {
         ))
     }
 
-    /// Enrich a `PaginatedWorkflow` (which already includes children counts)
-    /// with history events and PR URL.
+    /// Enrich a `PaginatedWorkflow` with history events, PR URL, and ticket children counts.
+    ///
+    /// Children counts are fetched from `ticket_repo` to avoid cross-DB JOINs in
+    /// `list_workflows_paginated`.
     async fn enrich_paginated_workflow(
         &self,
-        pw: ur_db::workflow_repo::PaginatedWorkflow,
+        pw: workflow_db::workflow_repo::PaginatedWorkflow,
     ) -> Result<WorkflowInfo, Status> {
         let pr_url = self
             .ticket_repo
@@ -210,12 +211,18 @@ impl TicketServiceHandler {
             })
             .collect();
 
+        let (ticket_children_open, ticket_children_closed) = self
+            .ticket_repo
+            .get_ticket_children_counts(&pw.workflow.ticket_id)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
         Ok(workflow_to_proto(
             pw.workflow,
             pr_url,
             history,
-            pw.ticket_children_open,
-            pw.ticket_children_closed,
+            ticket_children_open,
+            ticket_children_closed,
             ticket_title,
         ))
     }
@@ -290,7 +297,7 @@ impl TicketServiceHandler {
 
     /// Convert metadata query results to minimal proto tickets.
     fn meta_tickets_to_proto(
-        matches: Vec<ur_db::MetadataMatchTicket>,
+        matches: Vec<ticket_db::MetadataMatchTicket>,
     ) -> Vec<ur_rpc::proto::ticket::Ticket> {
         matches
             .into_iter()
@@ -385,14 +392,68 @@ impl TicketServiceHandler {
             })
             .collect())
     }
+
+    /// List workflows filtered by project, fetching ticket data from ticket_db separately.
+    ///
+    /// Fetches all matching workflows from workflow_db, then queries ticket_db for
+    /// the corresponding ticket rows to filter by project. Missing tickets (deleted
+    /// while workflow still exists) are logged at info level and skipped.
+    async fn list_workflows_by_project(
+        &self,
+        page_size: Option<i32>,
+        offset: i32,
+        status: Option<LifecycleStatus>,
+        project: &str,
+    ) -> Result<(Vec<workflow_db::workflow_repo::PaginatedWorkflow>, i32), Status> {
+        let (all_workflows, _) = self
+            .workflow_repo
+            .list_workflows_paginated(None, 0, status)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        let ticket_ids: Vec<String> = all_workflows
+            .iter()
+            .map(|pw| pw.workflow.ticket_id.clone())
+            .collect();
+
+        let tickets = self
+            .ticket_repo
+            .get_tickets_by_ids(&ticket_ids)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        let matching_ids: std::collections::HashSet<String> = tickets
+            .into_iter()
+            .filter(|t| t.project == project)
+            .map(|t| t.id)
+            .collect();
+
+        let filtered: Vec<_> = all_workflows
+            .into_iter()
+            .filter(|pw| matching_ids.contains(&pw.workflow.ticket_id))
+            .collect();
+
+        let total_count = filtered.len() as i32;
+        let start = offset as usize;
+        let paged: Vec<_> = match page_size {
+            Some(ps) => filtered.into_iter().skip(start).take(ps as usize).collect(),
+            None => filtered.into_iter().skip(start).collect(),
+        };
+
+        Ok((paged, total_count))
+    }
 }
 
 type SubscribeUiEventsOutputStream =
     Pin<Box<dyn tokio_stream::Stream<Item = Result<UiEventBatch, Status>> + Send>>;
 
+type TicketExportOutputStream =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<TicketExportRecord, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl TicketService for TicketServiceHandler {
     type SubscribeUiEventsStream = SubscribeUiEventsOutputStream;
+    type TicketExportStream = TicketExportOutputStream;
 
     async fn create_ticket(
         &self,
@@ -1119,11 +1180,17 @@ impl TicketService for TicketServiceHandler {
             return Err(TicketError::Validation("page_size must be positive".into()).into());
         }
 
-        let (paginated, total_count) = self
-            .workflow_repo
-            .list_workflows_paginated(page_size, offset, status_filter, project)
-            .await
-            .map_err(|e| TicketError::Db(e.to_string()))?;
+        // When a project filter is specified, fetch all workflows and filter by
+        // querying ticket_db separately — avoids cross-DB JOINs.
+        let (paginated, total_count) = if let Some(project_key) = project {
+            self.list_workflows_by_project(page_size, offset, status_filter, project_key)
+                .await?
+        } else {
+            self.workflow_repo
+                .list_workflows_paginated(page_size, offset, status_filter)
+                .await
+                .map_err(|e| TicketError::Db(e.to_string()))?
+        };
 
         let mut protos = Vec::with_capacity(paginated.len());
         for pw in paginated {
@@ -1150,10 +1217,47 @@ impl TicketService for TicketServiceHandler {
 
         Ok(Response::new(Box::pin(mapped)))
     }
+
+    async fn ticket_export(
+        &self,
+        _req: Request<TicketExportRequest>,
+    ) -> Result<Response<Self::TicketExportStream>, Status> {
+        info!("ticket_export request");
+
+        let ticket_repo = self.ticket_repo.clone();
+
+        // Collect all records up-front in a background task, then stream them.
+        // This keeps the impl simple and avoids lifetime issues with async streams.
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            if let Err(e) = crate::ticket_export::stream_export(&ticket_repo, &tx).await {
+                let _ = tx.send(Err(e)).await;
+            }
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn ticket_import(
+        &self,
+        req: Request<tonic::Streaming<TicketExportRecord>>,
+    ) -> Result<Response<TicketImportResponse>, Status> {
+        info!("ticket_import request");
+
+        let mut stream = req.into_inner();
+        let mut records: Vec<TicketExportRecord> = Vec::new();
+        while let Some(record) = stream.message().await? {
+            records.push(record);
+        }
+
+        let records_inserted = crate::ticket_import::run_import(&self.ticket_repo, records).await?;
+        Ok(Response::new(TicketImportResponse { records_inserted }))
+    }
 }
 
 fn workflow_to_proto(
-    wf: ur_db::Workflow,
+    wf: workflow_db::Workflow,
     pr_url: String,
     history: Vec<WorkflowHistoryEvent>,
     ticket_children_open: i64,
@@ -1181,12 +1285,12 @@ fn workflow_to_proto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ticket_db::{GraphManager, NewTicket};
     use tonic::Request;
-    use ur_db::{GraphManager, NewTicket};
     use ur_db_test::TestDb;
 
-    fn test_workflow() -> ur_db::Workflow {
-        ur_db::Workflow {
+    fn test_workflow() -> workflow_db::Workflow {
+        workflow_db::Workflow {
             id: "wf-id".into(),
             ticket_id: "t-1".into(),
             status: LifecycleStatus::Implementing,
@@ -1199,7 +1303,6 @@ mod tests {
             ci_status: String::new(),
             mergeable: String::new(),
             review_status: String::new(),
-            node_id: String::new(),
             created_at: "2025-01-01T00:00:00Z".into(),
         }
     }
@@ -1249,10 +1352,11 @@ mod tests {
 
     async fn setup_handler() -> (TestDb, TicketServiceHandler) {
         let test_db = TestDb::new().await;
-        let pool = test_db.db().pool().clone();
-        let graph_manager = GraphManager::new(pool.clone());
-        let ticket_repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
+        let ticket_pool = test_db.ticket_pool().clone();
+        let workflow_pool = test_db.workflow_pool().clone();
+        let graph_manager = GraphManager::new(ticket_pool.clone());
+        let ticket_repo = TicketRepo::new(ticket_pool, graph_manager);
+        let workflow_repo = WorkflowRepo::new(workflow_pool);
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
             crate::hostexec::HostExecConfigManager::empty(),

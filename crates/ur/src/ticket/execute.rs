@@ -5,7 +5,7 @@ use ur_rpc::error::StatusResultExt;
 use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
 use ur_rpc::proto::ticket::*;
 
-use ur_db::model::TicketType;
+use ticket_db::TicketType;
 use ur_rpc::lifecycle;
 
 use super::TicketOutput;
@@ -72,6 +72,9 @@ where
         TicketArgs::Dispatchable { epic_id, project } => {
             execute_dispatchable(client, epic_id, project).await
         }
+        // Export and Import are handled before execute() is called in mod.rs::handle().
+        TicketArgs::Export { .. } => unreachable!("Export is handled in handle()"),
+        TicketArgs::Import { .. } => unreachable!("Import is handled in handle()"),
     }
 }
 

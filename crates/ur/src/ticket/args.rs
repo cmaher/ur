@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, builder::PossibleValuesParser};
-use ur_db::model::TicketType;
+use ticket_db::TicketType;
 
 /// Ticket management subcommands matching all TicketService RPCs.
 #[derive(Debug, Subcommand)]
@@ -244,6 +244,18 @@ pub enum TicketArgs {
     Open {
         /// Ticket ID
         id: String,
+    },
+
+    /// Export all ticket-domain rows as JSONL
+    Export {
+        /// Output file path ("-" for stdout)
+        path: String,
+    },
+
+    /// Import ticket-domain rows from a JSONL export file
+    Import {
+        /// Path to the JSONL file produced by `ur ticket export`
+        path: String,
     },
 }
 

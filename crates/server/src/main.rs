@@ -8,16 +8,24 @@ use tracing::info;
 
 use container::NetworkManager;
 
-use ur_db::{
-    DatabaseManager, GraphManager, SnapshotManager, TicketRepo, UiEventRepo, WorkerRepo,
-    WorkflowRepo,
-};
+use sqlx::PgPool;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::str::FromStr;
+use ticket_db::{GraphManager, TicketRepo};
+use ur_server::SnapshotManager;
 use ur_server::worker::WorkerModesConfig;
 use ur_server::workflow::handlers::build_handlers;
 use ur_server::{
     BackupTaskManager, Config, GithubPollerManager, LogCleanupManager, ProjectRegistry,
     RepoPoolManager, WorkerManager, WorkflowEngine,
 };
+use workflow_db::{WorkerRepo, WorkflowRepo};
+
+/// Both database pools opened at server startup.
+struct DatabasePools {
+    ticket_pool: PgPool,
+    workflow_pool: PgPool,
+}
 
 #[derive(Parser)]
 #[command(
@@ -48,13 +56,63 @@ fn resolve_workspace_paths(cfg: &Config) -> (PathBuf, PathBuf) {
     (host_workspace, local_workspace)
 }
 
-async fn init_database(cfg: &Config) -> anyhow::Result<DatabaseManager> {
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
-    let db = DatabaseManager::open(&url)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to open database: {e}"))?;
-    info!(url = %url, "database initialized");
-    Ok(db)
+async fn open_pool(url: &str, label: &str) -> anyhow::Result<PgPool> {
+    let options = PgConnectOptions::from_str(url)
+        .map_err(|e| anyhow::anyhow!("invalid {label} database URL: {e}"))?;
+    let mut last_err = None;
+    for attempt in 1..=10u32 {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(options.clone())
+            .await
+        {
+            Ok(pool) => return Ok(pool),
+            Err(e) => {
+                tracing::warn!("attempt {attempt}/10: failed to open {label} database: {e}");
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "failed to open {label} database after 10 attempts: {}",
+        last_err.unwrap()
+    ))
+}
+
+async fn init_databases(cfg: &Config) -> anyhow::Result<DatabasePools> {
+    let ticket_url = std::env::var(ur_config::UR_TICKET_DB_URL_ENV)
+        .unwrap_or_else(|_| cfg.ticket_db.database_url());
+    let workflow_url = std::env::var(ur_config::UR_WORKFLOW_DB_URL_ENV)
+        .unwrap_or_else(|_| cfg.workflow_db.database_url());
+
+    let (ticket_pool, workflow_pool) = tokio::try_join!(
+        open_pool(&ticket_url, "ticket_db"),
+        open_pool(&workflow_url, "workflow_db"),
+    )?;
+
+    tokio::try_join!(
+        async {
+            ticket_db::migrate(&ticket_pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("ticket_db migration failed: {e}"))
+        },
+        async {
+            workflow_db::migrate(&workflow_pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("workflow_db migration failed: {e}"))
+        },
+    )?;
+
+    info!(
+        ticket_url = %ticket_url,
+        workflow_url = %workflow_url,
+        "databases initialized"
+    );
+    Ok(DatabasePools {
+        ticket_pool,
+        workflow_pool,
+    })
 }
 
 fn load_worker_modes(cfg: &Config) -> anyhow::Result<WorkerModesConfig> {
@@ -66,24 +124,48 @@ fn load_worker_modes(cfg: &Config) -> anyhow::Result<WorkerModesConfig> {
     }
 }
 
-fn init_backup(
-    cfg: &Config,
+struct BackupHandles {
+    ticket_shutdown_tx: watch::Sender<bool>,
+    ticket_handle: Option<tokio::task::JoinHandle<()>>,
+    workflow_shutdown_tx: watch::Sender<bool>,
+    workflow_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn spawn_backup(
+    container_command: &str,
+    db_name: &str,
+    backup_config: ur_config::BackupConfig,
 ) -> anyhow::Result<(watch::Sender<bool>, Option<tokio::task::JoinHandle<()>>)> {
-    let mut backup_config = cfg.db.backup.clone();
-    if let Ok(container_path) = std::env::var("UR_BACKUP_PATH") {
-        backup_config.path = Some(std::path::PathBuf::from(container_path));
-    }
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let snapshot_manager = SnapshotManager::new(
-        cfg.server.container_command.clone(),
+        container_command.to_owned(),
         ur_config::DEFAULT_DB_HOST.to_string(),
-        cfg.db.name.clone(),
+        db_name.to_owned(),
     );
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let backup_task_manager = BackupTaskManager::new(snapshot_manager, backup_config);
-    let backup_handle = backup_task_manager
+    let handle = backup_task_manager
         .spawn(shutdown_rx)
-        .map_err(|e| anyhow::anyhow!("backup configuration error: {e}"))?;
-    Ok((shutdown_tx, backup_handle))
+        .map_err(|e| anyhow::anyhow!("backup configuration error for {db_name}: {e}"))?;
+    Ok((shutdown_tx, handle))
+}
+
+fn init_backups(cfg: &Config) -> anyhow::Result<BackupHandles> {
+    let (ticket_shutdown_tx, ticket_handle) = spawn_backup(
+        &cfg.server.container_command,
+        &cfg.ticket_db.name,
+        cfg.ticket_db.backup.clone(),
+    )?;
+    let (workflow_shutdown_tx, workflow_handle) = spawn_backup(
+        &cfg.server.container_command,
+        &cfg.workflow_db.name,
+        cfg.workflow_db.backup.clone(),
+    )?;
+    Ok(BackupHandles {
+        ticket_shutdown_tx,
+        ticket_handle,
+        workflow_shutdown_tx,
+        workflow_handle,
+    })
 }
 
 fn init_log_cleanup(
@@ -150,7 +232,8 @@ async fn reconcile_workers(worker_repo: &WorkerRepo, docker_command: &str) -> an
 #[allow(clippy::too_many_arguments)]
 async fn init_and_serve(
     cfg: &Config,
-    db: &DatabaseManager,
+    ticket_pool: &PgPool,
+    workflow_pool: &PgPool,
     worker_manager: WorkerManager,
     repo_pool_manager: RepoPoolManager,
     worker_repo: WorkerRepo,
@@ -158,16 +241,23 @@ async fn init_and_serve(
     host_workspace: PathBuf,
     project_registry: ProjectRegistry,
 ) -> anyhow::Result<()> {
-    let graph_manager = GraphManager::new(db.pool().clone());
-    let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
+    let graph_manager = GraphManager::new(ticket_pool.clone());
+    let ticket_repo = TicketRepo::new(ticket_pool.clone(), graph_manager);
+    let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
 
-    let ui_event_repo = UiEventRepo::new(db.pool().clone());
     let fallback_interval =
         std::time::Duration::from_millis(cfg.server.ui_event_fallback_interval_ms);
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| cfg.db.database_url());
-    let ui_event_poller =
-        ur_server::UiEventPoller::new(ui_event_repo, fallback_interval, database_url);
+    let ticket_url = std::env::var(ur_config::UR_TICKET_DB_URL_ENV)
+        .unwrap_or_else(|_| cfg.ticket_db.database_url());
+    let workflow_url = std::env::var(ur_config::UR_WORKFLOW_DB_URL_ENV)
+        .unwrap_or_else(|_| cfg.workflow_db.database_url());
+    let ui_event_poller = ur_server::UiEventPoller::new(
+        ticket_pool.clone(),
+        ticket_url,
+        workflow_pool.clone(),
+        workflow_url,
+        fallback_interval,
+    );
 
     let ticket_handler = ur_server::grpc_ticket::TicketServiceHandler {
         ticket_repo: ticket_repo.clone(),
@@ -203,7 +293,6 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
-        node_id: cfg.node_id.clone(),
     };
 
     serve_grpc_servers(
@@ -404,7 +493,7 @@ async fn serve_grpc_servers(
 #[allow(clippy::too_many_arguments)]
 async fn init_managers(
     cfg: &Config,
-    db: &DatabaseManager,
+    workflow_pool: &PgPool,
     local_workspace: &Path,
     host_workspace: &Path,
     host_config_dir: &Path,
@@ -430,26 +519,7 @@ async fn init_managers(
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
-    let worker_repo = WorkerRepo::new(db.pool().clone(), cfg.node_id.clone());
-    let workflow_repo_for_adopt = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
-
-    let (workers_adopted, slots_adopted) = worker_repo
-        .adopt_legacy_node_rows()
-        .await
-        .map_err(|e| anyhow::anyhow!("legacy node_id adoption failed: {e}"))?;
-    let workflows_adopted = workflow_repo_for_adopt
-        .adopt_legacy_node_rows()
-        .await
-        .map_err(|e| anyhow::anyhow!("legacy node_id adoption failed: {e}"))?;
-    if workers_adopted > 0 || slots_adopted > 0 || workflows_adopted > 0 {
-        info!(
-            workers = workers_adopted,
-            slots = slots_adopted,
-            workflows = workflows_adopted,
-            node_id = %cfg.node_id,
-            "adopted pre-multi-node rows"
-        );
-    }
+    let worker_repo = WorkerRepo::new(workflow_pool.clone());
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 
@@ -546,15 +616,15 @@ async fn main() -> anyhow::Result<()> {
     info!(host_config_dir = %host_config_dir.display(), "host config resolved");
 
     let worker_modes = load_worker_modes(&cfg)?;
-    let db = init_database(&cfg).await?;
-    let (shutdown_tx, backup_handle) = init_backup(&cfg)?;
+    let pools = init_databases(&cfg).await?;
+    let backup_handles = init_backups(&cfg)?;
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
     let (builderd_addr, worker_repo, repo_pool_manager, worker_manager, project_registry) =
         init_managers(
             &cfg,
-            &db,
+            &pools.workflow_pool,
             &local_workspace,
             &host_workspace,
             &host_config_dir,
@@ -567,7 +637,8 @@ async fn main() -> anyhow::Result<()> {
 
     let result = init_and_serve(
         &cfg,
-        &db,
+        &pools.ticket_pool,
+        &pools.workflow_pool,
         worker_manager,
         repo_pool_manager,
         worker_repo,
@@ -578,8 +649,12 @@ async fn main() -> anyhow::Result<()> {
     .await;
 
     // Signal background tasks to stop and wait for them
-    let _ = shutdown_tx.send(true);
-    if let Some(handle) = backup_handle {
+    let _ = backup_handles.ticket_shutdown_tx.send(true);
+    if let Some(handle) = backup_handles.ticket_handle {
+        let _ = handle.await;
+    }
+    let _ = backup_handles.workflow_shutdown_tx.send(true);
+    if let Some(handle) = backup_handles.workflow_handle {
         let _ = handle.await;
     }
     let _ = log_cleanup_shutdown_tx.send(true);

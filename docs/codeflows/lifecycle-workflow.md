@@ -8,11 +8,13 @@ The workflow system drives tickets through an automated state machine: dispatch,
 2. **WorkerdNextStepRouter** -- pure-function router mapping `workflow_status` to the next action
 3. **GithubPollerManager** -- polls GitHub for CI status, mergeability, and review signals on `InReview` tickets
 
-The system uses four database tables:
+The system uses four database tables, all living in the **`workflow_db` (`ur_workflow`)** Postgres database:
 - **`workflow`** -- tracks the current workflow state for each ticket (status, condition columns, timestamps)
 - **`workflow_intent`** -- records pending intents (target status) for crash recovery
 - **`workflow_comments`** -- tracks seen PR comments for deduplication across feedback cycles
 - **`workflow_events`** -- append-only analytics log recording lifecycle transitions and condition changes
+
+**Cross-DB references**: Workflow tables reference `ticket_id` values that correspond to rows in the separate `ticket_db` (`ur_tickets`) database. There is no database-level foreign key across these two databases — the relationship is a **soft reference** enforced by the application layer. Workflow records are only created after the ticket exists in `ticket_db`, and workflow handlers look up the ticket via `TicketRepo` (ticket pool) before acting on the workflow (workflow pool). See `docs/codeflows/database.md` for the full two-pool architecture.
 
 ## State Machine
 
@@ -228,7 +230,7 @@ Source: `crates/server/src/main.rs`
 
 The three condition columns (`ci_status`, `mergeable`, `review_status`) are initialized when a ticket enters `InReview` via `PushHandler`. They are updated independently by the `GithubPollerManager` each scan cycle. The `MergeHandler` checks all three before attempting a merge (pre-merge gate). Condition values are defined as constants in `ur_rpc::workflow_condition`.
 
-Source: `crates/ur_db/migrations/014_workflow_conditions.sql`
+Source: `crates/workflow_db/migrations/`
 
 ### workflow_events
 
@@ -246,7 +248,7 @@ The events table is an append-only analytics log. Two categories of events are r
 1. **Lifecycle events** -- emitted by the coordinator on every status transition. Event names mirror lifecycle statuses (e.g., `implementing`, `in_review`, `merging`, `done`). Defined in `ur_rpc::workflow_event`.
 2. **Condition events** -- emitted by the poller when external state changes: `pr_created`, `ci_succeeded`, `ci_failed`, `review_approved`, `review_changes_requested`, `merge_conflict_detected`, `stalled`. CI events use the actual `completed_at` timestamp from GitHub check runs (via `insert_workflow_event_at`) for accurate timing.
 
-Source: `crates/ur_db/migrations/014_workflow_conditions.sql`
+Source: `crates/workflow_db/migrations/`
 
 ### workflow_intent
 
@@ -271,7 +273,7 @@ The intent table provides crash recovery: if the server crashes mid-transition, 
 
 The `workflow_comments` table enables two-phase comment handling for deduplication across feedback cycles. Phase 1 (poller): the `GithubPollerManager` inserts unseen comment IDs with `feedback_created = 0` when it detects new review comments. Phase 2 (step complete): after the worker finishes creating feedback tickets, `mark_feedback_created` flips `feedback_created` to 1 for all pending comments. This ensures that if the worker dies mid-way, comments remain pending (`feedback_created = 0`) and will be re-processed on the next feedback cycle. Already-handled comment IDs (`feedback_created = 1`) are passed to the worker so it skips comments that already have feedback tickets.
 
-Source: `crates/ur_db/migrations/011_workflow_comments.sql`
+Source: `crates/workflow_db/migrations/`
 
 ## Workflow Condition Constants
 
@@ -379,7 +381,7 @@ Agent status is validated via the `AgentStatus` enum rather than raw strings:
 | `Working` | `"working"` | Agent is actively executing |
 | `Stalled` | `"stalled"` | Agent has stalled (no progress) |
 
-Source: `crates/ur_db/src/model.rs`
+Source: `crates/workflow_db/src/model.rs`
 
 ## Verification and Fix Attempt Budget
 

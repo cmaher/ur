@@ -60,9 +60,6 @@ enum Commands {
     },
     /// Bootstrap the ~/.ur/ config directory
     Init {
-        /// Unique node name for this ur installation
-        #[arg(long)]
-        node: String,
         /// Overwrite all files
         #[arg(long)]
         force: bool,
@@ -102,11 +99,6 @@ enum Commands {
     Flow {
         #[command(subcommand)]
         command: crate::flow::FlowArgs,
-    },
-    /// Manage node identities
-    Node {
-        #[command(subcommand)]
-        command: NodeCommands,
     },
     /// Manage workers
     Worker {
@@ -195,20 +187,6 @@ enum DbCommands {
     Restore {
         /// Path to the backup file to restore
         path: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
-enum NodeCommands {
-    /// List all node identities in the database
-    List,
-    /// Delete all rows for an orphaned node identity
-    Cleanup {
-        /// Node ID to clean up
-        node_id: String,
-        /// Skip confirmation prompt
-        #[arg(long)]
-        force: bool,
     },
 }
 
@@ -1243,92 +1221,6 @@ fn main() {
     }
 }
 
-async fn handle_node(command: NodeCommands, port: u16, output: &OutputManager) -> Result<()> {
-    match command {
-        NodeCommands::List => node_list(port, output).await,
-        NodeCommands::Cleanup { node_id, force } => {
-            node_cleanup(port, &node_id, force, output).await
-        }
-    }
-}
-
-async fn node_list(port: u16, output: &OutputManager) -> Result<()> {
-    let mut client = connect(port).await?;
-    let resp = client.node_list(NodeListRequest {}).await?;
-    let inner = resp.into_inner();
-    let nodes = inner.nodes;
-    let local = inner.local_node_id;
-
-    if nodes.is_empty() {
-        output.print_text("No nodes found.");
-        return Ok(());
-    }
-
-    output.print_items(&nodes, |nodes| {
-        let mut out = format!(
-            "{:<24} {:>8} {:>8} {:>10}  {}\n",
-            "NODE", "WORKERS", "SLOTS", "WORKFLOWS", ""
-        );
-        for n in nodes {
-            let marker = if n.node_id == local { "(local)" } else { "" };
-            out.push_str(&format!(
-                "{:<24} {:>8} {:>8} {:>10}  {}\n",
-                n.node_id, n.worker_count, n.slot_count, n.workflow_count, marker
-            ));
-        }
-        if out.ends_with('\n') {
-            out.pop();
-        }
-        out
-    });
-    Ok(())
-}
-
-async fn node_cleanup(port: u16, node_id: &str, force: bool, output: &OutputManager) -> Result<()> {
-    if !force {
-        eprint!("Delete all data for node '{node_id}'? This cannot be undone. [y/N] ");
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        if !answer.trim().eq_ignore_ascii_case("y") {
-            output.print_text("Aborted.");
-            return Ok(());
-        }
-    }
-
-    let mut client = connect(port).await?;
-    let resp = client
-        .node_cleanup(NodeCleanupRequest {
-            node_id: node_id.to_owned(),
-        })
-        .await?;
-    let inner = resp.into_inner();
-
-    #[derive(serde::Serialize)]
-    struct CleanupResult {
-        node_id: String,
-        workers_deleted: i32,
-        slots_deleted: i32,
-        workflows_deleted: i32,
-    }
-
-    let result = CleanupResult {
-        node_id: node_id.to_owned(),
-        workers_deleted: inner.workers_deleted,
-        slots_deleted: inner.slots_deleted,
-        workflows_deleted: inner.workflows_deleted,
-    };
-
-    if output.is_json() {
-        output.print_success(&result);
-    } else {
-        println!(
-            "Cleaned up node '{}':\n  Workers deleted: {}\n  Slots deleted: {}\n  Workflows deleted: {}",
-            node_id, inner.workers_deleted, inner.slots_deleted, inner.workflows_deleted
-        );
-    }
-    Ok(())
-}
-
 async fn handle_project(
     command: ProjectCommands,
     config: &ur_config::Config,
@@ -1419,7 +1311,6 @@ fn handle_proxy(
 async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     // Init bypasses config loading — it creates the config files.
     if let Commands::Init {
-        node,
         force,
         force_config,
         force_squid,
@@ -1430,7 +1321,6 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
                 force,
                 force_config,
                 force_squid,
-                node,
             },
             output,
         );
@@ -1475,7 +1365,6 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
             ServerCommands::Start => start_server(&config, &compose, output)?,
             ServerCommands::Stop => stop_server(&config, &compose, output).await?,
         },
-        Commands::Node { command } => handle_node(command, port, output).await?,
         Commands::Ticket { command } => {
             ticket::handle(port, command, output, &config.projects).await?
         }

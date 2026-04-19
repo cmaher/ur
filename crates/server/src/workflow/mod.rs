@@ -19,12 +19,11 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use ticket_db::{LifecycleStatus, TicketRepo};
 use ur_config::Config;
-use ur_db::TicketRepo;
-use ur_db::WorkerRepo;
-use ur_db::WorkflowRepo;
-use ur_db::model::LifecycleStatus;
 use ur_rpc::proto::builder::BuilderdClient;
+use workflow_db::WorkerRepo;
+use workflow_db::WorkflowRepo;
 
 use crate::WorkerManager;
 

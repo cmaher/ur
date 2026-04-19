@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::graph::GraphManager;
 use crate::model::{
-    Activity, DispatchableTicket, Edge, EdgeKind, LifecycleStatus, MetadataMatchTicket, NewTicket,
-    Ticket, TicketFilter, TicketUpdate,
+    Activity, DispatchableTicket, Edge, EdgeKind, ImportError, LifecycleStatus,
+    MetadataMatchTicket, NewTicket, Ticket, TicketFilter, TicketUpdate,
 };
 
 type TicketRow = (
@@ -399,34 +399,6 @@ impl TicketRepo {
         .bind(old_id)
         .execute(&self.pool)
         .await?;
-
-        // workflow
-        sqlx::query("UPDATE workflow SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_event
-        sqlx::query("UPDATE workflow_event SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_intent
-        sqlx::query("UPDATE workflow_intent SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
-
-        // workflow_comments
-        sqlx::query("UPDATE workflow_comments SET ticket_id = $1 WHERE ticket_id = $2")
-            .bind(new_id)
-            .bind(old_id)
-            .execute(&self.pool)
-            .await?;
 
         // ticket_comments
         sqlx::query("UPDATE ticket_comments SET ticket_id = $1 WHERE ticket_id = $2")
@@ -1212,6 +1184,380 @@ impl TicketRepo {
         Ok(result.rows_affected())
     }
 
+    /// Return all tickets ordered by id for deterministic export.
+    pub async fn export_tickets(&self) -> Result<Vec<crate::model::ExportTicket>, sqlx::Error> {
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, \
+             parent_id, title, body, branch, created_at, updated_at \
+             FROM ticket ORDER BY id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| crate::model::ExportTicket {
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
+    /// Return all edges ordered by (source_id, target_id, kind) for deterministic export.
+    pub async fn export_edges(&self) -> Result<Vec<crate::model::ExportEdge>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT source_id, target_id, kind FROM edge ORDER BY source_id ASC, target_id ASC, kind ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(source_id, target_id, kind)| crate::model::ExportEdge {
+                source_id,
+                target_id,
+                kind,
+            })
+            .collect())
+    }
+
+    /// Return all meta rows ordered by (entity_type, entity_id, key) for deterministic export.
+    pub async fn export_meta(&self) -> Result<Vec<crate::model::ExportMeta>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT entity_id, entity_type, key, value FROM meta \
+             ORDER BY entity_type ASC, entity_id ASC, key ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(entity_id, entity_type, key, value)| crate::model::ExportMeta {
+                    entity_id,
+                    entity_type,
+                    key,
+                    value,
+                },
+            )
+            .collect())
+    }
+
+    /// Return all activities ordered by (ticket_id, timestamp) for deterministic export.
+    pub async fn export_activities(
+        &self,
+    ) -> Result<Vec<crate::model::ExportActivity>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+            "SELECT id, ticket_id, timestamp, author, message FROM activity \
+             ORDER BY ticket_id ASC, timestamp ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, ticket_id, timestamp, author, message)| crate::model::ExportActivity {
+                    id,
+                    ticket_id,
+                    timestamp,
+                    author,
+                    message,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn insert_ticket_comment(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+        pr_number: i64,
+        gh_repo: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO ticket_comments (comment_id, ticket_id, pr_number, gh_repo) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .bind(pr_number)
+        .bind(gh_repo)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_pending_replies(
+        &self,
+    ) -> Result<Vec<crate::model::TicketComment>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
+            "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
+             FROM ticket_comments WHERE reply_posted = false \
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at)| {
+                    crate::model::TicketComment {
+                        comment_id,
+                        ticket_id,
+                        pr_number,
+                        gh_repo,
+                        reply_posted,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn mark_reply_posted(
+        &self,
+        comment_id: &str,
+        ticket_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE ticket_comments SET reply_posted = true \
+             WHERE comment_id = $1 AND ticket_id = $2",
+        )
+        .bind(comment_id)
+        .bind(ticket_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Return all ticket_comments rows ordered by (ticket_id, comment_id) for deterministic export.
+    pub async fn export_ticket_comments(
+        &self,
+    ) -> Result<Vec<crate::model::ExportTicketComment>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, i64, String, bool, String)>(
+            "SELECT comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at \
+             FROM ticket_comments ORDER BY ticket_id ASC, comment_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at)| {
+                    crate::model::ExportTicketComment {
+                        comment_id,
+                        ticket_id,
+                        pr_number,
+                        gh_repo,
+                        reply_posted,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Fetch multiple tickets by their IDs in a single query.
+    ///
+    /// Returns only tickets that exist. Callers should treat missing IDs as
+    /// dropped (e.g., deleted while a workflow still references them).
+    pub async fn get_tickets_by_ids(&self, ids: &[String]) -> Result<Vec<Ticket>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                String,
+                bool,
+                i32,
+                Option<String>,
+                String,
+                String,
+                Option<String>,
+                String,
+                String,
+            ),
+        >(
+            "SELECT id, project, type, status, lifecycle_status, lifecycle_managed, priority, parent_id, title, body, branch, created_at, updated_at
+             FROM ticket
+             WHERE id = ANY($1)
+             ORDER BY priority ASC, created_at ASC",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    project,
+                    type_,
+                    status,
+                    lifecycle_status_str,
+                    lifecycle_managed,
+                    priority,
+                    parent_id,
+                    title,
+                    body,
+                    branch,
+                    created_at,
+                    updated_at,
+                )| {
+                    Ticket {
+                        id,
+                        project,
+                        type_,
+                        status,
+                        lifecycle_status: lifecycle_status_str
+                            .parse::<LifecycleStatus>()
+                            .unwrap_or_default(),
+                        lifecycle_managed,
+                        priority,
+                        parent_id,
+                        title,
+                        body,
+                        branch,
+                        created_at,
+                        updated_at,
+                        children_completed: 0,
+                        children_total: 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Get the open and closed children counts for a ticket.
+    /// Returns (open_count, closed_count).
+    pub async fn get_ticket_children_counts(
+        &self,
+        ticket_id: &str,
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ticket WHERE parent_id = $1")
+            .bind(ticket_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let closed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ticket WHERE parent_id = $1 AND status = 'closed'",
+        )
+        .bind(ticket_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok((total - closed, closed))
+    }
+
+    /// Import a batch of rows into the database within a single transaction.
+    ///
+    /// Tickets are inserted first, then edges, meta, activities, and
+    /// ticket_comments.  If any ticket id already exists the transaction is
+    /// rolled back and an error is returned listing the conflicting ids.
+    ///
+    /// Returns the total number of rows inserted across all tables.
+    pub async fn import_records(
+        &self,
+        tickets: Vec<crate::model::ExportTicket>,
+        edges: Vec<crate::model::ExportEdge>,
+        meta: Vec<crate::model::ExportMeta>,
+        activities: Vec<crate::model::ExportActivity>,
+        comments: Vec<crate::model::ExportTicketComment>,
+    ) -> Result<i64, ImportError> {
+        self.check_ticket_id_collisions(&tickets).await?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        let count = insert_import_rows(&mut tx, tickets, edges, meta, activities, comments).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        Ok(count)
+    }
+
+    /// Check whether any of the incoming ticket ids already exist in the DB.
+    async fn check_ticket_id_collisions(
+        &self,
+        tickets: &[crate::model::ExportTicket],
+    ) -> Result<(), ImportError> {
+        if tickets.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<&str> = tickets.iter().map(|t| t.id.as_str()).collect();
+        let existing: Vec<(String,)> = sqlx::query_as("SELECT id FROM ticket WHERE id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ImportError::Db(e.to_string()))?;
+
+        if existing.is_empty() {
+            Ok(())
+        } else {
+            let conflicting: Vec<String> = existing.into_iter().map(|(id,)| id).collect();
+            Err(ImportError::IdCollision(conflicting))
+        }
+    }
+
     /// Return all tickets with the given lifecycle status.
     /// Used by GithubPoller to find tickets in pushing/in_review states.
     pub async fn tickets_by_lifecycle_status(
@@ -1286,6 +1632,140 @@ impl TicketRepo {
             )
             .collect())
     }
+}
+
+/// Insert tickets, edges, meta, activities, and comments into a transaction.
+///
+/// Returns the total number of rows inserted.
+async fn insert_import_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tickets: Vec<crate::model::ExportTicket>,
+    edges: Vec<crate::model::ExportEdge>,
+    meta: Vec<crate::model::ExportMeta>,
+    activities: Vec<crate::model::ExportActivity>,
+    comments: Vec<crate::model::ExportTicketComment>,
+) -> Result<i64, ImportError> {
+    let mut count: i64 = 0;
+    count += insert_tickets(tx, tickets).await?;
+    count += insert_edges(tx, edges).await?;
+    count += insert_meta(tx, meta).await?;
+    count += insert_activities(tx, activities).await?;
+    count += insert_ticket_comments(tx, comments).await?;
+    Ok(count)
+}
+
+async fn insert_tickets(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tickets: Vec<crate::model::ExportTicket>,
+) -> Result<i64, ImportError> {
+    for t in &tickets {
+        sqlx::query(
+            "INSERT INTO ticket \
+             (id, project, type, status, lifecycle_status, lifecycle_managed, priority, \
+              parent_id, title, body, branch, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+        )
+        .bind(&t.id)
+        .bind(&t.project)
+        .bind(&t.type_)
+        .bind(&t.status)
+        .bind(&t.lifecycle_status)
+        .bind(t.lifecycle_managed)
+        .bind(t.priority)
+        .bind(&t.parent_id)
+        .bind(&t.title)
+        .bind(&t.body)
+        .bind(&t.branch)
+        .bind(&t.created_at)
+        .bind(&t.updated_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(tickets.len() as i64)
+}
+
+async fn insert_edges(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    edges: Vec<crate::model::ExportEdge>,
+) -> Result<i64, ImportError> {
+    for e in &edges {
+        sqlx::query(
+            "INSERT INTO edge (source_id, target_id, kind) VALUES ($1,$2,$3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&e.source_id)
+        .bind(&e.target_id)
+        .bind(&e.kind)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(edges.len() as i64)
+}
+
+async fn insert_meta(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    meta: Vec<crate::model::ExportMeta>,
+) -> Result<i64, ImportError> {
+    for m in &meta {
+        sqlx::query(
+            "INSERT INTO meta (entity_id, entity_type, key, value) VALUES ($1,$2,$3,$4) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(&m.entity_id)
+        .bind(&m.entity_type)
+        .bind(&m.key)
+        .bind(&m.value)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(meta.len() as i64)
+}
+
+async fn insert_activities(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    activities: Vec<crate::model::ExportActivity>,
+) -> Result<i64, ImportError> {
+    for a in &activities {
+        sqlx::query(
+            "INSERT INTO activity (id, ticket_id, timestamp, author, message) \
+             VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+        )
+        .bind(&a.id)
+        .bind(&a.ticket_id)
+        .bind(&a.timestamp)
+        .bind(&a.author)
+        .bind(&a.message)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(activities.len() as i64)
+}
+
+async fn insert_ticket_comments(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    comments: Vec<crate::model::ExportTicketComment>,
+) -> Result<i64, ImportError> {
+    for c in &comments {
+        sqlx::query(
+            "INSERT INTO ticket_comments \
+             (comment_id, ticket_id, pr_number, gh_repo, reply_posted, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(&c.comment_id)
+        .bind(&c.ticket_id)
+        .bind(c.pr_number)
+        .bind(&c.gh_repo)
+        .bind(c.reply_posted)
+        .bind(&c.created_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ImportError::Db(e.to_string()))?;
+    }
+    Ok(comments.len() as i64)
 }
 
 const BASE36_CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";

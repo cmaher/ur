@@ -19,7 +19,7 @@ pub use verify::VerifyHandler;
 
 use std::sync::Arc;
 
-use ur_db::model::LifecycleStatus;
+use ticket_db::LifecycleStatus;
 
 use super::HandlerEntry;
 use super::ticket_client::TicketClient;

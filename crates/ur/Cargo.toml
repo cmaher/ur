@@ -16,6 +16,7 @@ toml = "0.8"
 toml_edit = "0.22"
 fs4 = "0.12"
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 tonic = { workspace = true }
 tonic-types = { workspace = true }
 tracing = { workspace = true }
@@ -25,12 +26,11 @@ bytes = "1"
 http-body = "1"
 tmux = { path = "../tmux" }
 ur_config = { path = "../ur_config" }
-ur_db = { path = "../ur_db" }
+ticket_db = { path = "../ticket_db" }
 ur_rpc = { path = "../ur_rpc", features = ["error", "retry"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio-stream = { workspace = true }
 
 [lints]
 workspace = true

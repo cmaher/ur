@@ -1,21 +1,20 @@
 [package]
-name = "ur_db"
-edition = "2024"
-version = "0.1.0"
+name = "ticket_db"
+edition.workspace = true
+version.workspace = true
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.7"
 rand = "0.8"
 sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
-tokio = { version = "1", features = ["fs", "process"] }
-ur_rpc = { path = "../ur_rpc" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
-ur_db_test = { path = "../ur_db_test" }
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true

@@ -1,11 +1,11 @@
 use tracing::warn;
-use ur_db::WorkerRepo;
-use ur_db::model::AgentStatus;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{
     AddressFeedbackRequest, DesignRequest, ImplementRequest, SendMessageRequest,
 };
 use ur_rpc::retry::{RetryChannel, RetryConfig};
+use workflow_db::WorkerRepo;
+use workflow_db::model::AgentStatus;
 
 /// Thin client for sending messages to a workerd instance inside a worker container.
 ///

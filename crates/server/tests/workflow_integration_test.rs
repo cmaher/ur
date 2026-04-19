@@ -10,8 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::{Mutex, Notify, watch};
 use tonic::transport::{Endpoint, Server};
 
-use ur_db::model::{LifecycleStatus, NewTicket, Worker};
-use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
 use ur_db_test::TestDb;
 use ur_rpc::proto::core::core_service_client::CoreServiceClient;
 use ur_rpc::proto::core::{UpdateAgentStatusRequest, WorkflowStepCompleteRequest};
@@ -19,6 +18,8 @@ use ur_server::workflow::{
     HandlerEntry, HandlerFuture, TransitionRequest, WorkflowContext, WorkflowCoordinator,
     WorkflowHandler, coordinator_cancel_channel, coordinator_channel,
 };
+use workflow_db::model::Worker;
+use workflow_db::{WorkerRepo, WorkflowRepo};
 
 // ---------------------------------------------------------------------------
 // Mock handler: records calls, optionally auto-advances to a next state
@@ -223,11 +224,12 @@ impl TestHarness {
 
 async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
     let test_db = TestDb::new().await;
-    let pool = test_db.db().pool().clone();
-    let graph = GraphManager::new(pool.clone());
-    let ticket_repo = TicketRepo::new(pool.clone(), graph);
-    let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
-    let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
+    let ticket_pool = test_db.ticket_pool().clone();
+    let workflow_pool = test_db.workflow_pool().clone();
+    let graph = GraphManager::new(ticket_pool.clone());
+    let ticket_repo = TicketRepo::new(ticket_pool, graph);
+    let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
+    let worker_repo = WorkerRepo::new(workflow_pool);
     (test_db, ticket_repo, workflow_repo, worker_repo)
 }
 
@@ -272,8 +274,13 @@ fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
 }
 
 fn dummy_config() -> Arc<ur_config::Config> {
+    let backup = ur_config::BackupConfig {
+        path: None,
+        interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+        enabled: true,
+        retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+    };
     Arc::new(ur_config::Config {
-        node_id: "test-node".to_string(),
         config_dir: std::path::PathBuf::from("/tmp/test"),
         logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
         workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -299,12 +306,25 @@ fn dummy_config() -> Arc<ur_config::Config> {
             password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
             name: ur_config::DEFAULT_DB_NAME.to_string(),
             bind_address: None,
-            backup: ur_config::BackupConfig {
-                path: None,
-                interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                enabled: true,
-                retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-            },
+            backup: backup.clone(),
+        },
+        ticket_db: ur_config::TicketDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+            bind_address: None,
+            backup: backup.clone(),
+        },
+        workflow_db: ur_config::WorkflowDbConfig {
+            host: ur_config::DEFAULT_DB_HOST.to_string(),
+            port: ur_config::DEFAULT_DB_PORT,
+            user: ur_config::DEFAULT_DB_USER.to_string(),
+            password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+            name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
+            bind_address: None,
+            backup,
         },
         git_branch_prefix: String::new(),
         server: ur_config::ServerConfig {
@@ -446,7 +466,6 @@ async fn seed_ticket_and_worker(
         container_status: "running".to_string(),
         agent_status: "starting".to_string(),
         workspace_path: Some("/tmp/test/workspace".to_string()),
-        node_id: "test-node".to_string(),
         created_at: now.clone(),
         updated_at: now,
         idle_redispatch_count: 0,

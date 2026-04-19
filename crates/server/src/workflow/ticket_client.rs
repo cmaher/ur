@@ -166,15 +166,17 @@ impl TicketClient {
 mod tests {
     use super::*;
 
-    use ur_db::{GraphManager, TicketRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, TicketRepo};
     use ur_db_test::TestDb;
+    use workflow_db::WorkflowRepo;
 
     async fn setup() -> (TicketClient, TicketRepo, TestDb) {
         let test_db = TestDb::new().await;
-        let pool = test_db.db().pool().clone();
-        let graph_manager = GraphManager::new(pool.clone());
-        let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool, "test-node".to_string());
+        let ticket_pool = test_db.ticket_pool().clone();
+        let workflow_pool = test_db.workflow_pool().clone();
+        let graph_manager = GraphManager::new(ticket_pool.clone());
+        let repo = TicketRepo::new(ticket_pool, graph_manager);
+        let workflow_repo = WorkflowRepo::new(workflow_pool);
 
         let project_registry = crate::ProjectRegistry::new(
             std::collections::HashMap::new(),
@@ -199,7 +201,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create a parent ticket first.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),
@@ -244,7 +246,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create parent.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent2".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),
@@ -289,7 +291,7 @@ mod tests {
         let (client, repo, _test_db) = setup().await;
 
         // Create parent.
-        let parent = ur_db::NewTicket {
+        let parent = ticket_db::NewTicket {
             id: Some("ur-parent3".to_owned()),
             project: "ur".to_owned(),
             type_: "code".to_owned(),

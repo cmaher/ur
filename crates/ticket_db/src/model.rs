@@ -1,4 +1,4 @@
-// Shared data types for ur_db.
+// Shared data types for ticket_db.
 
 use std::fmt;
 use std::str::FromStr;
@@ -218,21 +218,6 @@ pub enum EdgeKind {
     RelatesTo,
 }
 
-pub struct WorkflowEvent {
-    pub id: String,
-    pub ticket_id: String,
-    pub old_lifecycle_status: LifecycleStatus,
-    pub new_lifecycle_status: LifecycleStatus,
-    pub attempts: i32,
-    pub created_at: String,
-}
-
-/// A row from the workflow_events table (lifecycle/condition events for a workflow).
-pub struct WorkflowEventRow {
-    pub event: String,
-    pub created_at: String,
-}
-
 /// Ticket status enum for workflow-driven tickets.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TicketStatus {
@@ -271,105 +256,6 @@ impl fmt::Display for TicketStatus {
     }
 }
 
-/// A workflow tracks the lifecycle state machine for a single ticket.
-pub struct Workflow {
-    pub id: String,
-    pub ticket_id: String,
-    pub status: LifecycleStatus,
-    pub stalled: bool,
-    pub stall_reason: String,
-    pub implement_cycles: i32,
-    pub worker_id: String,
-    pub noverify: bool,
-    pub feedback_mode: String,
-    pub ci_status: String,
-    pub mergeable: String,
-    pub review_status: String,
-    pub node_id: String,
-    pub created_at: String,
-}
-
-/// A workflow intent represents a desired state transition for a ticket.
-pub struct WorkflowIntent {
-    pub id: String,
-    pub ticket_id: String,
-    pub target_status: LifecycleStatus,
-    pub created_at: String,
-}
-
-/// Agent status for workers.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AgentStatus {
-    #[default]
-    Starting,
-    Idle,
-    Working,
-    Stalled,
-}
-
-impl AgentStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Starting => "starting",
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Stalled => "stalled",
-        }
-    }
-}
-
-impl FromStr for AgentStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "starting" => Ok(Self::Starting),
-            "idle" => Ok(Self::Idle),
-            "working" => Ok(Self::Working),
-            "stalled" => Ok(Self::Stalled),
-            _ => Err(format!("unknown agent status: {s}")),
-        }
-    }
-}
-
-impl fmt::Display for AgentStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-pub struct Slot {
-    pub id: String,
-    pub project_key: String,
-    pub slot_name: String,
-    pub host_path: String,
-    pub node_id: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-pub struct Worker {
-    pub worker_id: String,
-    pub process_id: String,
-    pub project_key: String,
-    pub container_id: String,
-    pub worker_secret: String,
-    pub strategy: String,
-    pub container_status: String,
-    pub agent_status: String,
-    pub workspace_path: Option<String>,
-    pub node_id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub idle_redispatch_count: i32,
-}
-
-pub struct WorkerSlot {
-    pub worker_id: String,
-    pub slot_id: String,
-    pub created_at: String,
-}
-
 pub struct TicketComment {
     pub comment_id: String,
     pub ticket_id: String,
@@ -386,31 +272,71 @@ pub struct UiEventRow {
     pub created_at: String,
 }
 
+/// Error type returned by `TicketRepo::import_records`.
+#[derive(Debug, thiserror::Error)]
+pub enum ImportError {
+    /// One or more ticket ids already exist in the database.
+    #[error("id collision: {}", .0.join(", "))]
+    IdCollision(Vec<String>),
+    /// A database error occurred.
+    #[error("database error: {0}")]
+    Db(String),
+}
+
+/// A raw ticket row for export purposes.
+pub struct ExportTicket {
+    pub id: String,
+    pub project: String,
+    pub type_: String,
+    pub status: String,
+    pub lifecycle_status: String,
+    pub lifecycle_managed: bool,
+    pub priority: i32,
+    pub parent_id: Option<String>,
+    pub title: String,
+    pub body: String,
+    pub branch: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A raw edge row for export purposes.
+pub struct ExportEdge {
+    pub source_id: String,
+    pub target_id: String,
+    pub kind: String,
+}
+
+/// A raw metadata row for export purposes.
+pub struct ExportMeta {
+    pub entity_id: String,
+    pub entity_type: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// A raw activity row for export purposes.
+pub struct ExportActivity {
+    pub id: String,
+    pub ticket_id: String,
+    pub timestamp: String,
+    pub author: String,
+    pub message: String,
+}
+
+/// A raw ticket_comments row for export purposes.
+pub struct ExportTicketComment {
+    pub comment_id: String,
+    pub ticket_id: String,
+    pub pr_number: i64,
+    pub gh_repo: String,
+    pub reply_posted: bool,
+    pub created_at: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_status_roundtrip() {
-        for status in [
-            AgentStatus::Starting,
-            AgentStatus::Idle,
-            AgentStatus::Working,
-            AgentStatus::Stalled,
-        ] {
-            let s = status.as_str();
-            let parsed: AgentStatus = s.parse().unwrap();
-            assert_eq!(parsed, status);
-            assert_eq!(status.to_string(), s);
-        }
-    }
-
-    #[test]
-    fn agent_status_rejects_unknown() {
-        let result = "unknown_value".parse::<AgentStatus>();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unknown agent status"));
-    }
 
     #[test]
     fn lifecycle_status_roundtrip() {

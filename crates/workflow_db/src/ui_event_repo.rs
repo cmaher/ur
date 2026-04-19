@@ -2,7 +2,7 @@
 
 use sqlx::PgPool;
 
-use crate::model::UiEventRow;
+use ticket_db::UiEventRow;
 
 #[derive(Clone)]
 pub struct UiEventRepo {

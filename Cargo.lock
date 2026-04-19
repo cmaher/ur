@@ -494,6 +494,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "db_events"
+version = "0.1.0"
+dependencies = [
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2749,6 +2760,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ticket_db"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "petgraph",
+ "rand 0.8.5",
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3204,6 +3229,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ticket_db",
  "tmux",
  "tokio",
  "tokio-stream",
@@ -3215,7 +3241,6 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ur_config",
- "ur_db",
  "ur_rpc",
 ]
 
@@ -3238,6 +3263,7 @@ dependencies = [
  "chrono",
  "clap",
  "container",
+ "db_events",
  "futures",
  "local_repo",
  "mlua",
@@ -3249,6 +3275,7 @@ dependencies = [
  "sqlx 0.9.0-alpha.1",
  "tempfile",
  "thiserror",
+ "ticket_db",
  "tokio",
  "tokio-stream",
  "toml",
@@ -3257,11 +3284,11 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ur_config",
- "ur_db",
  "ur_db_test",
  "ur_rpc",
  "ur_utils",
  "uuid",
+ "workflow_db",
 ]
 
 [[package]]
@@ -3276,28 +3303,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "ur_db"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "petgraph",
- "rand 0.8.5",
- "sqlx 0.9.0-alpha.1",
- "tempfile",
- "tokio",
- "ur_db_test",
- "ur_rpc",
- "uuid",
-]
-
-[[package]]
 name = "ur_db_test"
 version = "0.1.0"
 dependencies = [
  "sqlx 0.9.0-alpha.1",
+ "ticket_db",
  "tokio",
- "ur_db",
  "uuid",
+ "workflow_db",
 ]
 
 [[package]]
@@ -3922,6 +3935,21 @@ dependencies = [
  "tonic",
  "ur_config",
  "ur_rpc",
+]
+
+[[package]]
+name = "workflow_db"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "ticket_db",
+ "tokio",
+ "tracing",
+ "ur_db_test",
+ "ur_rpc",
+ "uuid",
 ]
 
 [[package]]

@@ -21,7 +21,9 @@ tracing-subscriber = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 local_repo = { path = "../local_repo" }
 ur_config = { path = "../ur_config" }
-ur_db = { path = "../ur_db" }
+db_events = { path = "../db_events" }
+ticket_db = { path = "../ticket_db" }
+workflow_db = { path = "../workflow_db" }
 mlua = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
@@ -33,6 +35,7 @@ sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["r
 
 [features]
 temporal = ["ur_rpc/temporal"]
+acceptance = []
 
 [dev-dependencies]
 container = { path = "../container" }

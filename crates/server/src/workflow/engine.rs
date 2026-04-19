@@ -5,11 +5,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
-use ur_db::TicketRepo;
-use ur_db::WorkerRepo;
-use ur_db::WorkflowRepo;
-
-use ur_db::model::LifecycleStatus;
+use ticket_db::{LifecycleStatus, TicketRepo};
+use workflow_db::WorkerRepo;
+use workflow_db::WorkflowRepo;
 
 use crate::WorkerManager;
 
@@ -194,7 +192,7 @@ impl WorkflowEngine {
     /// Handle a failed handler: stall the workflow immediately.
     async fn handle_failure(
         &self,
-        event: &ur_db::model::WorkflowEvent,
+        event: &workflow_db::WorkflowEvent,
         target: LifecycleStatus,
         handler_err: anyhow::Error,
     ) {
@@ -231,17 +229,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
     use ur_db_test::TestDb;
+    use workflow_db::{WorkerRepo, WorkflowRepo};
 
     async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
         let test_db = TestDb::new().await;
-        let pool = test_db.db().pool().clone();
-        let graph_manager = GraphManager::new(pool.clone());
-        let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
-        let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
+        let ticket_pool = test_db.ticket_pool().clone();
+        let workflow_pool = test_db.workflow_pool().clone();
+        let graph_manager = GraphManager::new(ticket_pool.clone());
+        let repo = TicketRepo::new(ticket_pool, graph_manager);
+        let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
+        let worker_repo = WorkerRepo::new(workflow_pool);
         (test_db, repo, workflow_repo, worker_repo)
     }
 
@@ -253,7 +252,6 @@ mod tests {
 
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
-            node_id: "test-node".to_string(),
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -278,6 +276,34 @@ mod tests {
                 user: ur_config::DEFAULT_DB_USER.to_string(),
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            ticket_db: ur_config::TicketDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            workflow_db: ur_config::WorkflowDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
                 bind_address: None,
                 backup: ur_config::BackupConfig {
                     path: None,
@@ -381,19 +407,24 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        let update = ur_db::model::TicketUpdate {
+        // Update the ticket to Implementing so the engine's idempotency check passes.
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+            ..Default::default()
         };
         repo.update_ticket("ur-test1", &update).await.unwrap();
+
+        // In the two-DB architecture, lifecycle transitions are enqueued in workflow_db
+        // by the coordinator. Create the queue entry directly.
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-test1",
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+            )
+            .await
+            .unwrap();
 
         // Verify event exists
         let event = workflow_repo.poll_workflow_event().await.unwrap();
@@ -446,25 +477,29 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
+        // Update ticket to Implementing so the engine's idempotency check passes.
+        let update = ticket_db::TicketUpdate {
+            lifecycle_status: Some(LifecycleStatus::Implementing),
+            lifecycle_managed: Some(true),
+            ..Default::default()
+        };
+        repo.update_ticket("ur-test2", &update).await.unwrap();
+
         // Create a workflow row so set_workflow_stalled has something to update.
         workflow_repo
             .create_workflow("ur-test2", LifecycleStatus::Implementing)
             .await
             .unwrap();
 
-        let update = ur_db::model::TicketUpdate {
-            lifecycle_status: Some(LifecycleStatus::Implementing),
-            lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
-        };
-        repo.update_ticket("ur-test2", &update).await.unwrap();
+        // Enqueue the lifecycle transition directly in workflow_db.
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-test2",
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+            )
+            .await
+            .unwrap();
 
         let call_count = Arc::new(AtomicU32::new(0));
         let engine = WorkflowEngine::new(
@@ -522,20 +557,23 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        // Enable lifecycle management and transition to AwaitingDispatch.
-        let update = ur_db::model::TicketUpdate {
+        // Update ticket status so the engine's idempotency check passes.
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
             lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+            ..Default::default()
         };
         repo.update_ticket("ur-ad01", &update).await.unwrap();
+
+        // Enqueue the lifecycle transition directly in workflow_db.
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-ad01",
+                LifecycleStatus::Open,
+                LifecycleStatus::AwaitingDispatch,
+            )
+            .await
+            .unwrap();
 
         // Verify event exists.
         let event = workflow_repo.poll_workflow_event().await.unwrap();
@@ -596,25 +634,21 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        // First transition: Open → AwaitingDispatch (enable lifecycle management).
-        let update = ur_db::model::TicketUpdate {
+        // Phase 1: set ticket to AwaitingDispatch and drain that event with a no-op engine.
+        let ad_update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::AwaitingDispatch),
             lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+            ..Default::default()
         };
-        repo.update_ticket("ur-ad02", &update).await.unwrap();
-
-        // Drain the Open→AwaitingDispatch event (not relevant to this test).
-        workflow_repo.poll_workflow_event().await.unwrap();
-        // Delete it manually since we have no handler for it in this engine.
-        // Use a small engine with the no-op handler.
+        repo.update_ticket("ur-ad02", &ad_update).await.unwrap();
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-ad02",
+                LifecycleStatus::Open,
+                LifecycleStatus::AwaitingDispatch,
+            )
+            .await
+            .unwrap();
         let noop_engine = WorkflowEngine::new(
             repo.clone(),
             workflow_repo.clone(),
@@ -634,20 +668,20 @@ mod tests {
         );
         noop_engine.poll_once().await;
 
-        // Second transition: AwaitingDispatch → Implementing.
-        let update = ur_db::model::TicketUpdate {
+        // Phase 2: set ticket to Implementing and enqueue that transition.
+        let impl_update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
-            lifecycle_managed: None,
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+            ..Default::default()
         };
-        repo.update_ticket("ur-ad02", &update).await.unwrap();
+        repo.update_ticket("ur-ad02", &impl_update).await.unwrap();
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-ad02",
+                LifecycleStatus::AwaitingDispatch,
+                LifecycleStatus::Implementing,
+            )
+            .await
+            .unwrap();
 
         // Verify event exists.
         let event = workflow_repo.poll_workflow_event().await.unwrap();
@@ -707,19 +741,21 @@ mod tests {
         };
         repo.create_ticket(&ticket).await.unwrap();
 
-        let update = ur_db::model::TicketUpdate {
+        let update = ticket_db::TicketUpdate {
             lifecycle_status: Some(LifecycleStatus::Implementing),
             lifecycle_managed: Some(true),
-            status: None,
-            type_: None,
-            priority: None,
-            title: None,
-            body: None,
-            branch: None,
-            parent_id: None,
-            project: None,
+            ..Default::default()
         };
         repo.update_ticket("ur-test4", &update).await.unwrap();
+
+        workflow_repo
+            .create_lifecycle_event(
+                "ur-test4",
+                LifecycleStatus::Open,
+                LifecycleStatus::Implementing,
+            )
+            .await
+            .unwrap();
 
         let engine = WorkflowEngine::new(
             repo.clone(),

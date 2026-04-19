@@ -9,6 +9,9 @@ Cargo workspace:
 - `crates/server/` - Server (`ur-server`, orchestration, gRPC server, container management)
 - `crates/ur_rpc/` - Shared RPC contract (protobuf/tonic service definitions)
 - `crates/workercmd/` - Worker binaries for containers (`ur-ping`, `git` proxy)
+- `crates/ticket_db/` - Postgres ticket database (tickets, edges, activities, workers, slots; `ur_tickets` DB)
+- `crates/workflow_db/` - Postgres workflow database (workflow state, events, intents, comments; `ur_workflow` DB)
+- `crates/db_events/` - Shared LISTEN/NOTIFY infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`)
 
 ## Code Style
 
@@ -47,7 +50,7 @@ Cargo workspace:
 - **Acceptance tests**: When adding a new launch mode, flag, or code path (e.g., `-p` project pool launches vs `-w` workspace mounts), the acceptance test suite MUST cover that path. Do not ship a feature whose primary flow is untested in the e2e acceptance tests.
 - **Cross-compile**: Use `cargo zigbuild` (requires `zig` + `cargo-zigbuild`) targeting `aarch64-unknown-linux-gnu` / `x86_64-unknown-linux-gnu` to match the debian bookworm container. Match the host arch like the container crate does (`std::env::consts::ARCH`).
 - **Container tests**: Docker backend tested locally on macOS and in CI (ubuntu-latest).
-- **String-based enum constants**: When a domain concept is represented as strings in proto/gRPC but has a fixed set of values, use defined constants or Rust enums instead of string literals. For example, use `ur_rpc::lifecycle::*` constants (e.g., `lifecycle::OPEN`, `lifecycle::IMPLEMENTING`) for lifecycle statuses, and `ur_db::model::LifecycleStatus` for server-side code that can depend on `ur_db`. Apply this pattern to any new string-based enums.
+- **String-based enum constants**: When a domain concept is represented as strings in proto/gRPC but has a fixed set of values, use defined constants or Rust enums instead of string literals. For example, use `ur_rpc::lifecycle::*` constants (e.g., `lifecycle::OPEN`, `lifecycle::IMPLEMENTING`) for lifecycle statuses, and `ticket_db::model::LifecycleStatus` or `workflow_db::model::*` for server-side code. Apply this pattern to any new string-based enums.
 - **No feature flags**: Do NOT add Cargo feature flags unless explicitly instructed. The only remaining feature flags are `temporal` (ur_rpc/server, gating unreleased temporal service), `stream`/`error` (ur_rpc, gating optional dependencies), and `acceptance` (acceptance tests). All gRPC services compile unconditionally.
 - **Codeflows** (`docs/codeflows/`): Detailed flow diagrams for cross-cutting concerns (credential injection, process launch, etc.). Consult these before modifying multi-component flows.
 

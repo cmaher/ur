@@ -6,8 +6,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use ur_db::WorkflowRepo;
-use ur_db::model::LifecycleStatus;
+use ticket_db::LifecycleStatus;
+use workflow_db::WorkflowRepo;
 
 use super::{HandlerEntry, WorkflowContext, WorkflowHandler};
 
@@ -285,7 +285,7 @@ async fn run_handler(
     // Sync ticket lifecycle to match workflow status. This fires a SQLite trigger
     // that creates a workflow_event, so we immediately delete it to prevent the
     // engine from re-dispatching a transition we're already handling.
-    let update = ur_db::model::TicketUpdate {
+    let update = ticket_db::TicketUpdate {
         lifecycle_status: Some(target_status),
         ..Default::default()
     };
@@ -468,17 +468,18 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use ur_db::model::{LifecycleStatus, NewTicket};
-    use ur_db::{GraphManager, TicketRepo, WorkerRepo, WorkflowRepo};
+    use ticket_db::{GraphManager, LifecycleStatus, NewTicket, TicketRepo};
     use ur_db_test::TestDb;
+    use workflow_db::{WorkerRepo, WorkflowRepo};
 
     async fn setup_test_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
         let test_db = TestDb::new().await;
-        let pool = test_db.db().pool().clone();
-        let graph_manager = GraphManager::new(pool.clone());
-        let repo = TicketRepo::new(pool.clone(), graph_manager);
-        let workflow_repo = WorkflowRepo::new(pool.clone(), "test-node".to_string());
-        let worker_repo = WorkerRepo::new(pool, "test-node".to_string());
+        let ticket_pool = test_db.ticket_pool().clone();
+        let workflow_pool = test_db.workflow_pool().clone();
+        let graph_manager = GraphManager::new(ticket_pool.clone());
+        let repo = TicketRepo::new(ticket_pool, graph_manager);
+        let workflow_repo = WorkflowRepo::new(workflow_pool.clone());
+        let worker_repo = WorkerRepo::new(workflow_pool);
         (test_db, repo, workflow_repo, worker_repo)
     }
 
@@ -490,7 +491,6 @@ mod tests {
 
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
-            node_id: "test-node".to_string(),
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -515,6 +515,34 @@ mod tests {
                 user: ur_config::DEFAULT_DB_USER.to_string(),
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            ticket_db: ur_config::TicketDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            workflow_db: ur_config::WorkflowDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
                 bind_address: None,
                 backup: ur_config::BackupConfig {
                     path: None,

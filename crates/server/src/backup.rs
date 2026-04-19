@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::snapshot::SnapshotManager;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 use ur_config::BackupConfig;
-use ur_db::SnapshotManager;
 
 /// Manages periodic database backups as a background tokio task.
 ///
