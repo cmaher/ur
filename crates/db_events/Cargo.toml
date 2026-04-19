@@ -9,5 +9,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4"] }
+
 [lints]
 workspace = true
