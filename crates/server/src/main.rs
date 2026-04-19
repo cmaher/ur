@@ -26,6 +26,24 @@ use ur_server::{
 )]
 struct Cli {}
 
+/// Derive a stable node identifier from the hostname.
+///
+/// Falls back to "ur-server" if the hostname cannot be determined.
+fn resolve_node_id() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "ur-server".to_string())
+}
+
 fn resolve_logs_dir(cfg: &Config) -> anyhow::Result<PathBuf> {
     let logs_dir = if std::path::Path::new("/logs").exists() {
         PathBuf::from("/logs")
@@ -154,13 +172,14 @@ async fn init_and_serve(
     worker_manager: WorkerManager,
     repo_pool_manager: RepoPoolManager,
     worker_repo: WorkerRepo,
+    node_id: String,
     builderd_addr: String,
     host_workspace: PathBuf,
     project_registry: ProjectRegistry,
 ) -> anyhow::Result<()> {
     let graph_manager = GraphManager::new(db.pool().clone());
     let ticket_repo = TicketRepo::new(db.pool().clone(), graph_manager);
-    let workflow_repo = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
+    let workflow_repo = WorkflowRepo::new(db.pool().clone(), node_id.clone());
 
     let ui_event_repo = UiEventRepo::new(db.pool().clone());
     let fallback_interval =
@@ -203,7 +222,7 @@ async fn init_and_serve(
         network_config: cfg.network.clone(),
         builderd_addr: builderd_addr.clone(),
         config_dir: cfg.config_dir.clone(),
-        node_id: cfg.node_id.clone(),
+        node_id: node_id.clone(),
     };
 
     serve_grpc_servers(
@@ -414,6 +433,7 @@ async fn init_managers(
     docker_command: &str,
 ) -> anyhow::Result<(
     String,
+    String,
     WorkerRepo,
     RepoPoolManager,
     WorkerManager,
@@ -430,8 +450,9 @@ async fn init_managers(
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
-    let worker_repo = WorkerRepo::new(db.pool().clone(), cfg.node_id.clone());
-    let workflow_repo_for_adopt = WorkflowRepo::new(db.pool().clone(), cfg.node_id.clone());
+    let node_id = resolve_node_id();
+    let worker_repo = WorkerRepo::new(db.pool().clone(), node_id.clone());
+    let workflow_repo_for_adopt = WorkflowRepo::new(db.pool().clone(), node_id.clone());
 
     let (workers_adopted, slots_adopted) = worker_repo
         .adopt_legacy_node_rows()
@@ -446,7 +467,7 @@ async fn init_managers(
             workers = workers_adopted,
             slots = slots_adopted,
             workflows = workflows_adopted,
-            node_id = %cfg.node_id,
+            node_id = %node_id,
             "adopted pre-multi-node rows"
         );
     }
@@ -499,6 +520,7 @@ async fn init_managers(
 
     Ok((
         builderd_addr,
+        node_id,
         worker_repo,
         repo_pool_manager,
         worker_manager,
@@ -551,7 +573,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
-    let (builderd_addr, worker_repo, repo_pool_manager, worker_manager, project_registry) =
+    let (builderd_addr, node_id, worker_repo, repo_pool_manager, worker_manager, project_registry) =
         init_managers(
             &cfg,
             &db,
@@ -571,6 +593,7 @@ async fn main() -> anyhow::Result<()> {
         worker_manager,
         repo_pool_manager,
         worker_repo,
+        node_id,
         builderd_addr,
         host_workspace,
         project_registry,

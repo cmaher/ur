@@ -494,6 +494,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "db_events"
+version = "0.1.0"
+dependencies = [
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2749,6 +2759,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ticket_db"
+version = "0.1.0"
+dependencies = [
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "time"
 version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3922,6 +3942,16 @@ dependencies = [
  "tonic",
  "ur_config",
  "ur_rpc",
+]
+
+[[package]]
+name = "workflow_db"
+version = "0.1.0"
+dependencies = [
+ "sqlx 0.9.0-alpha.1",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

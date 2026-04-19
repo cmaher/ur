@@ -253,7 +253,6 @@ mod tests {
 
     fn dummy_config() -> Arc<ur_config::Config> {
         Arc::new(ur_config::Config {
-            node_id: "test-node".to_string(),
             config_dir: std::path::PathBuf::from("/tmp/test"),
             logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
             workspace: std::path::PathBuf::from("/tmp/test/workspace"),
@@ -278,6 +277,34 @@ mod tests {
                 user: ur_config::DEFAULT_DB_USER.to_string(),
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            ticket_db: ur_config::TicketDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
+                bind_address: None,
+                backup: ur_config::BackupConfig {
+                    path: None,
+                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+                    enabled: true,
+                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+                },
+            },
+            workflow_db: ur_config::WorkflowDbConfig {
+                host: ur_config::DEFAULT_DB_HOST.to_string(),
+                port: ur_config::DEFAULT_DB_PORT,
+                user: ur_config::DEFAULT_DB_USER.to_string(),
+                password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
+                name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
                 bind_address: None,
                 backup: ur_config::BackupConfig {
                     path: None,
