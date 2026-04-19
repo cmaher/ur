@@ -1,0 +1,13 @@
+[package]
+name = "workflow_db"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+sqlx = { git = "https://github.com/cmaher/sqlx", branch = "main", features = ["runtime-tokio", "postgres"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
