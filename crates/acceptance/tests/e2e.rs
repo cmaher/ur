@@ -1211,7 +1211,7 @@ fn scenario_project_image_rust(env: &TestEnv) {
 }
 
 /// Verify `ur project add` CLI writes correct TOML with `[container]` section,
-/// and that omitting `--image` produces an error.
+/// that omitting `--image` defaults to `ur-worker`, and that `--image` overrides the default.
 fn scenario_project_add_image_flag(env: &TestEnv) {
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
@@ -1247,25 +1247,50 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         .current_dir(&repo_dir)
         .output();
 
-    // ---- `ur project add` without --image should fail ----
-    let no_image_output = run_cmd(
+    // ---- `ur project add` without --image should succeed and default to ur-worker ----
+    let default_image_output = run_cmd(
         &env.ur,
-        &["project", "add", repo_dir.to_str().unwrap()],
+        &[
+            "project",
+            "add",
+            repo_dir.to_str().unwrap(),
+            "--key",
+            "addtest",
+        ],
         &env_slice,
     );
     assert!(
-        !no_image_output.status.success(),
-        "project add without --image should fail.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&no_image_output.stdout),
-        String::from_utf8_lossy(&no_image_output.stderr),
-    );
-    let stderr = String::from_utf8_lossy(&no_image_output.stderr);
-    assert!(
-        stderr.contains("--image"),
-        "error should mention --image.\nstderr: {stderr}"
+        default_image_output.status.success(),
+        "project add without --image should succeed (defaulting to ur-worker).\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&default_image_output.stdout),
+        String::from_utf8_lossy(&default_image_output.stderr),
     );
 
-    // ---- `ur project add --image rust` should succeed and write correct TOML ----
+    let toml_content =
+        std::fs::read_to_string(env.config_path.join("ur.toml")).expect("failed to read ur.toml");
+    assert!(
+        toml_content.contains("[projects.addtest.container]"),
+        "ur.toml should contain [projects.addtest.container] section.\nGot:\n{toml_content}"
+    );
+    assert!(
+        toml_content.contains("image = \"ur-worker\""),
+        "ur.toml should default image = \"ur-worker\" in the addtest project.\nGot:\n{toml_content}"
+    );
+
+    // ---- Remove so we can re-add with an explicit --image override ----
+    let remove_default_output = run_cmd(
+        &env.ur,
+        &["project", "remove", "addtest", "--force"],
+        &env_slice,
+    );
+    assert!(
+        remove_default_output.status.success(),
+        "project remove (default image) failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_default_output.stdout),
+        String::from_utf8_lossy(&remove_default_output.stderr),
+    );
+
+    // ---- `ur project add --image rust` should override the default ----
     let add_output = run_cmd(
         &env.ur,
         &[
