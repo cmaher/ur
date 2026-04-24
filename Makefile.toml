@@ -131,13 +131,19 @@ script_runner = "@shell"
 script = ["cp ur-hooks/git/* .git/hooks/"]
 
 [tasks."test:init"]
-description = "Start ci-postgres container for tests (port 5433)"
+description = "Start ci-postgres container for tests (port 5433) if not already up"
 script_runner = "@shell"
 script = ["""
+# Fast path: if something is already listening on :5433, assume ci-postgres is up.
+if (exec 3<>/dev/tcp/localhost/5433) 2>/dev/null; then
+    exec 3<&- 3>&-
+    exit 0
+fi
 if docker inspect ci-postgres >/dev/null 2>&1; then
-    echo "ci-postgres already exists"
-    docker start ci-postgres 2>/dev/null || true
+    echo "ci-postgres exists but not listening; starting"
+    docker start ci-postgres >/dev/null 2>&1 || true
 else
+    echo "creating ci-postgres"
     docker run -d --name ci-postgres \
         -e POSTGRES_USER=ur \
         -e POSTGRES_PASSWORD=ur \
