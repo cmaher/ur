@@ -2708,4 +2708,152 @@ mod tests {
                 .contains("blocked go subcommand: telemetry")
         );
     }
+
+    // --- bazel.lua tests ---
+
+    #[test]
+    fn test_bazel_allows_build() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["build".into(), "//...".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_allows_test() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["test".into(), "//foo:bar".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_blocks_output_base_equals() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "--output_base=/tmp/x".into(),
+            "build".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked startup option: --output_base=")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_output_base_space() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["--output_base".into(), "/tmp/x".into(), "build".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked startup option: --output_base")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_shutdown() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["shutdown".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel command: shutdown")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_clean_expunge() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["clean".into(), "--expunge".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel command: clean --expunge")
+        );
+    }
+
+    #[test]
+    fn test_bazel_allows_clean_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["clean".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_blocks_override_repository() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--override_repository=foo=/tmp/evil".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked command option: --override_repository=")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_disk_cache() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--disk_cache=/tmp/cache".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked command option: --disk_cache=")
+        );
+    }
+
+    #[test]
+    fn test_bazel_allows_query() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["query".into(), "deps(//...)".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
 }
