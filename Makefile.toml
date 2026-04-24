@@ -149,6 +149,7 @@ else
         -e POSTGRES_PASSWORD=ur \
         -e POSTGRES_DB=postgres \
         -p 5433:5432 \
+        --shm-size=512m \
         postgres:17
 fi
 echo "Waiting for ci-postgres to be ready..."
