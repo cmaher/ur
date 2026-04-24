@@ -2340,4 +2340,182 @@ mod tests {
             "no UR_PROJECT without worker_context"
         );
     }
+
+    // --- make.lua tests ---
+
+    #[test]
+    fn test_make_allows_bare_target() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["build".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_allows_parallel_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-j8".into(), "test".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_allows_var_assignment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["FOO=bar".into(), "target".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_blocks_f_absolute() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "/etc/evil.mk".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -f"));
+    }
+
+    #[test]
+    fn test_make_blocks_f_dotdot() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "../outside/Makefile".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -f"));
+    }
+
+    #[test]
+    fn test_make_allows_f_relative() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "subdir/Makefile".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_blocks_file_equals_absolute() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["--file=/etc/evil.mk".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --file=")
+        );
+    }
+
+    #[test]
+    fn test_make_blocks_makefile_equals_absolute() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["--makefile=/etc/evil.mk".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: --makefile=")
+        );
+    }
+
+    #[test]
+    fn test_make_dash_c_rewrite_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
+        );
+    }
+
+    #[test]
+    fn test_make_dash_c_blocked_evil() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
+    }
+
+    #[test]
+    fn test_make_blocks_include_dir_absolute() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-I".into(), "/absolute/dir".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -I"));
+    }
+
+    #[test]
+    fn test_make_allows_misc_flags_passthrough() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec![
+            "-k".into(),
+            "-n".into(),
+            "-B".into(),
+            "-s".into(),
+            "--debug".into(),
+            "--trace".into(),
+            "all".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_dash_c_blocked_without_worker_context() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-C".into(), "workspace".into(), "build".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -C"));
+    }
 }
