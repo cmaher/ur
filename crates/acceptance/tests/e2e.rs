@@ -1210,14 +1210,10 @@ fn scenario_project_image_rust(env: &TestEnv) {
     }
 }
 
-/// Verify `ur project add` CLI writes correct TOML with `[container]` section,
-/// that omitting `--image` defaults to `ur-worker`, and that `--image` overrides the default.
-fn scenario_project_add_image_flag(env: &TestEnv) {
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
-    // ---- Create a temporary git repo to add as a project ----
-    let repo_dir = env.config_path.join("add-test-repo");
+/// Initialize a throwaway git repo under `parent_dir` suitable for exercising
+/// `ur project add` — initial commit, user identity, and a fake origin remote.
+fn init_addtest_repo(parent_dir: &Path) -> PathBuf {
+    let repo_dir = parent_dir.join("add-test-repo");
     std::fs::create_dir_all(&repo_dir).expect("failed to create add-test-repo dir");
     let git_init = Command::new("git")
         .args(["init", "--initial-branch=main"])
@@ -1246,6 +1242,16 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         .args(["remote", "add", "origin", "git@github.com:test/addtest.git"])
         .current_dir(&repo_dir)
         .output();
+    repo_dir
+}
+
+/// Verify `ur project add` CLI writes correct TOML with `[container]` section,
+/// that omitting `--image` defaults to `ur-worker`, and that `--image` overrides the default.
+fn scenario_project_add_image_flag(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let repo_dir = init_addtest_repo(&env.config_path);
 
     // ---- `ur project add` without --image should succeed and default to ur-worker ----
     let default_image_output = run_cmd(
