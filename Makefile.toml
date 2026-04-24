@@ -31,6 +31,7 @@ args = ["build", "--workspace", "--all-features"]
 
 [tasks.test]
 description = "Run tests on all workspace crates"
+dependencies = ["test:init"]
 command = "cargo"
 args = ["test", "--workspace"]
 
