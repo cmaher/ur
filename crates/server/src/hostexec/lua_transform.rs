@@ -2459,4 +2459,178 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("blocked flag: -I"));
     }
+
+    // ── go.lua tests ──
+
+    #[test]
+    fn test_go_allows_build() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["build".into(), "./...".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_allows_test() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["test".into(), "./...".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_install() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["install".into(), "./cmd/foo".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked go subcommand: install")
+        );
+    }
+
+    #[test]
+    fn test_go_allows_clean_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["clean".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_clean_modcache() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["clean".into(), "-modcache".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -modcache")
+        );
+    }
+
+    #[test]
+    fn test_go_allows_env_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["env".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_env_w() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["env".into(), "-w".into(), "GOPROXY=off".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -w"));
+    }
+
+    #[test]
+    fn test_go_blocks_overlay_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["test".into(), "-overlay=/etc/passwd".into(), "./...".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -overlay")
+        );
+    }
+
+    #[test]
+    fn test_go_blocks_toolexec_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["build".into(), "-toolexec".into(), "/bin/bash".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -toolexec")
+        );
+    }
+
+    #[test]
+    fn test_go_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
+        );
+    }
+
+    #[test]
+    fn test_go_dash_c_rejected_wrong_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
+    }
+
+    #[test]
+    fn test_go_blocks_telemetry() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["telemetry".into(), "on".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked go subcommand: telemetry")
+        );
+    }
 }
