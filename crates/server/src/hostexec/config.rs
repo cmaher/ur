@@ -146,6 +146,14 @@ impl HostExecConfigManager {
                 bidi: false,
             },
         );
+        commands.insert(
+            "go".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/go.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
         commands
     }
 
@@ -157,6 +165,7 @@ impl HostExecConfigManager {
             "docker" => Some(include_str!("default_scripts/docker.lua").into()),
             "ur" => Some(include_str!("default_scripts/ur.lua").into()),
             "make" => Some(include_str!("default_scripts/make.lua").into()),
+            "go" => Some(include_str!("default_scripts/go.lua").into()),
             _ => None,
         }
     }
@@ -212,7 +221,7 @@ mod tests {
         assert!(!mgr.is_allowed("tk"));
         assert_eq!(
             mgr.command_names(),
-            vec!["cargo", "docker", "gh", "git", "make", "ur"]
+            vec!["cargo", "docker", "gh", "git", "go", "make", "ur"]
         );
     }
 
@@ -381,7 +390,7 @@ mod tests {
 
         assert_eq!(
             merged.command_names(),
-            vec!["cargo", "docker", "gh", "git", "make", "ur"]
+            vec!["cargo", "docker", "gh", "git", "go", "make", "ur"]
         );
     }
 
