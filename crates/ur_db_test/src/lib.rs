@@ -91,33 +91,35 @@ impl Drop for TestDb {
                 .enable_all()
                 .build()
                 .expect("failed to build TestDb cleanup runtime");
-            rt.block_on(async {
-                let admin = match PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect(CI_POSTGRES_URL)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("TestDb cleanup: failed to connect to ci-postgres: {e}");
-                        return;
-                    }
-                };
-                for db_name in [&ticket_db_name, &workflow_db_name] {
-                    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!(
-                        "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
-                    )))
-                    .execute(&admin)
-                    .await
-                    {
-                        eprintln!("TestDb cleanup: failed to drop {db_name}: {e}");
-                    }
-                }
-                admin.close().await;
-            });
+            rt.block_on(drop_test_dbs(ticket_db_name, workflow_db_name));
         });
         let _ = join.join();
     }
+}
+
+async fn drop_test_dbs(ticket_db_name: String, workflow_db_name: String) {
+    let admin = match PgPoolOptions::new()
+        .max_connections(1)
+        .connect(CI_POSTGRES_URL)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("TestDb cleanup: failed to connect to ci-postgres: {e}");
+            return;
+        }
+    };
+    for db_name in [&ticket_db_name, &workflow_db_name] {
+        let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+        )))
+        .execute(&admin)
+        .await;
+        if let Err(e) = result {
+            eprintln!("TestDb cleanup: failed to drop {db_name}: {e}");
+        }
+    }
+    admin.close().await;
 }
 
 async fn connect_admin_pool() -> PgPool {
