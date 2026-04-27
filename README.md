@@ -49,7 +49,8 @@ ur init
 
 # Add a project (auto-detects repo URL from the git remote)
 cd /path/to/your/project
-ur project add . --image ur-worker
+ur project add .                        # --image defaults to ur-worker
+ur project add . --image ur-worker-rust # pass --image to use a custom image
 
 # Start the server (launches containers and host process)
 ur server start
@@ -60,7 +61,7 @@ urui
 
 Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifies a git repository and container configuration. Key options:
 
-- **`container.image`** — Container image for workers (e.g. `"ur-worker"`, `"ur-worker-rust"`)
+- **`container.image`** — Container image for workers; optional, defaults to `"ur-worker"` (e.g. `"ur-worker-rust"` for Rust projects)
 - **`container.mounts`** — Additional volume mounts for the container
 - **`git_hooks_dir`** — Template path to git hook scripts run during verification (e.g. `"%PROJECT%/.ur/git-hooks"`)
 - **`skill_hooks_dir`** — Template path to skill hook snippets copied to `~/.claude/skill-hooks/` at container startup (e.g. `"%PROJECT%/.ur/skill-hooks"`)
