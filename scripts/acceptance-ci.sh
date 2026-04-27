@@ -21,8 +21,10 @@ acquire_lock() {
     while true; do
         if mkdir "$LOCK_DIR" 2>/dev/null; then
             echo $$ > "$PID_FILE"
-            [ -n "${UR_PUSH_BRANCH:-}" ] && echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
-            return
+            if [ -n "${UR_PUSH_BRANCH:-}" ]; then
+                echo "$UR_PUSH_BRANCH" > "$LOCK_DIR/branch"
+            fi
+            return 0
         fi
 
         if [ -f "$PID_FILE" ]; then
@@ -54,7 +56,7 @@ acquire_lock
 trap cleanup EXIT
 
 echo "=== Building images with tag=$TAG ==="
-UR_IMAGE_TAG="$TAG" scripts/build/image.sh >/dev/null
+UR_IMAGE_TAG="$TAG" scripts/build/image.sh
 
 echo "=== Running acceptance tests with tag=$TAG ==="
 UR_IMAGE_TAG="$TAG" cargo test -p acceptance --features acceptance
