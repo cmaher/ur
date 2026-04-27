@@ -10,7 +10,6 @@ pub struct TestDb {
     workflow_pool: PgPool,
     ticket_db_name: String,
     workflow_db_name: String,
-    admin_pool: PgPool,
 }
 
 impl TestDb {
@@ -62,7 +61,6 @@ impl TestDb {
             workflow_pool,
             ticket_db_name,
             workflow_db_name,
-            admin_pool,
         }
     }
 
@@ -73,21 +71,52 @@ impl TestDb {
     pub fn workflow_pool(&self) -> &PgPool {
         &self.workflow_pool
     }
+}
 
-    pub async fn cleanup(self) {
-        self.ticket_pool.close().await;
-        self.workflow_pool.close().await;
-
-        for db_name in [&self.ticket_db_name, &self.workflow_db_name] {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
-            )))
-            .execute(&self.admin_pool)
-            .await
-            .unwrap_or_else(|e| panic!("failed to drop test database {db_name}: {e}"));
+/// Drop databases on scope exit so panicking tests don't leak.
+///
+/// Spawns a fresh OS thread with its own current-thread tokio runtime because
+/// `Drop` is sync and the calling runtime may already be unwinding. `WITH
+/// (FORCE)` evicts any still-open connections from the test pools.
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let ticket_db_name = std::mem::take(&mut self.ticket_db_name);
+        let workflow_db_name = std::mem::take(&mut self.workflow_db_name);
+        if ticket_db_name.is_empty() && workflow_db_name.is_empty() {
+            return;
         }
 
-        self.admin_pool.close().await;
+        let join = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build TestDb cleanup runtime");
+            rt.block_on(async {
+                let admin = match PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect(CI_POSTGRES_URL)
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("TestDb cleanup: failed to connect to ci-postgres: {e}");
+                        return;
+                    }
+                };
+                for db_name in [&ticket_db_name, &workflow_db_name] {
+                    if let Err(e) = sqlx::query(sqlx::AssertSqlSafe(format!(
+                        "DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)"
+                    )))
+                    .execute(&admin)
+                    .await
+                    {
+                        eprintln!("TestDb cleanup: failed to drop {db_name}: {e}");
+                    }
+                }
+                admin.close().await;
+            });
+        });
+        let _ = join.join();
     }
 }
 
