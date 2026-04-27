@@ -1227,59 +1227,89 @@ fn scenario_project_image_rust(env: &TestEnv) {
     }
 }
 
-/// Verify `ur project add` CLI writes correct TOML with `[container]` section,
-/// and that omitting `--image` produces an error.
-fn scenario_project_add_image_flag(env: &TestEnv) {
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
-    // ---- Create a temporary git repo to add as a project ----
-    let repo_dir = env.config_path.join("add-test-repo");
-    std::fs::create_dir_all(&repo_dir).expect("failed to create add-test-repo dir");
+/// Initialize a bare git repo at `path` suitable for use as a project in `ur project add`.
+fn init_project_git_repo(path: &std::path::Path) {
+    std::fs::create_dir_all(path).expect("failed to create repo dir");
     let git_init = Command::new("git")
         .args(["init", "--initial-branch=main"])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output()
         .expect("failed to git init");
     assert!(git_init.status.success(), "git init failed");
     let _ = Command::new("git")
         .args(["config", "user.email", "test@test.com"])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output();
     let _ = Command::new("git")
         .args(["config", "user.name", "Test"])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output();
-    std::fs::write(repo_dir.join("README.md"), "# Add test\n").expect("write readme");
+    std::fs::write(path.join("README.md"), "# Add test\n").expect("write readme");
     let _ = Command::new("git")
         .args(["add", "."])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output();
     let _ = Command::new("git")
         .args(["commit", "-m", "init"])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output();
     let _ = Command::new("git")
         .args(["remote", "add", "origin", "git@github.com:test/addtest.git"])
-        .current_dir(&repo_dir)
+        .current_dir(path)
         .output();
+}
 
-    // ---- `ur project add` without --image should fail ----
+/// Verify `ur project add` CLI writes correct TOML with `[container]` section,
+/// and that omitting `--image` defaults to `ur-worker`.
+fn scenario_project_add_image_flag(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let repo_dir = env.config_path.join("add-test-repo");
+    init_project_git_repo(&repo_dir);
+
+    // ---- `ur project add` without --image should succeed and default to ur-worker ----
     let no_image_output = run_cmd(
         &env.ur,
-        &["project", "add", repo_dir.to_str().unwrap()],
+        &[
+            "project",
+            "add",
+            repo_dir.to_str().unwrap(),
+            "--key",
+            "addtest-default",
+        ],
         &env_slice,
     );
     assert!(
-        !no_image_output.status.success(),
-        "project add without --image should fail.\nstdout: {}\nstderr: {}",
+        no_image_output.status.success(),
+        "project add without --image should succeed with default image.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&no_image_output.stdout),
         String::from_utf8_lossy(&no_image_output.stderr),
     );
-    let stderr = String::from_utf8_lossy(&no_image_output.stderr);
+
+    // ---- Verify the default image resolves to ur-worker:latest in TOML ----
+    let toml_content =
+        std::fs::read_to_string(env.config_path.join("ur.toml")).expect("failed to read ur.toml");
     assert!(
-        stderr.contains("--image"),
-        "error should mention --image.\nstderr: {stderr}"
+        toml_content.contains("[projects.addtest-default.container]"),
+        "ur.toml should contain [projects.addtest-default.container] section.\nGot:\n{toml_content}"
+    );
+    assert!(
+        toml_content.contains("image = \"ur-worker\""),
+        "ur.toml should contain image = \"ur-worker\" for the default image project.\nGot:\n{toml_content}"
+    );
+
+    // ---- Clean up the default-image project ----
+    let remove_default_output = run_cmd(
+        &env.ur,
+        &["project", "remove", "addtest-default", "--force"],
+        &env_slice,
+    );
+    assert!(
+        remove_default_output.status.success(),
+        "project remove addtest-default failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_default_output.stdout),
+        String::from_utf8_lossy(&remove_default_output.stderr),
     );
 
     // ---- `ur project add --image rust` should succeed and write correct TOML ----
