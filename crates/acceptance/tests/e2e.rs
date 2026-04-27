@@ -321,6 +321,23 @@ fn create_bare_repo(parent_dir: &Path) -> PathBuf {
         .expect("failed to run git init --bare");
     assert!(output.status.success(), "git init --bare failed");
 
+    // Allow partial clones (--filter=blob:none) against this bare repo,
+    // matching what GitHub serves by default.
+    let output = Command::new("git")
+        .args([
+            "-C",
+            bare_repo.to_str().unwrap(),
+            "config",
+            "uploadpack.allowFilter",
+            "true",
+        ])
+        .output()
+        .expect("failed to set uploadpack.allowFilter");
+    assert!(
+        output.status.success(),
+        "git config uploadpack.allowFilter failed"
+    );
+
     // Clone it into a staging dir, add a commit, push back
     let output = Command::new("git")
         .args([
