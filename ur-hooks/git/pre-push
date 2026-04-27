@@ -4,11 +4,11 @@ set -euo pipefail
 # Pre-push hook: run CI checks, build images, and run acceptance tests.
 # Install with: cargo make install-hooks
 #
-# All command output is suppressed; only the failing step is reported.
-# To see full output, run the failing command manually.
+# Output is captured to a stable log file. The log is removed on success
+# and preserved on failure so you can read the full output.
 
-LOGFILE=$(mktemp /tmp/ur-pre-push.XXXXXX)
-trap 'rm -f "$LOGFILE"' EXIT
+mkdir -p tmp
+LOGFILE=$(mktemp tmp/ur-pre-push.XXXXXX)
 
 # Capture the branch being pushed from stdin (format: <local ref> <local sha> <remote ref> <remote sha>)
 while IFS=' ' read -r local_ref _local_sha _remote_ref _remote_sha; do
@@ -19,10 +19,10 @@ done
 run_step() {
     local label="$1"
     shift
-    if ! "$@" >"$LOGFILE" 2>&1; then
-        echo "pre-push FAILED: $label"
-        echo "--- last 30 lines ---"
-        tail -30 "$LOGFILE"
+    if ! "$@" >>"$LOGFILE" 2>&1; then
+        echo "pre-push FAILED: $label" >&2
+        echo "--- last 100 lines (full log: $LOGFILE) ---" >&2
+        tail -100 "$LOGFILE" >&2
         exit 1
     fi
 }
@@ -30,3 +30,5 @@ run_step() {
 run_step "Cargo.lock check" cargo check --locked --quiet
 run_step "CI (fmt + clippy + build + test)" cargo make ci
 run_step "image build + acceptance" cargo make acceptance-ci
+
+rm -f "$LOGFILE"

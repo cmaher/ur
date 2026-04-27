@@ -2340,4 +2340,445 @@ mod tests {
             "no UR_PROJECT without worker_context"
         );
     }
+
+    // make.lua tests
+
+    #[test]
+    fn test_make_allows_bare_target() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["build".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_allows_j_flag_with_target() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-j8".into(), "test".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_allows_var_assignment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["FOO=bar".into(), "target".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_blocks_f_absolute_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "/etc/evil.mk".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -f"));
+    }
+
+    #[test]
+    fn test_make_blocks_f_dotdot_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "../outside/Makefile".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -f"));
+    }
+
+    #[test]
+    fn test_make_allows_f_relative_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-f".into(), "subdir/Makefile".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_make_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "ur".into(), "build".into()];
+        let result = mgr
+            .run_transform(script, "make", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
+        );
+    }
+
+    #[test]
+    fn test_make_dash_c_blocks_absolute_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
+    }
+
+    #[test]
+    fn test_make_blocks_i_absolute_dir() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/make.lua");
+        let args: Vec<String> = vec!["-I".into(), "/absolute/dir".into()];
+        let result = mgr.run_transform(script, "make", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -I"));
+    }
+
+    // ── go.lua tests ──
+
+    #[test]
+    fn test_go_allows_build() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["build".into(), "./...".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_allows_test() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["test".into(), "./...".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_install() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["install".into(), "./cmd/foo".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked go subcommand: install")
+        );
+    }
+
+    #[test]
+    fn test_go_allows_clean_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["clean".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_clean_modcache() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["clean".into(), "-modcache".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -modcache")
+        );
+    }
+
+    #[test]
+    fn test_go_allows_env_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["env".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_go_blocks_env_w() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["env".into(), "-w".into(), "GOPROXY=off".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -w"));
+    }
+
+    #[test]
+    fn test_go_blocks_overlay_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["test".into(), "-overlay=/etc/passwd".into(), "./...".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -overlay")
+        );
+    }
+
+    #[test]
+    fn test_go_blocks_toolexec_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["build".into(), "-toolexec".into(), "/bin/bash".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked flag: -toolexec")
+        );
+    }
+
+    #[test]
+    fn test_go_dash_c_rewrite_with_project_key() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/some/path/ur".into(), "build".into()];
+        let result = mgr
+            .run_transform(script, "go", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(
+            result.args,
+            vec!["-C", "/home/user/.ur/workspace/pool/ur/0", "build"]
+        );
+    }
+
+    #[test]
+    fn test_go_dash_c_rejected_wrong_project() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["-C".into(), "/tmp/evil".into(), "build".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("does not match project key")
+        );
+    }
+
+    #[test]
+    fn test_go_blocks_telemetry() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/go.lua");
+        let args: Vec<String> = vec!["telemetry".into(), "on".into()];
+        let result = mgr.run_transform(script, "go", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked go subcommand: telemetry")
+        );
+    }
+
+    // ── bazel.lua tests ──
+
+    #[test]
+    fn test_bazel_allows_build_all() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["build".into(), "//...".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_allows_test_target() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["test".into(), "//foo:bar".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_blocks_output_base_equals_form() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "--output_base=/tmp/x".into(),
+            "build".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel startup option: --output_base")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_output_base_space_form() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["--output_base".into(), "/tmp/x".into(), "build".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel startup option: --output_base")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_shutdown() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["shutdown".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel command: shutdown")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_clean_expunge() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["clean".into(), "--expunge".into()];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel clean option: --expunge")
+        );
+    }
+
+    #[test]
+    fn test_bazel_allows_clean_bare() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["clean".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_bazel_blocks_override_repository_equals_form() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--override_repository=foo=/tmp/evil".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel command option: --override_repository")
+        );
+    }
+
+    #[test]
+    fn test_bazel_blocks_disk_cache() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec![
+            "build".into(),
+            "--disk_cache=/tmp/cache".into(),
+            "//...".into(),
+        ];
+        let result = mgr.run_transform(script, "bazel", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked bazel command option: --disk_cache")
+        );
+    }
+
+    #[test]
+    fn test_bazel_allows_query() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/bazel.lua");
+        let args: Vec<String> = vec!["query".into(), "deps(//...)".into()];
+        let result = mgr
+            .run_transform(script, "bazel", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
 }
