@@ -160,13 +160,23 @@ impl LocalRepo for GitBackend {
     }
 
     async fn clone(&self, url: &str, path: &str, parent_dir: &str) -> Result<()> {
-        self.exec_git_checked(&["clone", url, path], parent_dir)
-            .await?;
+        self.exec_git_checked(
+            &[
+                "clone",
+                "--filter=blob:none",
+                "--no-tags",
+                "--single-branch",
+                url,
+                path,
+            ],
+            parent_dir,
+        )
+        .await?;
         Ok(())
     }
 
     async fn fetch(&self, working_dir: &str) -> Result<()> {
-        self.exec_git_checked(&["fetch", "origin"], working_dir)
+        self.exec_git_checked(&["fetch", "--no-tags", "origin"], working_dir)
             .await?;
         Ok(())
     }
