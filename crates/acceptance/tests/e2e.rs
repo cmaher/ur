@@ -1247,22 +1247,48 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         .current_dir(&repo_dir)
         .output();
 
-    // ---- `ur project add` without --image should fail ----
+    // ---- `ur project add` without --image should succeed and default to ur-worker ----
     let no_image_output = run_cmd(
         &env.ur,
-        &["project", "add", repo_dir.to_str().unwrap()],
+        &[
+            "project",
+            "add",
+            repo_dir.to_str().unwrap(),
+            "--key",
+            "addtest-default",
+        ],
         &env_slice,
     );
     assert!(
-        !no_image_output.status.success(),
-        "project add without --image should fail.\nstdout: {}\nstderr: {}",
+        no_image_output.status.success(),
+        "project add without --image should succeed with default image.\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&no_image_output.stdout),
         String::from_utf8_lossy(&no_image_output.stderr),
     );
-    let stderr = String::from_utf8_lossy(&no_image_output.stderr);
+
+    // ---- Verify the default image resolves to ur-worker:latest in TOML ----
+    let toml_content =
+        std::fs::read_to_string(env.config_path.join("ur.toml")).expect("failed to read ur.toml");
     assert!(
-        stderr.contains("--image"),
-        "error should mention --image.\nstderr: {stderr}"
+        toml_content.contains("[projects.addtest-default.container]"),
+        "ur.toml should contain [projects.addtest-default.container] section.\nGot:\n{toml_content}"
+    );
+    assert!(
+        toml_content.contains("image = \"ur-worker\""),
+        "ur.toml should contain image = \"ur-worker\" for the default image project.\nGot:\n{toml_content}"
+    );
+
+    // ---- Clean up the default-image project ----
+    let remove_default_output = run_cmd(
+        &env.ur,
+        &["project", "remove", "addtest-default", "--force"],
+        &env_slice,
+    );
+    assert!(
+        remove_default_output.status.success(),
+        "project remove addtest-default failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_default_output.stdout),
+        String::from_utf8_lossy(&remove_default_output.stderr),
     );
 
     // ---- `ur project add --image rust` should succeed and write correct TOML ----
