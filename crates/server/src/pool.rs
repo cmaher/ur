@@ -354,7 +354,7 @@ impl RepoPoolManager {
 
     /// Reset an existing slot to a clean origin/master state via builderd.
     ///
-    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx && git submodule update --init --recursive`
+    /// Runs on the host: `git fetch origin && git checkout master && git reset --hard origin/master && git clean -fdx && git submodule update --init --recursive --depth 1`
     /// `host_slot_path` is the host-side path to the slot.
     async fn reset_slot(&self, host_slot_path: &Path) -> Result<(), String> {
         let cwd = self.to_builderd_path(host_slot_path);
@@ -490,7 +490,7 @@ impl RepoPoolManager {
     /// Initialize/update git submodules recursively if the repo has a `.gitmodules` file.
     ///
     /// Uses the local (container-side) path to check for `.gitmodules` existence,
-    /// then runs `git submodule update --init --recursive` on the host via builderd.
+    /// then runs `git submodule update --init --recursive --depth 1` on the host via builderd.
     async fn init_submodules(&self, host_slot_path: &Path) -> Result<(), String> {
         let local_slot_path = self.host_to_local_path(host_slot_path);
 
@@ -503,7 +503,7 @@ impl RepoPoolManager {
         let cwd = self.to_builderd_path(host_slot_path);
         self.local_repo.submodule_update(&cwd).await.map_err(|e| {
             format!(
-                "git submodule update --init --recursive failed in {}: {e}",
+                "git submodule update --init --recursive --depth 1 failed in {}: {e}",
                 host_slot_path.display()
             )
         })

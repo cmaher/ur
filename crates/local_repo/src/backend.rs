@@ -207,7 +207,14 @@ impl LocalRepo for GitBackend {
 
     async fn submodule_update(&self, working_dir: &str) -> Result<()> {
         self.exec_git_checked(
-            &["submodule", "update", "--init", "--recursive"],
+            &[
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "--depth",
+                "1",
+            ],
             working_dir,
         )
         .await?;
