@@ -975,6 +975,11 @@ pub const IMAGE_ALIASES: &[(&str, &str)] = &[
     ("ur-worker-rust", "ur-worker-rust:latest"),
 ];
 
+/// Returns the default image alias (first entry in [`IMAGE_ALIASES`]).
+pub fn default_image_alias() -> &'static str {
+    IMAGE_ALIASES[0].0
+}
+
 /// Validate that the given string is a known image alias or a full image reference.
 /// Returns `Ok(())` if valid, or an error describing the valid aliases.
 pub fn validate_image_alias(raw: &str) -> anyhow::Result<()> {

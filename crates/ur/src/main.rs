@@ -124,8 +124,9 @@ enum ProjectCommands {
         /// Path to a git repository directory (e.g. "." for current directory)
         path: PathBuf,
         /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full image reference
+        /// [default: ur-worker]
         #[arg(long)]
-        image: String,
+        image: Option<String>,
         /// Project key (derived from repo name if omitted)
         #[arg(long)]
         key: Option<String>,
@@ -1241,12 +1242,14 @@ async fn handle_project(
                 input::reject_control_chars(n, "name")?;
             }
             input::reject_path_traversal(&path, "path")?;
-            ur_config::validate_image_alias(&image)?;
+            let image_resolved: String =
+                image.unwrap_or_else(|| ur_config::default_image_alias().to_string());
+            ur_config::validate_image_alias(&image_resolved)?;
             let resolved_key = resolve_add_project_key(&path, key.as_deref())?;
             project::add(
                 config,
                 &path,
-                &image,
+                &image_resolved,
                 key.as_deref(),
                 name.as_deref(),
                 pool_limit,
