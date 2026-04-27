@@ -63,7 +63,7 @@ Builderd has two clients in the server, serving different use cases:
 
 ### 1. HostExecServiceHandler (worker → server → builderd)
 
-- **Purpose**: Worker commands (git, gh, tk) via the hostexec pipeline
+- **Purpose**: Worker commands (git, gh) via the hostexec pipeline
 - **Client**: Creates `BuilderDaemonServiceClient` directly per-request
 - **CWD source**: `map_working_dir()` replaces `/workspace` prefix with `%WORKSPACE%`
 - **File**: `crates/server/src/grpc_hostexec.rs`

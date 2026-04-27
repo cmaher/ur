@@ -2,7 +2,7 @@
 
 ## Overview
 
-Workers execute host commands (git, gh, tk, etc.) through a three-hop gRPC pipeline
+Workers execute host commands (git, gh, etc.) through a three-hop gRPC pipeline
 with Lua-based validation and `%WORKSPACE%` CWD templating.
 
 ## Flow

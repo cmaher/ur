@@ -16,9 +16,6 @@ RUN chmod +x /usr/local/bin/workerd
 RUN mkdir -p /home/worker/.local/bin && chown worker:worker /home/worker/.local/bin
 ENV PATH="/usr/local/bin:/home/worker/.local/bin:${PATH}"
 
-COPY bin/tk /usr/local/bin/tk
-RUN chmod +x /usr/local/bin/tk
-
 RUN mkdir -p /workspace && chown worker:worker /workspace
 
 # Bake in minimal Claude Code config to skip onboarding/login prompts.
