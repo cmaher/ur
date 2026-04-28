@@ -51,11 +51,11 @@ enum Commands {
         #[arg(long)]
         bidi: bool,
         /// Path to a script file to execute on the host (mutually exclusive with COMMAND)
-        #[arg(long, value_name = "PATH", conflicts_with = "command")]
+        #[arg(long, value_name = "PATH")]
         script: Option<String>,
-        /// The command to execute
+        /// The command to execute (omit when using --script)
         command: Option<String>,
-        /// Arguments to the command
+        /// Arguments to the command or script
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -109,11 +109,17 @@ async fn main() {
                 (None, Some(path)) => {
                     std::process::exit(run_host_exec_script(&path, args).await);
                 }
+                (Some(first_arg), Some(path)) => {
+                    // When --script is given, clap consumes the first positional as
+                    // `command`. Prepend it back so all positionals become script args.
+                    let mut script_args = vec![first_arg];
+                    script_args.extend(args);
+                    std::process::exit(run_host_exec_script(&path, script_args).await);
+                }
                 (None, None) => {
                     eprintln!("error: either COMMAND or --script <PATH> must be provided");
                     std::process::exit(1);
                 }
-                (Some(_), Some(_)) => unreachable!("clap enforces mutual exclusion"),
             }
         }
         Commands::Repo { command } => {
