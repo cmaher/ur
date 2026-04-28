@@ -563,7 +563,15 @@ impl WorkerManager {
             config
                 .workspace_dir
                 .as_ref()
-                .map(|p| self.repo_pool_manager.host_to_local_path(p))
+                .and_then(|p| {
+                    let local = self.repo_pool_manager.host_to_local_path(p);
+                    // Pool-mode slots are under host_workspace and get converted to a
+                    // container-local path that is actually mounted in the server
+                    // container — existence check is meaningful there.
+                    // Workspace-mode paths are arbitrary host paths not mounted in
+                    // the server container; skip the check to avoid false negatives.
+                    if local != *p { Some(local) } else { None }
+                })
                 .as_deref(),
         )?
         .add_ports(&config.ports)
