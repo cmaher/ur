@@ -502,6 +502,10 @@ pub enum TicketOpMsg {
         /// it via the server's branch field semantics). When the editor caller
         /// supplies `None`, the server treats it as no change.
         branch: Option<String>,
+        /// Metadata keys to set (key-value pairs). Applied after the field update.
+        meta_set: Vec<(String, String)>,
+        /// Metadata keys to delete. Applied after the field update.
+        meta_delete: Vec<String>,
     },
 }
 

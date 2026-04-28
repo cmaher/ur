@@ -558,6 +558,8 @@ async fn run_edit_ticket_flow(
         priority: p.priority,
         body: p.body,
         branch: Some(p.branch.unwrap_or_else(|| "NONE".to_owned())),
+        meta_set: vec![],
+        meta_delete: vec![],
     }))
 }
 

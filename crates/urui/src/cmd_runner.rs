@@ -169,6 +169,8 @@ impl CmdRunner {
                 priority,
                 body,
                 branch,
+                meta_set: _,
+                meta_delete: _,
             } => self.exec_update_fields(
                 ticket_id,
                 project,
