@@ -50,9 +50,12 @@ enum Commands {
         /// Enable bidirectional streaming (forward stdin to the remote command)
         #[arg(long)]
         bidi: bool,
-        /// The command to execute
-        command: String,
-        /// Arguments to the command
+        /// Path to a script file to execute on the host (mutually exclusive with COMMAND)
+        #[arg(long, value_name = "PATH")]
+        script: Option<String>,
+        /// The command to execute (omit when using --script)
+        command: Option<String>,
+        /// Arguments to the command or script
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -91,10 +94,33 @@ async fn main() {
     match cli.command {
         Commands::HostExec {
             bidi,
+            script,
             command,
             args,
         } => {
-            std::process::exit(run_host_exec(&command, args, bidi).await);
+            if bidi && script.is_some() {
+                eprintln!("error: --bidi cannot be used with --script");
+                std::process::exit(1);
+            }
+            match (command, script) {
+                (Some(cmd), None) => {
+                    std::process::exit(run_host_exec(&cmd, args, bidi).await);
+                }
+                (None, Some(path)) => {
+                    std::process::exit(run_host_exec_script(&path, args).await);
+                }
+                (Some(first_arg), Some(path)) => {
+                    // When --script is given, clap consumes the first positional as
+                    // `command`. Prepend it back so all positionals become script args.
+                    let mut script_args = vec![first_arg];
+                    script_args.extend(args);
+                    std::process::exit(run_host_exec_script(&path, script_args).await);
+                }
+                (None, None) => {
+                    eprintln!("error: either COMMAND or --script <PATH> must be provided");
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Repo { command } => {
             std::process::exit(repo::run(command).await);
@@ -136,6 +162,32 @@ async fn forward_stdin_to_stream(tx: mpsc::Sender<HostExecMessage>) {
 }
 
 async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
+    let working_dir = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/workspace".into());
+    let req = HostExecRequest {
+        command: command.into(),
+        args,
+        working_dir,
+        script_path: String::new(),
+    };
+    exec_host_request(command, req, bidi).await
+}
+
+async fn run_host_exec_script(script_path: &str, args: Vec<String>) -> i32 {
+    let working_dir = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "/workspace".into());
+    let req = HostExecRequest {
+        command: String::new(),
+        args,
+        working_dir,
+        script_path: script_path.into(),
+    };
+    exec_host_request(script_path, req, false).await
+}
+
+async fn exec_host_request(display_name: &str, req: HostExecRequest, bidi: bool) -> i32 {
     let server_addr =
         std::env::var(ur_config::UR_SERVER_ADDR_ENV).expect("UR_SERVER_ADDR must be set");
     let addr = format!("http://{server_addr}");
@@ -143,23 +195,15 @@ async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,
         Err(e) => {
-            eprintln!("{command}: failed to connect to ur server: {e}");
+            eprintln!("{display_name}: failed to connect to ur server: {e}");
             return 1;
         }
     };
 
     let mut client = HostExecServiceClient::new(channel);
 
-    let working_dir = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "/workspace".into());
-
     let start_msg = HostExecMessage {
-        payload: Some(HostExecPayload::Start(HostExecRequest {
-            command: command.into(),
-            args,
-            working_dir,
-        })),
+        payload: Some(HostExecPayload::Start(req)),
     };
 
     // Build the outbound stream: start frame first, then optional stdin forwarding.
@@ -180,7 +224,7 @@ async fn run_host_exec(command: &str, args: Vec<String>, bidi: bool) -> i32 {
     let response = match client.exec(request).await {
         Ok(resp) => resp,
         Err(status) => {
-            eprintln!("{command}: {}", status.message());
+            eprintln!("{display_name}: {}", status.message());
             return 1;
         }
     };

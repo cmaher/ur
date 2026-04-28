@@ -3280,6 +3280,7 @@ dependencies = [
  "tokio-stream",
  "toml",
  "tonic",
+ "tonic-types",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

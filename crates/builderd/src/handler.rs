@@ -53,10 +53,12 @@ impl BuilderDaemonHandler {
         req: &BuilderExecRequest,
     ) -> Result<Response<CommandOutputStream>, Status> {
         let resolved_dir = self.resolve_working_dir(&req.working_dir);
+        let resolved_command = self.resolve_working_dir(&req.command);
         let arg_count = req.args.len();
 
         info!(
             command = %req.command,
+            resolved_command = %resolved_command,
             working_dir = %req.working_dir,
             resolved_dir = %resolved_dir,
             arg_count,
@@ -65,7 +67,7 @@ impl BuilderDaemonHandler {
             "host exec request received"
         );
 
-        let mut cmd = tokio::process::Command::new(&req.command);
+        let mut cmd = tokio::process::Command::new(&resolved_command);
         cmd.args(&req.args)
             .current_dir(&resolved_dir)
             .stdin(Stdio::null())
@@ -76,12 +78,12 @@ impl BuilderDaemonHandler {
         }
         let child = cmd.spawn().map_err(|e| {
             error!(
-                command = %req.command,
+                command = %resolved_command,
                 working_dir = %resolved_dir,
                 error = %e,
                 "failed to spawn process"
             );
-            Status::internal(format!("failed to spawn {}: {e}", req.command))
+            Status::internal(format!("failed to spawn {resolved_command}: {e}"))
         })?;
 
         let (tx, rx) = mpsc::channel(32);

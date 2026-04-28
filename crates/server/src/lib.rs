@@ -25,6 +25,7 @@ pub mod workflow;
 
 pub use backup::BackupTaskManager;
 pub use config::Config;
+pub use hostexec::materialize_shim;
 pub use log_cleanup::LogCleanupManager;
 pub use pool::RepoPoolManager;
 pub use project_registry::ProjectRegistry;

@@ -186,6 +186,8 @@ struct ProjectEntry {
     repo: String,
     /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
     image: String,
+    /// Paths to hostexec scripts declared for this project (e.g. `["host-only.sh"]`).
+    hostexec_scripts: Vec<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -262,10 +264,21 @@ fn write_test_config(
         } else {
             format!("{}:{}", proj.image, tag)
         };
+        let scripts_line = if proj.hostexec_scripts.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj
+                .hostexec_scripts
+                .iter()
+                .map(|s| format!("\"{}\"", s))
+                .collect();
+            format!("hostexec_scripts = [{}]\n", quoted.join(", "))
+        };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n\n[projects.{key}.container]\nimage = \"{image}\"\n",
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}\n[projects.{key}.container]\nimage = \"{image}\"\n",
             key = proj.key,
             repo = proj.repo,
+            scripts = scripts_line,
             image = image_ref,
         ));
     }
@@ -505,6 +518,11 @@ fn e2e_all() {
     std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
     let bare_repo_rust = create_bare_repo(&rust_repos_dir);
 
+    // Create a bare repo for the hostexec script project (contains host-only.sh)
+    let script_repos_dir = config_path.join("script-repos");
+    std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
+    let bare_repo_script = create_bare_repo_with_script(&script_repos_dir);
+
     write_test_config(
         &config_path,
         server_port,
@@ -514,11 +532,19 @@ fn e2e_all() {
                 key: project_key.into(),
                 repo: bare_repo.to_string_lossy().into_owned(),
                 image: "ur-worker".into(),
+                hostexec_scripts: vec![],
             },
             ProjectEntry {
                 key: "rustproj".into(),
                 repo: bare_repo_rust.to_string_lossy().into_owned(),
                 image: "ur-worker-rust".into(),
+                hostexec_scripts: vec![],
+            },
+            ProjectEntry {
+                key: "scriptproj".into(),
+                repo: bare_repo_script.to_string_lossy().into_owned(),
+                image: "ur-worker".into(),
+                hostexec_scripts: vec!["host-only.sh".into()],
             },
         ],
     );
@@ -605,6 +631,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_dispatch_creates_workflow(&env);
         scenario_ticket_close_preserves_workflow(&env);
         scenario_flow_list_and_cancel(&env);
+        scenario_hostexec_script_pool(&env);
+        scenario_hostexec_script_workspace(&env, &config_path);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -616,6 +644,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "custom-model-test",
         "rust-image-test",
         "hotreload-test",
+        "script-pool-test",
+        "scriptproj-ws-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -1227,6 +1257,99 @@ fn scenario_project_image_rust(env: &TestEnv) {
     }
 }
 
+/// Create a bare git repository with one commit containing README.md and a
+/// hostexec fixture script (`host-only.sh`), suitable as a clone source.
+/// Returns the path to the bare repo directory.
+fn create_bare_repo_with_script(parent_dir: &Path) -> PathBuf {
+    let fixture_script = workspace_root().join("crates/acceptance/tests/fixtures/host-only.sh");
+    let bare_repo = parent_dir.join("script-repo.git");
+    let staging = parent_dir.join("script-staging");
+
+    let output = Command::new("git")
+        .args(["init", "--bare", bare_repo.to_str().unwrap()])
+        .output()
+        .expect("failed to run git init --bare");
+    assert!(output.status.success(), "git init --bare failed");
+
+    let output = Command::new("git")
+        .args([
+            "-C",
+            bare_repo.to_str().unwrap(),
+            "config",
+            "uploadpack.allowFilter",
+            "true",
+        ])
+        .output()
+        .expect("failed to set uploadpack.allowFilter");
+    assert!(
+        output.status.success(),
+        "git config uploadpack.allowFilter failed"
+    );
+
+    let output = Command::new("git")
+        .args([
+            "clone",
+            bare_repo.to_str().unwrap(),
+            staging.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to clone bare repo into staging");
+    assert!(output.status.success(), "git clone failed");
+
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&staging)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&staging)
+        .output();
+
+    std::fs::write(staging.join("README.md"), "# Script test repo\n")
+        .expect("failed to write README");
+
+    // Copy the fixture script into the repo
+    let script_content = std::fs::read_to_string(&fixture_script).unwrap_or_else(|e| {
+        panic!(
+            "failed to read fixture script {}: {e}",
+            fixture_script.display()
+        )
+    });
+    let script_dest = staging.join("host-only.sh");
+    std::fs::write(&script_dest, &script_content).expect("failed to write host-only.sh");
+    // Make it executable
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script_dest, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to set script permissions");
+
+    let output = Command::new("git")
+        .args(["add", "README.md", "host-only.sh"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git add");
+    assert!(output.status.success(), "git add failed");
+
+    let output = Command::new("git")
+        .args(["commit", "-m", "initial commit with script"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git commit");
+    assert!(output.status.success(), "git commit failed");
+
+    let output = Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git push");
+    assert!(
+        output.status.success(),
+        "git push failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    bare_repo
+}
+
 /// Initialize a bare git repo at `path` suitable for use as a project in `ur project add`.
 fn init_project_git_repo(path: &std::path::Path) {
     std::fs::create_dir_all(path).expect("failed to create repo dir");
@@ -1818,14 +1941,12 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
             String::from_utf8_lossy(&add_output.stderr),
         );
 
-        // Verify the add output mentions server reload
+        // Verify the add output confirms the server registered the project.
+        // The exact text is "Server reloaded — project {key} now added".
         let add_stdout = String::from_utf8_lossy(&add_output.stdout);
         assert!(
-            add_stdout.contains("reloaded")
-                || add_stdout.contains("Reloaded")
-                || add_stdout.contains("reload")
-                || add_stdout.contains("available"),
-            "project add output should confirm server reload.\nGot: {add_stdout}"
+            add_stdout.contains("Server reloaded"),
+            "project add output should confirm server reload succeeded.\nGot: {add_stdout}"
         );
 
         // ---- Launch a worker for the newly added project (no server restart) ----
@@ -1853,6 +1974,270 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
         wait_for_healthy(&env.runtime, &container_name);
 
         verify_hot_reloaded_worker(env, &container_name, project_key, ticket_id, &env_slice);
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Invoke a declared hostexec script from inside a container and verify the
+/// end-to-end dispatch flow.
+///
+/// - Runs `host-only.sh <tag> <marker_path>` via `workertools host-exec --script`.
+/// - Asserts the exec exits 0 and stdout contains the expected "wrote tag" line.
+/// - Asserts the marker file exists on the host and contains exactly `tag`.
+fn assert_hostexec_script_works(
+    runtime: &str,
+    container: &str,
+    tag: &str,
+    marker_path: &std::path::Path,
+) {
+    let marker_str = marker_path.to_string_lossy();
+    let script_output = exec_in_container(
+        runtime,
+        container,
+        &[
+            "workertools",
+            "host-exec",
+            "--script",
+            "/workspace/host-only.sh",
+            tag,
+            &marker_str,
+        ],
+    );
+    assert_exec_success(
+        &script_output,
+        &format!("workertools host-exec --script /workspace/host-only.sh {tag} should exit 0"),
+    );
+
+    let stdout = String::from_utf8_lossy(&script_output.stdout);
+    assert!(
+        stdout.contains("host-only: wrote tag"),
+        "host-exec script stdout should contain 'host-only: wrote tag'.\nGot: {stdout}"
+    );
+    assert!(
+        stdout.contains(tag),
+        "stdout should contain the tag '{tag}'.\nGot: {stdout}"
+    );
+
+    assert!(
+        marker_path.exists(),
+        "marker file should exist at {} after script execution",
+        marker_path.display()
+    );
+    let marker_content = std::fs::read_to_string(marker_path)
+        .unwrap_or_else(|e| panic!("failed to read marker file: {e}"));
+    assert_eq!(
+        marker_content.trim(),
+        tag,
+        "marker file should contain the tag '{tag}', got: {marker_content:?}"
+    );
+}
+
+/// Assert that invoking an undeclared script returns a non-zero exit and an
+/// error message indicating the script is not allowed.
+fn assert_hostexec_script_denied(runtime: &str, container: &str) {
+    let denied_output = exec_in_container(
+        runtime,
+        container,
+        &[
+            "workertools",
+            "host-exec",
+            "--script",
+            "/workspace/other-undeclared.sh",
+        ],
+    );
+    assert_ne!(
+        denied_output.status.code(),
+        Some(0),
+        "invoking an undeclared script should fail.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&denied_output.stdout),
+        String::from_utf8_lossy(&denied_output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&denied_output.stderr);
+    assert!(
+        stderr.contains("not allowed")
+            || stderr.contains("SCRIPT_NOT_ALLOWED")
+            || stderr.contains("PermissionDenied"),
+        "error message should indicate script is not allowed.\nstderr: {stderr}"
+    );
+}
+
+/// Pool launch: verify that a declared hostexec script runs on the host, the
+/// marker file appears with the correct tag, stdout/exit code propagate, and
+/// that the original repo script in the pool slot is unmodified.
+/// Also verifies that invoking an undeclared script is rejected.
+fn scenario_hostexec_script_pool(env: &TestEnv) {
+    let ticket_id = "script-pool-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch worker for scriptproj ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "scriptproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p scriptproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify pool slot has host-only.sh from the cloned repo ----
+        let pool_slot = env
+            .config_path
+            .join("workspace")
+            .join("pool")
+            .join("scriptproj")
+            .join("0");
+        let script_on_host = pool_slot.join("host-only.sh");
+        assert!(
+            script_on_host.exists(),
+            "host-only.sh should be present in pool slot at {}",
+            script_on_host.display()
+        );
+
+        // Read the original script content for later comparison.
+        let original_script_content = std::fs::read_to_string(&script_on_host)
+            .expect("failed to read original host-only.sh from pool slot");
+
+        // ---- Create a temp marker dir on the host ----
+        let marker_dir = tempfile::tempdir().expect("failed to create marker temp dir");
+        let marker_path = marker_dir.path().join("marker.txt");
+
+        // ---- Invoke the declared script from inside the container ----
+        assert_hostexec_script_works(
+            &env.runtime,
+            &container_name,
+            "pool-tag-12345",
+            &marker_path,
+        );
+
+        // ---- Negative case: undeclared script is rejected ----
+        assert_hostexec_script_denied(&env.runtime, &container_name);
+
+        // ---- Verify original repo script on host is unmodified ----
+        let script_after = std::fs::read_to_string(&script_on_host)
+            .expect("failed to read host-only.sh after test");
+        assert_eq!(
+            original_script_content, script_after,
+            "original host-only.sh in pool slot must be unmodified after the test"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Workspace-mount launch: verify that a declared hostexec script runs on the
+/// host when the worker is launched with `-w` (workspace mount). The project
+/// key is derived from the ticket ID prefix (`scriptproj`), giving the worker
+/// the right allowlist. The host-side `host-only.sh` is present in the
+/// workspace directory so the existence check passes.
+fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Path) {
+    // Ticket ID prefix "scriptproj" matches the configured project key, so the
+    // project key is automatically derived from the ID even under -w mode.
+    let ticket_id = "scriptproj-ws-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Prepare workspace directory with the fixture script ----
+        let ws_dir = config_path.join("script-workspace");
+        std::fs::create_dir_all(&ws_dir).expect("failed to create script workspace dir");
+
+        // Initialize as a git repo (workspace-mount scenario needs git)
+        let _ = Command::new("git")
+            .args(["init", ws_dir.to_str().unwrap()])
+            .output();
+
+        // Copy the fixture script into the workspace so the existence check passes.
+        let fixture_script = workspace_root().join("crates/acceptance/tests/fixtures/host-only.sh");
+        let script_content = std::fs::read_to_string(&fixture_script)
+            .unwrap_or_else(|e| panic!("failed to read fixture: {e}"));
+        let script_dest = ws_dir.join("host-only.sh");
+        std::fs::write(&script_dest, &script_content)
+            .expect("failed to write host-only.sh to workspace");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_dest, std::fs::Permissions::from_mode(0o755))
+            .expect("failed to set script permissions");
+
+        // ---- Launch with -w; project key is derived from ticket ID prefix ----
+        let ws_str = ws_dir.to_str().unwrap();
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-w", ws_str, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -w failed for {ticket_id}.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Create a temp marker dir on the host ----
+        let marker_dir = tempfile::tempdir().expect("failed to create marker temp dir");
+        let marker_path = marker_dir.path().join("marker.txt");
+
+        // ---- Invoke the declared script from inside the container ----
+        assert_hostexec_script_works(
+            &env.runtime,
+            &container_name,
+            "workspace-tag-67890",
+            &marker_path,
+        );
+
+        // ---- Verify original script in workspace is unmodified ----
+        let script_after =
+            std::fs::read_to_string(&script_dest).expect("failed to read host-only.sh after test");
+        assert_eq!(
+            script_content, script_after,
+            "original host-only.sh in workspace must be unmodified after the test"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
     }));
 
     if let Err(e) = result {

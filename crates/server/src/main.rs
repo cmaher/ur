@@ -523,6 +523,9 @@ async fn init_managers(
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
 
+    ur_server::hostexec::materialize_shim(&cfg.config_dir)
+        .map_err(|e| anyhow::anyhow!("failed to materialize hostexec script shim: {e}"))?;
+
     let hostexec_config =
         ur_server::hostexec::HostExecConfigManager::load(&cfg.config_dir, &cfg.hostexec)
             .expect("failed to load hostexec config");

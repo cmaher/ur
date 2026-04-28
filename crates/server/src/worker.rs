@@ -287,6 +287,9 @@ pub struct WorkerConfig {
     /// Context repositories to mount read-only into the container.
     /// Each entry is (project_key, host_path) from shared pool slots.
     pub context_mounts: Vec<(String, PathBuf)>,
+    /// Relative paths to hostexec scripts declared by the project.
+    /// Each entry is bind-mounted over `/workspace/<rel_path>` with the shim as the source.
+    pub hostexec_scripts: Vec<String>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -526,6 +529,13 @@ impl WorkerManager {
             &self.host_config_dir,
         );
 
+        // Derive the shim host path from the config dir. The shim is materialized
+        // at server startup; we only need the path here for volume mounting.
+        let shim_host_path = self
+            .host_config_dir
+            .join(ur_config::HOSTEXEC_DIR)
+            .join("script-shim.sh");
+
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
         let opts = RunOptsBuilder::new(
@@ -546,6 +556,23 @@ impl WorkerManager {
         .add_mounts(
             &context_mount_configs(&config.context_mounts),
             &self.host_config_dir,
+        )?
+        .add_project_hostexec_scripts(
+            &config.hostexec_scripts,
+            &shim_host_path,
+            config
+                .workspace_dir
+                .as_ref()
+                .and_then(|p| {
+                    let local = self.repo_pool_manager.host_to_local_path(p);
+                    // Pool-mode slots are under host_workspace and get converted to a
+                    // container-local path that is actually mounted in the server
+                    // container — existence check is meaningful there.
+                    // Workspace-mode paths are arbitrary host paths not mounted in
+                    // the server container; skip the check to avoid false negatives.
+                    if local != *p { Some(local) } else { None }
+                })
+                .as_deref(),
         )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)
@@ -1181,6 +1208,7 @@ mod tests {
             ports: Vec::new(),
             slot_id: None,
             context_mounts: Vec::new(),
+            hostexec_scripts: Vec::new(),
         }
     }
 
