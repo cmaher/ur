@@ -169,8 +169,8 @@ impl CmdRunner {
                 priority,
                 body,
                 branch,
-                meta_set: _,
-                meta_delete: _,
+                meta_set,
+                meta_delete,
             } => self.exec_update_fields(
                 ticket_id,
                 project,
@@ -179,6 +179,8 @@ impl CmdRunner {
                 priority,
                 body,
                 branch,
+                meta_set,
+                meta_delete,
             ),
         }
     }
@@ -284,10 +286,19 @@ impl CmdRunner {
         let port = self.port;
         tokio::spawn(async move {
             debug!(port, project = %pending.project, "v2: creating ticket");
-            let result = create_ticket(port, &pending).await;
-            let preserved = if result.is_err() { Some(pending) } else { None };
+            let create_result = create_ticket(port, &pending).await;
+            let (result, preserved) = match create_result {
+                Err(e) => (Err(e), Some(pending)),
+                Ok(ticket_id) => {
+                    let meta_result = set_pending_meta(port, &ticket_id, &pending.meta).await;
+                    match meta_result {
+                        Ok(()) => (Ok(format!("Created {ticket_id}")), None),
+                        Err(e) => (Err(format!("{ticket_id}: {e}")), None),
+                    }
+                }
+            };
             let msg = TicketOpResultMsg::Created {
-                result: result.map(|id| format!("Created {id}")),
+                result,
                 pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
@@ -305,10 +316,20 @@ impl CmdRunner {
         let port = self.port;
         tokio::spawn(async move {
             debug!(port, project = %pending.project, "v2: creating and dispatching ticket");
-            let result = create_and_dispatch(port, &pending, &project_key, &image_id, &tx2).await;
-            let preserved = if result.is_err() { Some(pending) } else { None };
+            let create_result =
+                create_and_dispatch(port, &pending, &project_key, &image_id, &tx2).await;
+            let (result, preserved) = match create_result {
+                Err(e) => (Err(e), Some(pending)),
+                Ok(ticket_id) => {
+                    let meta_result = set_pending_meta(port, &ticket_id, &pending.meta).await;
+                    match meta_result {
+                        Ok(()) => (Ok(format!("Created and dispatched {ticket_id}")), None),
+                        Err(e) => (Err(format!("{ticket_id}: {e}")), None),
+                    }
+                }
+            };
             let msg = TicketOpResultMsg::Created {
-                result: result.map(|id| format!("Created and dispatched {id}")),
+                result,
                 pending: preserved,
             };
             let _ = tx.send(Msg::TicketOpResult(msg));
@@ -351,6 +372,8 @@ impl CmdRunner {
         priority: i64,
         body: String,
         branch: Option<String>,
+        meta_set: Vec<(String, String)>,
+        meta_delete: Vec<String>,
     ) {
         let tx = self.msg_tx.clone();
         let port = self.port;
@@ -367,6 +390,15 @@ impl CmdRunner {
                 branch,
             )
             .await;
+            let result = match result {
+                Err(e) => Err(e),
+                Ok(final_id) => {
+                    match apply_meta_diff(port, &final_id, &meta_set, &meta_delete).await {
+                        Ok(()) => Ok(final_id),
+                        Err(e) => Err(e),
+                    }
+                }
+            };
             let msg = TicketOpResultMsg::Updated {
                 result: result.map(|final_id| format!("Updated {final_id}")),
             };
@@ -1156,6 +1188,24 @@ async fn redrive_ticket(port: u16, ticket_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Set all non-empty metadata entries from a pending ticket creation on the
+/// newly-created ticket. Skips entries whose value is empty or whitespace-only.
+/// Returns `Err` on the first `set_ticket_meta` failure, with a message that
+/// callers can prefix with the ticket ID to surface context.
+async fn set_pending_meta(
+    port: u16,
+    ticket_id: &str,
+    meta: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    for (key, value) in meta {
+        if value.trim().is_empty() {
+            continue;
+        }
+        set_ticket_meta(port, ticket_id, key, value).await?;
+    }
+    Ok(())
+}
+
 /// Set a metadata key-value pair on a ticket via `SetMeta` gRPC.
 async fn set_ticket_meta(port: u16, ticket_id: &str, key: &str, value: &str) -> Result<(), String> {
     use ur_rpc::connection::connect;
@@ -1175,6 +1225,47 @@ async fn set_ticket_meta(port: u16, ticket_id: &str, key: &str, value: &str) -> 
             error!(port, %ticket_id, %key, error = %e, "v2: set_ticket_meta failed");
             e.to_string()
         })?;
+    Ok(())
+}
+
+/// Delete a metadata key from a ticket via `DeleteMeta` gRPC.
+async fn delete_ticket_meta(port: u16, ticket_id: &str, key: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::DeleteMetaRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .delete_meta(DeleteMetaRequest {
+            ticket_id: ticket_id.to_owned(),
+            key: key.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %ticket_id, %key, error = %e, "v2: delete_ticket_meta failed");
+            e.to_string()
+        })?;
+    Ok(())
+}
+
+/// Apply a metadata diff (set/delete) to a ticket.
+///
+/// Calls `set_ticket_meta` for each entry in `meta_set` and
+/// `delete_ticket_meta` for each key in `meta_delete`. Returns `Err` on
+/// the first failure.
+async fn apply_meta_diff(
+    port: u16,
+    ticket_id: &str,
+    meta_set: &[(String, String)],
+    meta_delete: &[String],
+) -> Result<(), String> {
+    for (key, value) in meta_set {
+        set_ticket_meta(port, ticket_id, key, value).await?;
+    }
+    for key in meta_delete {
+        delete_ticket_meta(port, ticket_id, key).await?;
+    }
     Ok(())
 }
 
@@ -1351,5 +1442,69 @@ mod tests {
             },
             other => panic!("expected Data msg, got {other:?}"),
         }
+    }
+
+    /// set_pending_meta skips empty and whitespace-only values without
+    /// attempting a gRPC call, so it returns Ok(()) for a map that contains
+    /// only blank values even when the server is unavailable.
+    #[tokio::test]
+    async fn set_pending_meta_skips_blank_values() {
+        let mut meta = std::collections::BTreeMap::new();
+        meta.insert("ref".to_owned(), "".to_owned());
+        meta.insert("key2".to_owned(), "   ".to_owned());
+        meta.insert("key3".to_owned(), "\t\n".to_owned());
+
+        // Port 0 — no server. If set_ticket_meta were called it would error.
+        let result = set_pending_meta(0, "ur-test", &meta).await;
+        assert!(
+            result.is_ok(),
+            "all-blank meta should be a no-op: {result:?}"
+        );
+    }
+
+    /// exec_create sends a Created error (with ticket id in the message) when
+    /// create_ticket fails, and preserves the pending ticket for retry.
+    #[tokio::test]
+    async fn exec_create_sends_created_error_when_server_unavailable() {
+        let (runner, mut rx) = make_runner();
+
+        let pending = super::super::msg::PendingTicket {
+            project: "ur".to_owned(),
+            title: "test ticket".to_owned(),
+            ticket_type: "task".to_owned(),
+            priority: 0,
+            body: String::new(),
+            parent_id: None,
+            branch: None,
+            meta: std::collections::BTreeMap::new(),
+        };
+
+        runner.execute(Cmd::TicketOp(TicketOpMsg::Create { pending }));
+
+        let msg = rx.recv().await.unwrap();
+        match msg {
+            Msg::TicketOpResult(TicketOpResultMsg::Created { result, pending }) => {
+                assert!(result.is_err(), "expected error from unavailable server");
+                assert!(
+                    pending.is_some(),
+                    "pending should be preserved on create failure"
+                );
+            }
+            other => panic!("expected Created result, got {other:?}"),
+        }
+    }
+
+    /// set_pending_meta returns an error when a non-empty value triggers a
+    /// set_ticket_meta call against an unavailable server.
+    #[tokio::test]
+    async fn set_pending_meta_errors_on_non_empty_value_with_no_server() {
+        let mut meta = std::collections::BTreeMap::new();
+        meta.insert("ref".to_owned(), "some-ref".to_owned());
+
+        let result = set_pending_meta(0, "ur-test", &meta).await;
+        assert!(
+            result.is_err(),
+            "expected connection error for non-empty meta"
+        );
     }
 }
