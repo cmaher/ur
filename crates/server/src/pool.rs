@@ -650,6 +650,7 @@ mod tests {
                 protected_branches: ur_config::default_protected_branches(),
                 tui: None,
                 ignored_workflow_checks: Vec::new(),
+                hostexec_scripts: Vec::new(),
             },
         );
         let (worker_repo, test_db) = test_worker_repo().await;
@@ -951,6 +952,7 @@ mod tests {
                 protected_branches: ur_config::default_protected_branches(),
                 tui: None,
                 ignored_workflow_checks: Vec::new(),
+                hostexec_scripts: Vec::new(),
             },
         );
         let channel =
