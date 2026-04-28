@@ -496,6 +496,7 @@ fn run_editor_flow(
                 body: parsed.body,
                 parent_id,
                 branch: parsed.branch,
+                meta: parsed.meta,
             })
         }
         _ => {
@@ -527,6 +528,7 @@ async fn run_edit_ticket_flow(
         &ticket.ticket_type,
         ticket.priority,
         ticket.branch.as_deref(),
+        &ticket.meta,
         &ticket.body,
     );
 
@@ -580,6 +582,12 @@ async fn fetch_ticket_for_edit(
     let ticket = resp
         .ticket
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+    let meta: std::collections::BTreeMap<String, String> = resp
+        .metadata
+        .into_iter()
+        .filter(|e| !e.key.is_empty() && !e.value.is_empty())
+        .map(|e| (e.key, e.value))
+        .collect();
     Ok(create_ticket::PendingTicket {
         project: ticket.project,
         title: ticket.title,
@@ -591,6 +599,7 @@ async fn fetch_ticket_for_edit(
             Some(ticket.branch)
         },
         body: ticket.body,
+        meta,
     })
 }
 

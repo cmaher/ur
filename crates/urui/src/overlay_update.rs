@@ -917,6 +917,7 @@ fn handle_create_action(
                 &pending.ticket_type,
                 pending.priority,
                 pending.branch.as_deref(),
+                &pending.meta,
                 &pending.body,
             );
             return (
@@ -1224,6 +1225,7 @@ mod tests {
                     body: String::new(),
                     parent_id: None,
                     branch: None,
+                    meta: Default::default(),
                 },
             },
         );
@@ -1247,6 +1249,7 @@ mod tests {
                     body: String::new(),
                     parent_id: None,
                     branch: None,
+                    meta: Default::default(),
                 },
             },
         );
@@ -1274,6 +1277,7 @@ mod tests {
                     body: String::new(),
                     parent_id: None,
                     branch: None,
+                    meta: Default::default(),
                 },
             },
         );
@@ -1539,6 +1543,7 @@ mod tests {
                     body: String::new(),
                     parent_id: None,
                     branch: None,
+                    meta: Default::default(),
                 },
             },
         );
