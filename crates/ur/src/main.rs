@@ -257,6 +257,34 @@ fn load_config() -> Result<ur_config::Config> {
     ur_config::Config::load().context("failed to load config")
 }
 
+/// Pre-create writable mount source directories for all projects.
+///
+/// The server runs in a container and cannot reach arbitrary macOS host paths.
+/// If a writable mount source doesn't exist, Docker creates it as root, making
+/// it unwritable by the worker user inside the container.
+fn prepare_project_mounts(config: &ur_config::Config) {
+    for (key, project) in &config.projects {
+        for mount in &project.container.mounts {
+            if mount.readonly {
+                continue;
+            }
+            let resolved = ur_config::resolve_template_path(&mount.source, &config.config_dir);
+            let host_path = match resolved {
+                Ok(ur_config::ResolvedTemplatePath::HostPath(p)) => p,
+                _ => continue,
+            };
+            if let Err(e) = std::fs::create_dir_all(&host_path) {
+                warn!(
+                    project = key,
+                    path = %host_path.display(),
+                    error = %e,
+                    "failed to create mount source directory"
+                );
+            }
+        }
+    }
+}
+
 #[instrument(skip(config, compose, output))]
 fn start_server(
     config: &ur_config::Config,
@@ -264,6 +292,8 @@ fn start_server(
     output: &OutputManager,
 ) -> Result<()> {
     info!("starting server");
+
+    prepare_project_mounts(config);
 
     // Seed credentials from host Claude Code before starting anything so
     // they're available for bind-mounting into worker containers. Force a
