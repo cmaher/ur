@@ -195,6 +195,16 @@ fn fallback_title(body: &str) -> anyhow::Result<String> {
     }
 }
 
+fn parse_meta_entry(line: &str) -> Option<(String, String)> {
+    let (k, v) = line.trim().split_once(':')?;
+    let key = k.trim().to_string();
+    let value = v.trim().to_string();
+    if key.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some((key, value))
+}
+
 /// Parse editor output into a `PendingTicket`.
 ///
 /// The `project` field is left empty — the caller fills it in.
@@ -226,22 +236,14 @@ pub fn parse_ticket_file(content: &str) -> Option<PendingTicket> {
 
     let mut in_meta = false;
     for line in front_matter.lines() {
-        if in_meta {
-            if line.starts_with("    ") || line.starts_with('\t') {
-                // Indented line inside meta block — parse as key: value
-                let entry = line.trim();
-                if let Some((k, v)) = entry.split_once(':') {
-                    let key = k.trim().to_string();
-                    let value = v.trim().to_string();
-                    if !key.is_empty() && !value.is_empty() {
-                        meta.insert(key, value);
-                    }
-                }
-                continue;
-            } else {
-                // Non-indented line ends the meta block
-                in_meta = false;
+        if in_meta && (line.starts_with("    ") || line.starts_with('\t')) {
+            if let Some((k, v)) = parse_meta_entry(line) {
+                meta.insert(k, v);
             }
+            continue;
+        }
+        if in_meta {
+            in_meta = false;
         }
 
         if let Some(val) = line.strip_prefix("title:") {

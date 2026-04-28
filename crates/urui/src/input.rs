@@ -15,6 +15,9 @@ pub struct FooterCommand {
 }
 
 /// Result of an input handler processing a key event.
+// InputResult is always stack-allocated and immediately consumed; boxing would add unnecessary
+// heap allocation on every key press.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum InputResult {
     /// The handler captured the key and produced a message.

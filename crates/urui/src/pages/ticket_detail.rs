@@ -1119,7 +1119,7 @@ mod tests {
     fn ref_value_found_when_set() {
         use ur_rpc::proto::ticket::MetadataEntry;
 
-        let metadata = vec![
+        let metadata = [
             MetadataEntry {
                 key: ticket_meta::REF.to_string(),
                 value: "JIRA-123".to_string(),
@@ -1157,7 +1157,7 @@ mod tests {
     fn ref_value_absent_when_empty() {
         use ur_rpc::proto::ticket::MetadataEntry;
 
-        let metadata = vec![MetadataEntry {
+        let metadata = [MetadataEntry {
             key: ticket_meta::REF.to_string(),
             value: String::new(),
         }];
