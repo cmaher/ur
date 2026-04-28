@@ -245,30 +245,55 @@ pub fn remove(
 /// This is best-effort: if the server is not running (connection refused) or
 /// the RPC fails, we print a message but do not return an error since the
 /// config file write already succeeded.
+///
+/// Retries up to 3 times with 200ms delay to handle bind-mount propagation
+/// delays on macOS Docker Desktop (osxfs cache staleness).
 pub async fn try_reload_server(port: u16, key: &str, action: &str) {
     let Some(channel) = connection::try_connect(port) else {
         println!("Project {action} in config. Will be available on next server start.");
         return;
     };
     let mut client = CoreServiceClient::new(channel);
-    match client.reload_projects(ReloadProjectsRequest {}).await {
-        Ok(_) => {
-            println!("Server reloaded — project {key} now available");
-        }
-        Err(status) => {
-            let code = status.code();
-            if code == tonic::Code::Unavailable {
-                println!("Project {action} in config. Will be available on next server start.");
-            } else {
-                warn!(
-                    code = ?code,
-                    message = status.message(),
-                    "ReloadProjects RPC failed"
-                );
+    const MAX_ATTEMPTS: u32 = 4;
+    for attempt in 0..MAX_ATTEMPTS {
+        match client.reload_projects(ReloadProjectsRequest {}).await {
+            Ok(response) => {
+                let inner = response.into_inner();
+                let key_registered = if action == "removed" {
+                    inner.removed.iter().any(|k| k == key)
+                } else {
+                    inner.added.iter().any(|k| k == key)
+                };
+                if key_registered {
+                    println!("Server reloaded — project {key} now {action}");
+                    return;
+                }
+                if attempt + 1 < MAX_ATTEMPTS {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    continue;
+                }
                 println!(
-                    "Warning: project {action} in config but server reload failed: {}",
-                    status.message()
+                    "Warning: project {action} in config but server did not register '{key}' — \
+                     restart server to apply"
                 );
+                return;
+            }
+            Err(status) => {
+                let code = status.code();
+                if code == tonic::Code::Unavailable {
+                    println!("Project {action} in config. Will be available on next server start.");
+                } else {
+                    warn!(
+                        code = ?code,
+                        message = status.message(),
+                        "ReloadProjects RPC failed"
+                    );
+                    println!(
+                        "Warning: project {action} in config but server reload failed: {}",
+                        status.message()
+                    );
+                }
+                return;
             }
         }
     }

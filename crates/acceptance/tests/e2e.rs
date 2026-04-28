@@ -1941,14 +1941,12 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
             String::from_utf8_lossy(&add_output.stderr),
         );
 
-        // Verify the add output mentions server reload
+        // Verify the add output confirms the server registered the project.
+        // The exact text is "Server reloaded — project {key} now added".
         let add_stdout = String::from_utf8_lossy(&add_output.stdout);
         assert!(
-            add_stdout.contains("reloaded")
-                || add_stdout.contains("Reloaded")
-                || add_stdout.contains("reload")
-                || add_stdout.contains("available"),
-            "project add output should confirm server reload.\nGot: {add_stdout}"
+            add_stdout.contains("Server reloaded"),
+            "project add output should confirm server reload succeeded.\nGot: {add_stdout}"
         );
 
         // ---- Launch a worker for the newly added project (no server restart) ----
