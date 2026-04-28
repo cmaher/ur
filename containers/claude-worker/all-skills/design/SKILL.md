@@ -13,7 +13,7 @@ Help turn ideas into fully formed designs and specs through natural collaborativ
 Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design and get user approval. The end result is a parent ticket with the full design document and child tickets for each task.
 
 <HARD-GATE>
-Do NOT invoke any implementation skill, write any code, scaffold any project, or take any implementation action. This skill produces ONLY tickets. No code. No plans that reference writing code. No "next step: implement." The terminal state is a set of tickets.
+Do NOT invoke any implementation skill, write or scaffold source code, or take any implementation action on code. The terminal state is a set of tickets. Exception: if the user explicitly asks you to write or edit a documentation file (e.g., "write a doc", "save this to a file", "create a CLAUDE.md"), you may do so — writing a doc the user asked for is not transitioning to implementation.
 </HARD-GATE>
 
 ## Anti-Pattern: "This Is Too Simple To Need A Design"
@@ -22,7 +22,7 @@ Every project goes through this process. A todo list, a single-function utility,
 
 ## Anti-Pattern: "Let Me Start Coding"
 
-This skill does NOT transition to implementation. There is no "next step" after tickets are created. The user will decide when and how to implement. Do not suggest coding, do not invoke writing-plans, do not mention implementation skills.
+This skill does NOT transition to implementation. There is no "next step" after tickets are created. The user will decide when and how to implement. Do not suggest coding, do not invoke writing-plans, do not mention implementation skills. Writing a documentation file the user explicitly requested (e.g., "write a doc", "save this to a file") is not transitioning to implementation — it is a direct response to a user verb. Generic questions about design still produce chat answers, not unsolicited files.
 
 ## Design Ticket
 
