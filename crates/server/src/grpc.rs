@@ -327,6 +327,42 @@ impl LaunchManager {
         ))
     }
 
+    /// Extracted from `launch` to keep method body within the line limit.
+    #[allow(clippy::type_complexity)]
+    fn extract_project_launch_fields(
+        &self,
+        project_key: &str,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Vec<ur_config::MountConfig>,
+        Vec<ur_config::PortMapping>,
+        String,
+        Vec<String>,
+    ) {
+        match self.project_registry.get(project_key) {
+            Some(proj) if !project_key.is_empty() => (
+                proj.git_hooks_dir.clone(),
+                proj.skill_hooks_dir.clone(),
+                proj.claude_md.clone(),
+                proj.container.mounts.clone(),
+                proj.container.ports.clone(),
+                proj.container.image.clone(),
+                proj.hostexec_scripts.clone(),
+            ),
+            _ => (
+                None,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                String::new(),
+                Vec::new(),
+            ),
+        }
+    }
+
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
     pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<String, Status> {
         let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model) =
@@ -365,26 +401,7 @@ impl LaunchManager {
             ports,
             resolved_image,
             hostexec_scripts,
-        ) = match self.project_registry.get(&project_key) {
-            Some(proj) if !project_key.is_empty() => (
-                proj.git_hooks_dir.clone(),
-                proj.skill_hooks_dir.clone(),
-                proj.claude_md.clone(),
-                proj.container.mounts.clone(),
-                proj.container.ports.clone(),
-                proj.container.image.clone(),
-                proj.hostexec_scripts.clone(),
-            ),
-            _ => (
-                None,
-                None,
-                None,
-                Vec::new(),
-                Vec::new(),
-                String::new(),
-                Vec::new(),
-            ),
-        };
+        ) = self.extract_project_launch_fields(&project_key);
 
         // Use the image from the request if provided, otherwise fall back to
         // the project's configured image.
