@@ -1,4 +1,5 @@
 use ur_rpc::proto::ticket::{ActivityEntry, MetadataEntry, Ticket};
+use ur_rpc::ticket_meta;
 
 use super::format::{format_ticket_detail, format_ticket_list};
 
@@ -150,6 +151,45 @@ fn format_list_multiple() {
     // Verify column values appear
     assert!(out.contains("design"));
     assert!(out.contains("closed"));
+}
+
+#[test]
+fn format_detail_ref_present() {
+    let t = sample_ticket("ur-abc12", "With ref");
+    let meta = vec![MetadataEntry {
+        key: ticket_meta::REF.to_owned(),
+        value: "PROJ-123".to_owned(),
+    }];
+    let out = format_ticket_detail(&t, &meta, &[]);
+    assert!(
+        out.contains("Ref:      PROJ-123"),
+        "Ref line should be present"
+    );
+    // Ref should appear near Status/Priority (before body/metadata sections)
+    let ref_pos = out.find("Ref:").unwrap();
+    let status_pos = out.find("Status:").unwrap();
+    assert!(ref_pos > status_pos, "Ref should appear after Status");
+}
+
+#[test]
+fn format_detail_ref_absent() {
+    let t = sample_ticket("ur-abc12", "No ref");
+    let out = format_ticket_detail(&t, &[], &[]);
+    assert!(!out.contains("Ref:"), "No Ref line when ref meta is absent");
+}
+
+#[test]
+fn format_detail_ref_whitespace_only() {
+    let t = sample_ticket("ur-abc12", "Whitespace ref");
+    let meta = vec![MetadataEntry {
+        key: ticket_meta::REF.to_owned(),
+        value: "   ".to_owned(),
+    }];
+    let out = format_ticket_detail(&t, &meta, &[]);
+    assert!(
+        !out.contains("Ref:"),
+        "No Ref line when ref value is whitespace-only"
+    );
 }
 
 #[test]
