@@ -560,7 +560,11 @@ impl WorkerManager {
         .add_project_hostexec_scripts(
             &config.hostexec_scripts,
             &shim_host_path,
-            config.workspace_dir.as_deref(),
+            config
+                .workspace_dir
+                .as_ref()
+                .map(|p| self.repo_pool_manager.host_to_local_path(p))
+                .as_deref(),
         )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)

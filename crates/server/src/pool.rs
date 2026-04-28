@@ -240,7 +240,7 @@ impl RepoPoolManager {
     ///
     /// Replaces the host_workspace prefix with local_workspace prefix.
     /// Falls back to the input path if no prefix match (e.g., in tests).
-    fn host_to_local_path(&self, host_path: &Path) -> PathBuf {
+    pub fn host_to_local_path(&self, host_path: &Path) -> PathBuf {
         let host_prefix = self.host_workspace.to_string_lossy();
         let path_str = host_path.to_string_lossy();
         if let Some(suffix) = path_str.strip_prefix(host_prefix.as_ref()) {
