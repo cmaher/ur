@@ -410,6 +410,10 @@ struct RawProjectConfig {
     /// CI check names to ignore when evaluating workflow status.
     #[serde(default)]
     ignored_workflow_checks: Vec<String>,
+    /// Relative paths to host-exec scripts that agents running against this
+    /// project are allowed to invoke. Stored in canonical form (no leading `./`).
+    #[serde(default)]
+    hostexec_scripts: Vec<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -1086,6 +1090,9 @@ pub struct ProjectConfig {
     pub tui: Option<ProjectTuiConfig>,
     /// CI check names to ignore when evaluating workflow status.
     pub ignored_workflow_checks: Vec<String>,
+    /// Relative paths to host-exec scripts that agents running against this
+    /// project are allowed to invoke. Stored in canonical form (no leading `./`).
+    pub hostexec_scripts: Vec<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1359,6 +1366,8 @@ fn resolve_project_config(
         theme_name: t.theme,
     });
 
+    let hostexec_scripts = normalize_hostexec_scripts(&key, raw_proj.hostexec_scripts)?;
+
     let resolved = ProjectConfig {
         name: raw_proj.name.unwrap_or_else(|| key.clone()),
         repo: raw_proj.repo,
@@ -1378,6 +1387,7 @@ fn resolve_project_config(
             .unwrap_or_else(default_protected_branches),
         tui,
         ignored_workflow_checks: raw_proj.ignored_workflow_checks,
+        hostexec_scripts,
     };
     Ok((key, resolved))
 }
@@ -1673,6 +1683,53 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
     }
     // Mount validation is handled by parse_mount_entry during config loading.
     Ok(())
+}
+
+/// Normalize and validate a list of `hostexec_scripts` entries for a project.
+///
+/// Normalization:
+/// - Strips a single leading `./` from each entry.
+///
+/// Validation rejects:
+/// - Empty strings.
+/// - Absolute paths (starting with `/`).
+/// - Paths containing `..` segments.
+/// - Paths starting with `%PROJECT%`.
+fn normalize_hostexec_scripts(key: &str, scripts: Vec<String>) -> anyhow::Result<Vec<String>> {
+    scripts
+        .into_iter()
+        .map(|s| {
+            let normalized = s.strip_prefix("./").unwrap_or(&s).to_string();
+            if normalized.is_empty() {
+                anyhow::bail!(
+                    "project '{}': hostexec_scripts: empty string is not allowed",
+                    key
+                );
+            }
+            if normalized.starts_with('/') {
+                anyhow::bail!(
+                    "project '{}': hostexec_scripts: '{}' must be a relative path, not absolute",
+                    key,
+                    normalized
+                );
+            }
+            if normalized.split('/').any(|seg| seg == "..") {
+                anyhow::bail!(
+                    "project '{}': hostexec_scripts: '{}' must not contain '..' segments",
+                    key,
+                    normalized
+                );
+            }
+            if normalized.starts_with("%PROJECT%") {
+                anyhow::bail!(
+                    "project '{}': hostexec_scripts: '{}' must not start with '%PROJECT%'",
+                    key,
+                    normalized
+                );
+            }
+            Ok(normalized)
+        })
+        .collect()
 }
 
 /// Resolve the project key from an explicit flag, env var, or cwd dirname.
@@ -3552,6 +3609,7 @@ quit = ["q"]
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
+                    hostexec_scripts: vec![],
                 },
             );
             m.insert(
@@ -3575,6 +3633,7 @@ quit = ["q"]
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
+                    hostexec_scripts: vec![],
                 },
             );
             m
@@ -3692,6 +3751,7 @@ quit = ["q"]
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
+                    hostexec_scripts: vec![],
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
@@ -3880,5 +3940,180 @@ image = "ur-worker"
         // Per-project theme is set
         let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
         assert_eq!(tui.theme_name.as_deref(), Some("nord"));
+    }
+
+    mod hostexec_scripts_tests {
+        use super::*;
+
+        fn toml_with_scripts(scripts: &str) -> String {
+            format!(
+                r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+hostexec_scripts = {scripts}
+[projects.ur.container]
+image = "ur-worker"
+"#
+            )
+        }
+
+        #[test]
+        fn defaults_to_empty_when_absent() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert!(cfg.projects["ur"].hostexec_scripts.is_empty());
+        }
+
+        #[test]
+        fn accepts_plain_relative_path() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["needs-to-run-on-host.sh"]"#),
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert_eq!(
+                cfg.projects["ur"].hostexec_scripts,
+                vec!["needs-to-run-on-host.sh"]
+            );
+        }
+
+        #[test]
+        fn accepts_subdirectory_path() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["scripts/deploy.sh"]"#),
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert_eq!(
+                cfg.projects["ur"].hostexec_scripts,
+                vec!["scripts/deploy.sh"]
+            );
+        }
+
+        #[test]
+        fn normalizes_leading_dot_slash() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["./needs-to-run-on-host.sh", "./scripts/deploy.sh"]"#),
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert_eq!(
+                cfg.projects["ur"].hostexec_scripts,
+                vec!["needs-to-run-on-host.sh", "scripts/deploy.sh"]
+            );
+        }
+
+        #[test]
+        fn rejects_empty_string() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_scripts(r#"[""]"#)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("empty string"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn rejects_absolute_path() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["/usr/local/bin/script.sh"]"#),
+            )
+            .unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("absolute"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn rejects_dotdot_segment() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["../escape.sh"]"#),
+            )
+            .unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            assert!(err.to_string().contains(".."), "unexpected error: {err}");
+        }
+
+        #[test]
+        fn rejects_dotdot_in_middle() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["scripts/../escape.sh"]"#),
+            )
+            .unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            assert!(err.to_string().contains(".."), "unexpected error: {err}");
+        }
+
+        #[test]
+        fn rejects_project_prefix() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["%PROJECT%/scripts/run.sh"]"#),
+            )
+            .unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            assert!(
+                err.to_string().contains("%PROJECT%"),
+                "unexpected error: {err}"
+            );
+        }
+
+        #[test]
+        fn error_message_names_offending_entry() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["/bad/path.sh"]"#),
+            )
+            .unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("/bad/path.sh"),
+                "error should name the offending entry: {msg}"
+            );
+        }
+
+        #[test]
+        fn normalize_does_not_strip_more_than_one_leading_dot_slash() {
+            let tmp = TempDir::new().unwrap();
+            // "././script.sh" — only one leading "./" is stripped; result is "./script.sh"
+            // which is still relative and valid (no absolute, no .., no %PROJECT%)
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                toml_with_scripts(r#"["././script.sh"]"#),
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert_eq!(cfg.projects["ur"].hostexec_scripts, vec!["./script.sh"]);
+        }
     }
 }
