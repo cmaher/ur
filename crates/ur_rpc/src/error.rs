@@ -23,6 +23,7 @@ pub const TICKET_HAS_ACTIVE_WORKFLOW: &str = "TICKET_HAS_ACTIVE_WORKFLOW";
 // HostExec reason codes
 // ---------------------------------------------------------------------------
 pub const COMMAND_NOT_ALLOWED: &str = "COMMAND_NOT_ALLOWED";
+pub const SCRIPT_NOT_ALLOWED: &str = "SCRIPT_NOT_ALLOWED";
 pub const TRANSFORM_REJECTED: &str = "TRANSFORM_REJECTED";
 pub const BUILDERD_UNAVAILABLE: &str = "BUILDERD_UNAVAILABLE";
 
