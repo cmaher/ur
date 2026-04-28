@@ -520,7 +520,7 @@ async fn ensure_pr(
     };
 
     let opts = CreatePrOpts {
-        title: title.to_string(),
+        title: build_pr_title(title, &meta),
         body: pr_body,
         head: branch.to_string(),
         base: String::new(),
