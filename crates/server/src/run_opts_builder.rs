@@ -294,6 +294,34 @@ impl RunOptsBuilder {
         self
     }
 
+    /// Add bind mounts for project hostexec scripts.
+    ///
+    /// For each entry in `scripts`, mounts `shim_host_path` read-only over
+    /// `/workspace/<rel_path>` inside the container. This causes the worker to
+    /// invoke the hostexec shim whenever it runs the declared script path.
+    ///
+    /// - No-op when `scripts` is empty.
+    /// - When `workspace_path` is provided, checks that each script exists at
+    ///   `<workspace_path>/<rel_path>` and returns an error if any are missing,
+    ///   preventing a silent Docker bind-mount failure.
+    pub fn add_project_hostexec_scripts(
+        mut self,
+        scripts: &[String],
+        shim_host_path: &std::path::Path,
+        workspace_path: Option<&std::path::Path>,
+    ) -> Result<Self, String> {
+        if scripts.is_empty() {
+            return Ok(self);
+        }
+        for rel_path in scripts {
+            check_script_exists(rel_path, workspace_path)?;
+            let container_path = PathBuf::from(format!("/workspace/{rel_path}:ro"));
+            self.volumes
+                .push((shim_host_path.to_path_buf(), container_path));
+        }
+        Ok(self)
+    }
+
     /// Add environment variables to the container.
     pub fn add_env_vars(mut self, env_vars: Vec<(String, String)>) -> Self {
         self.env_vars.extend(env_vars);
@@ -316,6 +344,26 @@ impl RunOptsBuilder {
             add_hosts: vec![],
         }
     }
+}
+
+/// Pre-launch sanity check for a single hostexec script entry.
+///
+/// When `workspace_path` is provided, verifies that `rel_path` exists under it.
+/// Returns an error message if the script is absent so callers can surface it
+/// before Docker silently mounts a missing source.
+fn check_script_exists(rel_path: &str, workspace_path: Option<&Path>) -> Result<(), String> {
+    let Some(ws_path) = workspace_path else {
+        return Ok(());
+    };
+    let source_path = ws_path.join(rel_path);
+    if !source_path.exists() {
+        return Err(format!(
+            "hostexec script '{rel_path}' not found at '{}': \
+             ensure the script is committed to the repository",
+            source_path.display()
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -794,5 +842,103 @@ mod tests {
         assert_eq!(opts.env_vars.len(), 1);
         assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
         assert_eq!(opts.env_vars[0].1, "/workspace/CLAUDE.md");
+    }
+
+    #[test]
+    fn add_project_hostexec_scripts_empty_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_hostexec_scripts(&[], Path::new("/unused/shim.sh"), None)
+            .unwrap()
+            .build();
+
+        assert!(opts.volumes.is_empty());
+    }
+
+    #[test]
+    fn add_project_hostexec_scripts_multi_entry_mounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim_path = tmp.path().join("script-shim.sh");
+        std::fs::write(&shim_path, "#!/bin/sh\n").unwrap();
+
+        let scripts = vec!["scripts/deploy.sh".to_string(), "tools/lint.sh".to_string()];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_hostexec_scripts(&scripts, &shim_path, None)
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 2);
+        assert_eq!(opts.volumes[0].0, shim_path);
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/workspace/scripts/deploy.sh:ro")
+        );
+        assert_eq!(opts.volumes[1].0, shim_path);
+        assert_eq!(
+            opts.volumes[1].1,
+            PathBuf::from("/workspace/tools/lint.sh:ro")
+        );
+    }
+
+    #[test]
+    fn add_project_hostexec_scripts_no_workspace_skips_existence_check() {
+        // When workspace_path is None, no existence check is done — mount is added regardless.
+        let shim_path = Path::new("/nonexistent/shim.sh");
+        let scripts = vec!["run.sh".to_string()];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_hostexec_scripts(&scripts, shim_path, None)
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/nonexistent/shim.sh"));
+        assert_eq!(opts.volumes[0].1, PathBuf::from("/workspace/run.sh:ro"));
+    }
+
+    #[test]
+    fn add_project_hostexec_scripts_missing_source_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim_path = tmp.path().join("script-shim.sh");
+        std::fs::write(&shim_path, "#!/bin/sh\n").unwrap();
+
+        // Workspace exists but script does not.
+        let scripts = vec!["scripts/deploy.sh".to_string()];
+        let result = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_hostexec_scripts(&scripts, &shim_path, Some(tmp.path()));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("scripts/deploy.sh"),
+            "error should name the missing script: {err}"
+        );
+        assert!(
+            err.contains("not found"),
+            "error should say 'not found': {err}"
+        );
+    }
+
+    #[test]
+    fn add_project_hostexec_scripts_present_source_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim_path = tmp.path().join("script-shim.sh");
+        std::fs::write(&shim_path, "#!/bin/sh\n").unwrap();
+
+        // Create the script in the workspace.
+        let scripts_dir = tmp.path().join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(scripts_dir.join("deploy.sh"), "#!/bin/sh\necho deploy\n").unwrap();
+
+        let scripts = vec!["scripts/deploy.sh".to_string()];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_project_hostexec_scripts(&scripts, &shim_path, Some(tmp.path()))
+            .unwrap()
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, shim_path);
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/workspace/scripts/deploy.sh:ro")
+        );
     }
 }

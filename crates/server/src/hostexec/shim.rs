@@ -29,10 +29,10 @@ pub fn materialize_shim(config_dir: &Path) -> anyhow::Result<PathBuf> {
 /// Write the shim to `path` atomically if the current content differs.
 fn write_shim_if_needed(path: &Path) -> anyhow::Result<()> {
     // Read existing content to check for idempotency.
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing == SHIM_CONTENT {
-            return Ok(());
-        }
+    if let Ok(existing) = std::fs::read_to_string(path)
+        && existing == SHIM_CONTENT
+    {
+        return Ok(());
     }
 
     // Write to a sibling temp file then rename into place.

@@ -357,18 +357,34 @@ impl LaunchManager {
             req.skills.clone()
         };
 
-        let (git_hooks_dir, skill_hooks_dir, claude_md, mounts, ports, resolved_image) =
-            match self.project_registry.get(&project_key) {
-                Some(proj) if !project_key.is_empty() => (
-                    proj.git_hooks_dir.clone(),
-                    proj.skill_hooks_dir.clone(),
-                    proj.claude_md.clone(),
-                    proj.container.mounts.clone(),
-                    proj.container.ports.clone(),
-                    proj.container.image.clone(),
-                ),
-                _ => (None, None, None, Vec::new(), Vec::new(), String::new()),
-            };
+        let (
+            git_hooks_dir,
+            skill_hooks_dir,
+            claude_md,
+            mounts,
+            ports,
+            resolved_image,
+            hostexec_scripts,
+        ) = match self.project_registry.get(&project_key) {
+            Some(proj) if !project_key.is_empty() => (
+                proj.git_hooks_dir.clone(),
+                proj.skill_hooks_dir.clone(),
+                proj.claude_md.clone(),
+                proj.container.mounts.clone(),
+                proj.container.ports.clone(),
+                proj.container.image.clone(),
+                proj.hostexec_scripts.clone(),
+            ),
+            _ => (
+                None,
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+                String::new(),
+                Vec::new(),
+            ),
+        };
 
         // Use the image from the request if provided, otherwise fall back to
         // the project's configured image.
@@ -414,6 +430,7 @@ impl LaunchManager {
             ports,
             slot_id,
             context_mounts,
+            hostexec_scripts,
         };
         let (container_id, _worker_secret) = self
             .worker_manager
