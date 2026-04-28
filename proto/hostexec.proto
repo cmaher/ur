@@ -20,6 +20,7 @@ message HostExecRequest {
   string command = 1;
   repeated string args = 2;
   string working_dir = 3;
+  string script_path = 4;
 }
 
 message ListHostExecCommandsRequest {}
