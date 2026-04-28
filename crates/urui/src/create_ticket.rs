@@ -22,6 +22,51 @@ const TITLE_PLACEHOLDER: &str = "<summarize>";
 pub const BRANCH_PLACEHOLDER: &str = "<ticket-id>";
 const DEFAULT_TICKET_TYPE: &str = "design";
 
+/// Metadata keys that the editor is allowed to set or delete.
+///
+/// Workflow-managed keys (e.g. `autoapprove`, `pr_number`, `gh_repo`,
+/// `feedback_mode`) are intentionally excluded so the edit flow cannot
+/// clobber running workflow state.
+pub const EDITABLE_META_KEYS: &[&str] = &[ur_rpc::ticket_meta::REF];
+
+/// Compute the meta diff between server state and editor output.
+///
+/// For each key in the allowlist:
+/// - Editor has a non-empty value that differs from server → include in `meta_set`.
+/// - Server has the key but editor omits or empties it → include in `meta_delete`.
+/// - Value unchanged → skip.
+///
+/// Keys not in the allowlist are never touched.
+pub fn compute_meta_diff(
+    server: &BTreeMap<String, String>,
+    editor: &BTreeMap<String, String>,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut meta_set: Vec<(String, String)> = Vec::new();
+    let mut meta_delete: Vec<String> = Vec::new();
+
+    for &key in EDITABLE_META_KEYS {
+        let server_val = server.get(key).map(|s| s.as_str()).unwrap_or("");
+        let editor_val = editor.get(key).map(|s| s.as_str()).unwrap_or("");
+
+        match (server_val.is_empty(), editor_val.is_empty()) {
+            // Both empty — no change.
+            (true, true) => {}
+            // Server empty, editor has value → set.
+            (true, false) => meta_set.push((key.to_owned(), editor_val.to_owned())),
+            // Server has value, editor empty → delete.
+            (false, true) => meta_delete.push(key.to_owned()),
+            // Both non-empty — set only if changed.
+            (false, false) => {
+                if editor_val != server_val {
+                    meta_set.push((key.to_owned(), editor_val.to_owned()));
+                }
+            }
+        }
+    }
+
+    (meta_set, meta_delete)
+}
+
 /// Normalize a ticket type string: maps aliases to their canonical form.
 ///
 /// Maps "task" → "code", "epic" → "code", "c" → "code", "d" → "design".
@@ -861,5 +906,123 @@ mod tests {
         let ticket = parse_ticket_file(content).unwrap();
         assert_eq!(ticket.title, "Old ticket");
         assert!(ticket.meta.is_empty());
+    }
+
+    // --- compute_meta_diff tests ---
+
+    fn ref_key() -> String {
+        ur_rpc::ticket_meta::REF.to_owned()
+    }
+
+    /// Case 1: setting a previously-empty `ref` → meta_set entry.
+    #[test]
+    fn meta_diff_set_new_value() {
+        let server: BTreeMap<String, String> = BTreeMap::new();
+        let mut editor = BTreeMap::new();
+        editor.insert(ref_key(), "PROJ-42".to_owned());
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert_eq!(meta_set, vec![(ref_key(), "PROJ-42".to_owned())]);
+        assert!(meta_delete.is_empty());
+    }
+
+    /// Case 2: changing an existing `ref` → meta_set with new value.
+    #[test]
+    fn meta_diff_change_existing_value() {
+        let mut server = BTreeMap::new();
+        server.insert(ref_key(), "OLD-1".to_owned());
+        let mut editor = BTreeMap::new();
+        editor.insert(ref_key(), "NEW-2".to_owned());
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert_eq!(meta_set, vec![(ref_key(), "NEW-2".to_owned())]);
+        assert!(meta_delete.is_empty());
+    }
+
+    /// Case 3: clearing an existing `ref` → meta_delete entry.
+    #[test]
+    fn meta_diff_clear_existing_value() {
+        let mut server = BTreeMap::new();
+        server.insert(ref_key(), "JIRA-99".to_owned());
+        let editor: BTreeMap<String, String> = BTreeMap::new();
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert!(meta_set.is_empty());
+        assert_eq!(meta_delete, vec![ref_key()]);
+    }
+
+    /// Case 4: unchanged `ref` → no diff entries.
+    #[test]
+    fn meta_diff_unchanged_value() {
+        let mut server = BTreeMap::new();
+        server.insert(ref_key(), "SAME-1".to_owned());
+        let mut editor = BTreeMap::new();
+        editor.insert(ref_key(), "SAME-1".to_owned());
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert!(meta_set.is_empty());
+        assert!(meta_delete.is_empty());
+    }
+
+    /// Both server and editor have no value for `ref` → no diff entries.
+    #[test]
+    fn meta_diff_both_empty() {
+        let server: BTreeMap<String, String> = BTreeMap::new();
+        let editor: BTreeMap<String, String> = BTreeMap::new();
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert!(meta_set.is_empty());
+        assert!(meta_delete.is_empty());
+    }
+
+    /// Allowlist guard: workflow-managed keys in editor are NOT included in diff.
+    #[test]
+    fn meta_diff_allowlist_blocks_workflow_keys() {
+        let server: BTreeMap<String, String> = BTreeMap::new();
+        let mut editor = BTreeMap::new();
+        // These are workflow-managed keys that must never be touched.
+        editor.insert("autoapprove".to_owned(), "true".to_owned());
+        editor.insert("pr_number".to_owned(), "123".to_owned());
+        editor.insert("gh_repo".to_owned(), "org/repo".to_owned());
+        editor.insert("feedback_mode".to_owned(), "now".to_owned());
+        editor.insert("noverify".to_owned(), "true".to_owned());
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert!(
+            meta_set.is_empty(),
+            "workflow-managed keys must not be set via editor diff"
+        );
+        assert!(meta_delete.is_empty());
+    }
+
+    /// Allowlist guard: workflow-managed key on server side is not deleted even if
+    /// editor omits it.
+    #[test]
+    fn meta_diff_allowlist_does_not_delete_workflow_keys() {
+        let mut server = BTreeMap::new();
+        server.insert("autoapprove".to_owned(), "true".to_owned());
+        server.insert("pr_number".to_owned(), "42".to_owned());
+        let editor: BTreeMap<String, String> = BTreeMap::new();
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert!(meta_set.is_empty());
+        assert!(
+            meta_delete.is_empty(),
+            "workflow-managed keys must not be deleted via editor diff"
+        );
+    }
+
+    /// Mixed: allowlisted key changed, non-allowlisted key added → only allowlisted key in diff.
+    #[test]
+    fn meta_diff_mixed_keys_only_allowlisted_in_diff() {
+        let mut server = BTreeMap::new();
+        server.insert(ref_key(), "OLD".to_owned());
+        let mut editor = BTreeMap::new();
+        editor.insert(ref_key(), "NEW".to_owned());
+        editor.insert("autoapprove".to_owned(), "true".to_owned());
+
+        let (meta_set, meta_delete) = compute_meta_diff(&server, &editor);
+        assert_eq!(meta_set, vec![(ref_key(), "NEW".to_owned())]);
+        assert!(meta_delete.is_empty());
     }
 }
