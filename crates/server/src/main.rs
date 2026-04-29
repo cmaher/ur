@@ -267,6 +267,8 @@ async fn init_and_serve(
         cancel_tx: None,     // set in serve_grpc_servers after builderd connects
         ui_event_poller: Some(ui_event_poller.clone()),
         worker_manager: Some(worker_manager.clone()),
+        worker_repo: Some(worker_repo.clone()),
+        worker_prefix: cfg.network.worker_prefix.clone(),
     };
 
     let launch_manager = ur_server::grpc::LaunchManager {
@@ -410,6 +412,28 @@ fn spawn_workflow_services(
     }
 }
 
+/// Push the tmux status-left label for a single worker, with a 5s timeout.
+/// Logs the result at `info!` or `warn!` level. Fire-and-forget helper for
+/// `spawn_startup_label_backfill`.
+async fn push_label_for_worker(deps: ur_server::worker_label::WorkerLabelDeps, worker_id: String) {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ur_server::worker_label::push(&deps, &worker_id),
+    )
+    .await;
+    match result {
+        Ok(Ok(())) => {
+            info!(worker_id = %worker_id, "startup label backfill: pushed label");
+        }
+        Ok(Err(e)) => {
+            warn!(worker_id = %worker_id, error = %e, "startup label backfill: failed to push label");
+        }
+        Err(_elapsed) => {
+            warn!(worker_id = %worker_id, "startup label backfill: timed out after 5s");
+        }
+    }
+}
+
 /// Spawn a fire-and-forget task that pushes a fresh tmux status-left label to
 /// every live worker. Each worker gets its own bounded task (5 s timeout).
 /// Failures are logged at `warn!`; successes at `info!`. Never blocks startup.
@@ -448,24 +472,7 @@ fn spawn_startup_label_backfill(
             .map(|w| {
                 let deps = deps.clone();
                 let worker_id = w.worker_id.clone();
-                tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        ur_server::worker_label::push(&deps, &worker_id),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(())) => {
-                            info!(worker_id = %worker_id, "startup label backfill: pushed label");
-                        }
-                        Ok(Err(e)) => {
-                            warn!(worker_id = %worker_id, error = %e, "startup label backfill: failed to push label");
-                        }
-                        Err(_elapsed) => {
-                            warn!(worker_id = %worker_id, "startup label backfill: timed out after 5s");
-                        }
-                    }
-                })
+                tokio::spawn(push_label_for_worker(deps, worker_id))
             })
             .collect();
 

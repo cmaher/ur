@@ -434,10 +434,10 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         let session = tmux::Session::agent();
 
         if req.status_left_length != 0 {
-            if let Err(e) = session
+            let set_len_result = session
                 .set_option("status-left-length", &req.status_left_length.to_string())
-                .await
-            {
+                .await;
+            if let Err(e) = set_len_result {
                 error!(error = %e, "tmux set-option status-left-length failed");
                 return Ok(Response::new(SetStatusLeftResponse {
                     success: false,

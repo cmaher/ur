@@ -14,3 +14,6 @@ pub const FEEDBACK_MODE: &str = "feedback_mode";
 
 /// Metadata key for a reference label (e.g. a Jira ticket or external ID) to prepend to PR titles.
 pub const REF: &str = "ref";
+
+/// Metadata key storing the GitHub PR number associated with the ticket.
+pub const PR_NUMBER: &str = "pr_number";

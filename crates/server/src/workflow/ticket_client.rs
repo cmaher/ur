@@ -190,6 +190,8 @@ mod tests {
             cancel_tx: None,
             ui_event_poller: None,
             worker_manager: None,
+            worker_repo: None,
+            worker_prefix: String::new(),
         };
 
         let client = TicketClient::new(handler);

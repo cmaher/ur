@@ -122,9 +122,61 @@ pub struct TicketServiceHandler {
     /// Optional worker manager for killing workers when workflows are cancelled.
     /// None on the worker server.
     pub worker_manager: Option<WorkerManager>,
+    /// Optional worker repo for pushing tmux status-left labels when pr_number metadata changes.
+    /// None on the worker server or in tests without worker infrastructure.
+    pub worker_repo: Option<workflow_db::WorkerRepo>,
+    /// Docker container name prefix for workers (e.g., `ur-worker-`).
+    /// Used with `worker_repo` to construct `WorkerLabelDeps` for label pushes.
+    pub worker_prefix: String,
 }
 
 impl TicketServiceHandler {
+    /// Spawn a background task to refresh the tmux status-left label for the worker
+    /// assigned to `ticket_id`. Best-effort: errors are logged at `warn`.
+    ///
+    /// No-op when `worker_repo` is `None` (worker server or test environments without
+    /// real worker infrastructure).
+    fn spawn_label_refresh_for_ticket(&self, ticket_id: &str) {
+        let Some(worker_repo) = self.worker_repo.clone() else {
+            return;
+        };
+        let workflow_repo = self.workflow_repo.clone();
+        let ticket_repo = self.ticket_repo.clone();
+        let worker_prefix = self.worker_prefix.clone();
+        let ticket_id = ticket_id.to_owned();
+
+        tokio::spawn(async move {
+            // Resolve the worker_id from the ticket's active workflow.
+            let worker_id = match workflow_repo.get_workflow_by_ticket(&ticket_id).await {
+                Ok(Some(wf)) if !wf.worker_id.is_empty() => wf.worker_id,
+                Ok(_) => return, // No active workflow or no worker assigned — nothing to refresh.
+                Err(e) => {
+                    tracing::warn!(
+                        ticket_id = %ticket_id,
+                        error = %e,
+                        "spawn_label_refresh_for_ticket: failed to look up workflow"
+                    );
+                    return;
+                }
+            };
+
+            let deps = crate::worker_label::WorkerLabelDeps {
+                workflow_repo,
+                ticket_repo,
+                worker_repo,
+                worker_prefix,
+            };
+            if let Err(e) = crate::worker_label::push(&deps, &worker_id).await {
+                tracing::warn!(
+                    ticket_id = %ticket_id,
+                    worker_id = %worker_id,
+                    error = %e,
+                    "spawn_label_refresh_for_ticket: failed to push worker label"
+                );
+            }
+        });
+    }
+
     /// Enrich a workflow with history events, ticket progress, and PR URL.
     async fn enrich_workflow(&self, wf: workflow_db::Workflow) -> Result<WorkflowInfo, Status> {
         let pr_url = self
@@ -817,6 +869,12 @@ impl TicketService for TicketServiceHandler {
                     .set_meta(&req.ticket_id, "ticket", &req.key, &req.value)
                     .await
                     .map_err(|e| TicketError::Db(e.to_string()))?;
+
+                // When pr_number is set, refresh the worker's tmux status-left label so
+                // the PR number appears immediately without waiting for the next startup backfill.
+                if req.key == ur_rpc::ticket_meta::PR_NUMBER {
+                    self.spawn_label_refresh_for_ticket(&req.ticket_id);
+                }
             }
         }
 
@@ -1369,6 +1427,8 @@ mod tests {
             cancel_tx: None,
             ui_event_poller: None,
             worker_manager: None,
+            worker_repo: None,
+            worker_prefix: String::new(),
         };
         (test_db, handler)
     }

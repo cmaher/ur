@@ -237,6 +237,8 @@ async fn two_db_split_events_arrive_on_merged_stream() {
         cancel_tx: None,
         ui_event_poller: Some(ui_event_poller.clone()),
         worker_manager: None,
+        worker_repo: None,
+        worker_prefix: String::new(),
     };
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
