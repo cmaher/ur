@@ -192,7 +192,7 @@ async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Re
         .await?
         .ok_or_else(|| anyhow::anyhow!("no workflow found for ticket {ticket_id}"))?;
 
-    if workflow.implement_cycles >= max_cycles {
+    if workflow.implement_cycles as u32 >= max_cycles {
         let reason = format!(
             "implement cycle limit reached ({}/{})",
             workflow.implement_cycles, max_cycles
