@@ -762,8 +762,7 @@ mod tests {
         // Walk through the string, skipping ESC sequences and BEL characters.
         // An OSC sequence starts at ESC (0x1b) and ends at BEL (0x07) or ST (ESC\\).
         let mut in_esc = false;
-        let mut chars = sym.chars();
-        while let Some(c) = chars.next() {
+        for c in sym.chars() {
             match c {
                 '\x1b' => {
                     in_esc = true;
