@@ -6,6 +6,7 @@ pub mod force_close_confirm;
 pub mod goto_menu;
 pub mod header;
 pub mod help_overlay;
+pub mod hyperlink;
 pub mod overlay;
 pub mod priority_picker;
 pub mod progress_bar;
@@ -18,5 +19,6 @@ pub mod ticket_table;
 pub mod title_input;
 pub mod type_menu;
 
+pub use hyperlink::{format_pr_short, render_hyperlink, supports_osc8};
 pub use progress_bar::MiniProgressBar;
 pub use table::ThemedTable;
