@@ -610,9 +610,17 @@ mod tests {
         assert!(!manager.is_running().unwrap());
     }
 
-    #[test]
-    fn compose_manager_from_config_sets_env_vars() {
-        let config = ur_config::Config {
+    /// Build a fixed `ur_config::Config` used by env-var and compose generation tests.
+    ///
+    /// Config dir is `/test/config`, workspace `/test/workspace`, ports 9999/10000.
+    fn test_config_for_compose() -> ur_config::Config {
+        let backup = || ur_config::BackupConfig {
+            path: None,
+            interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
+            enabled: true,
+            retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
+        };
+        ur_config::Config {
             config_dir: PathBuf::from("/test/config"),
             logs_dir: PathBuf::from("/test/config/logs"),
             workspace: PathBuf::from("/test/workspace"),
@@ -638,12 +646,7 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_DB_NAME.to_string(),
                 bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
+                backup: backup(),
             },
             ticket_db: ur_config::TicketDbConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
@@ -652,12 +655,7 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_TICKET_DB_NAME.to_string(),
                 bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
+                backup: backup(),
             },
             workflow_db: ur_config::WorkflowDbConfig {
                 host: ur_config::DEFAULT_DB_HOST.to_string(),
@@ -666,12 +664,7 @@ mod tests {
                 password: ur_config::DEFAULT_DB_PASSWORD.to_string(),
                 name: ur_config::DEFAULT_WORKFLOW_DB_NAME.to_string(),
                 bind_address: None,
-                backup: ur_config::BackupConfig {
-                    path: None,
-                    interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
-                    enabled: true,
-                    retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
-                },
+                backup: backup(),
             },
             git_branch_prefix: String::new(),
             server: ur_config::ServerConfig {
@@ -686,8 +679,13 @@ mod tests {
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
-        };
+            global_skills: ur_config::GlobalSkillsConfig::default(),
+        }
+    }
 
+    #[test]
+    fn compose_manager_from_config_sets_env_vars() {
+        let config = test_config_for_compose();
         let manager = compose_manager_from_config(&config);
         assert_eq!(
             manager.compose_file,
@@ -1257,6 +1255,7 @@ mod tests {
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
+            global_skills: ur_config::GlobalSkillsConfig::default(),
         };
 
         let manager = compose_manager_from_config(&config);
