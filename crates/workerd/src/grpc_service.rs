@@ -14,8 +14,8 @@ use ur_rpc::proto::workerd::{
     AddressFeedbackRequest, AddressFeedbackResponse, DesignRequest, DesignResponse,
     DispatchTicketRequest, DispatchTicketResponse, ImplementRequest, ImplementResponse,
     NotifyIdleRequest, NotifyIdleResponse, PauseNudgeRequest, PauseNudgeResponse,
-    SendMessageRequest, SendMessageResponse, SetTicketRequest, SetTicketResponse,
-    StepCompleteRequest, StepCompleteResponse,
+    SendMessageRequest, SendMessageResponse, SetStatusLeftRequest, SetStatusLeftResponse,
+    SetTicketRequest, SetTicketResponse, StepCompleteRequest, StepCompleteResponse,
 };
 
 /// Buffer for dispatched commands that workerd drains on idle signals.
@@ -418,6 +418,50 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         *stored = Some(ticket_id);
 
         Ok(Response::new(SetTicketResponse {}))
+    }
+
+    async fn set_status_left(
+        &self,
+        request: Request<SetStatusLeftRequest>,
+    ) -> Result<Response<SetStatusLeftResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            status_left = req.status_left.as_str(),
+            status_left_length = req.status_left_length,
+            "SetStatusLeft received"
+        );
+
+        let session = tmux::Session::agent();
+
+        if req.status_left_length != 0 {
+            let set_len_result = session
+                .set_option("status-left-length", &req.status_left_length.to_string())
+                .await;
+            if let Err(e) = set_len_result {
+                error!(error = %e, "tmux set-option status-left-length failed");
+                return Ok(Response::new(SetStatusLeftResponse {
+                    success: false,
+                    error: e.to_string(),
+                }));
+            }
+        }
+
+        match session.set_status_left(&req.status_left).await {
+            Ok(()) => {
+                info!("set-status-left succeeded");
+                Ok(Response::new(SetStatusLeftResponse {
+                    success: true,
+                    error: String::new(),
+                }))
+            }
+            Err(e) => {
+                error!(error = %e, "tmux set-status-left failed");
+                Ok(Response::new(SetStatusLeftResponse {
+                    success: false,
+                    error: e.to_string(),
+                }))
+            }
+        }
     }
 
     async fn dispatch_ticket(

@@ -11,6 +11,7 @@ service WorkerDaemonService {
   rpc PauseNudge(PauseNudgeRequest) returns (PauseNudgeResponse);
   rpc SetTicket(SetTicketRequest) returns (SetTicketResponse);
   rpc DispatchTicket(DispatchTicketRequest) returns (DispatchTicketResponse);
+  rpc SetStatusLeft(SetStatusLeftRequest) returns (SetStatusLeftResponse);
 }
 
 message SendMessageRequest {
@@ -69,4 +70,15 @@ message DispatchTicketRequest {}
 
 message DispatchTicketResponse {
   string error = 1;
+}
+
+message SetStatusLeftRequest {
+  string status_left = 1;
+  // When 0, the status-left-length is left unchanged.
+  uint32 status_left_length = 2;
+}
+
+message SetStatusLeftResponse {
+  bool success = 1;
+  string error = 2;
 }

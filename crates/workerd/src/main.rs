@@ -124,6 +124,7 @@ async fn run_daemon_only() -> Result<()> {
     // 2. Set tmux status line with worker ID
     let worker_id = std::env::var(ur_config::UR_WORKER_ID_ENV).unwrap_or_else(|_| "unknown".into());
     let status_left = format!("[{worker_id}] ");
+    session.set_option("status-left-length", "50").await?;
     session.set_status_left(&status_left).await?;
 
     // 3. Launch Claude Code via send-keys

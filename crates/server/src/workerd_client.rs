@@ -2,6 +2,7 @@ use tracing::warn;
 use ur_rpc::proto::workerd::worker_daemon_service_client::WorkerDaemonServiceClient;
 use ur_rpc::proto::workerd::{
     AddressFeedbackRequest, DesignRequest, ImplementRequest, SendMessageRequest,
+    SetStatusLeftRequest,
 };
 use ur_rpc::retry::{RetryChannel, RetryConfig};
 use workflow_db::WorkerRepo;
@@ -128,6 +129,35 @@ impl WorkerdClient {
 
         self.mark_working().await;
         Ok(())
+    }
+
+    /// Update the tmux status-left label for the worker's pane.
+    ///
+    /// Does NOT call `mark_working` — updating a label is not a dispatch
+    /// and should not change the agent's status.
+    pub async fn set_status_left(
+        &self,
+        status_left: &str,
+        status_left_length: u32,
+    ) -> Result<(), String> {
+        let mut client = WorkerDaemonServiceClient::new(self.retry_channel.channel().clone());
+
+        let req = SetStatusLeftRequest {
+            status_left: status_left.to_string(),
+            status_left_length,
+        };
+
+        let response = client
+            .set_status_left(req)
+            .await
+            .map_err(|e| format!("workerd SetStatusLeft failed: {e}"))?;
+
+        let resp = response.into_inner();
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error)
+        }
     }
 
     /// Fire-and-forget: send an /address-feedback skill invocation to the worker.

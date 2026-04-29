@@ -657,6 +657,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_hostexec_script_pool(&env);
         scenario_hostexec_script_workspace(&env, &config_path);
         scenario_global_skill_injection(&env);
+        scenario_worker_label_pr_status(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -2335,6 +2336,143 @@ fn scenario_global_skill_injection(env: &TestEnv) {
 
         // ---- Stop worker ----
         let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Read the tmux `status-left` value from a running worker container.
+///
+/// Executes `tmux display-message -p -t agent '#{status-left}'` inside the
+/// container and returns the trimmed string. Panics if the exec fails.
+fn read_tmux_status_left(runtime: &str, container: &str) -> String {
+    let output = Command::new(runtime)
+        .args([
+            "exec",
+            container,
+            "tmux",
+            "display-message",
+            "-p",
+            "-t",
+            "agent",
+            "#{status-left}",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to exec tmux display-message in {container}: {e}"));
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Worker tmux status-left label: verify bare label and PR label cases.
+///
+/// Flow:
+/// 1. Create a ticket and dispatch a worker.
+/// 2. Set `pr_number = 42` via `ur ticket set-meta` → spawns label refresh.
+/// 3. Poll up to 20s for the label to update to `[<ticket_id> PR-42]`.
+/// 4. Delete `pr_number` via `ur ticket delete-meta` → spawns label refresh.
+/// 5. Poll up to 20s for the label to revert to `[<ticket_id>]`.
+/// 6. Stop worker.
+///
+/// Both assertions use the set-meta / delete-meta trigger paths
+/// (spawn_label_refresh_for_ticket) rather than waiting for the agent to
+/// report idle — this avoids timing sensitivity around Claude Code startup.
+fn scenario_worker_label_pr_status(env: &TestEnv) {
+    let ticket_id = create_test_ticket(env, "Worker label PR status test");
+    let container_name = env.container_name(&ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch with dispatch so the workflow row is created ----
+        launch_dispatched_worker(env, &ticket_id, &container_name);
+
+        // ---- Set pr_number metadata → spawn_label_refresh_for_ticket pushes PR label ----
+        let set_meta_output = run_cmd(
+            &env.ur,
+            &[
+                "--output",
+                "json",
+                "ticket",
+                "set-meta",
+                &ticket_id,
+                "pr_number",
+                "42",
+            ],
+            &env_slice,
+        );
+        assert!(
+            set_meta_output.status.success(),
+            "ur ticket set-meta pr_number failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&set_meta_output.stdout),
+            String::from_utf8_lossy(&set_meta_output.stderr),
+        );
+
+        // ---- Poll up to 20s for the label to include PR-42 ----
+        let pr_expected = format!("[{ticket_id} PR-42]");
+        let mut pr_ok = false;
+        for _ in 0..80 {
+            let label = read_tmux_status_left(&env.runtime, &container_name);
+            if label == pr_expected {
+                pr_ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert!(
+            pr_ok,
+            "expected PR status-left '{pr_expected}' within 20s after set-meta; \
+             last value: '{}'",
+            read_tmux_status_left(&env.runtime, &container_name),
+        );
+
+        // ---- Delete pr_number → spawn_label_refresh_for_ticket pushes bare label ----
+        let delete_meta_output = run_cmd(
+            &env.ur,
+            &[
+                "--output",
+                "json",
+                "ticket",
+                "delete-meta",
+                &ticket_id,
+                "pr_number",
+            ],
+            &env_slice,
+        );
+        assert!(
+            delete_meta_output.status.success(),
+            "ur ticket delete-meta pr_number failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&delete_meta_output.stdout),
+            String::from_utf8_lossy(&delete_meta_output.stderr),
+        );
+
+        // ---- Poll up to 20s for the label to revert to the bare form ----
+        let bare_expected = format!("[{ticket_id}]");
+        let mut bare_ok = false;
+        for _ in 0..80 {
+            let label = read_tmux_status_left(&env.runtime, &container_name);
+            if label == bare_expected {
+                bare_ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert!(
+            bare_ok,
+            "expected bare status-left '{bare_expected}' within 20s after delete-meta; \
+             last value: '{}'",
+            read_tmux_status_left(&env.runtime, &container_name),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
         assert!(
             stop_output.status.success(),
             "ur worker stop failed.\nstdout: {}\nstderr: {}",
