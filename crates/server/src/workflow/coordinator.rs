@@ -555,7 +555,7 @@ mod tests {
             server: ur_config::ServerConfig {
                 container_command: "docker".into(),
                 stale_worker_ttl_days: 7,
-                max_implement_cycles: Some(6),
+                max_implement_cycles: Some(6u32),
                 poll_interval_ms: 500,
                 github_scan_interval_secs: 30,
                 builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,

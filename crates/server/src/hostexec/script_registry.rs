@@ -69,6 +69,7 @@ mod tests {
             },
             workflow_hooks_dir: None,
             max_fix_attempts: 5,
+            max_implement_cycles: Some(ur_config::DEFAULT_MAX_IMPLEMENT_CYCLES),
             protected_branches: vec!["main".to_string(), "master".to_string()],
             tui: None,
             ignored_workflow_checks: vec![],

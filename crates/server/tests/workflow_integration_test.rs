@@ -275,6 +275,14 @@ fn dummy_builderd_client() -> ur_rpc::proto::builder::BuilderdClient {
 }
 
 fn dummy_config() -> Arc<ur_config::Config> {
+    config_with_projects(std::collections::HashMap::new(), Some(6))
+}
+
+/// Build a test config with a custom projects map and server-wide cycle limit.
+fn config_with_projects(
+    projects: std::collections::HashMap<String, ur_config::ProjectConfig>,
+    server_max_implement_cycles: Option<u32>,
+) -> Arc<ur_config::Config> {
     let backup = ur_config::BackupConfig {
         path: None,
         interval_minutes: ur_config::DEFAULT_BACKUP_INTERVAL_MINUTES,
@@ -331,14 +339,14 @@ fn dummy_config() -> Arc<ur_config::Config> {
         server: ur_config::ServerConfig {
             container_command: "docker".into(),
             stale_worker_ttl_days: 7,
-            max_implement_cycles: Some(6),
+            max_implement_cycles: server_max_implement_cycles,
             poll_interval_ms: 500,
             github_scan_interval_secs: 30,
             builderd_retry_count: ur_config::DEFAULT_BUILDERD_RETRY_COUNT,
             builderd_retry_backoff_ms: ur_config::DEFAULT_BUILDERD_RETRY_BACKOFF_MS,
             ui_event_fallback_interval_ms: ur_config::DEFAULT_UI_EVENT_FALLBACK_INTERVAL_MS,
         },
-        projects: std::collections::HashMap::new(),
+        projects,
         tui: ur_config::TuiConfig::default(),
         global_skills: ur_config::GlobalSkillsConfig::default(),
     })
@@ -673,4 +681,163 @@ async fn coordinator_dequeues_pending_across_grpc_boundary() {
     assert_eq!(await_count.load(), 1);
 
     h.shutdown().await;
+}
+
+/// Test that a per-project `max_implement_cycles` override stalls the workflow
+/// at the project limit even when the server-wide default is higher.
+///
+/// Configuration: "fast-project" has `max_implement_cycles = 2`, server default = 6.
+/// After 2 cycles the workflow must be stalled; invoking the handler a third time
+/// must not increment `implement_cycles` or attempt any workerd RPC.
+#[tokio::test]
+async fn per_project_cycle_limit_overrides_server_default() {
+    use ur_server::workflow::handlers::ImplementHandler;
+
+    let (_test_db, ticket_repo, workflow_repo, worker_repo) = setup_db().await;
+
+    let ticket_id = "ur-cyc1";
+    let worker_id = "w-cyc1";
+    let project_key = "fast-project";
+
+    seed_ticket_and_worker_for_project(
+        &ticket_repo,
+        &workflow_repo,
+        &worker_repo,
+        ticket_id,
+        worker_id,
+        project_key,
+    )
+    .await;
+
+    // Simulate 2 completed implement cycles.
+    workflow_repo
+        .increment_implement_cycles(ticket_id)
+        .await
+        .unwrap();
+    workflow_repo
+        .increment_implement_cycles(ticket_id)
+        .await
+        .unwrap();
+
+    // Build a config with per-project max = 2, server default = 6.
+    let config = config_with_projects(project_cycle_limit_map(project_key, 2), Some(6));
+
+    let (transition_tx, _transition_rx) = coordinator_channel(8);
+    let ctx = WorkflowContext {
+        ticket_repo: ticket_repo.clone(),
+        workflow_repo: workflow_repo.clone(),
+        worker_repo: worker_repo.clone(),
+        worker_prefix: "ur-worker-".to_string(),
+        builderd_client: dummy_builderd_client(),
+        config,
+        transition_tx,
+        worker_manager: dummy_worker_manager(worker_repo.clone()),
+    };
+
+    // Invoke the real ImplementHandler — cycle limit is already at 2/2, so it
+    // must stall before reaching any workerd RPC call and return Ok(()).
+    ImplementHandler
+        .handle(&ctx, ticket_id)
+        .await
+        .expect("handler should return Ok when stalling");
+
+    // Verify the workflow is now stalled with the correct reason.
+    let wf = workflow_repo
+        .get_workflow_by_ticket(ticket_id)
+        .await
+        .unwrap()
+        .expect("workflow must exist");
+
+    assert!(wf.stalled, "workflow must be stalled");
+    assert_eq!(
+        wf.stall_reason, "implement cycle limit reached (2/2)",
+        "stall reason must use the project limit (2), not the server default (6)"
+    );
+    // implement_cycles must NOT have been incremented (stall fires before increment).
+    assert_eq!(wf.implement_cycles, 2, "cycle count must remain at 2");
+}
+
+/// Seed a ticket + workflow + worker for the given project key.
+///
+/// Variant of `seed_ticket_and_worker` that accepts an arbitrary project key
+/// instead of always using "ur".
+async fn seed_ticket_and_worker_for_project(
+    ticket_repo: &TicketRepo,
+    workflow_repo: &WorkflowRepo,
+    worker_repo: &WorkerRepo,
+    ticket_id: &str,
+    worker_id: &str,
+    project_key: &str,
+) {
+    let ticket = ticket_db::NewTicket {
+        id: Some(ticket_id.to_string()),
+        project: project_key.to_string(),
+        type_: "code".to_string(),
+        priority: 2,
+        title: "Cycle limit integration test".to_string(),
+        body: String::new(),
+        lifecycle_status: Some(LifecycleStatus::Open),
+        ..Default::default()
+    };
+    ticket_repo.create_ticket(&ticket).await.unwrap();
+
+    workflow_repo
+        .create_workflow(ticket_id, LifecycleStatus::AwaitingDispatch)
+        .await
+        .unwrap();
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let worker = workflow_db::model::Worker {
+        worker_id: worker_id.to_string(),
+        process_id: ticket_id.to_string(),
+        project_key: project_key.to_string(),
+        container_id: "test-container-id".to_string(),
+        worker_secret: format!("secret-{worker_id}"),
+        strategy: "code".to_string(),
+        container_status: "running".to_string(),
+        agent_status: "starting".to_string(),
+        workspace_path: Some("/tmp/test/workspace".to_string()),
+        created_at: now.clone(),
+        updated_at: now,
+        idle_redispatch_count: 0,
+    };
+    worker_repo.insert_worker(&worker).await.unwrap();
+    workflow_repo
+        .set_workflow_worker_id(ticket_id, worker_id)
+        .await
+        .unwrap();
+}
+
+/// Build a single-entry projects map with `max_implement_cycles` set.
+fn project_cycle_limit_map(
+    project_key: &str,
+    max_cycles: u32,
+) -> std::collections::HashMap<String, ur_config::ProjectConfig> {
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        project_key.to_string(),
+        ur_config::ProjectConfig {
+            key: project_key.to_string(),
+            repo: String::new(),
+            name: project_key.to_string(),
+            pool_limit: 1,
+            hostexec: vec![],
+            git_hooks_dir: None,
+            skill_hooks_dir: None,
+            claude_md: None,
+            workflow_hooks_dir: None,
+            container: ur_config::ContainerConfig {
+                image: String::new(),
+                mounts: vec![],
+                ports: vec![],
+            },
+            max_fix_attempts: 5,
+            max_implement_cycles: Some(max_cycles),
+            protected_branches: vec![],
+            tui: None,
+            ignored_workflow_checks: vec![],
+            hostexec_scripts: vec![],
+        },
+    );
+    projects
 }

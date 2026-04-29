@@ -468,6 +468,9 @@ struct RawProjectConfig {
     workflow_hooks_dir: Option<String>,
     /// Maximum fix loop iterations before stalling agent.
     max_fix_attempts: Option<u32>,
+    /// Maximum implement cycles before stalling the workflow.
+    /// Overrides `[server].max_implement_cycles` when set.
+    max_implement_cycles: Option<u32>,
     /// Branches that cannot be force-pushed. Supports glob patterns.
     protected_branches: Option<Vec<String>>,
     /// Per-project TUI settings.
@@ -632,7 +635,7 @@ struct RawKeymapOverrides {
 struct RawServerConfig {
     container_command: Option<String>,
     stale_worker_ttl_days: Option<u64>,
-    max_implement_cycles: Option<i32>,
+    max_implement_cycles: Option<u32>,
     poll_interval_ms: Option<u64>,
     github_scan_interval_secs: Option<u64>,
     builderd_retry_count: Option<u32>,
@@ -651,7 +654,7 @@ pub const DEFAULT_CONTAINER_COMMAND: &str = "docker";
 pub const DEFAULT_STALE_WORKER_TTL_DAYS: u64 = 7;
 
 /// Default maximum number of implement cycles before stalling a workflow.
-pub const DEFAULT_MAX_IMPLEMENT_CYCLES: i32 = 6;
+pub const DEFAULT_MAX_IMPLEMENT_CYCLES: u32 = 6;
 
 /// Default poll interval in milliseconds for background polling loops.
 pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
@@ -680,7 +683,7 @@ pub struct ServerConfig {
     pub stale_worker_ttl_days: u64,
     /// Maximum number of implement cycles before stalling (default: 6).
     /// `None` means no limit.
-    pub max_implement_cycles: Option<i32>,
+    pub max_implement_cycles: Option<u32>,
     /// Poll interval in milliseconds for background loops (default: 500).
     pub poll_interval_ms: u64,
     /// GitHub scan interval in seconds for the poller (default: 30).
@@ -1148,6 +1151,10 @@ pub struct ProjectConfig {
     pub workflow_hooks_dir: Option<String>,
     /// Maximum fix loop iterations before stalling the agent (default: 5).
     pub max_fix_attempts: u32,
+    /// Effective maximum implement cycles for this project.
+    /// Resolved value: project override if set, else server default (`DEFAULT_MAX_IMPLEMENT_CYCLES`).
+    /// `None` means no limit.
+    pub max_implement_cycles: Option<u32>,
     /// Branch patterns that cannot be force-pushed (default: `["main", "master"]`).
     /// Supports glob patterns.
     pub protected_branches: Vec<String>,
@@ -1265,10 +1272,13 @@ impl Config {
         let server = resolve_server(raw.server);
         let tui = resolve_tui(raw.tui);
 
+        let server_max_implement_cycles = server.max_implement_cycles;
         let projects = raw
             .projects
             .into_iter()
-            .map(|(key, raw_proj)| resolve_project_config(key, raw_proj))
+            .map(|(key, raw_proj)| {
+                resolve_project_config(key, raw_proj, server_max_implement_cycles)
+            })
             .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let git_branch_prefix = raw.git_branch_prefix.unwrap_or_default();
@@ -1392,6 +1402,7 @@ pub const SERVER_PID_FILE: &str = "server.pid";
 fn resolve_project_config(
     key: String,
     raw_proj: RawProjectConfig,
+    server_max_implement_cycles: Option<u32>,
 ) -> anyhow::Result<(String, ProjectConfig)> {
     // Reject mounts at project root level
     if raw_proj.mounts.is_some() {
@@ -1454,6 +1465,10 @@ fn resolve_project_config(
         max_fix_attempts: raw_proj
             .max_fix_attempts
             .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
+        max_implement_cycles: raw_proj
+            .max_implement_cycles
+            .or(server_max_implement_cycles)
+            .or(Some(DEFAULT_MAX_IMPLEMENT_CYCLES)),
         protected_branches: raw_proj
             .protected_branches
             .unwrap_or_else(default_protected_branches),
@@ -3799,6 +3814,7 @@ quit = ["q"]
                         ports: vec![],
                     },
                     max_fix_attempts: 5,
+                    max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
@@ -3823,6 +3839,7 @@ quit = ["q"]
                         ports: vec![],
                     },
                     max_fix_attempts: 5,
+                    max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
@@ -3941,6 +3958,7 @@ quit = ["q"]
                         ports: vec![],
                     },
                     max_fix_attempts: 5,
+                    max_implement_cycles: Some(DEFAULT_MAX_IMPLEMENT_CYCLES),
                     protected_branches: vec![],
                     tui: None,
                     ignored_workflow_checks: vec![],
@@ -4628,5 +4646,67 @@ my-skill = "%URCONFIG%/skills/my-skill"
                 tmp.path().join("skills/my-skill")
             );
         }
+    }
+
+    #[test]
+    fn project_max_implement_cycles_overrides_server() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[server]
+max_implement_cycles = 6
+[projects.x]
+repo = "git@github.com:example/x.git"
+max_implement_cycles = 12
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].max_implement_cycles, Some(12));
+    }
+
+    #[test]
+    fn project_max_implement_cycles_inherits_server_when_unset() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[server]
+max_implement_cycles = 8
+[projects.x]
+repo = "git@github.com:example/x.git"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].max_implement_cycles, Some(8));
+    }
+
+    #[test]
+    fn project_max_implement_cycles_defaults_when_neither_set() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@github.com:example/x.git"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["x"].max_implement_cycles,
+            Some(DEFAULT_MAX_IMPLEMENT_CYCLES)
+        );
     }
 }
