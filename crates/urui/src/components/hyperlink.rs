@@ -129,17 +129,25 @@ fn render_hyperlink_osc8(
 ) {
     let n = chars.len();
 
-    for (i, x) in (rect.x..rect.x + rect.width).enumerate() {
-        if i < n {
-            let ch = chars[i];
-            // Each cell is self-contained: open → char → close.
-            // Terminals merge adjacent same-URL regions into one clickable link.
-            let symbol = format!("\x1b]8;;{url}\x07{ch}\x1b]8;;\x07");
-            buf[(x, y)].set_symbol(&symbol).set_style(style);
-        } else {
-            // Pad remaining cells with spaces.
-            buf[(x, y)].set_symbol(" ").set_style(style);
+    if n > 0 {
+        // Cell 0: the full OSC 8-wrapped display text in a single symbol.
+        // The terminal renders it as a clickable hyperlink spanning n visible columns.
+        // Ratatui sees this cell as "2-wide" in the diff and auto-skips cell 1,
+        // so we explicitly mark cells 1..n-1 as skip=true to keep them out of
+        // the diff (their visual content comes from cell 0's symbol).
+        let display: String = chars.iter().collect();
+        let symbol = format!("\x1b]8;;{url}\x07{display}\x1b]8;;\x07");
+        buf[(rect.x, y)].set_symbol(&symbol).set_style(style);
+
+        for x in (rect.x + 1)..(rect.x + n as u16) {
+            buf[(x, y)].set_symbol("").set_style(style);
+            buf[(x, y)].skip = true;
         }
+    }
+
+    // Trailing cells: plain spaces so background/style renders correctly.
+    for x in (rect.x + n as u16)..(rect.x + rect.width) {
+        buf[(x, y)].set_symbol(" ").set_style(style);
     }
 }
 
@@ -375,52 +383,63 @@ mod tests {
     // ── render_hyperlink_osc8 ─────────────────────────────────────────────────
 
     #[test]
-    fn osc8_each_cell_is_self_contained() {
+    fn osc8_cell0_has_full_display_in_symbol() {
         let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(5, 1);
-        let rect = Rect::new(0, 0, 5, 1);
+        let mut buf = make_buf(8, 1);
+        let rect = Rect::new(0, 0, 8, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
 
-        let expected_open = format!("\x1b]8;;{url}\x07");
-        let expected_close = "\x1b]8;;\x07";
-        let display = "hello";
-        for (i, ch) in display.chars().enumerate() {
-            let sym = buf[(i as u16, 0u16)].symbol();
-            let expected = format!("{expected_open}{ch}{expected_close}");
-            assert_eq!(
-                sym, expected,
-                "cell {i} should be self-contained: {:?}",
-                sym
-            );
-        }
-    }
-
-    #[test]
-    fn osc8_single_cell_has_both_wrappers() {
-        let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(1, 1);
-        let rect = Rect::new(0, 0, 1, 1);
-        render_osc8_test(&mut buf, rect, url, "X", Color::White, Color::Black);
-
-        let sym = buf[(0u16, 0u16)].symbol();
-        let expected = format!("\x1b]8;;{url}\x07X\x1b]8;;\x07");
+        let expected = format!("\x1b]8;;{url}\x07hello\x1b]8;;\x07");
         assert_eq!(
-            sym, expected,
-            "single cell should match per-cell format: {:?}",
-            sym
+            buf[(0u16, 0u16)].symbol(),
+            expected,
+            "cell 0 should contain full OSC 8-wrapped display text"
         );
     }
 
     #[test]
-    fn osc8_trailing_cells_are_spaces() {
+    fn osc8_inner_cells_are_skip() {
         let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(6, 1);
-        let rect = Rect::new(0, 0, 6, 1);
-        // "hi" is 2 chars but rect is 6 wide → 4 trailing spaces.
-        render_osc8_test(&mut buf, rect, url, "hi", Color::White, Color::Black);
+        let mut buf = make_buf(8, 1);
+        let rect = Rect::new(0, 0, 8, 1);
+        render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
 
-        for x in 2u16..6 {
+        for x in 1u16..5 {
+            assert!(buf[(x, 0)].skip, "cell {x} should be skip=true");
+        }
+    }
+
+    #[test]
+    fn osc8_trailing_cells_are_spaces_not_skip() {
+        let url = "https://github.com/paxos/ur/pull/1";
+        let mut buf = make_buf(8, 1);
+        let rect = Rect::new(0, 0, 8, 1);
+        // "hello" = 5 chars → cells 5..7 are trailing spaces.
+        render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
+
+        for x in 5u16..8 {
             assert_eq!(buf[(x, 0)].symbol(), " ", "cell {x} should be a space");
+            assert!(!buf[(x, 0)].skip, "cell {x} should not be skip");
+        }
+    }
+
+    #[test]
+    fn osc8_single_char_no_skip_cells() {
+        let url = "https://github.com/paxos/ur/pull/1";
+        let mut buf = make_buf(4, 1);
+        let rect = Rect::new(0, 0, 4, 1);
+        render_osc8_test(&mut buf, rect, url, "X", Color::White, Color::Black);
+
+        let expected = format!("\x1b]8;;{url}\x07X\x1b]8;;\x07");
+        assert_eq!(buf[(0u16, 0u16)].symbol(), expected);
+        // No skip cells since n=1 means cells 1..n-1 is empty range.
+        for x in 1u16..4 {
+            assert!(!buf[(x, 0)].skip, "cell {x} should not be skip");
+            assert_eq!(
+                buf[(x, 0)].symbol(),
+                " ",
+                "cell {x} should be trailing space"
+            );
         }
     }
 
@@ -431,53 +450,57 @@ mod tests {
         let rect = Rect::new(0, 0, 3, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
 
-        // Only 3 display chars: h, e, l — each self-contained.
-        let expected_open = format!("\x1b]8;;{url}\x07");
-        let expected_close = "\x1b]8;;\x07";
-        for (i, ch) in "hel".chars().enumerate() {
-            let sym = buf[(i as u16, 0u16)].symbol();
-            let expected = format!("{expected_open}{ch}{expected_close}");
-            assert_eq!(
-                sym, expected,
-                "cell {i} should be self-contained after truncation: {:?}",
-                sym
-            );
-        }
+        // Truncated to "hel" (3 chars) — cell 0 gets full wrapped symbol.
+        let expected = format!("\x1b]8;;{url}\x07hel\x1b]8;;\x07");
+        assert_eq!(
+            buf[(0u16, 0u16)].symbol(),
+            expected,
+            "cell 0 truncated symbol"
+        );
+        // Cells 1..2 are skip, no trailing spaces.
+        assert!(buf[(1u16, 0u16)].skip);
+        assert!(buf[(2u16, 0u16)].skip);
     }
 
     #[test]
     fn osc8_uses_bel_not_st() {
         let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(3, 1);
-        let rect = Rect::new(0, 0, 3, 1);
+        let mut buf = make_buf(5, 1);
+        let rect = Rect::new(0, 0, 5, 1);
         render_osc8_test(&mut buf, rect, url, "abc", Color::White, Color::Black);
 
-        for x in 0u16..3 {
-            let sym = buf[(x, 0)].symbol();
-            assert!(
-                !sym.contains("\x1b\\"),
-                "cell {x} should not use ESC\\ ST, got: {:?}",
-                sym
-            );
-            assert!(
-                sym.contains('\x07'),
-                "cell {x} should use BEL terminator, got: {:?}",
-                sym
-            );
-        }
+        let sym = buf[(0u16, 0u16)].symbol();
+        assert!(
+            !sym.contains("\x1b\\"),
+            "should not use ESC\\ ST: {:?}",
+            sym
+        );
+        assert!(sym.contains('\x07'), "should use BEL terminator: {:?}", sym);
     }
 
     #[test]
-    fn osc8_all_cells_carry_correct_style() {
+    fn osc8_cell0_style_applied() {
         let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(4, 1);
-        let rect = Rect::new(0, 0, 4, 1);
+        let mut buf = make_buf(6, 1);
+        let rect = Rect::new(0, 0, 6, 1);
         render_osc8_test(&mut buf, rect, url, "test", Color::Green, Color::Magenta);
 
-        for x in 0u16..4 {
-            let cell = &buf[(x, 0)];
-            assert_eq!(cell.fg, Color::Green, "cell {x} fg should be Green");
-            assert_eq!(cell.bg, Color::Magenta, "cell {x} bg should be Magenta");
+        let cell = &buf[(0u16, 0u16)];
+        assert_eq!(cell.fg, Color::Green);
+        assert_eq!(cell.bg, Color::Magenta);
+    }
+
+    #[test]
+    fn osc8_trailing_cells_carry_style() {
+        let url = "https://github.com/paxos/ur/pull/1";
+        let mut buf = make_buf(8, 1);
+        let rect = Rect::new(0, 0, 8, 1);
+        render_osc8_test(&mut buf, rect, url, "test", Color::Green, Color::Magenta);
+
+        // "test" = 4 chars; cells 4..7 are trailing spaces.
+        for x in 4u16..8 {
+            assert_eq!(buf[(x, 0)].fg, Color::Green, "cell {x} fg");
+            assert_eq!(buf[(x, 0)].bg, Color::Magenta, "cell {x} bg");
         }
     }
 
@@ -490,6 +513,30 @@ mod tests {
 
         for x in 0..4u16 {
             assert_eq!(buf[(x, 0)].symbol(), " ");
+            assert!(!buf[(x, 0)].skip);
+        }
+    }
+
+    #[test]
+    fn osc8_diff_trailing_spaces_in_output() {
+        // Regression: trailing spaces (beyond display text) must appear in
+        // buffer diff so style changes (e.g. row selection) propagate correctly.
+        let url = "https://github.com/paxos/ur/pull/1";
+        let area = Rect::new(0, 0, 10, 1);
+        let prev = Buffer::empty(area);
+        let mut next = Buffer::empty(area);
+        let rect = Rect::new(0, 0, 10, 1);
+        render_osc8_test(&mut next, rect, url, "hello", Color::White, Color::Black);
+
+        let diff = prev.diff(&next);
+        let xs: Vec<u16> = diff.iter().map(|(x, _, _)| *x).collect();
+        // Cell 0 in diff; cells 1..4 excluded (skip=true); cells 5..9 in diff.
+        assert!(xs.contains(&0u16));
+        for x in 1u16..5 {
+            assert!(!xs.contains(&x), "skip cell {x} must not be in diff");
+        }
+        for x in 5u16..10 {
+            assert!(xs.contains(&x), "trailing space cell {x} must be in diff");
         }
     }
 
@@ -498,9 +545,12 @@ mod tests {
         let url = "https://github.com/paxos/ur/pull/1";
         let mut buf = make_buf(3, 1);
         let rect = Rect::new(0, 0, 3, 1);
-        render_osc8_test(&mut buf, rect, url, "hi ", Color::Red, Color::Blue);
+        render_osc8_test(&mut buf, rect, url, "hi", Color::Red, Color::Blue);
 
-        for x in 0..3u16 {
+        assert_eq!(buf[(0u16, 0u16)].fg, Color::Red);
+        assert_eq!(buf[(0u16, 0u16)].bg, Color::Blue);
+        // Cell 1 is skip=true, cell 2 is trailing space — both carry style.
+        for x in 1u16..3 {
             let cell = &buf[(x, 0)];
             assert_eq!(cell.fg, Color::Red);
             assert_eq!(cell.bg, Color::Blue);
