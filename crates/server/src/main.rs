@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{info, warn};
 
 use container::NetworkManager;
 
@@ -410,6 +410,71 @@ fn spawn_workflow_services(
     }
 }
 
+/// Spawn a fire-and-forget task that pushes a fresh tmux status-left label to
+/// every live worker. Each worker gets its own bounded task (5 s timeout).
+/// Failures are logged at `warn!`; successes at `info!`. Never blocks startup.
+fn spawn_startup_label_backfill(
+    worker_repo: WorkerRepo,
+    ticket_repo: TicketRepo,
+    workflow_repo: WorkflowRepo,
+    worker_prefix: String,
+) {
+    tokio::spawn(async move {
+        let workers = match worker_repo
+            .list_workers_by_container_status("running")
+            .await
+        {
+            Ok(w) => w,
+            Err(e) => {
+                warn!(error = %e, "startup label backfill: failed to list running workers");
+                return;
+            }
+        };
+
+        info!(
+            count = workers.len(),
+            "startup label backfill: pushing labels to live workers"
+        );
+
+        let deps = ur_server::worker_label::WorkerLabelDeps {
+            workflow_repo,
+            ticket_repo,
+            worker_repo,
+            worker_prefix,
+        };
+
+        let tasks: Vec<_> = workers
+            .into_iter()
+            .map(|w| {
+                let deps = deps.clone();
+                let worker_id = w.worker_id.clone();
+                tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        ur_server::worker_label::push(&deps, &worker_id),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {
+                            info!(worker_id = %worker_id, "startup label backfill: pushed label");
+                        }
+                        Ok(Err(e)) => {
+                            warn!(worker_id = %worker_id, error = %e, "startup label backfill: failed to push label");
+                        }
+                        Err(_elapsed) => {
+                            warn!(worker_id = %worker_id, "startup label backfill: timed out after 5s");
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        for task in tasks {
+            let _ = task.await;
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_grpc_servers(
     server_port: u16,
@@ -461,6 +526,13 @@ async fn serve_grpc_servers(
     let mut worker_ticket_handler = ticket_handler;
     worker_ticket_handler.ui_event_poller = None;
 
+    // Clone repos before they are moved into serve_worker_grpc so the backfill
+    // task can hold its own handles.
+    let backfill_worker_repo = worker_repo.clone();
+    let backfill_ticket_repo = ticket_repo.clone();
+    let backfill_workflow_repo = workflow_repo.clone();
+    let backfill_network_prefix = network_prefix.clone();
+
     let worker_server = ur_server::grpc_server::serve_worker_grpc(
         worker_addr,
         worker_manager,
@@ -476,6 +548,16 @@ async fn serve_grpc_servers(
         remote_repo_handler,
         wf.transition_tx,
         launch_manager,
+    );
+
+    // Fire-and-forget startup backfill: push a fresh status-left label to every
+    // live worker so that already-running workers pick up the new label format
+    // (including PR numbers) after an upgrade, without requiring a restart.
+    spawn_startup_label_backfill(
+        backfill_worker_repo,
+        backfill_ticket_repo,
+        backfill_workflow_repo,
+        backfill_network_prefix,
     );
 
     let server_result = tokio::try_join!(host_server, worker_server).map(|_| ());
