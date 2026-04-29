@@ -170,6 +170,10 @@ fn render_plain(rect: Rect, buf: &mut Buffer, chars: &[char], style: Style, y: u
 mod tests {
     use super::*;
     use ratatui::layout::Rect;
+    use std::sync::Mutex;
+
+    // Env-var tests mutate process-global state; serialize to prevent races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     // ── format_pr_short ────────────────────────────────────────────────────────
 
@@ -238,18 +242,16 @@ mod tests {
 
     #[test]
     fn detect_osc8_on_override() {
-        // SAFETY: single-threaded test environment; no other threads read this var.
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("URUI_HYPERLINKS", "on") };
         let result = detect_osc8();
-        // SAFETY: same as above.
         unsafe { std::env::remove_var("URUI_HYPERLINKS") };
         assert!(result);
     }
 
     #[test]
     fn detect_osc8_off_override() {
-        // Remove any vars that would otherwise trigger detection.
-        // SAFETY: single-threaded test environment.
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("TERM_PROGRAM");
             std::env::remove_var("TERM");
@@ -257,7 +259,6 @@ mod tests {
             std::env::set_var("URUI_HYPERLINKS", "off");
         }
         let result = detect_osc8();
-        // SAFETY: same as above.
         unsafe { std::env::remove_var("URUI_HYPERLINKS") };
         assert!(!result);
     }
