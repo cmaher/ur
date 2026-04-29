@@ -32,24 +32,25 @@ impl WorkflowHandler for ImplementHandler {
 }
 
 async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<()> {
-    // 0. Check implement cycle limit before doing any work.
-    if check_cycle_limit(ctx, ticket_id).await? {
-        return Ok(());
-    }
-
-    // 0b. Increment implement_cycles for this transition.
-    ctx.workflow_repo
-        .increment_implement_cycles(ticket_id)
-        .await?;
-
-    // 1. Load ticket to check branch field.
+    // 0. Load ticket — needed for both cycle-limit check (project lookup) and
+    //    branch resolution later.
     let ticket = ctx
         .ticket_repo
         .get_ticket(ticket_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-    // 2. Resolve the assigned worker from workflow table.
+    // 0b. Check implement cycle limit before doing any work.
+    if check_cycle_limit(ctx, ticket_id, &ticket.project).await? {
+        return Ok(());
+    }
+
+    // 0c. Increment implement_cycles for this transition.
+    ctx.workflow_repo
+        .increment_implement_cycles(ticket_id)
+        .await?;
+
+    // 1. Resolve the assigned worker from workflow table.
     let workflow = ctx
         .workflow_repo
         .get_workflow_by_ticket(ticket_id)
@@ -62,7 +63,7 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
     }
     let worker_id = &workflow.worker_id;
 
-    // 3. Look up the worker to get process_id for container name derivation.
+    // 2. Look up the worker to get process_id for container name derivation.
     let worker = ctx
         .worker_repo
         .get_worker(worker_id)
@@ -77,10 +78,10 @@ async fn dispatch_implement(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::R
         );
     }
 
-    // 4. Ensure branch is set on the ticket.
+    // 3. Ensure branch is set on the ticket.
     let branch = ensure_ticket_branch(ctx, &ticket, ticket_id, worker_id).await?;
 
-    // 5. Derive workerd gRPC address and send Implement RPC.
+    // 4. Derive workerd gRPC address and send Implement RPC.
     let container_name = format!("{}{}", ctx.worker_prefix, worker.process_id);
     let workerd_addr = format!("http://{}:{}", container_name, ur_config::WORKERD_GRPC_PORT);
 
@@ -180,8 +181,19 @@ async fn read_worker_branch(
 /// Returns `true` if the limit was reached and the workflow was stalled (caller
 /// should return `Ok(())` without dispatching). Returns `false` if dispatch
 /// should proceed.
-async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Result<bool> {
-    let max_cycles = match ctx.config.server.max_implement_cycles {
+///
+/// Resolves the effective limit by looking up `project_key` in config:
+/// per-project `max_implement_cycles` takes precedence over the server-wide
+/// value. Falls back to the server value for orphaned tickets (project not in
+/// config).
+async fn check_cycle_limit(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    project_key: &str,
+) -> anyhow::Result<bool> {
+    let max_cycles = resolve_cycle_limit(ctx, project_key);
+
+    let max_cycles = match max_cycles {
         Some(max) => max,
         None => return Ok(false), // No limit configured.
     };
@@ -210,4 +222,16 @@ async fn check_cycle_limit(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Re
     }
 
     Ok(false)
+}
+
+/// Resolve the effective implement cycle limit for a project key.
+///
+/// Precedence: per-project override → server-wide default → `None` (no limit).
+fn resolve_cycle_limit(ctx: &WorkflowContext, project_key: &str) -> Option<u32> {
+    if let Some(project_config) = ctx.config.projects.get(project_key)
+        && project_config.max_implement_cycles.is_some()
+    {
+        return project_config.max_implement_cycles;
+    }
+    ctx.config.server.max_implement_cycles
 }
