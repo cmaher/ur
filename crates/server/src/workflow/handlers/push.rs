@@ -632,7 +632,43 @@ async fn ensure_pr(
         .set_meta(ticket_id, "ticket", "gh_repo", &gh_repo)
         .await?;
 
+    push_worker_label(ctx, ticket_id).await;
+
     Ok(())
+}
+
+/// Best-effort: resolve the worker assigned to `ticket_id` and push a fresh
+/// tmux status-left label. Logs a warning on any error and returns immediately —
+/// callers must never fail due to a label-push failure.
+async fn push_worker_label(ctx: &WorkflowContext, ticket_id: &str) {
+    let worker_id = match ctx.workflow_repo.get_workflow_by_ticket(ticket_id).await {
+        Ok(Some(wf)) if !wf.worker_id.is_empty() => wf.worker_id,
+        Ok(_) => return,
+        Err(e) => {
+            warn!(
+                ticket_id = %ticket_id,
+                error = %e,
+                "push_worker_label: failed to fetch workflow"
+            );
+            return;
+        }
+    };
+
+    let deps = crate::worker_label::WorkerLabelDeps {
+        workflow_repo: ctx.workflow_repo.clone(),
+        ticket_repo: ctx.ticket_repo.clone(),
+        worker_repo: ctx.worker_repo.clone(),
+        worker_prefix: ctx.worker_prefix.clone(),
+    };
+
+    if let Err(e) = crate::worker_label::push(&deps, &worker_id).await {
+        warn!(
+            worker_id = %worker_id,
+            ticket_id = %ticket_id,
+            error = %e,
+            "push_worker_label: failed to update tmux status-left"
+        );
+    }
 }
 
 /// Resolve `gh_repo` from ticket metadata or derive it from the project config.
