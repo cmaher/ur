@@ -214,6 +214,19 @@ impl LaunchManager {
             );
         }
 
+        // Push the initial tmux status-left label once the worker is reachable.
+        // Best-effort: failure is logged at warn and does not affect launch.
+        spawn_label_push(
+            crate::worker_label::WorkerLabelDeps {
+                workflow_repo: self.workflow_repo.clone(),
+                ticket_repo: self.ticket_repo.clone(),
+                worker_repo: self.worker_repo.clone(),
+                worker_prefix: self.network_config.worker_prefix.clone(),
+            },
+            self.worker_repo.clone(),
+            worker_id_str.to_owned(),
+        );
+
         Ok(())
     }
 
@@ -1020,6 +1033,66 @@ fn spawn_design_dispatch(
             );
         }
     });
+}
+
+/// Spawn a background task to push the worker's tmux status-left label once
+/// the workerd daemon is reachable (agent status idle). Best-effort: errors
+/// are logged at `warn` and do not affect the launch reply.
+fn spawn_label_push(
+    deps: crate::worker_label::WorkerLabelDeps,
+    worker_repo: workflow_db::WorkerRepo,
+    worker_id: String,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = push_label_on_ready(&deps, &worker_repo, &worker_id).await {
+            warn!(
+                worker_id = %worker_id,
+                error = %e,
+                "worker_label::push failed after worker became ready"
+            );
+        }
+    });
+}
+
+/// Wait for the worker's agent status to become idle, then call
+/// `worker_label::push` with a 5-second timeout. Returns `Err` on any
+/// failure; the caller logs at `warn`.
+async fn push_label_on_ready(
+    deps: &crate::worker_label::WorkerLabelDeps,
+    worker_repo: &workflow_db::WorkerRepo,
+    worker_id: &str,
+) -> Result<(), anyhow::Error> {
+    use std::time::{Duration, Instant};
+
+    let readiness_timeout = Duration::from_secs(60);
+    let poll_interval = Duration::from_millis(500);
+    let start = Instant::now();
+
+    // Poll until the workerd daemon reports idle (first successful RPC contact).
+    loop {
+        if start.elapsed() > readiness_timeout {
+            anyhow::bail!("timed out waiting for worker {worker_id} to become reachable");
+        }
+
+        let worker = worker_repo
+            .get_worker(worker_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("worker {worker_id} not found in database"))?;
+
+        if worker.agent_status == AgentStatus::Idle.as_str() {
+            break;
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    // Worker is reachable — push the label with a 5-second timeout.
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        crate::worker_label::push(deps, worker_id),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("worker_label::push timed out after 5s for worker {worker_id}"))?
 }
 
 /// Acquire a single shared context slot for a project key.
