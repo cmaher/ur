@@ -17,6 +17,37 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
 
+## `[skills]` Section
+
+Host-side skills injected into worker containers at runtime. Skills are bind-mounted read-only into `/home/worker/.claude/potential-skills/<name>/` alongside skills baked into the container image.
+
+Three sub-tables are supported:
+
+| Sub-table | Scope |
+|-----------|-------|
+| `[skills.common]` | All modes |
+| `[skills.code]` | `code`-strategy modes only |
+| `[skills.design]` | `design`-strategy modes only |
+
+Each key is the skill name as it will appear in `potential-skills/`; the value is the host path to the skill directory. Paths support `%URCONFIG%/...` (resolves to `<config_dir>/...`) or absolute paths.
+
+**Visibility caveat**: paths must be accessible from the server process. Use `%URCONFIG%/...` to ensure the path is within the already-mounted config directory when the server runs inside a container.
+
+Example:
+
+```toml
+[skills.common]
+my-skill = "%URCONFIG%/skills/my-skill"
+
+[skills.code]
+research-helper = "%URCONFIG%/skills/research-helper"
+
+[skills.design]
+internal-tool = "/opt/skills/internal-tool"
+```
+
+Merge order: mode-specific (`code`/`design`) keys shadow same-named `common` keys. The merged set is processed by `WorkerManager::merge_global_skills()` and mounted via `RunOptsBuilder::add_extra_skills()`.
+
 ## `[proxy]` Section
 
 Forward proxy (Squid) configuration for restricting container network access.
@@ -145,4 +176,13 @@ repo = "https://github.com/cmaher/ur.git"
 hostexec = ["ur"]
 git_hooks_dir = "%PROJECT%/scripts/git-hooks"
 mounts = ["/Users/me/projects/ur/.tickets:/workspace/.tickets"]
+
+[skills.common]
+my-skill = "%URCONFIG%/skills/my-skill"
+
+[skills.code]
+research-helper = "%URCONFIG%/skills/research-helper"
+
+[skills.design]
+internal-tool = "/opt/skills/internal-tool"
 ```
