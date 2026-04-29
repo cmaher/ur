@@ -281,6 +281,24 @@ impl RunOptsBuilder {
         self
     }
 
+    /// Mount each `(name, host_path)` pair at `/home/worker/.claude/potential-skills/<name>:ro`.
+    ///
+    /// Each mount is a read-only directory bind mount. The existing `workerd init` step
+    /// iterates `UR_WORKER_SKILLS` and copies `~/.claude/potential-skills/<name>/` →
+    /// `~/.claude/skills/<name>/`, so bind-mounting here causes the copy step to pick
+    /// up the host skill transparently. No env vars are set by this method —
+    /// `UR_WORKER_SKILLS` is set elsewhere.
+    ///
+    /// Empty slice → no-op (no volumes added).
+    pub fn add_extra_skills(mut self, mounts: &[(String, PathBuf)]) -> Self {
+        for (name, host_path) in mounts {
+            let container_path =
+                PathBuf::from(format!("/home/worker/.claude/potential-skills/{name}:ro"));
+            self.volumes.push((host_path.clone(), container_path));
+        }
+        self
+    }
+
     /// Add port mappings to the container.
     ///
     /// Each [`PortMapping`] is converted to a Docker `-p host_port:container_port` flag.
@@ -940,5 +958,64 @@ mod tests {
             opts.volumes[0].1,
             PathBuf::from("/workspace/scripts/deploy.sh:ro")
         );
+    }
+
+    #[test]
+    fn add_extra_skills_empty_is_noop() {
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_extra_skills(&[])
+            .build();
+
+        assert!(opts.volumes.is_empty());
+        assert!(opts.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_extra_skills_single_entry_correct_container_path() {
+        let mounts = vec![(
+            "my-skill".to_string(),
+            PathBuf::from("/host/skills/my-skill"),
+        )];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_extra_skills(&mounts)
+            .build();
+
+        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/skills/my-skill"));
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/home/worker/.claude/potential-skills/my-skill:ro")
+        );
+        assert!(opts.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_extra_skills_multiple_entries_preserved_in_order() {
+        let mounts = vec![
+            ("alpha".to_string(), PathBuf::from("/host/skills/alpha")),
+            ("beta".to_string(), PathBuf::from("/host/skills/beta")),
+            ("gamma".to_string(), PathBuf::from("/host/skills/gamma")),
+        ];
+        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_extra_skills(&mounts)
+            .build();
+
+        assert_eq!(opts.volumes.len(), 3);
+        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/skills/alpha"));
+        assert_eq!(
+            opts.volumes[0].1,
+            PathBuf::from("/home/worker/.claude/potential-skills/alpha:ro")
+        );
+        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/skills/beta"));
+        assert_eq!(
+            opts.volumes[1].1,
+            PathBuf::from("/home/worker/.claude/potential-skills/beta:ro")
+        );
+        assert_eq!(opts.volumes[2].0, PathBuf::from("/host/skills/gamma"));
+        assert_eq!(
+            opts.volumes[2].1,
+            PathBuf::from("/home/worker/.claude/potential-skills/gamma:ro")
+        );
+        assert!(opts.env_vars.is_empty());
     }
 }
