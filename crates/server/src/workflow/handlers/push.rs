@@ -224,7 +224,7 @@ struct RejectedPushParams<'a> {
     worker_id: &'a str,
     project_key: &'a str,
     reason: &'a str,
-    local_repo: &'a local_repo::GitBackend,
+    local_repo: &'a dyn LocalRepo,
     working_dir: &'a str,
     no_verify: bool,
 }
