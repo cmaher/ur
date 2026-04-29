@@ -30,27 +30,26 @@ fn detect_osc8() -> bool {
         }
     }
 
-    if let Ok(term_program) = std::env::var("TERM_PROGRAM") {
-        if matches!(
+    if let Ok(term_program) = std::env::var("TERM_PROGRAM")
+        && matches!(
             term_program.as_str(),
             "iTerm.app" | "WezTerm" | "vscode" | "ghostty"
-        ) {
-            return true;
-        }
+        )
+    {
+        return true;
     }
 
-    if let Ok(term) = std::env::var("TERM") {
-        if term.contains("kitty") || term.contains("ghostty") || term.contains("alacritty") {
-            return true;
-        }
+    if let Ok(term) = std::env::var("TERM")
+        && (term.contains("kitty") || term.contains("ghostty") || term.contains("alacritty"))
+    {
+        return true;
     }
 
-    if let Ok(vte) = std::env::var("VTE_VERSION") {
-        if let Ok(v) = vte.parse::<u32>() {
-            if v >= 5000 {
-                return true;
-            }
-        }
+    if let Ok(vte) = std::env::var("VTE_VERSION")
+        && let Ok(v) = vte.parse::<u32>()
+        && v >= 5000
+    {
+        return true;
     }
 
     false
@@ -75,7 +74,7 @@ pub fn format_pr_short(url: &str) -> Option<String> {
     }
 
     // Extract the PR number, tolerating a trailing slash or query string.
-    let number_str = rest.split(|c| c == '/' || c == '?' || c == '#').next()?;
+    let number_str = rest.split(['/', '?', '#']).next()?;
 
     if number_str.is_empty() {
         return None;
