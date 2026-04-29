@@ -17,14 +17,14 @@ pub struct WorkerLabelDeps {
 
 /// Build the tmux status-left label string for a worker.
 ///
-/// Returns `"[<worker_id> PR-<n>] "` when a PR number is present,
-/// or `"[<worker_id>] "` otherwise.
+/// Returns `"[<ticket_id> PR-<n>] "` when a PR number is present,
+/// or `"[<ticket_id>] "` otherwise.
 ///
 /// This function is pure (no I/O) and fully unit-testable.
-pub fn build_label(worker_id: &str, pr_number: Option<&str>) -> String {
+pub fn build_label(ticket_id: &str, pr_number: Option<&str>) -> String {
     match pr_number {
-        Some(pr) => format!("[{worker_id} PR-{pr}] "),
-        None => format!("[{worker_id}] "),
+        Some(pr) => format!("[{ticket_id} PR-{pr}] "),
+        None => format!("[{ticket_id}] "),
     }
 }
 
@@ -44,8 +44,8 @@ pub async fn push(deps: &WorkerLabelDeps, worker_id: &str) -> anyhow::Result<()>
     let meta = deps.ticket_repo.get_meta(&ticket_id, "ticket").await?;
     let pr_number = meta.get("pr_number").map(String::as_str);
 
-    // 3. Build the label string.
-    let label = build_label(worker_id, pr_number);
+    // 3. Build the label string using ticket_id (the user-visible name).
+    let label = build_label(&ticket_id, pr_number);
 
     // 4. Construct a WorkerdClient for the worker and call set_status_left.
     let worker = deps
