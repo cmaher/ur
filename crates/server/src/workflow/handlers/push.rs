@@ -271,6 +271,17 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
         "push rejected (non-fast-forward) on non-protected branch — retrying with force-with-lease"
     );
 
+    // Refresh remote refs so --force-with-lease has an up-to-date lease target.
+    if let Err(e) = local_repo.fetch(working_dir).await {
+        warn!(
+            ticket_id = %ticket_id,
+            branch = %branch,
+            working_dir = %working_dir,
+            error = %e,
+            "fetch before force-push failed — proceeding anyway"
+        );
+    }
+
     let force_result = local_repo
         .force_push(branch, working_dir, *no_verify)
         .await?;
