@@ -148,6 +148,7 @@ fn parse_port_entry(project_key: &str, index: usize, raw: &str) -> anyhow::Resul
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
 use serde::Deserialize;
 
 // ---- Environment variable names ----
@@ -326,6 +327,24 @@ struct RawConfig {
     tui: Option<RawTuiConfig>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
+    /// Global skill injection configuration from the `[skills]` section.
+    #[serde(default)]
+    skills: Option<RawSkills>,
+}
+
+/// Raw TOML representation for the `[skills]` section.
+///
+/// Each sub-table maps skill names to template paths. Order is preserved
+/// via [`IndexMap`] so the resolved [`GlobalSkillsConfig`] reflects the
+/// order entries appear in `ur.toml`.
+#[derive(Debug, Default, Deserialize)]
+struct RawSkills {
+    #[serde(default)]
+    common: IndexMap<String, String>,
+    #[serde(default)]
+    code: IndexMap<String, String>,
+    #[serde(default)]
+    design: IndexMap<String, String>,
 }
 
 /// Raw TOML representation for the `[hostexec]` section.
@@ -359,6 +378,52 @@ pub struct HostExecCommandConfig {
     pub long_lived: bool,
     /// When true, the command uses bidirectional streaming (requires long_lived = true).
     pub bidi: bool,
+}
+
+/// A single resolved global skill: a named path on the host filesystem.
+///
+/// Skills may be injected into worker launches based on their strategy section
+/// (`common`, `code`, or `design`). All validation (path existence, template
+/// variables, name format) is done at config load time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalSkill {
+    /// Skill name — must match `^[a-z0-9_-]+$`.
+    pub name: String,
+    /// Resolved, absolute path to the skill directory on the host.
+    pub host_path: PathBuf,
+}
+
+/// Resolved global skills configuration from the `[skills]` section of `ur.toml`.
+///
+/// Skills are grouped into three sections:
+/// - `common`: injected into all workers regardless of strategy
+/// - `code`: injected into code-strategy workers (in addition to common)
+/// - `design`: injected into design-strategy workers (in addition to common)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GlobalSkillsConfig {
+    /// Skills injected into every worker.
+    pub common: Vec<GlobalSkill>,
+    /// Skills injected into code-strategy workers (combined with `common`).
+    pub code: Vec<GlobalSkill>,
+    /// Skills injected into design-strategy workers (combined with `common`).
+    pub design: Vec<GlobalSkill>,
+}
+
+impl GlobalSkillsConfig {
+    /// Return all skills applicable to `strategy`.
+    ///
+    /// For `"code"`: returns `common` + `code` entries (common first).
+    /// For `"design"`: returns `common` + `design` entries (common first).
+    /// For any other strategy: returns only `common` entries.
+    pub fn for_strategy(&self, strategy: &str) -> Vec<&GlobalSkill> {
+        let mut skills: Vec<&GlobalSkill> = self.common.iter().collect();
+        match strategy {
+            "code" => skills.extend(self.code.iter()),
+            "design" => skills.extend(self.design.iter()),
+            _ => {}
+        }
+        skills
+    }
 }
 
 /// Resolved hostexec configuration from the `[hostexec]` section of `ur.toml`.
@@ -1133,6 +1198,10 @@ pub struct Config {
     pub git_branch_prefix: String,
     /// Configured projects, keyed by project key.
     pub projects: HashMap<String, ProjectConfig>,
+    /// Global skill injection configuration from the `[skills]` section.
+    ///
+    /// Missing `[skills]` section → all sub-vecs are empty.
+    pub global_skills: GlobalSkillsConfig,
 }
 
 impl Config {
@@ -1210,6 +1279,8 @@ impl Config {
             None => config_dir.join("logs"),
         };
 
+        let global_skills = resolve_global_skills(raw.skills, config_dir)?;
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -1228,6 +1299,7 @@ impl Config {
             logs_dir,
             git_branch_prefix,
             projects,
+            global_skills,
         })
     }
 }
@@ -1769,6 +1841,118 @@ pub fn resolve_project(
         }
     }
     None
+}
+
+/// Regex matching valid skill names: `^[a-z0-9_-]+$`.
+fn is_valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// Resolve and validate one section of `[skills]` entries.
+///
+/// Returns a `Vec<GlobalSkill>` in the same order as `raw`.
+///
+/// Validation per entry:
+/// - Skill name matches `^[a-z0-9_-]+$`
+/// - Template syntax is valid (via `validate_template_str`)
+/// - `%PROJECT%` prefix is rejected
+/// - Resolved host path exists
+/// - Resolved host path is a directory
+fn resolve_skill_section(
+    section: &str,
+    raw: IndexMap<String, String>,
+    config_dir: &Path,
+) -> anyhow::Result<Vec<GlobalSkill>> {
+    let mut out = Vec::with_capacity(raw.len());
+    for (name, path_template) in raw {
+        if !is_valid_skill_name(&name) {
+            anyhow::bail!(
+                "skills.{section}: skill name '{name}' is invalid — \
+                 must match ^[a-z0-9_-]+$"
+            );
+        }
+        template_path::validate_template_str(&path_template)
+            .map_err(|e| anyhow::anyhow!("skills.{section}.{name}: template path invalid: {e}"))?;
+        if path_template.starts_with("%PROJECT%") {
+            anyhow::bail!(
+                "skills.{section}.{name}: %PROJECT% is not allowed for skill paths — \
+                 use %URCONFIG% or an absolute path"
+            );
+        }
+        let resolved = template_path::resolve_template_path(&path_template, config_dir)
+            .map_err(|e| anyhow::anyhow!("skills.{section}.{name}: {e}"))?;
+        let host_path = match resolved {
+            template_path::ResolvedTemplatePath::HostPath(p) => p,
+            template_path::ResolvedTemplatePath::ProjectRelative(_) => {
+                // Can't happen because we rejected %PROJECT% above, but handle for safety.
+                anyhow::bail!("skills.{section}.{name}: %PROJECT% is not allowed for skill paths");
+            }
+        };
+        if !host_path.exists() {
+            anyhow::bail!(
+                "skills.{section}.{name}: path does not exist: {}",
+                host_path.display()
+            );
+        }
+        if !host_path.is_dir() {
+            anyhow::bail!(
+                "skills.{section}.{name}: path is not a directory: {}",
+                host_path.display()
+            );
+        }
+        out.push(GlobalSkill { name, host_path });
+    }
+    Ok(out)
+}
+
+/// Resolve and validate the `[skills]` section of `ur.toml`.
+///
+/// Cross-section validation:
+/// - A name in `[skills.common]` AND any strategy section (`code`, `design`) is rejected.
+/// - Same name in `[skills.code]` AND `[skills.design]` is allowed (paths may differ).
+fn resolve_global_skills(
+    raw: Option<RawSkills>,
+    config_dir: &Path,
+) -> anyhow::Result<GlobalSkillsConfig> {
+    let raw = match raw {
+        Some(r) => r,
+        None => return Ok(GlobalSkillsConfig::default()),
+    };
+
+    let common = resolve_skill_section("common", raw.common, config_dir)?;
+    let code = resolve_skill_section("code", raw.code, config_dir)?;
+    let design = resolve_skill_section("design", raw.design, config_dir)?;
+
+    // Cross-section: a name in common must not appear in any strategy section.
+    for common_skill in &common {
+        for code_skill in &code {
+            if common_skill.name == code_skill.name {
+                anyhow::bail!(
+                    "skills: skill name '{}' appears in both [skills.common] and [skills.code] — \
+                     common skills are always included; remove it from one section",
+                    common_skill.name
+                );
+            }
+        }
+        for design_skill in &design {
+            if common_skill.name == design_skill.name {
+                anyhow::bail!(
+                    "skills: skill name '{}' appears in both [skills.common] and [skills.design] — \
+                     common skills are always included; remove it from one section",
+                    common_skill.name
+                );
+            }
+        }
+    }
+
+    Ok(GlobalSkillsConfig {
+        common,
+        code,
+        design,
+    })
 }
 
 pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
@@ -4114,6 +4298,326 @@ image = "ur-worker"
             .unwrap();
             let cfg = Config::load_from(tmp.path()).unwrap();
             assert_eq!(cfg.projects["ur"].hostexec_scripts, vec!["./script.sh"]);
+        }
+    }
+
+    // ---- GlobalSkillsConfig / [skills] tests ----
+
+    mod skills_tests {
+        use super::*;
+
+        /// Write a minimal ur.toml with the provided `[skills]` TOML snippet appended.
+        fn toml_with_skills(skills_toml: &str) -> String {
+            format!("server_port = 12321\n{skills_toml}")
+        }
+
+        /// Create a skill directory under `base` with the given relative path and return it.
+        fn make_skill_dir(base: &std::path::Path, name: &str) -> PathBuf {
+            let p = base.join(name);
+            std::fs::create_dir_all(&p).unwrap();
+            p
+        }
+
+        #[test]
+        fn missing_skills_section_defaults_to_empty() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(tmp.path().join("ur.toml"), "server_port = 12321\n").unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert!(cfg.global_skills.common.is_empty());
+            assert!(cfg.global_skills.code.is_empty());
+            assert!(cfg.global_skills.design.is_empty());
+        }
+
+        #[test]
+        fn empty_skills_section_defaults_to_empty() {
+            let tmp = TempDir::new().unwrap();
+            std::fs::write(
+                tmp.path().join("ur.toml"),
+                "server_port = 12321\n[skills]\n",
+            )
+            .unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert!(cfg.global_skills.common.is_empty());
+            assert!(cfg.global_skills.code.is_empty());
+            assert!(cfg.global_skills.design.is_empty());
+        }
+
+        #[test]
+        fn parses_all_three_sub_tables() {
+            let tmp = TempDir::new().unwrap();
+            let skill_dir = make_skill_dir(tmp.path(), "skills");
+            make_skill_dir(&skill_dir, "shared");
+            make_skill_dir(&skill_dir, "internal");
+            make_skill_dir(&skill_dir, "research");
+
+            let config_dir = tmp.path();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+shared = "{}/skills/shared"
+
+[skills.code]
+internal = "{}/skills/internal"
+
+[skills.design]
+research = "{}/skills/research"
+"#,
+                config_dir.display(),
+                config_dir.display(),
+                config_dir.display(),
+            );
+            std::fs::write(config_dir.join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(config_dir).unwrap();
+
+            assert_eq!(cfg.global_skills.common.len(), 1);
+            assert_eq!(cfg.global_skills.common[0].name, "shared");
+
+            assert_eq!(cfg.global_skills.code.len(), 1);
+            assert_eq!(cfg.global_skills.code[0].name, "internal");
+
+            assert_eq!(cfg.global_skills.design.len(), 1);
+            assert_eq!(cfg.global_skills.design[0].name, "research");
+        }
+
+        #[test]
+        fn for_strategy_code_returns_common_plus_code() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/common-skill");
+            make_skill_dir(tmp.path(), "skills/code-skill");
+            make_skill_dir(tmp.path(), "skills/design-skill");
+
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+common-skill = "{base}/skills/common-skill"
+
+[skills.code]
+code-skill = "{base}/skills/code-skill"
+
+[skills.design]
+design-skill = "{base}/skills/design-skill"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+
+            let code_skills = cfg.global_skills.for_strategy("code");
+            assert_eq!(code_skills.len(), 2);
+            assert_eq!(code_skills[0].name, "common-skill");
+            assert_eq!(code_skills[1].name, "code-skill");
+        }
+
+        #[test]
+        fn for_strategy_design_returns_common_plus_design() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/common-skill");
+            make_skill_dir(tmp.path(), "skills/design-skill");
+
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+common-skill = "{base}/skills/common-skill"
+
+[skills.design]
+design-skill = "{base}/skills/design-skill"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+
+            let design_skills = cfg.global_skills.for_strategy("design");
+            assert_eq!(design_skills.len(), 2);
+            assert_eq!(design_skills[0].name, "common-skill");
+            assert_eq!(design_skills[1].name, "design-skill");
+        }
+
+        #[test]
+        fn for_strategy_unknown_returns_only_common() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/common-skill");
+            make_skill_dir(tmp.path(), "skills/code-skill");
+
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+common-skill = "{base}/skills/common-skill"
+
+[skills.code]
+code-skill = "{base}/skills/code-skill"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+
+            let unknown_skills = cfg.global_skills.for_strategy("unknown");
+            assert_eq!(unknown_skills.len(), 1);
+            assert_eq!(unknown_skills[0].name, "common-skill");
+        }
+
+        #[test]
+        fn rejects_percent_project_in_skill_path() {
+            let tmp = TempDir::new().unwrap();
+            let skills_toml = r#"
+[skills.common]
+my-skill = "%PROJECT%/skills/my-skill"
+"#;
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("%PROJECT%") && msg.contains("not allowed"),
+                "unexpected error: {msg}"
+            );
+            assert!(msg.contains("my-skill"), "{msg}");
+            assert!(msg.contains("common"), "{msg}");
+        }
+
+        #[test]
+        fn rejects_missing_path() {
+            let tmp = TempDir::new().unwrap();
+            let skills_toml = format!(
+                r#"
+[skills.code]
+missing-skill = "{}/skills/nonexistent"
+"#,
+                tmp.path().display()
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("does not exist"), "unexpected error: {msg}");
+            assert!(msg.contains("missing-skill"), "{msg}");
+            assert!(msg.contains("code"), "{msg}");
+        }
+
+        #[test]
+        fn rejects_non_directory_path() {
+            let tmp = TempDir::new().unwrap();
+            // Create a file, not a directory.
+            let file_path = tmp.path().join("a-file");
+            std::fs::write(&file_path, "data").unwrap();
+
+            let skills_toml = format!(
+                r#"
+[skills.design]
+my-tool = "{}"
+"#,
+                file_path.display()
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("not a directory"), "unexpected error: {msg}");
+            assert!(msg.contains("my-tool"), "{msg}");
+            assert!(msg.contains("design"), "{msg}");
+        }
+
+        #[test]
+        fn rejects_bad_skill_name() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/bad");
+            let skills_toml = format!(
+                r#"
+[skills.common]
+"Bad Name!" = "{}/skills/bad"
+"#,
+                tmp.path().display()
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("invalid"), "unexpected error: {msg}");
+            assert!(msg.contains("Bad Name!"), "{msg}");
+        }
+
+        #[test]
+        fn rejects_common_and_code_duplicate() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/dup-skill-a");
+            make_skill_dir(tmp.path(), "skills/dup-skill-b");
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+dup-skill = "{base}/skills/dup-skill-a"
+
+[skills.code]
+dup-skill = "{base}/skills/dup-skill-b"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("dup-skill"), "unexpected error: {msg}");
+            assert!(msg.contains("common") && msg.contains("code"), "{msg}");
+        }
+
+        #[test]
+        fn rejects_common_and_design_duplicate() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/dup-skill-a");
+            make_skill_dir(tmp.path(), "skills/dup-skill-b");
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+dup-skill = "{base}/skills/dup-skill-a"
+
+[skills.design]
+dup-skill = "{base}/skills/dup-skill-b"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let err = Config::load_from(tmp.path()).unwrap_err();
+            let msg = err.to_string();
+            assert!(msg.contains("dup-skill"), "unexpected error: {msg}");
+            assert!(msg.contains("common") && msg.contains("design"), "{msg}");
+        }
+
+        #[test]
+        fn allows_same_name_in_code_and_design() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/shared-impl-a");
+            make_skill_dir(tmp.path(), "skills/shared-impl-b");
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.code]
+shared-impl = "{base}/skills/shared-impl-a"
+
+[skills.design]
+shared-impl = "{base}/skills/shared-impl-b"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            // Both code and design should have the skill with different paths.
+            assert_eq!(cfg.global_skills.code[0].name, "shared-impl");
+            assert_eq!(cfg.global_skills.design[0].name, "shared-impl");
+            assert_ne!(
+                cfg.global_skills.code[0].host_path,
+                cfg.global_skills.design[0].host_path
+            );
+        }
+
+        #[test]
+        fn urconfig_template_is_resolved() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/my-skill");
+            let skills_toml = r#"
+[skills.common]
+my-skill = "%URCONFIG%/skills/my-skill"
+"#;
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+            assert_eq!(cfg.global_skills.common[0].name, "my-skill");
+            assert_eq!(
+                cfg.global_skills.common[0].host_path,
+                tmp.path().join("skills/my-skill")
+            );
         }
     }
 }
