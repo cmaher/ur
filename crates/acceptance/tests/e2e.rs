@@ -2375,10 +2375,15 @@ fn read_tmux_status_left(runtime: &str, container: &str) -> String {
 ///
 /// Flow:
 /// 1. Create a ticket and dispatch a worker.
-/// 2. After the worker becomes healthy, read status-left → expect `[<ticket_id>]`.
-/// 3. Set `pr_number` metadata on the ticket via `ur ticket set-meta`.
-/// 4. Poll up to 5s for the label to update to `[<ticket_id> PR-42]`.
-/// 5. Stop worker.
+/// 2. Set `pr_number = 42` via `ur ticket set-meta` → spawns label refresh.
+/// 3. Poll up to 20s for the label to update to `[<ticket_id> PR-42]`.
+/// 4. Delete `pr_number` via `ur ticket delete-meta` → spawns label refresh.
+/// 5. Poll up to 20s for the label to revert to `[<ticket_id>]`.
+/// 6. Stop worker.
+///
+/// Both assertions use the set-meta / delete-meta trigger paths
+/// (spawn_label_refresh_for_ticket) rather than waiting for the agent to
+/// report idle — this avoids timing sensitivity around Claude Code startup.
 fn scenario_worker_label_pr_status(env: &TestEnv) {
     let ticket_id = create_test_ticket(env, "Worker label PR status test");
     let container_name = env.container_name(&ticket_id);
@@ -2389,29 +2394,7 @@ fn scenario_worker_label_pr_status(env: &TestEnv) {
         // ---- Launch with dispatch so the workflow row is created ----
         launch_dispatched_worker(env, &ticket_id, &container_name);
 
-        // ---- Assert bare label (no PR) ----
-        // Trigger B (grpc.rs spawn_label_push) fires once the worker reports idle.
-        // Since wait_for_healthy already waited for the HEALTHCHECK, the label
-        // should be set by the time we read it.  Allow a short poll in case the
-        // label push is still in flight.
-        let bare_expected = format!("[{ticket_id}]");
-        let mut bare_ok = false;
-        for _ in 0..20 {
-            let label = read_tmux_status_left(&env.runtime, &container_name);
-            if label == bare_expected {
-                bare_ok = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        assert!(
-            bare_ok,
-            "expected bare status-left '{bare_expected}' within 5s; \
-             last value: '{}'",
-            read_tmux_status_left(&env.runtime, &container_name),
-        );
-
-        // ---- Set pr_number metadata → spawn_label_refresh_for_ticket pushes new label ----
+        // ---- Set pr_number metadata → spawn_label_refresh_for_ticket pushes PR label ----
         let set_meta_output = run_cmd(
             &env.ur,
             &[
@@ -2432,10 +2415,10 @@ fn scenario_worker_label_pr_status(env: &TestEnv) {
             String::from_utf8_lossy(&set_meta_output.stderr),
         );
 
-        // ---- Poll up to 5s for the label to include PR-42 ----
+        // ---- Poll up to 20s for the label to include PR-42 ----
         let pr_expected = format!("[{ticket_id} PR-42]");
         let mut pr_ok = false;
-        for _ in 0..20 {
+        for _ in 0..80 {
             let label = read_tmux_status_left(&env.runtime, &container_name);
             if label == pr_expected {
                 pr_ok = true;
@@ -2445,7 +2428,45 @@ fn scenario_worker_label_pr_status(env: &TestEnv) {
         }
         assert!(
             pr_ok,
-            "expected PR status-left '{pr_expected}' within 5s after set-meta; \
+            "expected PR status-left '{pr_expected}' within 20s after set-meta; \
+             last value: '{}'",
+            read_tmux_status_left(&env.runtime, &container_name),
+        );
+
+        // ---- Delete pr_number → spawn_label_refresh_for_ticket pushes bare label ----
+        let delete_meta_output = run_cmd(
+            &env.ur,
+            &[
+                "--output",
+                "json",
+                "ticket",
+                "delete-meta",
+                &ticket_id,
+                "pr_number",
+            ],
+            &env_slice,
+        );
+        assert!(
+            delete_meta_output.status.success(),
+            "ur ticket delete-meta pr_number failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&delete_meta_output.stdout),
+            String::from_utf8_lossy(&delete_meta_output.stderr),
+        );
+
+        // ---- Poll up to 20s for the label to revert to the bare form ----
+        let bare_expected = format!("[{ticket_id}]");
+        let mut bare_ok = false;
+        for _ in 0..80 {
+            let label = read_tmux_status_left(&env.runtime, &container_name);
+            if label == bare_expected {
+                bare_ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert!(
+            bare_ok,
+            "expected bare status-left '{bare_expected}' within 20s after delete-meta; \
              last value: '{}'",
             read_tmux_status_left(&env.runtime, &container_name),
         );

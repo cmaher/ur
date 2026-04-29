@@ -893,6 +893,12 @@ impl TicketService for TicketServiceHandler {
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
+        // When pr_number is removed, refresh the worker label so the PR number
+        // disappears from the status-left immediately.
+        if req.key == ur_rpc::ticket_meta::PR_NUMBER {
+            self.spawn_label_refresh_for_ticket(&req.ticket_id);
+        }
+
         Ok(Response::new(DeleteMetaResponse {}))
     }
 
