@@ -38,6 +38,7 @@ temporal = ["ur_rpc/temporal"]
 acceptance = []
 
 [dev-dependencies]
+async-trait = "0.1"
 container = { path = "../container" }
 futures = "0.3"
 local_repo = { path = "../local_repo" }
