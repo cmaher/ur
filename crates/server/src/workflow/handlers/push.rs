@@ -520,7 +520,7 @@ async fn ensure_pr(
     };
 
     let opts = CreatePrOpts {
-        title: title.to_string(),
+        title: build_pr_title(title, &meta),
         body: pr_body,
         head: branch.to_string(),
         base: String::new(),
@@ -649,6 +649,25 @@ async fn stall_agent(
     Ok(())
 }
 
+/// Build a PR title by optionally prepending a `ref` metadata value.
+///
+/// If the ticket has a `ref` metadata key whose trimmed value is non-empty,
+/// the title is formatted as `"<ref> <title>"`. Otherwise `title` is returned
+/// unchanged.
+pub fn build_pr_title(title: &str, meta: &std::collections::HashMap<String, String>) -> String {
+    match meta.get(ur_rpc::ticket_meta::REF) {
+        Some(r) => {
+            let trimmed = r.trim();
+            if trimmed.is_empty() {
+                title.to_string()
+            } else {
+                format!("{trimmed} {title}")
+            }
+        }
+        None => title.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,5 +727,52 @@ mod tests {
         assert!(default_is_protected("main"));
         assert!(default_is_protected("master"));
         assert!(!default_is_protected("feature/foo"));
+    }
+
+    // build_pr_title tests
+
+    fn meta_with_ref(val: &str) -> std::collections::HashMap<String, String> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(ur_rpc::ticket_meta::REF.to_string(), val.to_string());
+        m
+    }
+
+    #[test]
+    fn build_pr_title_no_ref() {
+        let meta = std::collections::HashMap::new();
+        assert_eq!(build_pr_title("My feature", &meta), "My feature");
+    }
+
+    #[test]
+    fn build_pr_title_with_ref() {
+        let meta = meta_with_ref("JIRA-123");
+        assert_eq!(build_pr_title("My feature", &meta), "JIRA-123 My feature");
+    }
+
+    #[test]
+    fn build_pr_title_ref_with_leading_trailing_spaces() {
+        let meta = meta_with_ref("  JIRA-456  ");
+        assert_eq!(build_pr_title("Fix the bug", &meta), "JIRA-456 Fix the bug");
+    }
+
+    #[test]
+    fn build_pr_title_ref_with_internal_spaces() {
+        let meta = meta_with_ref("PROJECT 789");
+        assert_eq!(
+            build_pr_title("Add feature", &meta),
+            "PROJECT 789 Add feature"
+        );
+    }
+
+    #[test]
+    fn build_pr_title_empty_ref() {
+        let meta = meta_with_ref("");
+        assert_eq!(build_pr_title("My feature", &meta), "My feature");
+    }
+
+    #[test]
+    fn build_pr_title_whitespace_only_ref() {
+        let meta = meta_with_ref("   ");
+        assert_eq!(build_pr_title("My feature", &meta), "My feature");
     }
 }

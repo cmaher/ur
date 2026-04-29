@@ -14,6 +14,7 @@ use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{LoadState, Model, TicketDetailData};
 use crate::msg::{GotoTarget, Msg, NavMsg, OverlayMsg, TicketOpMsg};
 use crate::navigation::PageId;
+use ur_rpc::ticket_meta;
 
 /// Render the ticket detail page into the given content area.
 ///
@@ -45,16 +46,38 @@ fn render_loaded_detail(
     model: &Model,
     data: &TicketDetailData,
 ) {
-    let chunks = Layout::vertical([
-        Constraint::Length(1), // header line
-        Constraint::Length(5), // body preview (4 lines + 1 for "...")
-        Constraint::Min(3),    // children table
-    ])
-    .split(area);
+    let ref_value = data
+        .detail
+        .metadata
+        .iter()
+        .find(|m| m.key == ticket_meta::REF)
+        .filter(|m| !m.value.is_empty())
+        .map(|m| m.value.as_str());
+
+    let chunks = if ref_value.is_some() {
+        Layout::vertical([
+            Constraint::Length(1), // header line
+            Constraint::Length(1), // ref metadata row
+            Constraint::Length(5), // body preview (4 lines + 1 for "...")
+            Constraint::Min(3),    // children table
+        ])
+        .split(area)
+    } else {
+        Layout::vertical([
+            Constraint::Length(1), // header line
+            Constraint::Length(0), // ref metadata row (hidden)
+            Constraint::Length(5), // body preview (4 lines + 1 for "...")
+            Constraint::Min(3),    // children table
+        ])
+        .split(area)
+    };
 
     if let Some(ticket) = &data.detail.ticket {
         render_ticket_header(ticket, chunks[0], buf, ctx);
-        render_body_preview(&ticket.body, chunks[1], buf, ctx);
+        if let Some(value) = ref_value {
+            render_ref_row(value, chunks[1], buf, ctx);
+        }
+        render_body_preview(&ticket.body, chunks[2], buf, ctx);
     } else {
         let ticket_id = &model
             .ticket_detail
@@ -69,11 +92,22 @@ fn render_loaded_detail(
             && !detail_model.data.is_loading()
             && detail_model.data.is_loaded()
         {
-            render_message(chunks[2], buf, ctx, "No children");
+            render_message(chunks[3], buf, ctx, "No children");
         } else {
-            render_ticket_table(&detail_model.children_table, chunks[2], buf, ctx);
+            render_ticket_table(&detail_model.children_table, chunks[3], buf, ctx);
         }
     }
+}
+
+/// Render the `ref` metadata row: `ref: <value>` styled consistently with adjacent metadata.
+fn render_ref_row(value: &str, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+    let key_style = Style::default().fg(ctx.theme.neutral_content);
+    let value_style = Style::default().fg(ctx.theme.base_content);
+    let line = Line::from(vec![
+        Span::styled("ref: ", key_style),
+        Span::styled(value.to_string(), value_style),
+    ]);
+    Paragraph::new(line).render(area, buf);
 }
 
 /// Render the ticket header: ID, title (truncated), status, and progress bar.
@@ -1077,5 +1111,61 @@ mod tests {
         assert!(targets.iter().any(|t| t.label == "Ticket Detail"));
         assert!(targets.iter().any(|t| t.label == "Flow Details"));
         assert!(targets.iter().any(|t| t.label == "Worker"));
+    }
+
+    // ── Ref metadata extraction tests ────────────────────────────────
+
+    #[test]
+    fn ref_value_found_when_set() {
+        use ur_rpc::proto::ticket::MetadataEntry;
+
+        let metadata = [
+            MetadataEntry {
+                key: ticket_meta::REF.to_string(),
+                value: "JIRA-123".to_string(),
+            },
+            MetadataEntry {
+                key: "other".to_string(),
+                value: "ignored".to_string(),
+            },
+        ];
+        let found = metadata
+            .iter()
+            .find(|m| m.key == ticket_meta::REF)
+            .filter(|m| !m.value.is_empty())
+            .map(|m| m.value.as_str());
+        assert_eq!(found, Some("JIRA-123"));
+    }
+
+    #[test]
+    fn ref_value_absent_when_not_in_metadata() {
+        use ur_rpc::proto::ticket::MetadataEntry;
+
+        let metadata: Vec<MetadataEntry> = vec![MetadataEntry {
+            key: "other".to_string(),
+            value: "some_value".to_string(),
+        }];
+        let found = metadata
+            .iter()
+            .find(|m| m.key == ticket_meta::REF)
+            .filter(|m| !m.value.is_empty())
+            .map(|m| m.value.as_str());
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn ref_value_absent_when_empty() {
+        use ur_rpc::proto::ticket::MetadataEntry;
+
+        let metadata = [MetadataEntry {
+            key: ticket_meta::REF.to_string(),
+            value: String::new(),
+        }];
+        let found = metadata
+            .iter()
+            .find(|m| m.key == ticket_meta::REF)
+            .filter(|m| !m.value.is_empty())
+            .map(|m| m.value.as_str());
+        assert_eq!(found, None);
     }
 }

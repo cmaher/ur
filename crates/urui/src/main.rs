@@ -496,6 +496,7 @@ fn run_editor_flow(
                 body: parsed.body,
                 parent_id,
                 branch: parsed.branch,
+                meta: parsed.meta,
             })
         }
         _ => {
@@ -527,6 +528,7 @@ async fn run_edit_ticket_flow(
         &ticket.ticket_type,
         ticket.priority,
         ticket.branch.as_deref(),
+        &ticket.meta,
         &ticket.body,
     );
 
@@ -544,18 +546,23 @@ async fn run_edit_ticket_flow(
     // branch". The server's UpdateTicketRequest treats `Some("NONE")` as a
     // clear sentinel and `Some("foo")` as set-to-foo. We always send a value
     // here so the editor round-trips losslessly.
-    Ok(parsed.map(|p| msg::TicketOpMsg::UpdateFields {
-        ticket_id: ticket_id.to_string(),
-        project: if p.project.is_empty() {
-            ticket.project
-        } else {
-            p.project
-        },
-        title: p.title,
-        ticket_type: p.ticket_type,
-        priority: p.priority,
-        body: p.body,
-        branch: Some(p.branch.unwrap_or_else(|| "NONE".to_owned())),
+    Ok(parsed.map(|p| {
+        let (meta_set, meta_delete) = create_ticket::compute_meta_diff(&ticket.meta, &p.meta);
+        msg::TicketOpMsg::UpdateFields {
+            ticket_id: ticket_id.to_string(),
+            project: if p.project.is_empty() {
+                ticket.project
+            } else {
+                p.project
+            },
+            title: p.title,
+            ticket_type: p.ticket_type,
+            priority: p.priority,
+            body: p.body,
+            branch: Some(p.branch.unwrap_or_else(|| "NONE".to_owned())),
+            meta_set,
+            meta_delete,
+        }
     }))
 }
 
@@ -580,6 +587,12 @@ async fn fetch_ticket_for_edit(
     let ticket = resp
         .ticket
         .ok_or_else(|| anyhow::anyhow!("ticket {ticket_id} not found"))?;
+    let meta: std::collections::BTreeMap<String, String> = resp
+        .metadata
+        .into_iter()
+        .filter(|e| !e.key.is_empty() && !e.value.is_empty())
+        .map(|e| (e.key, e.value))
+        .collect();
     Ok(create_ticket::PendingTicket {
         project: ticket.project,
         title: ticket.title,
@@ -591,6 +604,7 @@ async fn fetch_ticket_for_edit(
             Some(ticket.branch)
         },
         body: ticket.body,
+        meta,
     })
 }
 

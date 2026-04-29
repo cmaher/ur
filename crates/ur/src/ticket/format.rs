@@ -3,6 +3,7 @@ use std::fmt::Write;
 use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
 };
+use ur_rpc::ticket_meta;
 
 /// Format a single ticket's full detail view (used by `show`).
 pub fn format_ticket_detail(
@@ -19,6 +20,14 @@ pub fn format_ticket_detail(
     writeln!(out, "Type:     {}", ticket.ticket_type).unwrap();
     writeln!(out, "Status:   {}", ticket.status).unwrap();
     writeln!(out, "Priority: {}", ticket.priority).unwrap();
+    if let Some(ref_val) = metadata
+        .iter()
+        .find(|m| m.key == ticket_meta::REF)
+        .map(|m| m.value.trim())
+        .filter(|v| !v.is_empty())
+    {
+        writeln!(out, "Ref:      {ref_val}").unwrap();
+    }
     if !ticket.parent_id.is_empty() {
         writeln!(out, "Parent:   {}", ticket.parent_id).unwrap();
     }

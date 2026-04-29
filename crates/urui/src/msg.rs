@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crossterm::event::KeyEvent;
 use ur_rpc::proto::core::WorkerSummary;
 use ur_rpc::proto::ticket::{ActivityEntry, GetTicketResponse, Ticket, WorkflowInfo};
@@ -246,6 +248,8 @@ pub struct PendingTicket {
     pub parent_id: Option<String>,
     /// Optional branch override. `None` means no branch override (server default).
     pub branch: Option<String>,
+    /// Arbitrary metadata key-value pairs (e.g. `ref`).
+    pub meta: BTreeMap<String, String>,
 }
 
 /// A single UI event received from the server's event stream.
@@ -498,6 +502,10 @@ pub enum TicketOpMsg {
         /// it via the server's branch field semantics). When the editor caller
         /// supplies `None`, the server treats it as no change.
         branch: Option<String>,
+        /// Metadata keys to set (key-value pairs). Applied after the field update.
+        meta_set: Vec<(String, String)>,
+        /// Metadata keys to delete. Applied after the field update.
+        meta_delete: Vec<String>,
     },
 }
 

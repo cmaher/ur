@@ -11,3 +11,6 @@ pub const NOVERIFY: &str = "noverify";
 
 /// Metadata key controlling how feedback is delivered (now vs later).
 pub const FEEDBACK_MODE: &str = "feedback_mode";
+
+/// Metadata key for a reference label (e.g. a Jira ticket or external ID) to prepend to PR titles.
+pub const REF: &str = "ref";

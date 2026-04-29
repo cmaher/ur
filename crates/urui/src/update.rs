@@ -1698,6 +1698,7 @@ mod tests {
                     body: String::new(),
                     parent_id: None,
                     branch: None,
+                    meta: Default::default(),
                 },
             }),
         );
@@ -1923,6 +1924,7 @@ mod tests {
             body: "Some body".into(),
             parent_id: None,
             branch: None,
+            meta: Default::default(),
         };
         let (new_model, _) = update(
             model,
