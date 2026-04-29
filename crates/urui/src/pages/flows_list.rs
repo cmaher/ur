@@ -10,7 +10,7 @@ use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::cmd::{Cmd, FetchCmd};
-use crate::components::{MiniProgressBar, ThemedTable};
+use crate::components::{MiniProgressBar, ThemedTable, format_pr_short, render_hyperlink};
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{FLOW_PAGE_SIZE, FlowListData, FlowListModel, LoadState, Model};
@@ -21,6 +21,8 @@ use crate::navigation::PageId;
 const PROGRESS_COUNT_COL: usize = 3;
 /// Column index of the progress bar in the table.
 const PROGRESS_BAR_COL: usize = 4;
+/// Column index of the PR URL in the table.
+const PR_URL_COL: usize = 7;
 
 /// Render the flows list page into the given content area.
 pub fn render_flows_list(area: Rect, buf: &mut Buffer, ctx: &TuiContext, model: &Model) {
@@ -108,6 +110,16 @@ fn render_loaded_flows(
         &widths,
         scroll_offset,
     );
+
+    render_pr_links(
+        &page_workflows,
+        flow_model,
+        area,
+        buf,
+        ctx,
+        &widths,
+        scroll_offset,
+    );
 }
 
 /// Build the column widths for the flows table (matching v1 layout).
@@ -120,7 +132,7 @@ fn table_widths() -> Vec<Constraint> {
         Constraint::Length(11), // Progress bar
         Constraint::Length(12), // Stage Time
         Constraint::Length(12), // Total Time
-        Constraint::Length(45), // PR URL
+        Constraint::Length(25), // PR URL
     ]
 }
 
@@ -140,7 +152,7 @@ fn workflow_to_row(wf: &WorkflowInfo, now: DateTime<Utc>) -> Vec<String> {
         String::new(), // placeholder for progress bar
         compute_stage_time(wf, now),
         compute_total_time(wf, now),
-        wf.pr_url.clone(),
+        String::new(), // placeholder for PR URL (rendered by overlay pass)
     ]
 }
 
@@ -311,6 +323,62 @@ fn render_progress_bars(
             };
             bar.render_label_styled(cell, buf, row_fg, row_bg);
         }
+    }
+}
+
+/// Render PR URL hyperlinks over the placeholder PR URL column.
+fn render_pr_links(
+    page_workflows: &[&WorkflowInfo],
+    flow_model: &FlowListModel,
+    area: Rect,
+    buf: &mut Buffer,
+    ctx: &TuiContext,
+    widths: &[Constraint],
+    scroll_offset: usize,
+) {
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let col_areas = Layout::horizontal(widths.to_vec()).split(inner);
+    let Some(pr_area) = col_areas.get(PR_URL_COL) else {
+        return;
+    };
+
+    let data_start_y = inner.y + 1;
+
+    for (i, wf) in page_workflows.iter().enumerate().skip(scroll_offset) {
+        if wf.pr_url.is_empty() {
+            continue;
+        }
+
+        let row_y = data_start_y + (i - scroll_offset) as u16;
+        if row_y >= inner.y + inner.height {
+            break;
+        }
+
+        let is_selected = i == flow_model.selected_row;
+        let (fg, bg) = if is_selected {
+            (ctx.theme.primary_content, ctx.theme.primary)
+        } else if i % 2 == 0 {
+            (ctx.theme.base_content, ctx.theme.base_100)
+        } else {
+            (ctx.theme.base_content, ctx.theme.base_200)
+        };
+
+        let display = format_pr_short(&wf.pr_url).unwrap_or_else(|| wf.pr_url.clone());
+
+        let cell = Rect {
+            x: pr_area.x,
+            y: row_y,
+            width: pr_area.width,
+            height: 1,
+        };
+
+        render_hyperlink(cell, buf, &wf.pr_url, &display, fg, bg);
     }
 }
 
@@ -669,6 +737,7 @@ mod tests {
         let row = workflow_to_row(&wf, now);
         assert_eq!(row[0], "ur-abc");
         assert_eq!(row[1], "implementing");
+        assert_eq!(row[7], "", "PR URL slot must be empty placeholder");
     }
 
     #[test]
@@ -1031,5 +1100,185 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert!(targets.iter().any(|t| t.label == "Ticket Details"));
         assert!(targets.iter().any(|t| t.label == "Worker"));
+    }
+
+    // ── render_pr_links ─────────────────────────────────────────────
+
+    fn make_ctx() -> crate::context::TuiContext {
+        use crate::keymap::Keymap;
+        use crate::theme::Theme;
+        use ur_config::TuiConfig;
+        let tui_config = TuiConfig::default();
+        let theme = Theme::resolve(&tui_config);
+        crate::context::TuiContext {
+            theme,
+            keymap: Keymap::default(),
+            projects: vec![],
+            project_configs: std::collections::HashMap::new(),
+            tui_config,
+            config_dir: std::path::PathBuf::from("/tmp/test-urui"),
+            project_filter: None,
+        }
+    }
+
+    fn make_flow_list_model(selected_row: usize) -> crate::model::FlowListModel {
+        crate::model::FlowListModel {
+            data: crate::model::LoadState::NotLoaded,
+            selected_row,
+            current_page: 0,
+        }
+    }
+
+    /// Collect raw cell symbols from the PR URL column area (x=78..103, y=row_y)
+    /// for a 110-wide buffer. Returns the symbols joined — no trimming — so callers
+    /// can check for the presence of text or escape sequences.
+    fn collect_pr_col_raw(buf: &ratatui::buffer::Buffer, row_y: u16) -> String {
+        // inner starts at x=1,y=1; data at y=2; PR col starts at x=1+77=78, width=25
+        (78u16..103)
+            .map(|x| buf[(x, row_y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn render_pr_links_into_buf(
+        workflows: &[WorkflowInfo],
+        selected_row: usize,
+        scroll_offset: usize,
+    ) -> ratatui::buffer::Buffer {
+        let area = ratatui::layout::Rect::new(0, 0, 110, 10);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let ctx = make_ctx();
+        let widths = table_widths();
+        let flow_model = make_flow_list_model(selected_row);
+        let page_wf_refs: Vec<&WorkflowInfo> = workflows.iter().collect();
+        render_pr_links(
+            &page_wf_refs,
+            &flow_model,
+            area,
+            &mut buf,
+            &ctx,
+            &widths,
+            scroll_offset,
+        );
+        buf
+    }
+
+    #[test]
+    fn pr_links_empty_url_leaves_col_blank() {
+        // make_workflow sets pr_url = ""
+        let wf = make_workflow("ur-abc", "implementing");
+        let buf = render_pr_links_into_buf(&[wf], 0, 0);
+        // When pr_url is empty, render_pr_links skips the row entirely.
+        // The buffer cells at the PR URL column (x=78..103, y=2) remain at
+        // their zero-initialized state (empty string symbol "").
+        let raw = collect_pr_col_raw(&buf, 2);
+        // All cells are default-initialized to " " by Buffer::empty, so
+        // an untouched column will be all spaces. An empty pr_url should not
+        // write any visible text (no '#', no 'http', etc.).
+        assert!(
+            !raw.contains('#') && !raw.contains("http"),
+            "expected blank PR URL col for empty pr_url, got: {raw:?}"
+        );
+    }
+
+    #[test]
+    fn pr_links_github_url_contains_hash() {
+        // render_pr_links uses format_pr_short to produce "owner/repo#N".
+        // We check that '#' appears in the column — valid regardless of OSC8 mode
+        // because the display text itself contains '#'.
+        let mut wf = make_workflow("ur-abc", "implementing");
+        wf.pr_url = "https://github.com/paxos/ur/pull/324".to_string();
+        let buf = render_pr_links_into_buf(&[wf], 0, 0);
+        // The raw symbols may contain ESC sequences (OSC8) or plain text; either
+        // way the visible character '#' must appear somewhere in the column.
+        let raw = collect_pr_col_raw(&buf, 2);
+        assert!(
+            raw.contains('#'),
+            "expected '#' in PR URL col for GitHub URL, got: {raw:?}"
+        );
+    }
+
+    #[test]
+    fn pr_links_non_github_url_renders_something() {
+        // For a non-GitHub URL, format_pr_short returns None and the URL itself
+        // is used as the display string (truncated to col width).
+        let mut wf = make_workflow("ur-abc", "implementing");
+        wf.pr_url = "https://example.com/foo".to_string();
+        let buf = render_pr_links_into_buf(&[wf], 0, 0);
+        let raw = collect_pr_col_raw(&buf, 2);
+        // Some part of the URL must appear in the column.
+        assert!(
+            raw.contains("example") || raw.contains("http"),
+            "expected URL text in PR URL col for non-GitHub URL, got: {raw:?}"
+        );
+    }
+
+    #[test]
+    fn pr_links_scroll_offset_skips_first_row() {
+        let mut wf0 = make_workflow("ur-0", "implementing");
+        wf0.pr_url = "https://github.com/paxos/ur/pull/1".to_string();
+        let mut wf1 = make_workflow("ur-1", "implementing");
+        wf1.pr_url = "https://github.com/paxos/ur/pull/2".to_string();
+
+        let area = ratatui::layout::Rect::new(0, 0, 110, 10);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let ctx = make_ctx();
+        let widths = table_widths();
+        // scroll_offset=1 means row 0 (wf0) is off-screen; row 1 (wf1) renders at y=2.
+        let flow_model = make_flow_list_model(0);
+        let page_wf_refs: Vec<&WorkflowInfo> = vec![&wf0, &wf1];
+        render_pr_links(&page_wf_refs, &flow_model, area, &mut buf, &ctx, &widths, 1);
+
+        // First visible row (y=2) should contain '#' from wf1's short URL.
+        let first_row = collect_pr_col_raw(&buf, 2);
+        assert!(
+            first_row.contains('#'),
+            "expected '#' from wf1 in first visible row (y=2), got: {first_row:?}"
+        );
+
+        // Second visible row (y=3) should be blank: no more workflows after wf1.
+        let second_row = collect_pr_col_raw(&buf, 3);
+        assert!(
+            !second_row.contains('#') && !second_row.contains("http"),
+            "expected blank second row (y=3), got: {second_row:?}"
+        );
+    }
+
+    #[test]
+    fn pr_links_selected_row_uses_primary_colors() {
+        use ratatui::style::Color;
+        // We just verify that the selected row uses the primary fg color.
+        // The exact color depends on the theme; we check it differs from the
+        // default base_content by using a theme-aware assertion.
+        let mut wf = make_workflow("ur-abc", "implementing");
+        wf.pr_url = "https://github.com/paxos/ur/pull/324".to_string();
+        let buf = render_pr_links_into_buf(&[wf], 0, 0); // row 0 is selected
+        let ctx = make_ctx();
+        // The first cell of the PR URL column should carry the primary_content fg
+        // when the row is selected (row index 0 == selected_row 0).
+        let cell = &buf[(78u16, 2u16)];
+        assert_ne!(
+            cell.fg,
+            Color::Reset,
+            "selected row cell should have explicit fg set"
+        );
+        assert_eq!(
+            cell.fg, ctx.theme.primary_content,
+            "selected row should use primary_content fg"
+        );
+    }
+
+    #[test]
+    fn pr_url_col_constant() {
+        assert_eq!(PR_URL_COL, 7);
+    }
+
+    #[test]
+    fn pr_url_col_width_is_25() {
+        let widths = table_widths();
+        match widths[PR_URL_COL] {
+            Constraint::Length(25) => {}
+            other => panic!("expected PR URL col width 25, got {other:?}"),
+        }
     }
 }
