@@ -1859,13 +1859,20 @@ fn is_valid_skill_name(name: &str) -> bool {
 /// - Skill name matches `^[a-z0-9_-]+$`
 /// - Template syntax is valid (via `validate_template_str`)
 /// - `%PROJECT%` prefix is rejected
-/// - Resolved host path exists
-/// - Resolved host path is a directory
+/// - Resolved host path exists (skipped inside the server container — see note below)
+/// - Resolved host path is a directory (skipped inside the server container)
+///
+/// Path existence checks are skipped when `UR_HOST_CONFIG` is set in the environment,
+/// which indicates that `Config::load` is running inside the server container. Absolute
+/// host paths (e.g. `/Users/me/.ur/skills/foo`) are not visible inside the container
+/// but are correct mount sources for the Docker daemon — the host CLI has already
+/// validated them at `ur start` time.
 fn resolve_skill_section(
     section: &str,
     raw: IndexMap<String, String>,
     config_dir: &Path,
 ) -> anyhow::Result<Vec<GlobalSkill>> {
+    let in_container = std::env::var(UR_HOST_CONFIG_ENV).is_ok();
     let mut out = Vec::with_capacity(raw.len());
     for (name, path_template) in raw {
         if !is_valid_skill_name(&name) {
@@ -1891,17 +1898,19 @@ fn resolve_skill_section(
                 anyhow::bail!("skills.{section}.{name}: %PROJECT% is not allowed for skill paths");
             }
         };
-        if !host_path.exists() {
-            anyhow::bail!(
-                "skills.{section}.{name}: path does not exist: {}",
-                host_path.display()
-            );
-        }
-        if !host_path.is_dir() {
-            anyhow::bail!(
-                "skills.{section}.{name}: path is not a directory: {}",
-                host_path.display()
-            );
+        if !in_container {
+            if !host_path.exists() {
+                anyhow::bail!(
+                    "skills.{section}.{name}: path does not exist: {}",
+                    host_path.display()
+                );
+            }
+            if !host_path.is_dir() {
+                anyhow::bail!(
+                    "skills.{section}.{name}: path is not a directory: {}",
+                    host_path.display()
+                );
+            }
         }
         out.push(GlobalSkill { name, host_path });
     }
