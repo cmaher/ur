@@ -10,7 +10,7 @@ use ur_rpc::lifecycle;
 use ur_rpc::proto::ticket::WorkflowInfo;
 
 use crate::cmd::Cmd;
-use crate::components::ThemedTable;
+use crate::components::{ThemedTable, format_pr_short, render_hyperlink};
 use crate::context::TuiContext;
 use crate::input::{FooterCommand, InputHandler, InputResult};
 use crate::model::{FlowDetailModel, Model};
@@ -141,6 +141,48 @@ fn render_field_list(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiC
 
     let paragraph = Paragraph::new(lines);
     paragraph.render(area, buf);
+
+    render_pr_url_hyperlink(wf, area, buf, ctx);
+}
+
+/// The number of characters in the PR URL field label (used to find the value x-offset).
+const PR_URL_LABEL_LEN: u16 = 16; // "PR URL:         "
+
+/// The 0-based row index of the PR URL line within the field list.
+const PR_URL_ROW: u16 = 7;
+
+/// Overlay a clickable OSC 8 hyperlink on the PR URL field value.
+///
+/// This is called after the paragraph renders so it can overwrite the plain
+/// `Span::styled` text with the hyperlink-decorated cells.
+fn render_pr_url_hyperlink(wf: &WorkflowInfo, area: Rect, buf: &mut Buffer, ctx: &TuiContext) {
+    if wf.pr_url.is_empty() {
+        return;
+    }
+
+    let y = area.y + PR_URL_ROW;
+    if y >= area.y + area.height {
+        return;
+    }
+
+    let value_x = area.x + PR_URL_LABEL_LEN;
+    let available_width = area.width.saturating_sub(PR_URL_LABEL_LEN);
+    if available_width == 0 {
+        return;
+    }
+
+    let display = format_pr_short(&wf.pr_url).unwrap_or_else(|| wf.pr_url.clone());
+    let fg = ctx.theme.base_content;
+    let bg = ctx.theme.base_100;
+
+    let cell = Rect {
+        x: value_x,
+        y,
+        width: available_width,
+        height: 1,
+    };
+
+    render_hyperlink(cell, buf, &wf.pr_url, &display, fg, bg);
 }
 
 /// Check if a workflow status is terminal (times should be frozen).
@@ -670,5 +712,108 @@ mod tests {
         let cmds = init_flow_detail(&mut model, "ur-xyz".to_string());
         assert!(model.flow_detail.is_none());
         assert_eq!(cmds.len(), 1);
+    }
+
+    // ── render_pr_url_hyperlink ─────────────────────────────────────
+
+    fn make_ctx() -> crate::context::TuiContext {
+        use crate::keymap::Keymap;
+        use crate::theme::Theme;
+        use ur_config::TuiConfig;
+        let tui_config = TuiConfig::default();
+        let theme = Theme::resolve(&tui_config);
+        crate::context::TuiContext {
+            theme,
+            keymap: Keymap::default(),
+            projects: vec![],
+            project_configs: std::collections::HashMap::new(),
+            tui_config,
+            config_dir: std::path::PathBuf::from("/tmp/test-urui"),
+            project_filter: None,
+        }
+    }
+
+    /// Render the PR URL overlay into a buffer and return the display characters
+    /// for the value area of the PR URL row (columns after the 16-char label).
+    ///
+    /// Each cell's symbol may contain OSC 8 escape sequences; this extracts the
+    /// visible character by stripping leading ESC sequences and taking the first
+    /// non-ESC, non-BEL character.
+    fn render_pr_hyperlink_display(wf: &WorkflowInfo, width: u16) -> String {
+        let area = ratatui::layout::Rect::new(0, 0, width, field_line_count());
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let ctx = make_ctx();
+        render_pr_url_hyperlink(wf, area, &mut buf, &ctx);
+        // Value area starts at x = PR_URL_LABEL_LEN, y = PR_URL_ROW.
+        // Strip OSC 8 escape sequences to get just the visible characters.
+        (PR_URL_LABEL_LEN..width)
+            .map(|x| {
+                let sym = buf[(x, PR_URL_ROW)].symbol().to_string();
+                // OSC 8 cells look like: ESC]8;;URL BEL char ESC]8;; BEL
+                // Extract visible chars: those that are not ESC, BEL, or in ESC sequences.
+                extract_visible_char(&sym)
+            })
+            .collect()
+    }
+
+    /// Extract the single visible character from a cell symbol that may contain
+    /// OSC 8 sequences (`ESC]8;;URL BEL char ESC]8;; BEL`).
+    fn extract_visible_char(sym: &str) -> char {
+        // Walk through the string, skipping ESC sequences and BEL characters.
+        // An OSC sequence starts at ESC (0x1b) and ends at BEL (0x07) or ST (ESC\\).
+        let mut in_esc = false;
+        for c in sym.chars() {
+            match c {
+                '\x1b' => {
+                    in_esc = true;
+                }
+                '\x07' => {
+                    // BEL terminates an OSC sequence; the next char is the visible one.
+                    in_esc = false;
+                }
+                _ if in_esc => {
+                    // Still inside an escape sequence; keep skipping.
+                }
+                _ => {
+                    return c;
+                }
+            }
+        }
+        ' '
+    }
+
+    #[test]
+    fn pr_url_empty_renders_nothing() {
+        let mut wf = make_workflow("done");
+        wf.pr_url = String::new();
+        // An empty pr_url should leave the value area untouched (all spaces).
+        let display = render_pr_hyperlink_display(&wf, 80);
+        let all_spaces = display.chars().all(|c| c == ' ');
+        assert!(
+            all_spaces,
+            "expected all spaces for empty pr_url, got: {display:?}"
+        );
+    }
+
+    #[test]
+    fn pr_url_github_displays_short_format() {
+        let mut wf = make_workflow("done");
+        wf.pr_url = "https://github.com/paxos/ur/pull/42".to_string();
+        let display = render_pr_hyperlink_display(&wf, 80);
+        assert!(
+            display.contains("paxos/ur#42"),
+            "expected short PR format in output, got: {display:?}"
+        );
+    }
+
+    #[test]
+    fn pr_url_non_github_displays_raw_url() {
+        let mut wf = make_workflow("done");
+        wf.pr_url = "https://example.com/pr/99".to_string();
+        let display = render_pr_hyperlink_display(&wf, 80);
+        assert!(
+            display.contains("https://example.com"),
+            "expected raw URL in output, got: {display:?}"
+        );
     }
 }
