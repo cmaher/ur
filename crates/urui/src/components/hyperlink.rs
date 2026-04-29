@@ -132,19 +132,9 @@ fn render_hyperlink_osc8(
     for (i, x) in (rect.x..rect.x + rect.width).enumerate() {
         if i < n {
             let ch = chars[i];
-            let symbol = if n == 1 {
-                // Single visible cell: carries both open and close wrappers.
-                format!("\x1b]8;;{url}\x1b\\{ch}\x1b]8;;\x1b\\")
-            } else if i == 0 {
-                // First cell: open wrapper before the visible char.
-                format!("\x1b]8;;{url}\x1b\\{ch}")
-            } else if i == n - 1 {
-                // Last cell: close wrapper after the visible char.
-                format!("{ch}\x1b]8;;\x1b\\")
-            } else {
-                // Middle cells: plain visible char.
-                ch.to_string()
-            };
+            // Each cell is self-contained: open → char → close.
+            // Terminals merge adjacent same-URL regions into one clickable link.
+            let symbol = format!("\x1b]8;;{url}\x07{ch}\x1b]8;;\x07");
             buf[(x, y)].set_symbol(&symbol).set_style(style);
         } else {
             // Pad remaining cells with spaces.
@@ -385,50 +375,21 @@ mod tests {
     // ── render_hyperlink_osc8 ─────────────────────────────────────────────────
 
     #[test]
-    fn osc8_first_cell_starts_with_open_sequence() {
+    fn osc8_each_cell_is_self_contained() {
         let url = "https://github.com/paxos/ur/pull/1";
         let mut buf = make_buf(5, 1);
         let rect = Rect::new(0, 0, 5, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
 
-        let first = buf[(0u16, 0u16)].symbol();
-        let expected_open = format!("\x1b]8;;{url}\x1b\\");
-        assert!(
-            first.starts_with(&expected_open),
-            "first cell should start with OSC open: {:?}",
-            first
-        );
-    }
-
-    #[test]
-    fn osc8_last_cell_ends_with_close_sequence() {
-        let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(5, 1);
-        let rect = Rect::new(0, 0, 5, 1);
-        render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
-
-        let last = buf[(4u16, 0u16)].symbol();
-        let expected_close = "\x1b]8;;\x1b\\";
-        assert!(
-            last.ends_with(expected_close),
-            "last cell should end with OSC close: {:?}",
-            last
-        );
-    }
-
-    #[test]
-    fn osc8_middle_cells_are_plain() {
-        let url = "https://github.com/paxos/ur/pull/1";
-        let mut buf = make_buf(5, 1);
-        let rect = Rect::new(0, 0, 5, 1);
-        render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
-
-        // Cells 1..=3 are middle cells and must not contain ESC.
-        for x in 1u16..=3 {
-            let sym = buf[(x, 0)].symbol();
-            assert!(
-                !sym.contains('\x1b'),
-                "middle cell {x} contains ESC: {:?}",
+        let expected_open = format!("\x1b]8;;{url}\x07");
+        let expected_close = "\x1b]8;;\x07";
+        let display = "hello";
+        for (i, ch) in display.chars().enumerate() {
+            let sym = buf[(i as u16, 0u16)].symbol();
+            let expected = format!("{expected_open}{ch}{expected_close}");
+            assert_eq!(
+                sym, expected,
+                "cell {i} should be self-contained: {:?}",
                 sym
             );
         }
@@ -442,16 +403,10 @@ mod tests {
         render_osc8_test(&mut buf, rect, url, "X", Color::White, Color::Black);
 
         let sym = buf[(0u16, 0u16)].symbol();
-        let expected_open = format!("\x1b]8;;{url}\x1b\\");
-        let expected_close = "\x1b]8;;\x1b\\";
-        assert!(
-            sym.starts_with(&expected_open),
-            "single cell should start with open: {:?}",
-            sym
-        );
-        assert!(
-            sym.ends_with(expected_close),
-            "single cell should end with close: {:?}",
+        let expected = format!("\x1b]8;;{url}\x07X\x1b]8;;\x07");
+        assert_eq!(
+            sym, expected,
+            "single cell should match per-cell format: {:?}",
             sym
         );
     }
@@ -476,14 +431,54 @@ mod tests {
         let rect = Rect::new(0, 0, 3, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
 
-        // Only 3 display chars should appear (h, e, l).
-        // The 3rd char (index 2) is the last and should have the close wrapper.
-        let last = buf[(2u16, 0u16)].symbol();
-        assert!(
-            last.ends_with("\x1b]8;;\x1b\\"),
-            "truncated last cell should carry close: {:?}",
-            last
-        );
+        // Only 3 display chars: h, e, l — each self-contained.
+        let expected_open = format!("\x1b]8;;{url}\x07");
+        let expected_close = "\x1b]8;;\x07";
+        for (i, ch) in "hel".chars().enumerate() {
+            let sym = buf[(i as u16, 0u16)].symbol();
+            let expected = format!("{expected_open}{ch}{expected_close}");
+            assert_eq!(
+                sym, expected,
+                "cell {i} should be self-contained after truncation: {:?}",
+                sym
+            );
+        }
+    }
+
+    #[test]
+    fn osc8_uses_bel_not_st() {
+        let url = "https://github.com/paxos/ur/pull/1";
+        let mut buf = make_buf(3, 1);
+        let rect = Rect::new(0, 0, 3, 1);
+        render_osc8_test(&mut buf, rect, url, "abc", Color::White, Color::Black);
+
+        for x in 0u16..3 {
+            let sym = buf[(x, 0)].symbol();
+            assert!(
+                !sym.contains("\x1b\\"),
+                "cell {x} should not use ESC\\ ST, got: {:?}",
+                sym
+            );
+            assert!(
+                sym.contains('\x07'),
+                "cell {x} should use BEL terminator, got: {:?}",
+                sym
+            );
+        }
+    }
+
+    #[test]
+    fn osc8_all_cells_carry_correct_style() {
+        let url = "https://github.com/paxos/ur/pull/1";
+        let mut buf = make_buf(4, 1);
+        let rect = Rect::new(0, 0, 4, 1);
+        render_osc8_test(&mut buf, rect, url, "test", Color::Green, Color::Magenta);
+
+        for x in 0u16..4 {
+            let cell = &buf[(x, 0)];
+            assert_eq!(cell.fg, Color::Green, "cell {x} fg should be Green");
+            assert_eq!(cell.bg, Color::Magenta, "cell {x} bg should be Magenta");
+        }
     }
 
     #[test]
