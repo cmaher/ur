@@ -316,22 +316,7 @@ async fn handle_push_rejected(params: &RejectedPushParams<'_>) -> anyhow::Result
         }
         | PushStatus::RemoteRejected {
             reason: retry_reason,
-        } => {
-            warn!(
-                ticket_id = %ticket_id,
-                branch = %branch,
-                reason = %retry_reason,
-                "force push also rejected — stalling agent"
-            );
-            add_push_activity(
-                ctx,
-                ticket_id,
-                "rejected",
-                &format!("Force push also rejected: {retry_reason}"),
-            )
-            .await?;
-            stall_agent(ctx, ticket_id, worker_id).await
-        }
+        } => handle_post_fetch_rejection(ctx, ticket_id, branch, retry_reason).await,
         PushStatus::HookFailed { summary } => {
             handle_hook_failed(ctx, ticket_id, branch, worker_id, summary).await
         }
@@ -363,6 +348,39 @@ async fn handle_hook_failed(
     ctx.ticket_repo
         .add_activity(ticket_id, "workflow", &message)
         .await?;
+    ctx.transition_tx
+        .send(TransitionRequest {
+            ticket_id: ticket_id.to_owned(),
+            target_status: LifecycleStatus::Implementing,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send Implementing transition: {e}"))?;
+    Ok(())
+}
+
+/// Handle a post-fetch force-push rejection: write a rebase-required activity and
+/// transition the agent back to Implementing so it can resolve the divergence.
+///
+/// Called when `force_push` returns `Rejected` or `RemoteRejected` after a successful
+/// `fetch`, meaning the branch has genuinely diverged and cannot be fast-forwarded.
+async fn handle_post_fetch_rejection(
+    ctx: &WorkflowContext,
+    ticket_id: &str,
+    branch: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    warn!(
+        ticket_id = %ticket_id,
+        branch = %branch,
+        reason = %reason,
+        "force push rejected after fetch — branch diverged, requesting rebase"
+    );
+    let detail = format!(
+        "Force-push rejected after fetching origin. Branch `{branch}` has diverged from \
+         `origin/{branch}` and requires a rebase. Run \
+         `git fetch origin && git rebase origin/{branch}`, resolve any conflicts, then continue."
+    );
+    add_push_activity(ctx, ticket_id, "rebase_required", &detail).await?;
     ctx.transition_tx
         .send(TransitionRequest {
             ticket_id: ticket_id.to_owned(),
