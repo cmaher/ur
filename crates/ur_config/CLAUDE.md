@@ -64,6 +64,32 @@ retain_count     = 3                        # default: 3
 
 These override the `password` field in the config file. Use env vars in production instead of storing passwords in `ur.toml`.
 
+## Workflow Cycle Limits
+
+### `max_implement_cycles` — per-project override with server default
+
+`[server].max_implement_cycles` sets the default maximum number of implement cycles allowed across all projects. `[projects.<key>].max_implement_cycles` overrides this on a per-project basis.
+
+Precedence (highest to lowest):
+1. `[projects.<key>].max_implement_cycles` — project-level override
+2. `[server].max_implement_cycles` — server-wide default
+3. Built-in default (6) — when neither is set
+
+If neither key is present anywhere, there is **no limit** (the value is treated as `None`).
+
+```toml
+[server]
+max_implement_cycles = 6   # default for all projects
+
+[projects.my-api]
+max_implement_cycles = 10  # this project gets more cycles
+
+[projects.quick-fix]
+max_implement_cycles = 3   # this project gets fewer cycles
+```
+
+An unset `[projects.<key>].max_implement_cycles` inherits the `[server].max_implement_cycles` value. Setting `max_implement_cycles` in neither section means no cycle limit is enforced.
+
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field
