@@ -387,11 +387,15 @@ impl LaunchManager {
                 reason: e.to_string(),
             })?;
 
-        let skills = if req.skills.is_empty() {
+        let mode_skills = if req.skills.is_empty() {
             resolved_skills
         } else {
             req.skills.clone()
         };
+
+        let (skills, extra_skill_mounts) = self
+            .worker_manager
+            .merge_global_skills(strategy, mode_skills);
 
         let (
             git_hooks_dir,
@@ -448,6 +452,7 @@ impl LaunchManager {
             slot_id,
             context_mounts,
             hostexec_scripts,
+            extra_skill_mounts,
         };
         let (container_id, _worker_secret) = self
             .worker_manager

@@ -221,11 +221,16 @@ fn test_names(label: &str) -> TestNames {
 /// network name and container name placeholders with values from the config.
 /// Uses unique container names so the acceptance test stack never collides
 /// with a real running ur stack or other test stacks.
+///
+/// `extra_toml` is appended verbatim to the generated toml content, allowing
+/// callers to inject additional sections (e.g. `[skills.code]`) without
+/// touching the shared base config.
 fn write_test_config(
     config_dir: &Path,
     server_port: u16,
     names: &TestNames,
     projects: &[ProjectEntry],
+    extra_toml: &str,
 ) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
@@ -308,7 +313,8 @@ fn write_test_config(
          skills = [\"implement\"]\n\
          model = \"my-custom-model\"\n\
          \n\
-         {projects_toml}",
+         {projects_toml}\n\
+         {extra_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
         squid = names.squid_hostname,
@@ -523,6 +529,22 @@ fn e2e_all() {
     std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
     let bare_repo_script = create_bare_repo_with_script(&script_repos_dir);
 
+    // Create a global skill directory for the global-skill-injection scenario.
+    // The absolute path is used directly in ur.toml so the server (which resolves
+    // absolute paths as host paths) and Docker (host daemon) both see the real
+    // filesystem path without any %URCONFIG% → /config remapping.
+    let skill_dir = config_path.join("skills").join("test-skill");
+    std::fs::create_dir_all(&skill_dir).expect("failed to create test-skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# Test Skill\nA skill for acceptance testing.\n",
+    )
+    .expect("failed to write SKILL.md");
+    let skills_extra_toml = format!(
+        "[skills.code]\ntest-skill = \"{skill_path}\"\n",
+        skill_path = skill_dir.display(),
+    );
+
     write_test_config(
         &config_path,
         server_port,
@@ -547,6 +569,7 @@ fn e2e_all() {
                 hostexec_scripts: vec!["host-only.sh".into()],
             },
         ],
+        &skills_extra_toml,
     );
 
     let ur = bin("ur");
@@ -633,6 +656,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_flow_list_and_cancel(&env);
         scenario_hostexec_script_pool(&env);
         scenario_hostexec_script_workspace(&env, &config_path);
+        scenario_global_skill_injection(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -646,6 +670,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "hotreload-test",
         "script-pool-test",
         "scriptproj-ws-test",
+        "global-skill-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -2228,6 +2253,84 @@ fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Pa
         assert_eq!(
             script_content, script_after,
             "original host-only.sh in workspace must be unmodified after the test"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Global skill injection: verify that a skill declared in `[skills.code]` in ur.toml
+/// is bind-mounted into `~/.claude/potential-skills/<name>/` and subsequently copied
+/// to `~/.claude/skills/<name>/` by the `workerd init` step.
+///
+/// This exercises the full path:
+///   ur.toml `[skills.code]` → `GlobalSkillsConfig` → `WorkerManager::merge_global_skills`
+///   → `RunOptsBuilder::add_extra_skills` → bind mount → `workerd init` copy.
+fn scenario_global_skill_injection(env: &TestEnv) {
+    let ticket_id = "global-skill-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a code-mode pool worker ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        assert!(
+            launch_stdout.contains(&container_name),
+            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Assert potential-skills bind mount is present ----
+        // The bind mount should make SKILL.md visible at the potential-skills path.
+        let potential_skill_path = "/home/worker/.claude/potential-skills/test-skill/SKILL.md";
+        let ls_potential =
+            exec_in_container(&env.runtime, &container_name, &["ls", potential_skill_path]);
+        assert_exec_success(
+            &ls_potential,
+            &format!(
+                "potential-skills bind mount should exist at {potential_skill_path} — \
+                 check that [skills.code] in ur.toml is plumbed through to add_extra_skills"
+            ),
+        );
+
+        // ---- Assert workerd init copied the skill to ~/.claude/skills/ ----
+        // The `workerd init` step copies each name in UR_WORKER_SKILLS from
+        // potential-skills/ → skills/, so the file must appear there too.
+        let skills_path = "/home/worker/.claude/skills/test-skill/SKILL.md";
+        let ls_skills = exec_in_container(&env.runtime, &container_name, &["ls", skills_path]);
+        assert_exec_success(
+            &ls_skills,
+            &format!(
+                "skills copy should exist at {skills_path} — \
+                 check that test-skill appears in UR_WORKER_SKILLS so workerd init copies it"
+            ),
         );
 
         // ---- Stop worker ----

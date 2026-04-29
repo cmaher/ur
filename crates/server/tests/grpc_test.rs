@@ -99,6 +99,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
         },
         projects: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
+        global_skills: ur_config::GlobalSkillsConfig::default(),
     };
     (config, network_config)
 }
@@ -149,6 +150,7 @@ async fn make_grpc_handler(
         ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
+        ur_config::GlobalSkillsConfig::default(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -274,6 +276,7 @@ async fn make_worker_handler() -> (
         ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
+        ur_config::GlobalSkillsConfig::default(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,

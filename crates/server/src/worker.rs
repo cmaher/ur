@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use ur_config::NetworkConfig;
+use ur_config::{GlobalSkillsConfig, NetworkConfig};
 use workflow_db::WorkerRepo;
 
 use container::{ContainerRuntime, NetworkManager};
@@ -290,6 +290,10 @@ pub struct WorkerConfig {
     /// Relative paths to hostexec scripts declared by the project.
     /// Each entry is bind-mounted over `/workspace/<rel_path>` with the shim as the source.
     pub hostexec_scripts: Vec<String>,
+    /// Extra skill mounts from global config, merged by `WorkerManager::merge_global_skills`.
+    /// Each entry is `(name, host_path)` — mounted read-only at
+    /// `/home/worker/.claude/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
+    pub extra_skill_mounts: Vec<(String, PathBuf)>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -314,6 +318,7 @@ pub struct WorkerManager {
     worker_port: u16,
     worker_modes: WorkerModesConfig,
     worker_repo: WorkerRepo,
+    global_skills: GlobalSkillsConfig,
 }
 
 impl WorkerManager {
@@ -329,6 +334,7 @@ impl WorkerManager {
         worker_port: u16,
         worker_modes: WorkerModesConfig,
         worker_repo: WorkerRepo,
+        global_skills: GlobalSkillsConfig,
     ) -> Self {
         Self {
             workspace,
@@ -341,6 +347,7 @@ impl WorkerManager {
             worker_port,
             worker_modes,
             worker_repo,
+            global_skills,
         }
     }
 
@@ -355,6 +362,39 @@ impl WorkerManager {
         mode: &str,
     ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
         self.worker_modes.resolve_mode(mode)
+    }
+
+    /// Merge global skills with mode-resolved skills.
+    ///
+    /// Returns `(merged_names, extra_mounts)`:
+    /// - `merged_names`: `mode_skills` → common globals → strategy-specific globals, deduped
+    ///   by name (first occurrence wins).
+    /// - `extra_mounts`: every global entry whose name is NOT already in `mode_skills`,
+    ///   in the order they appear from `for_strategy` (common first, then strategy-specific).
+    ///
+    /// Skills already present in `mode_skills` are expected to be served from the baked
+    /// `potential-skills/` directory — no extra mount is needed for them. Global skills
+    /// that are new (not already in `mode_skills`) receive a bind mount so `workerd init`
+    /// can copy them from the mounted host directory.
+    ///
+    /// Globals are always appended even when the launch supplied an explicit `--skills`
+    /// override — `[skills]` in `ur.toml` declares "I want these everywhere."
+    pub fn merge_global_skills(
+        &self,
+        strategy: WorkerStrategy,
+        mode_skills: Vec<String>,
+    ) -> (Vec<String>, Vec<(String, PathBuf)>) {
+        let globals = self.global_skills.for_strategy(strategy.name());
+        let mut seen: std::collections::HashSet<String> = mode_skills.iter().cloned().collect();
+        let mut merged = mode_skills;
+        let mut extra_mounts: Vec<(String, PathBuf)> = Vec::new();
+        for global in globals {
+            if seen.insert(global.name.clone()) {
+                merged.push(global.name.clone());
+                extra_mounts.push((global.name.clone(), global.host_path.clone()));
+            }
+        }
+        (merged, extra_mounts)
     }
 
     /// Generate a new unique worker ID for the given process_id.
@@ -551,6 +591,7 @@ impl WorkerManager {
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
+        .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
@@ -976,6 +1017,7 @@ mod tests {
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
+            global_skills: GlobalSkillsConfig::default(),
         }
     }
 
@@ -1030,6 +1072,7 @@ mod tests {
             ur_config::DEFAULT_SERVER_PORT + 1,
             WorkerModesConfig::default(),
             worker_repo,
+            GlobalSkillsConfig::default(),
         );
         (mgr, workspace, test_db)
     }
@@ -1209,6 +1252,7 @@ mod tests {
             slot_id: None,
             context_mounts: Vec::new(),
             hostexec_scripts: Vec::new(),
+            extra_skill_mounts: Vec::new(),
         }
     }
 
@@ -1620,5 +1664,215 @@ model = "haiku"
             "nerdctl rm failed: No such container: abc123"
         ));
         assert!(!is_missing_container_err("some unrelated docker error"));
+    }
+
+    // ---- merge_global_skills tests ----
+    //
+    // merge_global_skills is a pure function on self.global_skills — no DB
+    // access needed. We use test_manager() just to get a valid WorkerManager,
+    // then build a fresh one with custom globals via the public constructor.
+
+    async fn test_manager_with_globals(
+        globals: GlobalSkillsConfig,
+    ) -> (WorkerManager, tempfile::TempDir, ur_db_test::TestDb) {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = test_config(workspace.path());
+        let (worker_repo, test_db) = test_worker_repo().await;
+        let channel =
+            tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
+        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
+        let local_repo = local_repo::GitBackend {
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        };
+        let project_registry = crate::ProjectRegistry::new(
+            config.projects.clone(),
+            crate::hostexec::HostExecConfigManager::empty(),
+        );
+        let repo_pool_manager = RepoPoolManager::new(
+            &config,
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            builderd_client,
+            local_repo,
+            worker_repo.clone(),
+            workspace.path().join("config"),
+            project_registry,
+        );
+        let network_manager = NetworkManager::new(
+            "docker".into(),
+            ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+        );
+        let network_config = NetworkConfig {
+            name: ur_config::DEFAULT_NETWORK_NAME.into(),
+            worker_name: ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
+            server_hostname: ur_config::DEFAULT_SERVER_HOSTNAME.into(),
+            worker_prefix: ur_config::DEFAULT_WORKER_PREFIX.into(),
+        };
+        let mgr = WorkerManager::new(
+            workspace.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            workspace.path().join("logs"),
+            workspace.path().join("logs"),
+            repo_pool_manager,
+            network_manager,
+            network_config,
+            ur_config::DEFAULT_SERVER_PORT + 1,
+            WorkerModesConfig::default(),
+            worker_repo,
+            globals,
+        );
+        (mgr, workspace, test_db)
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_empty_globals_identity() {
+        let (mgr, _ws, _db) = test_manager_with_globals(GlobalSkillsConfig::default()).await;
+        let mode_skills = vec!["implement".to_string(), "green".to_string()];
+        let (merged, extra) = mgr.merge_global_skills(WorkerStrategy::Code, mode_skills.clone());
+        assert_eq!(merged, mode_skills);
+        assert!(extra.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_common_only_for_code() {
+        let host = std::path::PathBuf::from("/host/skills/shared");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "shared".into(),
+                host_path: host.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let (merged, extra) =
+            mgr.merge_global_skills(WorkerStrategy::Code, vec!["implement".into()]);
+        assert_eq!(merged, vec!["implement", "shared"]);
+        assert_eq!(extra, vec![("shared".to_string(), host)]);
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_common_and_code_for_code() {
+        let common_path = std::path::PathBuf::from("/host/skills/common");
+        let code_path = std::path::PathBuf::from("/host/skills/internal");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "common-skill".into(),
+                host_path: common_path.clone(),
+            }],
+            code: vec![ur_config::GlobalSkill {
+                name: "internal".into(),
+                host_path: code_path.clone(),
+            }],
+            design: vec![ur_config::GlobalSkill {
+                name: "research".into(),
+                host_path: std::path::PathBuf::from("/host/skills/research"),
+            }],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let (merged, extra) =
+            mgr.merge_global_skills(WorkerStrategy::Code, vec!["implement".into()]);
+        assert_eq!(merged, vec!["implement", "common-skill", "internal"]);
+        assert_eq!(
+            extra,
+            vec![
+                ("common-skill".to_string(), common_path),
+                ("internal".to_string(), code_path),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_common_and_design_for_design() {
+        let common_path = std::path::PathBuf::from("/host/skills/common");
+        let design_path = std::path::PathBuf::from("/host/skills/research");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "common-skill".into(),
+                host_path: common_path.clone(),
+            }],
+            code: vec![ur_config::GlobalSkill {
+                name: "internal".into(),
+                host_path: std::path::PathBuf::from("/host/skills/internal"),
+            }],
+            design: vec![ur_config::GlobalSkill {
+                name: "research".into(),
+                host_path: design_path.clone(),
+            }],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let (merged, extra) =
+            mgr.merge_global_skills(WorkerStrategy::Design, vec!["design".into()]);
+        assert_eq!(merged, vec!["design", "common-skill", "research"]);
+        assert_eq!(
+            extra,
+            vec![
+                ("common-skill".to_string(), common_path),
+                ("research".to_string(), design_path),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_overlap_no_duplicate_mount_or_name() {
+        // "implement" is in both mode_skills and globals.code — no duplicate.
+        let host = std::path::PathBuf::from("/host/skills/implement");
+        let globals = GlobalSkillsConfig {
+            common: vec![],
+            code: vec![ur_config::GlobalSkill {
+                name: "implement".into(),
+                host_path: host.clone(),
+            }],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        let (merged, extra) = mgr.merge_global_skills(
+            WorkerStrategy::Code,
+            vec!["implement".into(), "green".into()],
+        );
+        // "implement" already present — not duplicated.
+        assert_eq!(merged, vec!["implement", "green"]);
+        // No extra mount because "implement" was already in mode_skills.
+        assert!(extra.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_custom_mode_uses_code_bucket() {
+        // A custom mode with base = "code" should pick up code-bucket globals.
+        let code_path = std::path::PathBuf::from("/host/skills/internal");
+        let globals = GlobalSkillsConfig {
+            common: vec![],
+            code: vec![ur_config::GlobalSkill {
+                name: "internal".into(),
+                host_path: code_path.clone(),
+            }],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        // Custom mode with Code base.
+        let (merged, extra) =
+            mgr.merge_global_skills(WorkerStrategy::Code, vec!["my-skill".into()]);
+        assert_eq!(merged, vec!["my-skill", "internal"]);
+        assert_eq!(extra, vec![("internal".to_string(), code_path)]);
+    }
+
+    #[tokio::test]
+    async fn merge_global_skills_explicit_skills_override_still_receives_globals() {
+        // Even when launch uses explicit --skills (overrides mode), globals are appended.
+        let host = std::path::PathBuf::from("/host/skills/common");
+        let globals = GlobalSkillsConfig {
+            common: vec![ur_config::GlobalSkill {
+                name: "common-skill".into(),
+                host_path: host.clone(),
+            }],
+            code: vec![],
+            design: vec![],
+        };
+        let (mgr, _ws, _db) = test_manager_with_globals(globals).await;
+        // Simulate explicit --skills override: mode_skills = ["custom-skill"].
+        let (merged, extra) =
+            mgr.merge_global_skills(WorkerStrategy::Code, vec!["custom-skill".into()]);
+        assert_eq!(merged, vec!["custom-skill", "common-skill"]);
+        assert_eq!(extra, vec![("common-skill".to_string(), host)]);
     }
 }

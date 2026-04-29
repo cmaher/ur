@@ -78,6 +78,7 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
         },
         projects: HashMap::new(),
         tui: ur_config::TuiConfig::default(),
+        global_skills: ur_config::GlobalSkillsConfig::default(),
     }
 }
 
@@ -142,6 +143,7 @@ async fn make_components_with_db(
         ur_config::DEFAULT_SERVER_PORT + 1,
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
+        ur_config::GlobalSkillsConfig::default(),
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),

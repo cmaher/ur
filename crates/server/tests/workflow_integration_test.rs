@@ -265,6 +265,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         config.worker_port,
         Default::default(),
         worker_repo,
+        Default::default(),
     )
 }
 
@@ -339,6 +340,7 @@ fn dummy_config() -> Arc<ur_config::Config> {
         },
         projects: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
+        global_skills: ur_config::GlobalSkillsConfig::default(),
     })
 }
 
@@ -378,6 +380,7 @@ fn dummy_launch_manager(
         config.worker_port,
         Default::default(),
         worker_repo.clone(),
+        Default::default(),
     );
     ur_server::grpc::LaunchManager {
         worker_manager,

@@ -555,6 +555,7 @@ async fn init_managers(
         cfg.worker_port,
         worker_modes,
         worker_repo.clone(),
+        cfg.global_skills.clone(),
     );
 
     reconcile_workers(&worker_repo, docker_command).await?;

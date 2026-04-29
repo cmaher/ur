@@ -124,6 +124,71 @@ InitSkillsManager::init_claude_md()
     5. Missing strategy file → warning (non-fatal)
 ```
 
+## Host Skills (Runtime Injection via ur.toml)
+
+In addition to skills baked into the container image at build time, operators can inject skills from the host machine at runtime via the `[skills]` section of `ur.toml`. These host skills are bind-mounted read-only into the container's `potential-skills/` directory and become available for selection alongside baked-in skills.
+
+### Schema
+
+```toml
+[skills.common]
+my-skill = "%URCONFIG%/skills/my-skill"
+internal-tool = "/opt/skills/internal-tool"
+
+[skills.code]
+research-helper = "%URCONFIG%/skills/research-helper"
+
+[skills.design]
+research-helper = "%URCONFIG%/skills/research-helper"
+```
+
+Three sub-tables are supported:
+
+| Sub-table | Purpose |
+|-----------|---------|
+| `[skills.common]` | Skills available to all modes |
+| `[skills.code]` | Skills available only to `code`-strategy modes |
+| `[skills.design]` | Skills available only to `design`-strategy modes |
+
+Each entry maps a skill name to a host path. Paths support two forms:
+
+- `%URCONFIG%/...` — resolves to `<config_dir>/...` (recommended; portable across machines)
+- `/absolute/path` — literal host-side path
+
+### Merge Order
+
+`WorkerManager::merge_global_skills()` (`crates/server/src/worker.rs`) merges the three sub-tables before launch:
+
+```
+mode_skills (from [skills.code] or [skills.design])
+    +
+common_skills (from [skills.common])
+    =
+merged host skills map (name → host path)
+```
+
+Keys in mode-specific tables shadow same-named keys in `common`. The merged map is then passed to `RunOptsBuilder::add_extra_skills()`.
+
+### Bind-Mount Target
+
+Each host skill directory is mounted into the container at:
+
+```
+/home/worker/.claude/potential-skills/<name>  (read-only)
+```
+
+This is the same directory tree where baked-in skills live, so `workerd init` treats host skills and image skills identically when copying to `~/.claude/skills/` at startup.
+
+### Override-of-Baked Semantics
+
+Because host skills are mounted directly into `potential-skills/`, a host skill with the same name as a baked-in skill **shadows** the baked version. The bind-mount is applied after the image layer, so the host path wins. This allows operators to patch or replace a shipped skill without rebuilding the image.
+
+### Server-Container Visibility Caveat
+
+Host skill paths must be visible to the **server process** at mount-time, not just the worker container. When the server itself runs inside a container (as in the standard Docker Compose topology), a path like `/Users/me/skills/my-skill` on the developer's Mac is not accessible from inside the server container.
+
+Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` points) because that directory is already volume-mounted into the server container. Absolute paths outside the server's mount namespace will silently produce empty mounts.
+
 ## Key Files
 
 | File | Role |

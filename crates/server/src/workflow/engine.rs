@@ -325,6 +325,7 @@ mod tests {
             },
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
+            global_skills: ur_config::GlobalSkillsConfig::default(),
         })
     }
 
@@ -365,6 +366,7 @@ mod tests {
             config.worker_port,
             Default::default(),
             worker_repo,
+            Default::default(),
         )
     }
 

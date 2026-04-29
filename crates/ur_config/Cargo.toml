@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 dirs = "6"
+indexmap = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 toml = "0.8"
 
