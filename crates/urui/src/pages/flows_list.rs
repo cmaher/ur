@@ -125,7 +125,7 @@ fn render_loaded_flows(
 /// Build the column widths for the flows table (matching v1 layout).
 fn table_widths() -> Vec<Constraint> {
     vec![
-        Constraint::Length(12), // Ticket ID
+        Constraint::Length(15), // Ticket ID
         Constraint::Length(14), // Status
         Constraint::Length(8),  // Stalled
         Constraint::Length(8),  // Progress count
@@ -1129,12 +1129,12 @@ mod tests {
         }
     }
 
-    /// Collect raw cell symbols from the PR URL column area (x=78..103, y=row_y)
+    /// Collect raw cell symbols from the PR URL column area (x=81..106, y=row_y)
     /// for a 110-wide buffer. Returns the symbols joined — no trimming — so callers
     /// can check for the presence of text or escape sequences.
     fn collect_pr_col_raw(buf: &ratatui::buffer::Buffer, row_y: u16) -> String {
-        // inner starts at x=1,y=1; data at y=2; PR col starts at x=1+77=78, width=25
-        (78u16..103)
+        // inner starts at x=1,y=1; data at y=2; PR col starts at x=1+80=81, width=25
+        (81u16..106)
             .map(|x| buf[(x, row_y)].symbol().to_string())
             .collect::<Vec<_>>()
             .join("")
@@ -1256,7 +1256,7 @@ mod tests {
         let ctx = make_ctx();
         // The first cell of the PR URL column should carry the primary_content fg
         // when the row is selected (row index 0 == selected_row 0).
-        let cell = &buf[(78u16, 2u16)];
+        let cell = &buf[(81u16, 2u16)];
         assert_ne!(
             cell.fg,
             Color::Reset,
