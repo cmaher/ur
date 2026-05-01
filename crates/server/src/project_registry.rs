@@ -68,6 +68,20 @@ impl ProjectRegistry {
     /// The write lock is held only for the final swap — all I/O happens before acquiring it.
     pub fn reload(&self, config_dir: &Path) -> Result<ReloadReport> {
         let config = ur_config::Config::load_from(config_dir)?;
+        self.apply(config)
+    }
+
+    /// Reload from caller-supplied `ur.toml` bytes instead of re-reading the
+    /// file. Use this when the caller just wrote the file and is sending the
+    /// authoritative contents over RPC — avoids macOS Docker Desktop
+    /// bind-mount propagation lag where the server's view of the file can
+    /// briefly be stale or partial.
+    pub fn reload_from_str(&self, toml: &str, config_dir: &Path) -> Result<ReloadReport> {
+        let config = ur_config::Config::from_toml_str(toml, config_dir)?;
+        self.apply(config)
+    }
+
+    fn apply(&self, config: ur_config::Config) -> Result<ReloadReport> {
         let new_hostexec = HostExecConfigManager::load(&config.config_dir, &config.hostexec)?;
         let new_projects = config.projects;
 

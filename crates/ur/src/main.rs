@@ -1285,13 +1285,20 @@ async fn handle_project(
                 pool_limit,
                 output,
             )?;
-            project::try_reload_server(config.server_port, &resolved_key, "added").await;
+            project::try_reload_server(
+                config.server_port,
+                &config.config_dir,
+                &resolved_key,
+                "added",
+            )
+            .await;
         }
         ProjectCommands::List => project::list(config, output)?,
         ProjectCommands::Remove { key, force } => {
             input::validate_id(&key, "key")?;
             project::remove(config, &key, force, output)?;
-            project::try_reload_server(config.server_port, &key, "removed").await;
+            project::try_reload_server(config.server_port, &config.config_dir, &key, "removed")
+                .await;
         }
     }
     Ok(())

@@ -1243,8 +1243,8 @@ impl Config {
     /// Useful for testing.
     pub fn load_from(config_dir: &Path) -> anyhow::Result<Self> {
         let toml_path = config_dir.join("ur.toml");
-        let raw = match std::fs::read_to_string(&toml_path) {
-            Ok(contents) => toml::from_str::<RawConfig>(&contents)?,
+        let contents = match std::fs::read_to_string(&toml_path) {
+            Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 anyhow::bail!(
                     "ur.toml not found in {} — run 'ur init'",
@@ -1253,6 +1253,20 @@ impl Config {
             }
             Err(e) => return Err(e.into()),
         };
+        Self::from_toml_str(&contents, config_dir)
+    }
+
+    /// Parse `ur.toml` contents directly from a string, applying the same
+    /// defaults and resolution as [`load_from`]. `config_dir` is still used
+    /// to resolve relative paths (workspace, compose_file, logs_dir) and as
+    /// the `Config::config_dir` field.
+    ///
+    /// Use this when you already have authoritative bytes — e.g. across an
+    /// RPC where the client just wrote the file and is sending the bytes
+    /// alongside the reload request — to avoid re-reading from a possibly
+    /// stale view of the filesystem (Docker Desktop bind-mount lag on macOS).
+    pub fn from_toml_str(contents: &str, config_dir: &Path) -> anyhow::Result<Self> {
+        let raw: RawConfig = toml::from_str(contents)?;
 
         let workspace = raw
             .workspace

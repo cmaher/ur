@@ -723,16 +723,27 @@ impl CoreService for CoreServiceHandler {
 
     async fn reload_projects(
         &self,
-        _req: Request<ReloadProjectsRequest>,
+        req: Request<ReloadProjectsRequest>,
     ) -> Result<Response<ReloadProjectsResponse>, Status> {
-        info!("reload_projects request received");
-        let report = self
-            .project_registry
-            .reload(&self.config_dir)
-            .map_err(|e| {
-                error!(error = %e, "reload_projects failed");
-                Status::internal(format!("failed to reload projects: {e}"))
-            })?;
+        let inner = req.into_inner();
+        let result = if inner.config_toml.is_empty() {
+            info!("reload_projects request received (no inline config)");
+            self.project_registry.reload(&self.config_dir)
+        } else {
+            // Caller sent the authoritative bytes — parse those directly so
+            // we don't race the bind-mount propagation that happens after the
+            // CLI writes ur.toml on the host.
+            info!(
+                bytes = inner.config_toml.len(),
+                "reload_projects request received (inline config)"
+            );
+            self.project_registry
+                .reload_from_str(&inner.config_toml, &self.config_dir)
+        };
+        let report = result.map_err(|e| {
+            error!(error = %e, "reload_projects failed");
+            Status::internal(format!("failed to reload projects: {e}"))
+        })?;
         info!(
             added = ?report.added,
             removed = ?report.removed,
