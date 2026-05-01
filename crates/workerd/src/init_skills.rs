@@ -10,7 +10,6 @@ const POTENTIAL_CLAUDES_DIR: &str = ".claude/potential-claudes";
 const SHARED_CLAUDES_DIR: &str = ".claude/shared-claudes";
 const CLAUDE_MD_DEST: &str = ".claude/CLAUDE.md";
 const PROJECT_CLAUDE_MD_DEST: &str = ".claude/PROJECT_CLAUDE.md";
-const MODEL_ENV: &str = "UR_WORKER_MODEL";
 const POTENTIAL_SETTINGS_JSON: &str = ".claude/potential-settings.json";
 const SETTINGS_JSON_DEST: &str = ".claude/settings.json";
 
@@ -37,8 +36,7 @@ impl InitSkillsManager {
             eprintln!("init-claude-md failed: {e}");
             return 1;
         }
-        let model = std::env::var(MODEL_ENV).ok();
-        if let Err(e) = self.init_settings_json(model.as_deref()).await {
+        if let Err(e) = self.init_settings_json().await {
             eprintln!("init-settings-json failed: {e}");
             return 1;
         }
@@ -150,12 +148,13 @@ impl InitSkillsManager {
         Ok(())
     }
 
-    /// Compose `~/.claude/settings.json` from the baked-in
-    /// `~/.claude/potential-settings.json` base file. When `model` is `Some`
-    /// and non-empty, merge `"model": "<value>"` into the top-level JSON object,
-    /// overwriting any existing `model` key. When `model` is `None` or empty,
-    /// the base file is written out unchanged (no `model` key is added).
-    pub async fn init_settings_json(&self, model: Option<&str>) -> Result<(), std::io::Error> {
+    /// Copy the baked-in `~/.claude/potential-settings.json` to
+    /// `~/.claude/settings.json` so Claude Code picks up the hooks/permissions
+    /// baked into the image. Model selection is NOT injected here — it is
+    /// passed to `claude` as `--model <name>` at launch time, because Claude
+    /// Code rewrites `~/.claude/settings.json` on startup and silently drops
+    /// the `model` key (see workerd `run_daemon_only`).
+    pub async fn init_settings_json(&self) -> Result<(), std::io::Error> {
         let src = self.home.join(POTENTIAL_SETTINGS_JSON);
         let dst = self.home.join(SETTINGS_JSON_DEST);
 
@@ -167,41 +166,8 @@ impl InitSkillsManager {
             return Ok(());
         }
 
-        let raw = tokio::fs::read_to_string(&src).await?;
-        let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("parsing {}: {e}", src.display()),
-            )
-        })?;
-
-        let model_trimmed = model.map(str::trim).filter(|s| !s.is_empty());
-        match value.as_object_mut() {
-            Some(map) => {
-                if let Some(model_value) = model_trimmed {
-                    map.insert(
-                        "model".to_owned(),
-                        serde_json::Value::String(model_value.to_owned()),
-                    );
-                    info!(model = %model_value, "injected model into settings.json");
-                } else {
-                    map.remove("model");
-                    info!("no model env var set, omitting model key from settings.json");
-                }
-            }
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("{} top-level JSON must be an object", src.display()),
-                ));
-            }
-        }
-
-        let serialized = serde_json::to_string_pretty(&value)
-            .map_err(|e| std::io::Error::other(format!("serializing settings.json: {e}")))?;
-
-        tokio::fs::write(&dst, &serialized).await?;
-        info!(dst = %dst.display(), "wrote composed settings.json");
+        tokio::fs::copy(&src, &dst).await?;
+        info!(src = %src.display(), dst = %dst.display(), "copied settings.json");
         Ok(())
     }
 
@@ -468,108 +434,18 @@ mod tests {
 }"#;
 
     #[tokio::test]
-    async fn init_settings_json_injects_model_when_set() {
+    async fn init_settings_json_copies_base_file_verbatim() {
         let tmp = TempDir::new().unwrap();
         setup_potential_settings(&tmp, BASE_SETTINGS);
 
         let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(Some("opus")).await.unwrap();
+        mgr.init_settings_json().await.unwrap();
 
         let written = std::fs::read_to_string(tmp.path().join(SETTINGS_JSON_DEST)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        let obj = value.as_object().expect("top-level must be an object");
-
         assert_eq!(
-            obj.get("model").and_then(|v| v.as_str()),
-            Some("opus"),
-            "model key should be injected"
+            written, BASE_SETTINGS,
+            "settings.json should be a verbatim copy of potential-settings.json"
         );
-        assert!(
-            obj.contains_key("permissions"),
-            "permissions must be preserved"
-        );
-        assert!(obj.contains_key("hooks"), "hooks must be preserved");
-        assert_eq!(
-            obj.get("skipDangerousModePermissionPrompt")
-                .and_then(|v| v.as_bool()),
-            Some(true),
-            "scalar keys must be preserved"
-        );
-    }
-
-    #[tokio::test]
-    async fn init_settings_json_omits_model_when_none() {
-        let tmp = TempDir::new().unwrap();
-        setup_potential_settings(&tmp, BASE_SETTINGS);
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(None).await.unwrap();
-
-        let written = std::fs::read_to_string(tmp.path().join(SETTINGS_JSON_DEST)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        let obj = value.as_object().expect("top-level must be an object");
-
-        assert!(
-            !obj.contains_key("model"),
-            "model key must NOT be present when env var is unset"
-        );
-        assert!(
-            obj.contains_key("permissions"),
-            "permissions must be preserved"
-        );
-        assert!(obj.contains_key("hooks"), "hooks must be preserved");
-    }
-
-    #[tokio::test]
-    async fn init_settings_json_omits_model_when_empty() {
-        let tmp = TempDir::new().unwrap();
-        setup_potential_settings(&tmp, BASE_SETTINGS);
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(Some("")).await.unwrap();
-
-        let written = std::fs::read_to_string(tmp.path().join(SETTINGS_JSON_DEST)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        let obj = value.as_object().expect("top-level must be an object");
-
-        assert!(
-            !obj.contains_key("model"),
-            "model key must NOT be present when env var is empty string"
-        );
-    }
-
-    #[tokio::test]
-    async fn init_settings_json_omits_model_when_whitespace() {
-        let tmp = TempDir::new().unwrap();
-        setup_potential_settings(&tmp, BASE_SETTINGS);
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(Some("   ")).await.unwrap();
-
-        let written = std::fs::read_to_string(tmp.path().join(SETTINGS_JSON_DEST)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        let obj = value.as_object().expect("top-level must be an object");
-
-        assert!(
-            !obj.contains_key("model"),
-            "model key must NOT be present when env var is whitespace-only"
-        );
-    }
-
-    #[tokio::test]
-    async fn init_settings_json_overwrites_existing_model_key() {
-        let tmp = TempDir::new().unwrap();
-        setup_potential_settings(
-            &tmp,
-            r#"{"model": "stale", "permissions": {"defaultMode": "bypassPermissions"}}"#,
-        );
-
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(Some("sonnet")).await.unwrap();
-
-        let written = std::fs::read_to_string(tmp.path().join(SETTINGS_JSON_DEST)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
-        assert_eq!(value.get("model").and_then(|v| v.as_str()), Some("sonnet"));
     }
 
     #[tokio::test]
@@ -578,7 +454,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
         let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
-        mgr.init_settings_json(Some("opus")).await.unwrap();
+        mgr.init_settings_json().await.unwrap();
 
         assert!(
             !tmp.path().join(SETTINGS_JSON_DEST).exists(),

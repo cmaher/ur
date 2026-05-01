@@ -781,31 +781,12 @@ fn container_env_var(runtime: &str, container: &str, var: &str) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
-/// Read `~/.claude/settings.json` from inside a running container and parse it
-/// as JSON. Panics if the file cannot be read or parsed.
-fn read_container_settings_json(runtime: &str, container: &str) -> serde_json::Value {
-    // Use the worker's HOME to locate settings.json; `ur-worker` images use
-    // `/home/worker/.claude/settings.json`, so we rely on $HOME expansion via a shell.
-    let output = exec_in_container(
-        runtime,
-        container,
-        &["sh", "-c", "cat \"$HOME/.claude/settings.json\""],
-    );
-    assert_exec_success(
-        &output,
-        &format!("reading ~/.claude/settings.json from container {container}"),
-    );
-    let body = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&body).unwrap_or_else(|e| {
-        panic!(
-            "failed to parse ~/.claude/settings.json from container {container}: {e}\n\
-             contents: {body}"
-        )
-    })
-}
-
 /// Assert that a running container has `UR_WORKER_MODEL=<expected>` and that
-/// `~/.claude/settings.json` inside the container contains `"model": "<expected>"`.
+/// the running `claude` process was launched with `--model <expected>`.
+///
+/// Settings.json is NOT checked: Claude Code rewrites `~/.claude/settings.json`
+/// on startup and silently drops the `model` key, so model selection is passed
+/// via the `--model` CLI flag instead (see workerd `run_daemon_only`).
 fn assert_worker_model(runtime: &str, container: &str, expected: &str) {
     let env_val = container_env_var(runtime, container, "UR_WORKER_MODEL");
     assert_eq!(
@@ -813,13 +794,22 @@ fn assert_worker_model(runtime: &str, container: &str, expected: &str) {
         "container {container} should have UR_WORKER_MODEL={expected}, got {env_val:?}"
     );
 
-    let settings = read_container_settings_json(runtime, container);
-    let model = settings.get("model").and_then(|v| v.as_str());
-    assert_eq!(
-        model,
-        Some(expected),
-        "container {container} ~/.claude/settings.json should contain \"model\": \"{expected}\", \
-         got full settings: {settings}"
+    // Verify the launched claude command includes `--model <expected>`. We
+    // grep tmux's pane history (the visible buffer) for the launch line.
+    let pane_output = exec_in_container(
+        runtime,
+        container,
+        &["tmux", "capture-pane", "-t", "agent", "-p", "-S", "-200"],
+    );
+    assert_exec_success(
+        &pane_output,
+        &format!("tmux capture-pane should succeed in container {container}"),
+    );
+    let pane = String::from_utf8_lossy(&pane_output.stdout);
+    let needle = format!("claude --model {expected}");
+    assert!(
+        pane.contains(&needle),
+        "container {container} tmux pane should show '{needle}', got pane:\n{pane}"
     );
 }
 

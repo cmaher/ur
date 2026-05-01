@@ -27,7 +27,7 @@ Cargo workspace:
 ## Development
 
 - **`ur` CLI is pre-built and available on PATH** (`/home/worker/.local/bin/ur`). Use `ur` directly — do NOT use `cargo run --bin ur`. This applies to all `ur` subcommands (ticket, server, etc.).
-- **CI runs via the pre-push git hook** — avoid running `cargo make ci` manually. The pre-push hook runs full CI (fmt, clippy, tests, build), so `git push` can take several minutes. When pushing in the background, use a long timeout (≥5 min) when waiting for output.
+- **CI runs via the pre-push git hook, NOT GitHub Actions** — GitHub Actions are too expensive for this repo, so all CI (fmt, clippy, tests, build, image build, e2e acceptance) runs locally on `git push`. Pushes can take several minutes; use a ≥5 min timeout when waiting in the background. Avoid running `cargo make ci` manually since the hook will do it. Consequence: a regression on master is silent until someone tries to push — if `git push` fails on a pre-existing test failure, fix it before pushing rather than assuming master is healthy.
 - `cargo make fmt-fix` - Fix formatting
 - `cargo make clippy` - Run clippy lints
 - `cargo make audit` - Check dependency vulnerabilities

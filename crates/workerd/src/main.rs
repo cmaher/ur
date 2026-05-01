@@ -127,9 +127,17 @@ async fn run_daemon_only() -> Result<()> {
     session.set_option("status-left-length", "50").await?;
     session.set_status_left(&status_left).await?;
 
-    // 3. Launch Claude Code via send-keys
-    session.send_keys("claude").await?;
-    info!("claude launched in tmux session");
+    // 3. Launch Claude Code via send-keys. Pass `--model <name>` when
+    // UR_WORKER_MODEL is set so the model survives Claude Code's own
+    // settings.json rewrites on startup (settings.json injection is
+    // unreliable — Claude Code recomposes the file from .claude.json and
+    // drops unrecognized keys).
+    let claude_cmd = match std::env::var(ur_config::UR_WORKER_MODEL_ENV) {
+        Ok(model) if !model.trim().is_empty() => format!("claude --model {}", model.trim()),
+        _ => "claude".to_owned(),
+    };
+    session.send_keys(&claude_cmd).await?;
+    info!(cmd = %claude_cmd, "claude launched in tmux session");
 
     // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when Claude exits
     {

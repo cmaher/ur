@@ -10,7 +10,7 @@ Three modes:
 
 Startup sequence (daemon mode):
 1. Creates tmux session `agent` (220x55), sets status line with worker ID
-2. Launches Claude Code via `tmux send-keys`
+2. Launches Claude Code via `tmux send-keys`. When `UR_WORKER_MODEL` is set, the launch line is `claude --model <name>` — the model is passed via CLI flag (NOT settings.json), because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops the `model` key.
 3. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK)
 4. Starts gRPC server on port 9120 (long-lived, keeps the process alive)
 
@@ -21,7 +21,7 @@ itself. This keeps workerd image-agnostic.
 Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var
 - Copies strategy-specific CLAUDE.md from potential-claudes based on `$UR_WORKER_CLAUDE` env var
-- Composes `~/.claude/settings.json` from the baked-in `~/.claude/potential-settings.json`, merging `"model": "$UR_WORKER_MODEL"` when the env var is non-empty (omitted otherwise)
+- Copies `~/.claude/potential-settings.json` (baked into the image) to `~/.claude/settings.json` so Claude Code picks up hooks/permissions. The `model` key is intentionally NOT injected here — see step 2 of the daemon startup sequence above for why.
 - Copies git hooks from `$UR_GIT_HOOKS_DIR` (or default `/workspace/ur-hooks/git/`) into `/workspace/.git/hooks/`
 - Copies skill hooks from `$UR_SKILL_HOOKS_DIR` (or default `/workspace/ur-hooks/skills/`) into `~/.claude/skill-hooks/`
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)

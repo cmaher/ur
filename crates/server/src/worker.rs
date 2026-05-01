@@ -849,7 +849,7 @@ fn build_worker_env_vars(
     // Inject resolved Claude Code model name (only when non-empty — empty
     // means fall back to claude's built-in default)
     if !config.model.is_empty() {
-        env_vars.push(("UR_WORKER_MODEL".into(), config.model.clone()));
+        env_vars.push((ur_config::UR_WORKER_MODEL_ENV.into(), config.model.clone()));
     }
 
     // Inject project key so workers can resolve project context via env
