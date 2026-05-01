@@ -123,6 +123,16 @@ digraph brainstorming {
 - If invoked on a design ticket, add a link between the design ticket and the new parent: `ur ticket add-link <design-ticket-id> <parent-id> --output json`
 - Register the parent ticket with workerd so `/dispatch` knows which ticket to use: `workertools workflow set-ticket <parent-id>`
 
+**Calibrating for Sonnet implementers:**
+
+Implementation tickets are executed by Sonnet workers. Sonnet has a smaller context budget and is less able to improvise than Opus — author tickets accordingly:
+
+- **Explicit over implicit** — name specific files and patterns instead of "the relevant module"
+- **List what to read first** — use the `Files to read first` slot to point at similar existing code, crate CLAUDE.md files, and relevant codeflows, so Sonnet doesn't have to discover context
+- **Resolve judgment calls in the design** — if a choice between approaches remains, decide it here rather than deferring to the implementer
+- **Small, coherent scope** — one concern per ticket; split anything that crosses layers
+- **Spell out what NOT to touch** — use the `Out of scope` slot; Sonnet can over-refactor when ambiguous
+
 **Creating child tickets:**
 
 - Create one ticket per discrete, implementable task using `ur ticket create "Task title" --parent <parent-id> --output json`
@@ -135,16 +145,24 @@ digraph brainstorming {
   ## Context
   How this component interacts with its neighbors — inputs, outputs, shared interfaces.
 
-  ## Files
+  ## Files to read first
+  - path/to/existing_similar.rs — pattern to follow
+  - crates/foo/CLAUDE.md — crate conventions
+  - docs/codeflows/xyz.md — cross-cutting flow (if relevant)
+
+  ## Files to change
   - path/to/file.rs (create/modify)
   - path/to/other.rs (modify)
+
+  ## Out of scope
+  - Explicit list of things NOT to change — resolve refactor-adjacent temptations here
 
   ## Acceptance Criteria
   - [ ] Concrete conditions for done
   ```
 - Order tickets by dependency — use `ur ticket add-block <id> <dep-id> --output json` for hard dependencies
 - Use `ur ticket add-link <id> <id> --output json` for related but non-blocking relationships
-- Tickets should be small enough for a single agent to complete in one session
+- Tickets should be small enough for a single agent to complete in one session — typically 1–3 files on one concern. If a ticket crosses layers (e.g. proto + server + client + migration), split it. When in doubt, split.
 
 **Closing the design ticket:**
 
@@ -162,4 +180,5 @@ digraph brainstorming {
 - **Explore alternatives** - Always propose 2-3 approaches before settling
 - **Incremental validation** - Present design, get approval before moving on
 - **Be flexible** - Go back and clarify when something doesn't make sense
+- **Calibrate for Sonnet implementers** - Explicit over implicit; small scope; no judgment calls deferred
 - **No code** - This skill produces tickets, not code

@@ -7,7 +7,13 @@ description: Use when implementing a ticket — works directly for a single tick
 
 Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
 
-**If the ticket description and codebase do not provide enough context to implement confidently, run `workertools status request-human "<what context is missing>"` and stop.** Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
+**Run `workertools status request-human "<reason>"` and stop when:**
+- Ticket acceptance criteria are ambiguous or contradictory
+- Work appears to require changes beyond `Files to change` that are not obvious small consequences (import sites, adjacent types are fine)
+- Error recovery activities contain contradictory or incomplete guidance
+- Ticket description and codebase together do not provide enough context to implement confidently
+
+Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
 
 ## Detect Mode — Single Ticket vs Epic
 
@@ -39,9 +45,10 @@ When the ticket has no open descendants:
 1. `ur ticket --output json show <id>` — read the ticket (and check for workflow error activities per above)
 2. `ur ticket --output json update <id> --status in_progress` — claim it
 @/home/worker/.claude/skill-hooks/implement/after-ticket-claim.md
-3. Implement the work directly in this context
-4. Before committing, run any verifications listed in the **Verification Hooks** section below
-5. Commit and set a summary of the work done as ticket metadata:
+3. Read every file listed in the ticket's `Files to read first` section (if present) before editing anything. This loads the patterns and conventions needed for the change.
+4. Implement the work directly in this context, scoped to the ticket's `Files to change` list. Treat `Out of scope` as a hard boundary.
+5. Before committing, run any verifications listed in the **Verification Hooks** section below
+6. Commit and set a summary of the work done as ticket metadata:
    ```
    ur ticket set-meta <id> pr_summary "1-2 sentence summary of the changes made" --output json
    ```
@@ -97,19 +104,22 @@ Do NOT run any verification commands unless specified in a **Verification Hooks*
 ```
 Implement ticket <id>.
 
-`ur ticket --output json show <id>` to read the full ticket. Tickets have four sections:
+`ur ticket --output json show <id>` to read the full ticket. Tickets have these sections:
 - **Description**: What to build and why
 - **Context**: How this component interacts with neighbors — use this for architectural awareness
-- **Files**: Likely file paths to create or modify — use this to focus your work
+- **Files to read first** (if present): Read every file listed here BEFORE editing anything
+- **Files to change** (if present): Intended scope — focus your edits here
+- **Out of scope** (if present): Hard boundary — do NOT modify anything in this list
 - **Acceptance Criteria**: Conditions for done — verify all are met before closing
 
 Claim: `ur ticket --output json update <id> --status in_progress`
 
 [If relevant: "Previous ticket accomplished: <1-2 sentences>"]
 
-Constraints:
-- [Scope boundaries]
-- [What NOT to change]
+Scope discipline:
+- Treat `Files to change` as the intended scope and `Out of scope` as a hard boundary
+- Small consequential edits beyond `Files to change` (e.g. fixing an import site, adjacent type) are fine
+- If the work appears to require genuine scope expansion, run `workertools status request-human "<what's missing>"` and stop
 
 Parallel work:
 - Other agents may be working on sibling tickets at the same time

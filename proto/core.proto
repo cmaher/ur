@@ -136,7 +136,13 @@ message LinkCommentTicketRequest {
 
 message LinkCommentTicketResponse {}
 
-message ReloadProjectsRequest {}
+message ReloadProjectsRequest {
+  // Authoritative ur.toml contents the caller just wrote. When non-empty,
+  // the server parses these bytes directly instead of re-reading the file
+  // from its bind-mounted view, sidestepping macOS Docker Desktop bind-mount
+  // propagation lag. Empty means "read the file" (legacy behavior).
+  string config_toml = 1;
+}
 
 message ReloadProjectsResponse {
   repeated string added = 1;

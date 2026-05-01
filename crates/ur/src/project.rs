@@ -246,54 +246,61 @@ pub fn remove(
 /// the RPC fails, we print a message but do not return an error since the
 /// config file write already succeeded.
 ///
-/// Retries up to 3 times with 200ms delay to handle bind-mount propagation
-/// delays on macOS Docker Desktop (osxfs cache staleness).
-pub async fn try_reload_server(port: u16, key: &str, action: &str) {
+/// Reads ur.toml from `config_dir` and ships the bytes inline in the RPC
+/// payload so the server parses what we just wrote, not its (possibly stale)
+/// bind-mounted view of the file. This eliminates the macOS Docker Desktop
+/// bind-mount propagation race that would otherwise produce mid-string TOML
+/// parse errors when the server reads its own filesystem view.
+pub async fn try_reload_server(port: u16, config_dir: &Path, key: &str, action: &str) {
     let Some(channel) = connection::try_connect(port) else {
         println!("Project {action} in config. Will be available on next server start.");
         return;
     };
+    let toml_path = config_dir.join("ur.toml");
+    let config_toml = match std::fs::read_to_string(&toml_path) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, path = %toml_path.display(), "failed to read ur.toml for reload");
+            println!(
+                "Warning: project {action} in config but could not read {} to send: {e}",
+                toml_path.display()
+            );
+            return;
+        }
+    };
     let mut client = CoreServiceClient::new(channel);
-    const MAX_ATTEMPTS: u32 = 4;
-    for attempt in 0..MAX_ATTEMPTS {
-        match client.reload_projects(ReloadProjectsRequest {}).await {
-            Ok(response) => {
-                let inner = response.into_inner();
-                let key_registered = if action == "removed" {
-                    inner.removed.iter().any(|k| k == key)
-                } else {
-                    inner.added.iter().any(|k| k == key)
-                };
-                if key_registered {
-                    println!("Server reloaded — project {key} now {action}");
-                    return;
-                }
-                if attempt + 1 < MAX_ATTEMPTS {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                    continue;
-                }
+    let req = ReloadProjectsRequest { config_toml };
+    match client.reload_projects(req).await {
+        Ok(response) => {
+            let inner = response.into_inner();
+            let key_registered = if action == "removed" {
+                inner.removed.iter().any(|k| k == key)
+            } else {
+                inner.added.iter().any(|k| k == key)
+            };
+            if key_registered {
+                println!("Server reloaded — project {key} now {action}");
+            } else {
                 println!(
                     "Warning: project {action} in config but server did not register '{key}' — \
                      restart server to apply"
                 );
-                return;
             }
-            Err(status) => {
-                let code = status.code();
-                if code == tonic::Code::Unavailable {
-                    println!("Project {action} in config. Will be available on next server start.");
-                } else {
-                    warn!(
-                        code = ?code,
-                        message = status.message(),
-                        "ReloadProjects RPC failed"
-                    );
-                    println!(
-                        "Warning: project {action} in config but server reload failed: {}",
-                        status.message()
-                    );
-                }
-                return;
+        }
+        Err(status) => {
+            let code = status.code();
+            if code == tonic::Code::Unavailable {
+                println!("Project {action} in config. Will be available on next server start.");
+            } else {
+                warn!(
+                    code = ?code,
+                    message = status.message(),
+                    "ReloadProjects RPC failed"
+                );
+                println!(
+                    "Warning: project {action} in config but server reload failed: {}",
+                    status.message()
+                );
             }
         }
     }
