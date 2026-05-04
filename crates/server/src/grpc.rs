@@ -188,30 +188,34 @@ impl LaunchManager {
         strategy: crate::WorkerStrategy,
         dispatch: bool,
     ) -> Result<(), Status> {
-        // Bind the ticket to its worker on the workflow table (if a workflow exists).
-        self.workflow_repo
-            .set_workflow_worker_id(process_id, worker_id_str)
-            .await
-            .map_err(|e| CoreError::RunFailed {
-                reason: format!("failed to set workflow worker_id: {e}"),
-            })?;
+        // Manual workers have no ticket to bind, no branch to persist, and no
+        // command to dispatch — skip all workflow-related setup steps.
+        if strategy != crate::WorkerStrategy::Manual {
+            // Bind the ticket to its worker on the workflow table (if a workflow exists).
+            self.workflow_repo
+                .set_workflow_worker_id(process_id, worker_id_str)
+                .await
+                .map_err(|e| CoreError::RunFailed {
+                    reason: format!("failed to set workflow worker_id: {e}"),
+                })?;
 
-        // Pool slots check out a branch named after the worker ID; persist
-        // that on the ticket so the push handler knows which branch to push.
-        if has_pool_slot {
-            persist_pool_branch(&self.ticket_repo, process_id, worker_id_str).await?;
-        }
+            // Pool slots check out a branch named after the worker ID; persist
+            // that on the ticket so the push handler knows which branch to push.
+            if has_pool_slot {
+                persist_pool_branch(&self.ticket_repo, process_id, worker_id_str).await?;
+            }
 
-        // Design workers get the /design command dispatched automatically once
-        // the workerd daemon is ready (reports idle). This runs in the
-        // background so the launch RPC returns immediately.
-        if strategy == crate::WorkerStrategy::Design && dispatch {
-            spawn_design_dispatch(
-                self.worker_repo.clone(),
-                self.network_config.clone(),
-                process_id.to_owned(),
-                worker_id_str.to_owned(),
-            );
+            // Design workers get the /design command dispatched automatically once
+            // the workerd daemon is ready (reports idle). This runs in the
+            // background so the launch RPC returns immediately.
+            if strategy == crate::WorkerStrategy::Design && dispatch {
+                spawn_design_dispatch(
+                    self.worker_repo.clone(),
+                    self.network_config.clone(),
+                    process_id.to_owned(),
+                    worker_id_str.to_owned(),
+                );
+            }
         }
 
         // Push the initial tmux status-left label once the worker is reachable.
@@ -230,9 +234,37 @@ impl LaunchManager {
         Ok(())
     }
 
+    /// Resolve the effective project key from the request.
+    ///
+    /// If `req.project_key` is set, use it directly. Otherwise attempt to
+    /// extract the project prefix from `req.worker_id` (e.g. `"ur"` from
+    /// `"ur-abc12"`) and verify it against the registry.
+    fn resolve_effective_project_key(&self, req: &WorkerLaunchRequest) -> String {
+        if !req.project_key.is_empty() {
+            return req.project_key.clone();
+        }
+        let Some(prefix) = req.worker_id.split('-').next() else {
+            return String::new();
+        };
+        if !prefix.is_empty() && self.project_registry.get(prefix).is_some() {
+            info!(
+                worker_id = req.worker_id,
+                extracted_project_key = prefix,
+                "extracted project key from worker_id"
+            );
+            prefix.to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
     ///
     /// Extracted from `launch` to keep method body within the line limit.
+    ///
+    /// Returns `(workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model,
+    /// generated_process_id)`. `generated_process_id` is `Some` for Manual mode (auto-generated
+    /// from the slot name) and `None` for all other modes (caller uses `req.worker_id`).
     async fn resolve_launch_workspace(
         &self,
         req: &WorkerLaunchRequest,
@@ -245,6 +277,7 @@ impl LaunchManager {
             Vec<String>,
             crate::WorkerStrategy,
             String,
+            Option<String>,
         ),
         Status,
     > {
@@ -253,25 +286,7 @@ impl LaunchManager {
             .resolve_mode(&req.mode)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
-        // When project_key is empty, attempt to extract it from worker_id.
-        // Worker IDs follow the ticket convention `{project}-{hash}` (e.g., "ur-abc12").
-        // Only use the extracted key if it matches a known project.
-        let effective_project_key = if !req.project_key.is_empty() {
-            req.project_key.clone()
-        } else if let Some(prefix) = req.worker_id.split('-').next() {
-            if !prefix.is_empty() && self.project_registry.get(prefix).is_some() {
-                info!(
-                    worker_id = req.worker_id,
-                    extracted_project_key = prefix,
-                    "extracted project key from worker_id"
-                );
-                prefix.to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        let effective_project_key = self.resolve_effective_project_key(req);
 
         let (workspace_dir, project_key, slot_id) =
             if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
@@ -308,14 +323,42 @@ impl LaunchManager {
                 (None, String::new(), None)
             };
 
-        let worker_id = self.worker_manager.generate_worker_id(&req.worker_id);
+        // For Manual strategy, auto-generate process_id from project key and slot name.
+        // The slot name is the last path component (e.g., "0", "1", "2") of the workspace dir.
+        // process_id = "{project_key}-man-{slot_name}", e.g. "ur-man-0".
+        let generated_process_id = if strategy == crate::WorkerStrategy::Manual {
+            let slot_name = workspace_dir
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("0");
+            let pid = format!("{project_key}-man-{slot_name}");
+            info!(
+                project_key = %project_key,
+                slot_name = %slot_name,
+                process_id = %pid,
+                "manual mode: auto-generated process_id from slot"
+            );
+            Some(pid)
+        } else {
+            None
+        };
+
+        // Use the generated process_id as the base for WorkerId in Manual mode;
+        // fall back to req.worker_id for all other modes.
+        let worker_id_base = generated_process_id.as_deref().unwrap_or(&req.worker_id);
+        let worker_id = self.worker_manager.generate_worker_id(worker_id_base);
         info!(
             worker_id = req.worker_id,
             internal_worker_id = %worker_id,
             "generated worker ID"
         );
 
-        if let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some()) {
+        // Branch checkout is skipped for Manual — it manages its own workspace
+        // and does not own a ticket branch.
+        if strategy != crate::WorkerStrategy::Manual
+            && let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some())
+        {
             self.repo_pool_manager
                 .checkout_branch(slot_path, &worker_id.to_string())
                 .await
@@ -337,6 +380,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            generated_process_id,
         ))
     }
 
@@ -376,40 +420,31 @@ impl LaunchManager {
         }
     }
 
-    /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
-    pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<(String, String), Status> {
-        let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model) =
-            self.resolve_launch_workspace(&req).await?;
-
-        // Acquire shared slots for context repos in parallel.
-        let context_mounts = self.acquire_context_repos(&req.context_repos).await?;
-        if !context_mounts.is_empty() {
-            info!(
-                worker_id = req.worker_id,
-                context_repos = ?req.context_repos,
-                "acquired shared slots for context repos"
-            );
-        }
-
-        // Phase 1: prepare (create repo, git init, register)
-        let workspace_dir = self
-            .worker_manager
-            .prepare(&req.worker_id, &worker_id, workspace_dir)
-            .await
-            .map_err(|e| CoreError::PrepareFailed {
-                reason: e.to_string(),
-            })?;
-
+    /// Build a `WorkerConfig` from resolved launch fields and the original request.
+    ///
+    /// Extracted from `launch` to keep method body within the line limit.
+    #[allow(clippy::too_many_arguments)]
+    fn build_worker_config(
+        &self,
+        req: &WorkerLaunchRequest,
+        process_id: String,
+        project_key: String,
+        slot_id: Option<String>,
+        worker_id: crate::WorkerId,
+        resolved_skills: Vec<String>,
+        strategy: crate::WorkerStrategy,
+        model: String,
+        workspace_dir: Option<PathBuf>,
+        context_mounts: Vec<(String, std::path::PathBuf)>,
+    ) -> crate::WorkerConfig {
         let mode_skills = if req.skills.is_empty() {
             resolved_skills
         } else {
             req.skills.clone()
         };
-
         let (skills, extra_skill_mounts) = self
             .worker_manager
             .merge_global_skills(strategy, mode_skills);
-
         let (
             git_hooks_dir,
             skill_hooks_dir,
@@ -419,9 +454,6 @@ impl LaunchManager {
             resolved_image,
             hostexec_scripts,
         ) = self.extract_project_launch_fields(&project_key);
-
-        // Use the image from the request if provided, otherwise fall back to
-        // the project's configured image.
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
                 "ur-worker-rust:latest".to_owned()
@@ -431,10 +463,6 @@ impl LaunchManager {
         } else {
             req.image_id.clone()
         };
-
-        let process_id = req.worker_id.clone();
-        let worker_id_str = worker_id.to_string();
-        let has_pool_slot = slot_id.is_some();
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -443,10 +471,10 @@ impl LaunchManager {
         let memory = if req.memory.is_empty() {
             ur_config::DEFAULT_WORKER_MEMORY.to_owned()
         } else {
-            req.memory
+            req.memory.clone()
         };
-        let config = crate::WorkerConfig {
-            process_id: req.worker_id,
+        crate::WorkerConfig {
+            process_id,
             worker_id,
             image_id,
             cpus,
@@ -466,7 +494,58 @@ impl LaunchManager {
             context_mounts,
             hostexec_scripts,
             extra_skill_mounts,
-        };
+        }
+    }
+
+    /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
+    pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<(String, String), Status> {
+        let (
+            workspace_dir,
+            project_key,
+            slot_id,
+            worker_id,
+            resolved_skills,
+            strategy,
+            model,
+            generated_process_id,
+        ) = self.resolve_launch_workspace(&req).await?;
+
+        // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
+        let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());
+
+        // Acquire shared slots for context repos in parallel.
+        let context_mounts = self.acquire_context_repos(&req.context_repos).await?;
+        if !context_mounts.is_empty() {
+            info!(
+                worker_id = req.worker_id,
+                context_repos = ?req.context_repos,
+                "acquired shared slots for context repos"
+            );
+        }
+
+        // Phase 1: prepare (create repo, git init, register)
+        let workspace_dir = self
+            .worker_manager
+            .prepare(&process_id, &worker_id, workspace_dir)
+            .await
+            .map_err(|e| CoreError::PrepareFailed {
+                reason: e.to_string(),
+            })?;
+
+        let worker_id_str = worker_id.to_string();
+        let has_pool_slot = slot_id.is_some();
+        let config = self.build_worker_config(
+            &req,
+            process_id.clone(),
+            project_key,
+            slot_id,
+            worker_id,
+            resolved_skills,
+            strategy,
+            model,
+            workspace_dir,
+            context_mounts,
+        );
         let (container_id, _worker_secret) = self
             .worker_manager
             .run_and_record(config)
