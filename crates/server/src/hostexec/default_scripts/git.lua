@@ -68,8 +68,12 @@ function transform(command, args, working_dir, worker_context)
         end
     end
 
-    -- Block checkout and switch subcommands (workers must not switch branches)
-    local blocked_subcommands = {
+    -- always_blocked: subcommands blocked for all workers unconditionally
+    local always_blocked = {
+        ["worktree"] = true,
+    }
+    -- branch_locked: subcommands blocked in pool mode (branch is set) or when context is absent (safety default)
+    local branch_locked = {
         ["checkout"] = true,
         ["switch"] = true,
     }
@@ -87,8 +91,14 @@ function transform(command, args, working_dir, worker_context)
             sub_i = sub_i + 1  -- skip other flags
         else
             -- First positional arg is the subcommand
-            if blocked_subcommands[a] then
-                error("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
+            if always_blocked[a] then
+                error("blocked git subcommand: " .. a)
+            end
+            if branch_locked[a] then
+                -- Block when no context (safety default) or when in pool mode (branch is non-empty)
+                if worker_context == nil or worker_context.branch ~= "" then
+                    error("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
+                end
             end
             break
         end
