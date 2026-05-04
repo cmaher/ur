@@ -492,6 +492,8 @@ struct RawProjectConfig {
     /// project are allowed to invoke. Stored in canonical form (no leading `./`).
     #[serde(default)]
     hostexec_scripts: Vec<String>,
+    /// Exit code the verify hook returns to signal "push again" without penalizing the implement cycle count.
+    push_again_exit_code: Option<i32>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -882,6 +884,9 @@ impl Default for TuiConfig {
 /// Default maximum number of fix loop iterations before stalling an agent.
 pub const DEFAULT_MAX_FIX_ATTEMPTS: u32 = 10;
 
+/// Default exit code returned by the verify hook to signal "push again" without penalizing the implement cycle count.
+pub const DEFAULT_PUSH_AGAIN_EXIT_CODE: i32 = 200;
+
 /// Default protected branch patterns (branches that cannot be force-pushed).
 pub fn default_protected_branches() -> Vec<String> {
     vec!["main".to_string(), "master".to_string()]
@@ -1175,6 +1180,9 @@ pub struct ProjectConfig {
     /// Relative paths to host-exec scripts that agents running against this
     /// project are allowed to invoke. Stored in canonical form (no leading `./`).
     pub hostexec_scripts: Vec<String>,
+    /// Exit code the verify hook returns to signal "push again" without penalizing the implement cycle count.
+    /// Default: 200.
+    pub push_again_exit_code: i32,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1499,6 +1507,9 @@ fn resolve_project_config(
         tui,
         ignored_workflow_checks: raw_proj.ignored_workflow_checks,
         hostexec_scripts,
+        push_again_exit_code: raw_proj
+            .push_again_exit_code
+            .unwrap_or(DEFAULT_PUSH_AGAIN_EXIT_CODE),
     };
     Ok((key, resolved))
 }
@@ -3843,6 +3854,7 @@ quit = ["q"]
                     tui: None,
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
+                    push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                 },
             );
             m.insert(
@@ -3868,6 +3880,7 @@ quit = ["q"]
                     tui: None,
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
+                    push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                 },
             );
             m
@@ -3987,6 +4000,7 @@ quit = ["q"]
                     tui: None,
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
+                    push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
@@ -4762,5 +4776,45 @@ image = "ur-worker"
             cfg.projects["x"].max_implement_cycles,
             Some(DEFAULT_MAX_IMPLEMENT_CYCLES)
         );
+    }
+
+    #[test]
+    fn project_push_again_exit_code_defaults_to_200() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@github.com:example/x.git"
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["x"].push_again_exit_code,
+            DEFAULT_PUSH_AGAIN_EXIT_CODE
+        );
+    }
+
+    #[test]
+    fn project_push_again_exit_code_explicit_value() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.x]
+repo = "git@github.com:example/x.git"
+push_again_exit_code = 42
+[projects.x.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["x"].push_again_exit_code, 42);
     }
 }

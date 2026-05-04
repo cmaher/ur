@@ -115,22 +115,36 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
     }
     let worker_id = &workflow.worker_id;
 
-    if hook_result.success() {
-        info!(ticket_id = %ticket_id, "pre-push hook passed — advancing to pushing");
-        add_hook_activity(ctx, ticket_id, "pass", &output_summary).await?;
-        advance_to_pushing(ctx, ticket_id).await?;
-    } else {
-        info!(ticket_id = %ticket_id, exit_code = hook_result.exit_code, "pre-push hook failed");
-        let log_path = write_hook_failure_log(
-            &ctx.config.logs_dir,
-            worker_id,
-            "verify",
-            &hook_result.stdout,
-            &hook_result.stderr,
-            hook_result.exit_code,
-        );
-        add_hook_failure_activity(ctx, ticket_id, &log_path, &output_summary).await?;
-        handle_hook_failure(ctx, ticket_id, worker_id).await?;
+    let push_again_exit_code = project_config.push_again_exit_code;
+
+    match classify_hook_outcome(hook_result.exit_code, push_again_exit_code) {
+        HookOutcome::Pass => {
+            info!(ticket_id = %ticket_id, "pre-push hook passed — advancing to pushing");
+            add_hook_activity(ctx, ticket_id, "pass", &output_summary).await?;
+            advance_to_pushing(ctx, ticket_id).await?;
+        }
+        HookOutcome::PushAgain => {
+            info!(
+                ticket_id = %ticket_id,
+                exit_code = hook_result.exit_code,
+                "pre-push hook returned push_again — advancing to pushing without penalizing implement cycles"
+            );
+            add_hook_activity(ctx, ticket_id, "push_again", &output_summary).await?;
+            advance_to_pushing(ctx, ticket_id).await?;
+        }
+        HookOutcome::Fail => {
+            info!(ticket_id = %ticket_id, exit_code = hook_result.exit_code, "pre-push hook failed");
+            let log_path = write_hook_failure_log(
+                &ctx.config.logs_dir,
+                worker_id,
+                "verify",
+                &hook_result.stdout,
+                &hook_result.stderr,
+                hook_result.exit_code,
+            );
+            add_hook_failure_activity(ctx, ticket_id, &log_path, &output_summary).await?;
+            handle_hook_failure(ctx, ticket_id, worker_id).await?;
+        }
     }
 
     Ok(())
@@ -284,6 +298,29 @@ async fn add_hook_failure_activity(
     Ok(())
 }
 
+/// Classify the outcome of a hook execution based on its exit code.
+///
+/// Used to determine which branch of the verify handler to take.
+#[derive(Debug, PartialEq, Eq)]
+enum HookOutcome {
+    /// Exit code 0 — hook passed.
+    Pass,
+    /// Exit code matches `push_again_exit_code` — push again without penalizing cycles.
+    PushAgain,
+    /// Any other non-zero exit code — hook failed.
+    Fail,
+}
+
+fn classify_hook_outcome(exit_code: i32, push_again_exit_code: i32) -> HookOutcome {
+    if exit_code == 0 {
+        HookOutcome::Pass
+    } else if exit_code == push_again_exit_code {
+        HookOutcome::PushAgain
+    } else {
+        HookOutcome::Fail
+    }
+}
+
 /// Build a truncated output summary from stdout and stderr.
 fn build_output_summary(stdout: &str, stderr: &str) -> String {
     let mut parts = Vec::new();
@@ -309,6 +346,30 @@ fn build_output_summary(stdout: &str, stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_exit_0_is_pass() {
+        assert_eq!(classify_hook_outcome(0, 200), HookOutcome::Pass);
+    }
+
+    #[test]
+    fn classify_push_again_code_is_push_again() {
+        assert_eq!(classify_hook_outcome(200, 200), HookOutcome::PushAgain);
+    }
+
+    #[test]
+    fn classify_nonzero_non_push_again_is_fail() {
+        assert_eq!(classify_hook_outcome(1, 200), HookOutcome::Fail);
+        assert_eq!(classify_hook_outcome(127, 200), HookOutcome::Fail);
+        assert_eq!(classify_hook_outcome(201, 200), HookOutcome::Fail);
+    }
+
+    #[test]
+    fn classify_custom_push_again_code() {
+        assert_eq!(classify_hook_outcome(42, 42), HookOutcome::PushAgain);
+        assert_eq!(classify_hook_outcome(200, 42), HookOutcome::Fail);
+        assert_eq!(classify_hook_outcome(0, 42), HookOutcome::Pass);
+    }
 
     #[test]
     fn build_output_summary_both() {
