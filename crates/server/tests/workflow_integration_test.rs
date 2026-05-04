@@ -837,6 +837,7 @@ fn project_cycle_limit_map(
             tui: None,
             ignored_workflow_checks: vec![],
             hostexec_scripts: vec![],
+            push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
         },
     );
     projects

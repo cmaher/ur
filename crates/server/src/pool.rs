@@ -652,6 +652,7 @@ mod tests {
                 tui: None,
                 ignored_workflow_checks: Vec::new(),
                 hostexec_scripts: Vec::new(),
+                push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
             },
         );
         let (worker_repo, test_db) = test_worker_repo().await;
@@ -955,6 +956,7 @@ mod tests {
                 tui: None,
                 ignored_workflow_checks: Vec::new(),
                 hostexec_scripts: Vec::new(),
+                push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
             },
         );
         let channel =
