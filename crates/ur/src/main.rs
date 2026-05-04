@@ -829,14 +829,22 @@ async fn process_launch(
         })
         .await?;
 
-    let container_id = resp.into_inner().container_id;
+    let inner = resp.into_inner();
+    let container_id = inner.container_id;
+    // For manual mode the server generates the process_id; fall back to
+    // ticket_id (which the CLI supplied) for code/design modes.
+    let process_id = if inner.process_id.is_empty() {
+        ticket_id.to_string()
+    } else {
+        inner.process_id
+    };
     info!(
         ticket_id,
         container_name, container_id, image_id, "worker process launched"
     );
     if output.is_json() {
         output.print_success(&WorkerLaunched {
-            worker_id: ticket_id.to_string(),
+            worker_id: process_id,
             container_id,
         });
     } else {

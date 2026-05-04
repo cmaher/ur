@@ -377,7 +377,7 @@ impl LaunchManager {
     }
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
-    pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<String, Status> {
+    pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<(String, String), Status> {
         let (workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model) =
             self.resolve_launch_workspace(&req).await?;
 
@@ -484,7 +484,7 @@ impl LaunchManager {
         )
         .await?;
 
-        Ok(container_id)
+        Ok((container_id, process_id))
     }
 
     /// Stop a running worker.
@@ -553,9 +553,12 @@ impl CoreService for CoreServiceHandler {
             "worker_launch request received"
         );
 
-        let container_id = self.launch_manager.launch(req).await?;
+        let (container_id, process_id) = self.launch_manager.launch(req).await?;
 
-        Ok(Response::new(WorkerLaunchResponse { container_id }))
+        Ok(Response::new(WorkerLaunchResponse {
+            container_id,
+            process_id,
+        }))
     }
 
     async fn worker_stop(
@@ -839,9 +842,12 @@ impl CoreService for WorkerCoreServiceHandler {
             "worker_launch request received (worker server)"
         );
 
-        let container_id = self.launch_manager.launch(req).await?;
+        let (container_id, process_id) = self.launch_manager.launch(req).await?;
 
-        Ok(Response::new(WorkerLaunchResponse { container_id }))
+        Ok(Response::new(WorkerLaunchResponse {
+            container_id,
+            process_id,
+        }))
     }
 
     async fn worker_stop(

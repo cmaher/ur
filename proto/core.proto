@@ -58,6 +58,7 @@ message WorkerLaunchRequest {
 
 message WorkerLaunchResponse {
   string container_id = 1;
+  string process_id = 2;
 }
 
 message WorkerStopRequest {
