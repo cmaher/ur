@@ -206,7 +206,7 @@ enum WorkerCommands {
     Kill { worker_id: String },
     /// Launch a new worker process (requires -p project or -w workspace)
     Launch {
-        ticket_id: String,
+        ticket_id: Option<String>,
         /// Mount a host directory as the container workspace (mutually exclusive with -p)
         #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
         workspace: Option<PathBuf>,
@@ -760,7 +760,7 @@ async fn process_launch(
     dispatch: bool,
     output: &OutputManager,
     projects: &HashMap<String, ur_config::ProjectConfig>,
-) -> Result<()> {
+) -> Result<String> {
     info!(ticket_id, project_key, "launching worker process");
 
     // Refresh credentials from host Claude Code and ensure config exists.
@@ -844,13 +844,13 @@ async fn process_launch(
     );
     if output.is_json() {
         output.print_success(&WorkerLaunched {
-            worker_id: process_id,
+            worker_id: process_id.clone(),
             container_id,
         });
     } else {
-        println!("Worker {container_name} running (container {container_id})");
+        println!("Worker {process_id} running (container {container_id})");
     }
-    Ok(())
+    Ok(process_id)
 }
 
 #[instrument(skip(client, output))]
@@ -1080,7 +1080,7 @@ async fn handle_worker_launch(
     worker_prefix: &str,
     projects: &HashMap<String, ur_config::ProjectConfig>,
     output: &OutputManager,
-    ticket_id: String,
+    ticket_id: Option<String>,
     workspace: Option<PathBuf>,
     project: Option<String>,
     attach: bool,
@@ -1091,7 +1091,30 @@ async fn handle_worker_launch(
     dispatch: bool,
     context_repos: Option<String>,
 ) -> Result<()> {
-    input::validate_id(&ticket_id, "ticket_id")?;
+    let is_manual = mode == "manual";
+
+    // Manual mode validations
+    if is_manual && dispatch {
+        bail!("dispatch is not supported for manual mode");
+    }
+    if is_manual && project.is_none() && workspace.is_none() {
+        bail!("manual mode requires -p project");
+    }
+
+    // Non-manual modes require a ticket_id
+    let ticket_id_str: String = if is_manual {
+        // Manual mode does not use a ticket_id; send empty string to server
+        ticket_id.unwrap_or_default()
+    } else {
+        match ticket_id {
+            Some(ref id) => {
+                input::validate_id(id, "ticket_id")?;
+                id.clone()
+            }
+            None => bail!("ticket_id is required for mode '{mode}'"),
+        }
+    };
+
     if let Some(ref p) = project {
         input::validate_id(p, "project")?;
     }
@@ -1112,21 +1135,29 @@ async fn handle_worker_launch(
         .collect();
 
     let project_keys: Vec<String> = projects.keys().cloned().collect();
-    let resolved_project = resolve_project_key(project, &workspace, &ticket_id, &project_keys)?;
+    let resolved_project = resolve_project_key(
+        project,
+        &workspace,
+        &ticket_id_str,
+        &project_keys,
+        is_manual,
+    )?;
 
     let mut client = connect(port).await?;
     if force {
-        debug!(ticket_id = %ticket_id, "force-stopping existing process before launch");
-        let _ = process_stop(&mut client, &ticket_id, output).await;
-        cancel_workflow(port, &ticket_id).await?;
+        debug!(ticket_id = %ticket_id_str, "force-stopping existing process before launch");
+        let _ = process_stop(&mut client, &ticket_id_str, output).await;
+        if !is_manual {
+            cancel_workflow(port, &ticket_id_str).await?;
+        }
     }
     let is_design = mode == "design";
     if dispatch && !is_design {
-        dispatch_ticket(port, &ticket_id).await?;
+        dispatch_ticket(port, &ticket_id_str).await?;
     }
-    process_launch(
+    let process_id = process_launch(
         &mut client,
-        &ticket_id,
+        &ticket_id_str,
         workspace,
         &resolved_project,
         worker_prefix,
@@ -1147,12 +1178,12 @@ async fn handle_worker_launch(
             output.print_error(&err);
             process::exit(err.code.exit_code());
         }
-        wait_for_healthy(&ticket_id, worker_prefix)?;
-        let exit_code = process_attach(&ticket_id, worker_prefix)?;
+        wait_for_healthy(&process_id, worker_prefix)?;
+        let exit_code = process_attach(&process_id, worker_prefix)?;
         if rm {
-            println!("Stopping {ticket_id} (--rm)...");
+            println!("Stopping {process_id} (--rm)...");
             let mut client = connect(port).await?;
-            process_stop(&mut client, &ticket_id, output).await?;
+            process_stop(&mut client, &process_id, output).await?;
         }
         process::exit(exit_code);
     }
@@ -1164,15 +1195,23 @@ fn resolve_project_key(
     workspace: &Option<PathBuf>,
     ticket_id: &str,
     project_keys: &[String],
+    is_manual: bool,
 ) -> Result<String> {
     if let Some(p) = project {
         return Ok(p);
     }
-    let id_prefix = ticket_id
-        .split(&['-', '.'][..])
-        .next()
-        .unwrap_or("")
-        .to_owned();
+    // Manual mode with no -p or -w: caller already validated this won't happen
+    // (workspace is also None here only when -p was required and missing).
+    // When ticket_id is empty (manual mode), skip prefix-based derivation.
+    let id_prefix = if ticket_id.is_empty() {
+        String::new()
+    } else {
+        ticket_id
+            .split(&['-', '.'][..])
+            .next()
+            .unwrap_or("")
+            .to_owned()
+    };
     if !id_prefix.is_empty() && project_keys.contains(&id_prefix) {
         debug!(project_key = %id_prefix, "derived project from ticket ID prefix");
         return Ok(id_prefix);
@@ -1187,7 +1226,7 @@ fn resolve_project_key(
         debug!(project_key = %dir_name, "derived project from cwd");
         return Ok(dir_name);
     }
-    if workspace.is_some() {
+    if workspace.is_some() || is_manual {
         return Ok(String::new());
     }
     bail!(
