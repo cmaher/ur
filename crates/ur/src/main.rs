@@ -1487,6 +1487,7 @@ mod tests {
             &None,
             "ur-abc12",
             &project_keys(),
+            false,
         )
         .unwrap();
         assert_eq!(result, "explicit");
@@ -1500,6 +1501,7 @@ mod tests {
             &ws,
             "ur-abc12",
             &project_keys(),
+            false,
         )
         .unwrap();
         assert_eq!(result, "explicit");
@@ -1507,20 +1509,21 @@ mod tests {
 
     #[test]
     fn ticket_id_prefix_derivation() {
-        let result = resolve_project_key(None, &None, "ur-abc12", &project_keys()).unwrap();
+        let result = resolve_project_key(None, &None, "ur-abc12", &project_keys(), false).unwrap();
         assert_eq!(result, "ur");
     }
 
     #[test]
     fn ticket_id_prefix_derivation_with_workspace() {
         let ws = Some(PathBuf::from("/tmp/ws"));
-        let result = resolve_project_key(None, &ws, "ur-abc12", &project_keys()).unwrap();
+        let result = resolve_project_key(None, &ws, "ur-abc12", &project_keys(), false).unwrap();
         assert_eq!(result, "ur");
     }
 
     #[test]
     fn ticket_id_prefix_dot_separator() {
-        let result = resolve_project_key(None, &None, "myproj.xyz", &project_keys()).unwrap();
+        let result =
+            resolve_project_key(None, &None, "myproj.xyz", &project_keys(), false).unwrap();
         assert_eq!(result, "myproj");
     }
 
@@ -1529,7 +1532,7 @@ mod tests {
         // Prefix doesn't match a project key; with workspace set and cwd not matching,
         // falls through to the workspace fallback returning empty string.
         let ws = Some(PathBuf::from("/tmp/ws"));
-        let result = resolve_project_key(None, &ws, "zzz-abc", &project_keys());
+        let result = resolve_project_key(None, &ws, "zzz-abc", &project_keys(), false);
         if let Ok(val) = result {
             assert_ne!(val, "zzz");
         }
@@ -1540,7 +1543,7 @@ mod tests {
         // Empty ticket ID prefix + workspace set: should return Ok("") fallback
         // (unless cwd happens to match a project key, which is also fine).
         let ws = Some(PathBuf::from("/tmp/ws"));
-        let result = resolve_project_key(None, &ws, "", &project_keys());
+        let result = resolve_project_key(None, &ws, "", &project_keys(), false);
         match result {
             Ok(val) => assert!(val.is_empty() || project_keys().contains(&val)),
             Err(_) => panic!("should not error when workspace is set"),
@@ -1551,7 +1554,7 @@ mod tests {
     fn no_workspace_no_match_returns_error() {
         // No project flag, non-matching prefix, no workspace, empty project keys
         // so cwd can't match either → should error.
-        let result = resolve_project_key(None, &None, "zzz-abc", &[]);
+        let result = resolve_project_key(None, &None, "zzz-abc", &[], false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("could not derive project"));

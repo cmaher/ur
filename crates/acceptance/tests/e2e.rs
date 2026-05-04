@@ -2377,6 +2377,157 @@ fn read_tmux_status_left(runtime: &str, container: &str) -> String {
 ///    master/main or detached HEAD).
 /// 4. Verify worker appears in `ur worker list` with mode "manual".
 /// 5. Stop and verify clean shutdown + slot released (stop succeeds).
+fn manual_launch_and_verify_process_id(
+    ur: &Path,
+    project_key: &str,
+    env_slice: &[(&str, &str)],
+) -> String {
+    let launch_output = run_cmd(
+        ur,
+        &[
+            "--output",
+            "json",
+            "worker",
+            "launch",
+            "-m",
+            "manual",
+            "-p",
+            project_key,
+        ],
+        env_slice,
+    );
+    assert!(
+        launch_output.status.success(),
+        "ur worker launch -m manual -p {project_key} failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+    let launch_json: serde_json::Value =
+        serde_json::from_slice(&launch_output.stdout).expect("launch output should be valid JSON");
+    let process_id = launch_json["data"]["worker_id"]
+        .as_str()
+        .expect("launch response should have data.worker_id")
+        .to_owned();
+    let man_prefix = format!("{project_key}-man-");
+    let slot_suffix = process_id.strip_prefix(&man_prefix).unwrap_or_else(|| {
+        panic!(
+            "process_id '{process_id}' should start with '{man_prefix}' \
+             (expected pattern: {project_key}-man-{{digit}})"
+        )
+    });
+    assert!(
+        slot_suffix.chars().all(|c| c.is_ascii_digit()),
+        "process_id suffix '{slot_suffix}' should be all digits in '{process_id}'"
+    );
+    assert!(
+        launch_json["data"]["container_id"]
+            .as_str()
+            .map(|s| s.contains(&process_id))
+            .unwrap_or(false),
+        "container_id should contain process_id '{process_id}'.\nJSON: {launch_json}"
+    );
+    process_id
+}
+
+fn manual_verify_no_branch_checkout(
+    config_path: &std::path::Path,
+    project_key: &str,
+    process_id: &str,
+) {
+    let pool_slot = config_path
+        .join("workspace")
+        .join("pool")
+        .join(project_key)
+        .join("0");
+    assert!(
+        pool_slot.join(".git").exists(),
+        "pool slot should be a git repo at {}",
+        pool_slot.display()
+    );
+    let branch_output = Command::new("git")
+        .args([
+            "-C",
+            pool_slot.to_str().unwrap(),
+            "symbolic-ref",
+            "--short",
+            "HEAD",
+        ])
+        .output()
+        .expect("failed to run git symbolic-ref");
+    let branch_name = if branch_output.status.success() {
+        String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_owned()
+    } else {
+        "HEAD (detached)".to_owned()
+    };
+    assert!(
+        !branch_name.contains(process_id),
+        "pool slot should NOT be on a worker-specific branch after manual launch.\n\
+         Expected branch NOT containing '{process_id}', got: '{branch_name}'"
+    );
+}
+
+fn manual_verify_worker_in_list(ur: &Path, env_slice: &[(&str, &str)], process_id: &str) {
+    let list_output = run_cmd(ur, &["--output", "json", "worker", "list"], env_slice);
+    assert!(
+        list_output.status.success(),
+        "ur worker list failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list_output.stdout),
+        String::from_utf8_lossy(&list_output.stderr),
+    );
+    let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
+        .expect("worker list output should be valid JSON");
+    let workers = list_json["data"]
+        .as_array()
+        .expect("worker list data should be an array");
+    let mw = workers
+        .iter()
+        .find(|w| w["worker_id"].as_str() == Some(process_id))
+        .unwrap_or_else(|| panic!("worker list should contain '{process_id}'.\nlist: {list_json}"));
+    assert_eq!(
+        mw["mode"].as_str(),
+        Some("manual"),
+        "worker '{process_id}' should have mode 'manual', got: {:?}",
+        mw["mode"]
+    );
+}
+
+fn manual_stop_and_verify_gone(ur: &Path, env_slice: &[(&str, &str)], process_id: &str) {
+    let stop_output = run_cmd(
+        ur,
+        &["--output", "json", "worker", "stop", process_id],
+        env_slice,
+    );
+    assert!(
+        stop_output.status.success(),
+        "ur worker stop {process_id} failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&stop_output.stdout),
+        String::from_utf8_lossy(&stop_output.stderr),
+    );
+    let list_after = run_cmd(ur, &["--output", "json", "worker", "list"], env_slice);
+    assert!(
+        list_after.status.success(),
+        "ur worker list after stop failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list_after.stdout),
+        String::from_utf8_lossy(&list_after.stderr),
+    );
+    let list_after_json: serde_json::Value = serde_json::from_slice(&list_after.stdout)
+        .expect("worker list after stop should be valid JSON");
+    let still_running = list_after_json["data"]
+        .as_array()
+        .map(|workers| {
+            workers
+                .iter()
+                .any(|w| w["worker_id"].as_str() == Some(process_id))
+        })
+        .unwrap_or(false);
+    assert!(
+        !still_running,
+        "worker '{process_id}' should not appear in list after stop.\nlist: {list_after_json}"
+    );
+}
+
 fn scenario_manual_worker(env: &TestEnv) {
     let expected_process_id = format!("{}-man-0", env.project_key);
     let container_name = env.container_name(&expected_process_id);
@@ -2384,169 +2535,13 @@ fn scenario_manual_worker(env: &TestEnv) {
     let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch manual worker (no ticket_id) ----
-        let launch_output = run_cmd(
-            &env.ur,
-            &[
-                "--output",
-                "json",
-                "worker",
-                "launch",
-                "-m",
-                "manual",
-                "-p",
-                env.project_key,
-            ],
-            &env_slice,
-        );
-        assert!(
-            launch_output.status.success(),
-            "ur worker launch -m manual -p {} failed.\nstdout: {}\nstderr: {}",
-            env.project_key,
-            String::from_utf8_lossy(&launch_output.stdout),
-            String::from_utf8_lossy(&launch_output.stderr),
-        );
-
-        // ---- Verify process_id in response matches {project}-man-{digit} ----
-        let launch_json: serde_json::Value = serde_json::from_slice(&launch_output.stdout)
-            .expect("launch output should be valid JSON");
-        let process_id = launch_json["data"]["worker_id"]
-            .as_str()
-            .expect("launch response should have data.worker_id")
-            .to_owned();
-        let man_prefix = format!("{}-man-", env.project_key);
-        let slot_suffix = process_id.strip_prefix(&man_prefix).unwrap_or_else(|| {
-            panic!(
-                "process_id '{process_id}' should start with '{man_prefix}' \
-                     (expected pattern: {}-man-{{digit}})",
-                env.project_key
-            )
-        });
-        assert!(
-            slot_suffix.chars().all(|c| c.is_ascii_digit()),
-            "process_id suffix '{slot_suffix}' should be all digits in '{process_id}' \
-             (expected pattern: {}-man-{{digit}})",
-            env.project_key
-        );
-
-        // ---- Verify the container name from the launch response matches our expectation ----
-        assert!(
-            launch_json["data"]["container_id"]
-                .as_str()
-                .map(|s| s.contains(&process_id))
-                .unwrap_or(false),
-            "container_id in launch response should contain process_id '{process_id}'.\nJSON: {launch_json}"
-        );
+        let process_id = manual_launch_and_verify_process_id(&env.ur, env.project_key, &env_slice);
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Verify pool slot git branch is NOT a worker-specific branch ----
-        // Worker-specific branches look like "{process_id}-{4chars}" (e.g. "poolproj-man-0-a1b2").
-        // Manual mode skips checkout, so the slot stays on master/main.
-        let pool_slot = env
-            .config_path
-            .join("workspace")
-            .join("pool")
-            .join(env.project_key)
-            .join("0");
-        assert!(
-            pool_slot.join(".git").exists(),
-            "pool slot should be a git repo at {}",
-            pool_slot.display()
-        );
-        let branch_output = Command::new("git")
-            .args([
-                "-C",
-                pool_slot.to_str().unwrap(),
-                "symbolic-ref",
-                "--short",
-                "HEAD",
-            ])
-            .output()
-            .expect("failed to run git symbolic-ref");
-        // Either the command succeeds (we have a named branch) or we get an error
-        // (detached HEAD). In either case, the branch must NOT contain the process_id.
-        let branch_name = if branch_output.status.success() {
-            String::from_utf8_lossy(&branch_output.stdout)
-                .trim()
-                .to_owned()
-        } else {
-            // Detached HEAD is also fine — it means no worker branch was checked out.
-            "HEAD (detached)".to_owned()
-        };
-        assert!(
-            !branch_name.contains(&process_id),
-            "pool slot should NOT be on a worker-specific branch after manual launch.\n\
-             Expected branch NOT containing '{process_id}', got: '{branch_name}'"
-        );
-
-        // ---- Verify worker appears in ur worker list with mode "manual" ----
-        let list_output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env_slice);
-        assert!(
-            list_output.status.success(),
-            "ur worker list failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&list_output.stdout),
-            String::from_utf8_lossy(&list_output.stderr),
-        );
-        let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
-            .expect("worker list output should be valid JSON");
-        let workers = list_json["data"]
-            .as_array()
-            .expect("worker list data should be an array");
-        let manual_worker = workers
-            .iter()
-            .find(|w| w["worker_id"].as_str() == Some(&process_id));
-        assert!(
-            manual_worker.is_some(),
-            "worker list should contain worker with id '{process_id}'.\nworker list: {list_json}"
-        );
-        let mw = manual_worker.unwrap();
-        assert_eq!(
-            mw["mode"].as_str(),
-            Some("manual"),
-            "worker '{process_id}' should have mode 'manual', got: {:?}.\nworker: {mw}",
-            mw["mode"]
-        );
-
-        // ---- Stop worker and verify clean shutdown ----
-        let stop_output = run_cmd(
-            &env.ur,
-            &["--output", "json", "worker", "stop", &process_id],
-            &env_slice,
-        );
-        assert!(
-            stop_output.status.success(),
-            "ur worker stop {} failed.\nstdout: {}\nstderr: {}",
-            process_id,
-            String::from_utf8_lossy(&stop_output.stdout),
-            String::from_utf8_lossy(&stop_output.stderr),
-        );
-
-        // ---- Verify slot is released: worker should no longer appear in list ----
-        let list_after = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env_slice);
-        assert!(
-            list_after.status.success(),
-            "ur worker list after stop failed.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&list_after.stdout),
-            String::from_utf8_lossy(&list_after.stderr),
-        );
-        let list_after_json: serde_json::Value = serde_json::from_slice(&list_after.stdout)
-            .expect("worker list after stop should be valid JSON");
-        // After stop, either the list is empty or the manual worker is absent.
-        let still_running = list_after_json["data"]
-            .as_array()
-            .map(|workers| {
-                workers
-                    .iter()
-                    .any(|w| w["worker_id"].as_str() == Some(&process_id))
-            })
-            .unwrap_or(false);
-        // The "No running workers." message is returned as a text message object,
-        // not an array, so we also check for the ok:true + data.message case.
-        assert!(
-            !still_running,
-            "worker '{process_id}' should not appear in list after stop.\nlist: {list_after_json}"
-        );
+        manual_verify_no_branch_checkout(&env.config_path, env.project_key, &process_id);
+        manual_verify_worker_in_list(&env.ur, &env_slice, &process_id);
+        manual_stop_and_verify_gone(&env.ur, &env_slice, &process_id);
     }));
 
     if let Err(e) = result {
