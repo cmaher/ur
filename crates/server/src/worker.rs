@@ -74,6 +74,7 @@ fn default_worker_modes() -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     map.insert("code".into(), WorkerStrategy::Code.skills());
     map.insert("design".into(), WorkerStrategy::Design.skills());
+    map.insert("manual".into(), WorkerStrategy::Manual.skills());
     map
 }
 
@@ -117,11 +118,16 @@ impl Default for WorkerModesConfig {
         let mut strategies = HashMap::new();
         strategies.insert("code".into(), WorkerStrategy::Code);
         strategies.insert("design".into(), WorkerStrategy::Design);
+        strategies.insert("manual".into(), WorkerStrategy::Manual);
         let mut models = HashMap::new();
         models.insert("code".into(), WorkerStrategy::Code.default_model().into());
         models.insert(
             "design".into(),
             WorkerStrategy::Design.default_model().into(),
+        );
+        models.insert(
+            "manual".into(),
+            WorkerStrategy::Manual.default_model().into(),
         );
         Self {
             modes: default_worker_modes(),
@@ -153,16 +159,21 @@ impl WorkerModesConfig {
         let mut strategies = HashMap::new();
         strategies.insert("code".into(), WorkerStrategy::Code);
         strategies.insert("design".into(), WorkerStrategy::Design);
+        strategies.insert("manual".into(), WorkerStrategy::Manual);
         let mut models = HashMap::new();
         models.insert("code".into(), WorkerStrategy::Code.default_model().into());
         models.insert(
             "design".into(),
             WorkerStrategy::Design.default_model().into(),
         );
+        models.insert(
+            "manual".into(),
+            WorkerStrategy::Manual.default_model().into(),
+        );
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
-                    "invalid base '{}' for worker mode '{}': must be 'code' or 'design'",
+                    "invalid base '{}' for worker mode '{}': must be 'code', 'design', or 'manual'",
                     entry.base, name
                 )
             })?;
@@ -1403,6 +1414,73 @@ skills = ["tickets"]
         let result = WorkerModesConfig::from_toml(toml);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid base"));
+    }
+
+    #[test]
+    fn worker_modes_default_has_manual() {
+        let cfg = WorkerModesConfig::default();
+        let manual = cfg.resolve_skills("manual", &[]).unwrap();
+        assert!(manual.contains(&"implement".to_string()));
+        assert!(manual.contains(&"design".to_string()));
+        assert!(manual.contains(&"green".to_string()));
+    }
+
+    #[test]
+    fn resolve_mode_manual_returns_manual_strategy() {
+        let cfg = WorkerModesConfig::default();
+        let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Manual);
+        // All skills — union of code and design plus common
+        assert!(skills.contains(&"implement".to_string()));
+        assert!(skills.contains(&"design".to_string()));
+        assert!(skills.contains(&"green".to_string()));
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn resolve_mode_manual_default_model_is_opus() {
+        let cfg = WorkerModesConfig::default();
+        let (_, _, model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn from_toml_accepts_manual_as_base() {
+        let toml = r#"
+[worker_modes.my-manual]
+base = "manual"
+skills = ["implement", "design", "custom-skill"]
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("my-manual").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Manual);
+        assert_eq!(skills, vec!["implement", "design", "custom-skill"]);
+        // Inherits manual's default model (opus) when not overridden.
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn from_toml_manual_base_with_model_override() {
+        let toml = r#"
+[worker_modes.haiku-manual]
+base = "manual"
+skills = ["implement"]
+model = "haiku"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, _, model) = cfg.resolve_mode("haiku-manual").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Manual);
+        assert_eq!(model, "haiku");
+    }
+
+    #[test]
+    fn resolve_mode_manual_in_no_section_toml_works() {
+        let toml = "server_port = 5000\n";
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Manual);
+        assert!(skills.contains(&"implement".to_string()));
+        assert_eq!(model, "opus");
     }
 
     #[test]
