@@ -419,12 +419,17 @@ impl GlobalSkillsConfig {
     ///
     /// For `"code"`: returns `common` + `code` entries (common first).
     /// For `"design"`: returns `common` + `design` entries (common first).
+    /// For `"manual"`: returns `common` + `code` + `design` entries (common first).
     /// For any other strategy: returns only `common` entries.
     pub fn for_strategy(&self, strategy: &str) -> Vec<&GlobalSkill> {
         let mut skills: Vec<&GlobalSkill> = self.common.iter().collect();
         match strategy {
             "code" => skills.extend(self.code.iter()),
             "design" => skills.extend(self.design.iter()),
+            "manual" => {
+                skills.extend(self.code.iter());
+                skills.extend(self.design.iter());
+            }
             _ => {}
         }
         skills
@@ -4477,6 +4482,36 @@ design-skill = "{base}/skills/design-skill"
             assert_eq!(design_skills.len(), 2);
             assert_eq!(design_skills[0].name, "common-skill");
             assert_eq!(design_skills[1].name, "design-skill");
+        }
+
+        #[test]
+        fn for_strategy_manual_returns_all_sections() {
+            let tmp = TempDir::new().unwrap();
+            make_skill_dir(tmp.path(), "skills/common-skill");
+            make_skill_dir(tmp.path(), "skills/code-skill");
+            make_skill_dir(tmp.path(), "skills/design-skill");
+
+            let base = tmp.path().display();
+            let skills_toml = format!(
+                r#"
+[skills.common]
+common-skill = "{base}/skills/common-skill"
+
+[skills.code]
+code-skill = "{base}/skills/code-skill"
+
+[skills.design]
+design-skill = "{base}/skills/design-skill"
+"#
+            );
+            std::fs::write(tmp.path().join("ur.toml"), toml_with_skills(&skills_toml)).unwrap();
+            let cfg = Config::load_from(tmp.path()).unwrap();
+
+            let manual_skills = cfg.global_skills.for_strategy("manual");
+            assert_eq!(manual_skills.len(), 3);
+            assert_eq!(manual_skills[0].name, "common-skill");
+            assert_eq!(manual_skills[1].name, "code-skill");
+            assert_eq!(manual_skills[2].name, "design-skill");
         }
 
         #[test]

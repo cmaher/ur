@@ -3,21 +3,25 @@ use std::path::{Path, PathBuf};
 use crate::RepoPoolManager;
 
 /// Worker strategy enum governing mode-specific behavior: skill selection,
-/// slot acquisition, and slot release. Two variants exist initially: `Code`
-/// (exclusive numbered pool slots) and `Design` (shared named slot).
+/// slot acquisition, and slot release. Three variants exist: `Code`
+/// (exclusive numbered pool slots), `Design` (shared named slot), and
+/// `Manual` (exclusive numbered pool slots, no branch checkout, opus model,
+/// all skills).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStrategy {
     Code,
     Design,
+    Manual,
 }
 
 impl WorkerStrategy {
     /// Parse a strategy name into a variant.
-    /// Valid values: `"code"`, `"design"`.
+    /// Valid values: `"code"`, `"design"`, `"manual"`.
     pub fn from_name(name: &str) -> Result<Self, String> {
         match name {
             "code" => Ok(Self::Code),
             "design" => Ok(Self::Design),
+            "manual" => Ok(Self::Manual),
             other => Err(format!("unknown worker strategy: {other}")),
         }
     }
@@ -27,6 +31,7 @@ impl WorkerStrategy {
         match self {
             Self::Code => "code",
             Self::Design => "design",
+            Self::Manual => "manual",
         }
     }
 
@@ -36,13 +41,15 @@ impl WorkerStrategy {
     ///   `(host_path, Some(slot_id))` for DB linking via worker_slot.
     /// - `Design`: acquires a shared slot via `pool.acquire_shared_slot`, returning
     ///   `(host_path, None)` — no DB ownership tracking.
+    /// - `Manual`: acquires an exclusive slot via `pool.acquire_slot` (same as
+    ///   `Code`), returning `(host_path, Some(slot_id))`.
     pub async fn acquire_slot(
         &self,
         pool: &RepoPoolManager,
         project_key: &str,
     ) -> Result<(PathBuf, Option<String>), String> {
         match self {
-            Self::Code => {
+            Self::Code | Self::Manual => {
                 let (path, slot_id) = pool.acquire_slot(project_key).await?;
                 Ok((path, Some(slot_id)))
             }
@@ -57,6 +64,8 @@ impl WorkerStrategy {
     ///
     /// - `Code`: releases the exclusive slot via `pool.release_slot`.
     /// - `Design`: no-op — shared slots have no DB ownership tracking.
+    /// - `Manual`: releases the exclusive slot via `pool.release_slot` (same as
+    ///   `Code`).
     pub async fn release_slot(
         &self,
         pool: &RepoPoolManager,
@@ -64,7 +73,7 @@ impl WorkerStrategy {
         slot_path: &Path,
     ) -> Result<(), String> {
         match self {
-            Self::Code => pool.release_slot(worker_id, slot_path).await,
+            Self::Code | Self::Manual => pool.release_slot(worker_id, slot_path).await,
             Self::Design => Ok(()),
         }
     }
@@ -84,7 +93,7 @@ impl WorkerStrategy {
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::Code => "sonnet",
-            Self::Design => "opus",
+            Self::Design | Self::Manual => "opus",
         }
     }
 
@@ -103,6 +112,17 @@ impl WorkerStrategy {
             }
             Self::Design => {
                 skills.extend(["design".into(), "dispatch".into()]);
+            }
+            Self::Manual => {
+                skills.extend([
+                    "implement".into(),
+                    "ship".into(),
+                    "bacon".into(),
+                    "systematic-debugging".into(),
+                    "test-driven-development".into(),
+                    "design".into(),
+                    "dispatch".into(),
+                ]);
             }
         }
         skills
@@ -147,7 +167,11 @@ mod tests {
 
     #[test]
     fn both_strategies_include_common_skills() {
-        for strategy in [WorkerStrategy::Code, WorkerStrategy::Design] {
+        for strategy in [
+            WorkerStrategy::Code,
+            WorkerStrategy::Design,
+            WorkerStrategy::Manual,
+        ] {
             let skills = strategy.skills();
             assert!(skills.contains(&"green".to_string()));
             assert!(skills.contains(&"cli-design".to_string()));
@@ -160,9 +184,47 @@ mod tests {
     }
 
     #[test]
+    fn manual_skills_include_all_categories() {
+        let skills = WorkerStrategy::Manual.skills();
+        // Code-specific skills
+        assert!(skills.contains(&"implement".to_string()));
+        assert!(skills.contains(&"ship".to_string()));
+        assert!(skills.contains(&"bacon".to_string()));
+        assert!(skills.contains(&"systematic-debugging".to_string()));
+        assert!(skills.contains(&"test-driven-development".to_string()));
+        // Design-specific skills
+        assert!(skills.contains(&"design".to_string()));
+        assert!(skills.contains(&"dispatch".to_string()));
+        // Common skills
+        assert!(skills.contains(&"green".to_string()));
+        assert!(skills.contains(&"cli-design".to_string()));
+        assert!(skills.contains(&"reclaude".to_string()));
+    }
+
+    #[test]
+    fn manual_model_is_opus() {
+        assert_eq!(WorkerStrategy::Manual.default_model(), "opus");
+    }
+
+    #[test]
+    fn manual_name_roundtrip() {
+        assert_eq!(WorkerStrategy::Manual.name(), "manual");
+        assert_eq!(
+            WorkerStrategy::from_name("manual").unwrap(),
+            WorkerStrategy::Manual
+        );
+    }
+
+    #[test]
+    fn manual_claude_md_name() {
+        assert_eq!(WorkerStrategy::Manual.claude_md_name(), "manual");
+    }
+
+    #[test]
     fn claude_md_name_matches_strategy_name() {
         assert_eq!(WorkerStrategy::Code.claude_md_name(), "code");
         assert_eq!(WorkerStrategy::Design.claude_md_name(), "design");
+        assert_eq!(WorkerStrategy::Manual.claude_md_name(), "manual");
     }
 
     #[test]
@@ -185,6 +247,10 @@ mod tests {
             WorkerStrategy::from_name("design").unwrap(),
             WorkerStrategy::Design
         );
+        assert_eq!(
+            WorkerStrategy::from_name("manual").unwrap(),
+            WorkerStrategy::Manual
+        );
     }
 
     #[test]
@@ -201,6 +267,10 @@ mod tests {
         assert_eq!(
             WorkerStrategy::from_name(WorkerStrategy::Design.name()).unwrap(),
             WorkerStrategy::Design
+        );
+        assert_eq!(
+            WorkerStrategy::from_name(WorkerStrategy::Manual.name()).unwrap(),
+            WorkerStrategy::Manual
         );
     }
 }
