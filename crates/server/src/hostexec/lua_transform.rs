@@ -2781,4 +2781,148 @@ mod tests {
             .unwrap();
         assert_eq!(result.args, args);
     }
+
+    // ---- workspace-mode checkout/switch (branch == "") ----
+
+    #[test]
+    fn test_git_allows_checkout_workspace_mode() {
+        // Workspace-mode workers have an empty branch; checkout should be allowed.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "ws-worker".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/workspace"),
+            branch: "".into(),
+        };
+        let args: Vec<String> = vec!["checkout".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_git_allows_switch_workspace_mode() {
+        // Workspace-mode workers have an empty branch; switch should be allowed.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "ws-worker".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/workspace"),
+            branch: "".into(),
+        };
+        let args: Vec<String> = vec!["switch".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    // ---- pool-mode checkout/switch (branch != "") ----
+
+    #[test]
+    fn test_git_blocks_checkout_pool_mode() {
+        // Pool-mode workers have a non-empty branch; checkout must remain blocked.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec!["checkout".into(), "main".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: checkout")
+        );
+    }
+
+    // ---- worktree blocked unconditionally ----
+
+    #[test]
+    fn test_git_blocks_worktree_pool_mode() {
+        // worktree is always blocked, even in pool mode.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "deploy-x7q2".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: "deploy-x7q2".into(),
+        };
+        let args: Vec<String> = vec![
+            "worktree".into(),
+            "add".into(),
+            "../wt".into(),
+            "feature".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: worktree")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_worktree_workspace_mode() {
+        // worktree is always blocked, even for workspace-mode workers (empty branch).
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = WorkerContext {
+            worker_id: "ws-worker".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/workspace"),
+            branch: "".into(),
+        };
+        let args: Vec<String> = vec![
+            "worktree".into(),
+            "add".into(),
+            "../wt".into(),
+            "feature".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: worktree")
+        );
+    }
+
+    #[test]
+    fn test_git_blocks_worktree_no_context() {
+        // worktree is always blocked, even when no worker context is present.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec![
+            "worktree".into(),
+            "add".into(),
+            "../wt".into(),
+            "feature".into(),
+        ];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: worktree")
+        );
+    }
 }
