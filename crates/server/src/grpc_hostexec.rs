@@ -21,8 +21,8 @@ use ur_rpc::proto::hostexec::{
     HostExecMessage, ListHostExecCommandsRequest, ListHostExecCommandsResponse,
 };
 
-use crate::WorkerManager;
 use crate::hostexec::{HostExecConfigManager, LuaTransformManager, ScriptRegistry};
+use crate::{WorkerManager, WorkerStrategy};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostExecError {
@@ -511,7 +511,12 @@ impl HostExecServiceHandler {
         let (worker_context, config) = match proc_context {
             Some(ref ctx) if ctx.project_key.is_some() => {
                 let project_key = ctx.project_key.as_ref().unwrap();
-                let branch = format!("{}{}", self.git_branch_prefix, worker_id_str);
+                let strategy = WorkerStrategy::from_name(&ctx.strategy).ok();
+                let branch = if strategy == Some(WorkerStrategy::Manual) {
+                    String::new()
+                } else {
+                    format!("{}{}", self.git_branch_prefix, worker_id_str)
+                };
                 let lua_ctx = crate::hostexec::WorkerContext {
                     worker_id: worker_id_str.to_owned(),
                     process_id: process_id.clone(),
