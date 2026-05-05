@@ -2925,4 +2925,80 @@ mod tests {
                 .contains("blocked git subcommand: worktree")
         );
     }
+
+    // --- manual worker tests (branch = "") ---
+
+    fn manual_worker_ctx() -> WorkerContext {
+        WorkerContext {
+            worker_id: "ur-man-0".into(),
+            process_id: "ur-man-0".into(),
+            project_key: "ur".into(),
+            slot_path: PathBuf::from("/pool/ur/0"),
+            branch: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_git_allows_checkout_for_manual_worker() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["checkout".into(), "main".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["checkout", "main"]);
+    }
+
+    #[test]
+    fn test_git_allows_switch_for_manual_worker() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["switch".into(), "feature".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["switch", "feature"]);
+    }
+
+    #[test]
+    fn test_git_allows_push_to_any_branch_for_manual_worker() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["push".into(), "origin".into(), "feature:feature".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["push", "origin", "feature:feature"]);
+    }
+
+    #[test]
+    fn test_git_still_blocks_worktree_for_manual_worker() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["worktree".into(), "add".into(), "...".into()];
+        let result = mgr.run_transform(script, "git", &args, "/workspace", Some(&ctx));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("blocked git subcommand: worktree")
+        );
+    }
+
+    #[test]
+    fn test_git_commit_prefixes_for_manual_worker() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let ctx = manual_worker_ctx();
+        let args: Vec<String> = vec!["commit".into(), "-m".into(), "hi".into()];
+        let result = mgr
+            .run_transform(script, "git", &args, "/workspace", Some(&ctx))
+            .unwrap();
+        assert_eq!(result.args, vec!["commit", "-m", "[ur-man-0] hi"]);
+    }
 }

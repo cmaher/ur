@@ -2528,6 +2528,32 @@ fn manual_stop_and_verify_gone(ur: &Path, env_slice: &[(&str, &str)], process_id
     );
 }
 
+/// Verify that `git checkout -b <branch>` from inside a manual worker container
+/// succeeds via the host-exec path.
+///
+/// Manual workers have `branch == ""` in their WorkerContext, so git.lua's
+/// `branch_locked` gate must pass for `checkout`/`switch`. If a future change
+/// accidentally reinstates the block, this function panics with a message that
+/// explicitly names the lua transform block so the failure is unambiguous.
+fn manual_verify_git_checkout_allowed(runtime: &str, container: &str) {
+    let checkout_output = exec_in_container(
+        runtime,
+        container,
+        &["git", "checkout", "-b", "acceptance-scratch"],
+    );
+    let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+    assert_eq!(
+        checkout_output.status.code(),
+        Some(0),
+        "git checkout -b acceptance-scratch should succeed for a manual worker \
+         (lua transform must not block checkout when branch == \"\").\n\
+         If this fails with 'blocked git subcommand: checkout', the lua transform \
+         is incorrectly treating the manual worker as branch-locked.\n\
+         stdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&checkout_output.stdout),
+    );
+}
+
 fn scenario_manual_worker(env: &TestEnv) {
     let expected_process_id = format!("{}-man-0", env.project_key);
     let container_name = env.container_name(&expected_process_id);
@@ -2541,6 +2567,7 @@ fn scenario_manual_worker(env: &TestEnv) {
 
         manual_verify_no_branch_checkout(&env.config_path, env.project_key, &process_id);
         manual_verify_worker_in_list(&env.ur, &env_slice, &process_id);
+        manual_verify_git_checkout_allowed(&env.runtime, &container_name);
         manual_stop_and_verify_gone(&env.ur, &env_slice, &process_id);
     }));
 
