@@ -249,6 +249,8 @@ pub struct WorkerContext {
     pub project_key: Option<String>,
     /// Host path to the repo slot (workspace dir or pool slot).
     pub slot_path: PathBuf,
+    /// Worker strategy string as persisted in the database (e.g. `"code"`, `"design"`, `"manual"`).
+    pub strategy: String,
 }
 
 /// Summary of a running process, returned by `WorkerManager::list()`.
@@ -438,6 +440,7 @@ impl WorkerManager {
         Some(WorkerContext {
             project_key,
             slot_path: PathBuf::from(workspace_path),
+            strategy: worker.strategy,
         })
     }
 
@@ -1617,6 +1620,26 @@ model = "haiku"
         let ctx = mgr.get_worker_context(&wid).await.unwrap();
         assert_eq!(ctx.project_key, Some("myproject".to_string()));
         assert_eq!(ctx.slot_path, slot);
+        assert_eq!(ctx.strategy, "code");
+    }
+
+    #[tokio::test]
+    async fn get_worker_context_strategy_reflects_registered_strategy() {
+        let (mgr, _workspace, _test_db) = test_manager().await;
+        let wid = WorkerId("man-ab12".into());
+        let slot = PathBuf::from("/tmp/manual-slot");
+        mgr.register_worker(
+            wid.clone(),
+            "man".into(),
+            "proj".into(),
+            Some(slot.clone()),
+            WorkerStrategy::Manual,
+            "cid".into(),
+            "secret".into(),
+        )
+        .await;
+        let ctx = mgr.get_worker_context(&wid).await.unwrap();
+        assert_eq!(ctx.strategy, "manual");
     }
 
     #[tokio::test]
