@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use container::{PortMap, RunOpts};
 use ur_config::{MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
+use ur_rpc::proto::builder_container::{
+    EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap, Volume as ProtoVolume,
+};
 
 use crate::worker::ensure_file_exists;
 
-/// Builder that accumulates volumes, env vars, and config to produce a [`container::RunOpts`].
+/// Builder that accumulates volumes, env vars, and config to produce a [`LaunchWorkerRequest`].
 ///
 /// Each concern (workspace, credentials, env vars) is a separate contributor method,
 /// making it easy to add new volume mounts or env vars without bloating `run_and_record()`.
@@ -18,7 +20,7 @@ pub struct RunOptsBuilder {
     memory: String,
     workdir: Option<PathBuf>,
     volumes: Vec<(PathBuf, PathBuf)>,
-    port_maps: Vec<PortMap>,
+    port_maps: Vec<ProtoPortMap>,
     env_vars: Vec<(String, String)>,
 }
 
@@ -304,9 +306,9 @@ impl RunOptsBuilder {
     /// Each [`PortMapping`] is converted to a Docker `-p host_port:container_port` flag.
     pub fn add_ports(mut self, ports: &[PortMapping]) -> Self {
         for port in ports {
-            self.port_maps.push(PortMap {
-                host_port: port.host_port,
-                container_port: port.container_port,
+            self.port_maps.push(ProtoPortMap {
+                host_port: u32::from(port.host_port),
+                container_port: u32::from(port.container_port),
             });
         }
         self
@@ -346,19 +348,32 @@ impl RunOptsBuilder {
         self
     }
 
-    /// Produce the final [`RunOpts`].
-    pub fn build(self) -> RunOpts {
-        RunOpts {
-            image: container::ImageId(self.image),
+    /// Produce the final [`LaunchWorkerRequest`].
+    pub fn build(self) -> LaunchWorkerRequest {
+        LaunchWorkerRequest {
+            image: self.image,
             name: self.name,
             cpus: self.cpus,
             memory: self.memory,
-            volumes: self.volumes,
+            volumes: self
+                .volumes
+                .into_iter()
+                .map(|(host, container)| ProtoVolume {
+                    host_path: host.display().to_string(),
+                    container_path: container.display().to_string(),
+                })
+                .collect(),
             port_maps: self.port_maps,
-            env_vars: self.env_vars,
-            workdir: self.workdir,
-            command: vec![],
-            network: Some(self.network),
+            env_vars: self
+                .env_vars
+                .into_iter()
+                .map(|(key, value)| ProtoEnvVar { key, value })
+                .collect(),
+            workdir: self
+                .workdir
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            network: self.network,
             add_hosts: vec![],
         }
     }
@@ -390,102 +405,102 @@ mod tests {
 
     #[test]
     fn build_minimal() {
-        let opts = RunOptsBuilder::new(
+        let req = RunOptsBuilder::new(
             "test-image:latest".into(),
             "test-container".into(),
             "test-network".into(),
         )
         .build();
 
-        assert_eq!(opts.image.0, "test-image:latest");
-        assert_eq!(opts.name, "test-container");
-        assert_eq!(opts.network, Some("test-network".into()));
-        assert_eq!(opts.cpus, 0);
-        assert!(opts.memory.is_empty());
-        assert!(opts.volumes.is_empty());
-        assert!(opts.env_vars.is_empty());
-        assert!(opts.workdir.is_none());
+        assert_eq!(req.image, "test-image:latest");
+        assert_eq!(req.name, "test-container");
+        assert_eq!(req.network, "test-network");
+        assert_eq!(req.cpus, 0);
+        assert!(req.memory.is_empty());
+        assert!(req.volumes.is_empty());
+        assert!(req.env_vars.is_empty());
+        assert!(req.workdir.is_empty());
     }
 
     #[test]
     fn build_with_all_basic_config() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .cpus(4)
             .memory("8g".into())
             .workdir("/workspace")
             .build();
 
-        assert_eq!(opts.cpus, 4);
-        assert_eq!(opts.memory, "8g");
-        assert_eq!(opts.workdir, Some(PathBuf::from("/workspace")));
+        assert_eq!(req.cpus, 4);
+        assert_eq!(req.memory, "8g");
+        assert_eq!(req.workdir, "/workspace");
     }
 
     #[test]
     fn add_workspace_with_some_path() {
         let ws = Some(PathBuf::from("/host/workspace"));
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_workspace(&ws)
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/workspace"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/workspace"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/host/workspace");
+        assert_eq!(req.volumes[0].container_path, "/workspace");
     }
 
     #[test]
     fn add_workspace_with_none_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_workspace(&None)
             .build();
 
-        assert!(opts.volumes.is_empty());
+        assert!(req.volumes.is_empty());
     }
 
     #[test]
     fn add_credentials_creates_mount() {
         let tmp = tempfile::tempdir().unwrap();
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_credentials(tmp.path())
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        let (host, container) = &opts.volumes[0];
-        assert!(host.ends_with(".credentials.json"));
-        assert!(container.ends_with(".credentials.json"));
+        assert_eq!(req.volumes.len(), 1);
+        assert!(req.volumes[0].host_path.ends_with(".credentials.json"));
+        assert!(req.volumes[0].container_path.ends_with(".credentials.json"));
         // Verify the file was created on disk
-        assert!(host.exists());
+        assert!(PathBuf::from(&req.volumes[0].host_path).exists());
     }
 
     #[test]
     fn add_env_vars_accumulates() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_env_vars(vec![("A".into(), "1".into())])
             .add_env_vars(vec![("B".into(), "2".into())])
             .build();
 
-        assert_eq!(opts.env_vars.len(), 2);
-        assert_eq!(opts.env_vars[0], ("A".into(), "1".into()));
-        assert_eq!(opts.env_vars[1], ("B".into(), "2".into()));
+        assert_eq!(req.env_vars.len(), 2);
+        assert_eq!(req.env_vars[0].key, "A");
+        assert_eq!(req.env_vars[0].value, "1");
+        assert_eq!(req.env_vars[1].key, "B");
+        assert_eq!(req.env_vars[1].value, "2");
     }
 
     #[test]
     fn build_always_sets_empty_defaults() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into()).build();
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into()).build();
 
-        assert!(opts.port_maps.is_empty());
-        assert!(opts.command.is_empty());
-        assert!(opts.add_hosts.is_empty());
+        assert!(req.port_maps.is_empty());
+        assert!(req.add_hosts.is_empty());
     }
 
     #[test]
     fn add_mounts_empty_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&[], Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
+        assert!(req.volumes.is_empty());
     }
 
     #[test]
@@ -495,14 +510,14 @@ mod tests {
             destination: "/workspace/.tickets".into(),
             readonly: false,
         }];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/tickets"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/workspace/.tickets"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/host/tickets");
+        assert_eq!(req.volumes[0].container_path, "/workspace/.tickets");
     }
 
     #[test]
@@ -512,17 +527,14 @@ mod tests {
             destination: "/var/data".into(),
             readonly: false,
         }];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/home/user/.ur"))
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/home/user/.ur/shared-data")
-        );
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/data"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/home/user/.ur/shared-data");
+        assert_eq!(req.volumes[0].container_path, "/var/data");
     }
 
     #[test]
@@ -539,16 +551,16 @@ mod tests {
                 readonly: false,
             },
         ];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 2);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/a"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/container/a"));
-        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/b"));
-        assert_eq!(opts.volumes[1].1, PathBuf::from("/container/b"));
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, "/host/a");
+        assert_eq!(req.volumes[0].container_path, "/container/a");
+        assert_eq!(req.volumes[1].host_path, "/host/b");
+        assert_eq!(req.volumes[1].container_path, "/container/b");
     }
 
     #[test]
@@ -565,34 +577,34 @@ mod tests {
                 readonly: false,
             },
         ];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_mounts(&mounts, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 2);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/a"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/container/a:ro"));
-        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/b"));
-        assert_eq!(opts.volumes[1].1, PathBuf::from("/container/b"));
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, "/host/a");
+        assert_eq!(req.volumes[0].container_path, "/container/a:ro");
+        assert_eq!(req.volumes[1].host_path, "/host/b");
+        assert_eq!(req.volumes[1].container_path, "/container/b");
     }
 
     #[test]
     fn add_git_hooks_none_defaults_to_convention_path() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_git_hooks(&None, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/git");
+        assert!(req.volumes.is_empty());
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/workspace/ur-hooks/git");
     }
 
     #[test]
     fn add_git_hooks_host_path_adds_mount_and_env() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_git_hooks(
                 &Some("%URCONFIG%/hooks/myproject".into()),
                 Path::new("/home/user/.ur"),
@@ -600,20 +612,17 @@ mod tests {
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/home/user/.ur/hooks/myproject")
-        );
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/git-hooks"));
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/git-hooks");
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/home/user/.ur/hooks/myproject");
+        assert_eq!(req.volumes[0].container_path, "/var/ur/git-hooks");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/var/ur/git-hooks");
     }
 
     #[test]
     fn add_git_hooks_absolute_path_adds_mount_and_env() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_git_hooks(
                 &Some("/opt/git-hooks/myproject".into()),
                 Path::new("/unused"),
@@ -621,41 +630,41 @@ mod tests {
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/opt/git-hooks/myproject"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/git-hooks"));
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/git-hooks");
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/opt/git-hooks/myproject");
+        assert_eq!(req.volumes[0].container_path, "/var/ur/git-hooks");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/var/ur/git-hooks");
     }
 
     #[test]
     fn add_git_hooks_project_relative_no_mount() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_git_hooks(&Some("%PROJECT%/.git-hooks".into()), Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_GIT_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/workspace/.git-hooks");
+        assert!(req.volumes.is_empty());
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/workspace/.git-hooks");
     }
 
     #[test]
     fn add_skill_hooks_none_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_skill_hooks(&None, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert!(opts.env_vars.is_empty());
+        assert!(req.volumes.is_empty());
+        assert!(req.env_vars.is_empty());
     }
 
     #[test]
     fn add_skill_hooks_host_path_adds_mount_and_env() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_skill_hooks(
                 &Some("%URCONFIG%/skill-hooks".into()),
                 Path::new("/home/user/.ur"),
@@ -663,20 +672,17 @@ mod tests {
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/home/user/.ur/skill-hooks")
-        );
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/skill-hooks"));
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/skill-hooks");
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/home/user/.ur/skill-hooks");
+        assert_eq!(req.volumes[0].container_path, "/var/ur/skill-hooks");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_SKILL_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/var/ur/skill-hooks");
     }
 
     #[test]
     fn add_skill_hooks_project_relative_no_mount() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_skill_hooks(
                 &Some("%PROJECT%/ur-hooks/skills".into()),
                 Path::new("/unused"),
@@ -684,49 +690,49 @@ mod tests {
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_SKILL_HOOKS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/workspace/ur-hooks/skills");
+        assert!(req.volumes.is_empty());
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_SKILL_HOOKS_DIR");
+        assert_eq!(req.env_vars[0].value, "/workspace/ur-hooks/skills");
     }
 
     #[test]
     fn add_logs_dir_creates_mount_and_env() {
         let tmp = tempfile::tempdir().unwrap();
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_logs_dir(Path::new("/home/user/.ur/logs"), tmp.path(), "worker-ab12")
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(req.volumes.len(), 1);
         assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/home/user/.ur/logs/workers/worker-ab12")
+            req.volumes[0].host_path,
+            "/home/user/.ur/logs/workers/worker-ab12"
         );
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/var/ur/logs"));
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_LOGS_DIR");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/logs");
+        assert_eq!(req.volumes[0].container_path, "/var/ur/logs");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_LOGS_DIR");
+        assert_eq!(req.env_vars[0].value, "/var/ur/logs");
     }
 
     #[test]
     fn add_context_repos_empty_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_context_repos(&[])
             .build();
 
-        assert!(opts.volumes.is_empty());
+        assert!(req.volumes.is_empty());
     }
 
     #[test]
     fn add_context_repos_single() {
         let mounts = vec![("frontend".into(), PathBuf::from("/host/pool/frontend/0"))];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_context_repos(&mounts)
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/pool/frontend/0"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/context/frontend:ro"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/host/pool/frontend/0");
+        assert_eq!(req.volumes[0].container_path, "/context/frontend:ro");
     }
 
     #[test]
@@ -735,24 +741,24 @@ mod tests {
             ("frontend".into(), PathBuf::from("/host/pool/frontend/0")),
             ("backend".into(), PathBuf::from("/host/pool/backend/1")),
         ];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_context_repos(&mounts)
             .build();
 
-        assert_eq!(opts.volumes.len(), 2);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/pool/frontend/0"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/context/frontend:ro"));
-        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/pool/backend/1"));
-        assert_eq!(opts.volumes[1].1, PathBuf::from("/context/backend:ro"));
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, "/host/pool/frontend/0");
+        assert_eq!(req.volumes[0].container_path, "/context/frontend:ro");
+        assert_eq!(req.volumes[1].host_path, "/host/pool/backend/1");
+        assert_eq!(req.volumes[1].container_path, "/context/backend:ro");
     }
 
     #[test]
     fn add_ports_empty_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_ports(&[])
             .build();
 
-        assert!(opts.port_maps.is_empty());
+        assert!(req.port_maps.is_empty());
     }
 
     #[test]
@@ -761,13 +767,13 @@ mod tests {
             host_port: 8080,
             container_port: 80,
         }];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_ports(&ports)
             .build();
 
-        assert_eq!(opts.port_maps.len(), 1);
-        assert_eq!(opts.port_maps[0].host_port, 8080);
-        assert_eq!(opts.port_maps[0].container_port, 80);
+        assert_eq!(req.port_maps.len(), 1);
+        assert_eq!(req.port_maps[0].host_port, 8080u32);
+        assert_eq!(req.port_maps[0].container_port, 80u32);
     }
 
     #[test]
@@ -782,31 +788,31 @@ mod tests {
                 container_port: 3000,
             },
         ];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_ports(&ports)
             .build();
 
-        assert_eq!(opts.port_maps.len(), 2);
-        assert_eq!(opts.port_maps[0].host_port, 8080);
-        assert_eq!(opts.port_maps[0].container_port, 80);
-        assert_eq!(opts.port_maps[1].host_port, 3000);
-        assert_eq!(opts.port_maps[1].container_port, 3000);
+        assert_eq!(req.port_maps.len(), 2);
+        assert_eq!(req.port_maps[0].host_port, 8080u32);
+        assert_eq!(req.port_maps[0].container_port, 80u32);
+        assert_eq!(req.port_maps[1].host_port, 3000u32);
+        assert_eq!(req.port_maps[1].container_port, 3000u32);
     }
 
     #[test]
     fn add_project_claude_md_none_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_claude_md(&None, Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert!(opts.env_vars.is_empty());
+        assert!(req.volumes.is_empty());
+        assert!(req.env_vars.is_empty());
     }
 
     #[test]
     fn add_project_claude_md_host_path_adds_mount_and_env() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_claude_md(
                 &Some("/opt/claude/ur/CLAUDE.md".into()),
                 Path::new("/unused"),
@@ -814,20 +820,20 @@ mod tests {
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/opt/claude/ur/CLAUDE.md"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/opt/claude/ur/CLAUDE.md");
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro")
+            req.volumes[0].container_path,
+            "/var/ur/project-claude/CLAUDE.md:ro"
         );
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/project-claude/CLAUDE.md");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
     }
 
     #[test]
     fn add_project_claude_md_urconfig_adds_mount_and_env() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_claude_md(
                 &Some("%URCONFIG%/projects/ur/CLAUDE.md".into()),
                 Path::new("/home/user/.ur"),
@@ -835,41 +841,41 @@ mod tests {
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
+        assert_eq!(req.volumes.len(), 1);
         assert_eq!(
-            opts.volumes[0].0,
-            PathBuf::from("/home/user/.ur/projects/ur/CLAUDE.md")
+            req.volumes[0].host_path,
+            "/home/user/.ur/projects/ur/CLAUDE.md"
         );
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro")
+            req.volumes[0].container_path,
+            "/var/ur/project-claude/CLAUDE.md:ro"
         );
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
-        assert_eq!(opts.env_vars[0].1, "/var/ur/project-claude/CLAUDE.md");
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
     }
 
     #[test]
     fn add_project_claude_md_project_relative_no_mount() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_claude_md(&Some("%PROJECT%/CLAUDE.md".into()), Path::new("/unused"))
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert_eq!(opts.env_vars.len(), 1);
-        assert_eq!(opts.env_vars[0].0, "UR_PROJECT_CLAUDE");
-        assert_eq!(opts.env_vars[0].1, "/workspace/CLAUDE.md");
+        assert!(req.volumes.is_empty());
+        assert_eq!(req.env_vars.len(), 1);
+        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].value, "/workspace/CLAUDE.md");
     }
 
     #[test]
     fn add_project_hostexec_scripts_empty_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_hostexec_scripts(&[], Path::new("/unused/shim.sh"), None)
             .unwrap()
             .build();
 
-        assert!(opts.volumes.is_empty());
+        assert!(req.volumes.is_empty());
     }
 
     #[test]
@@ -879,22 +885,20 @@ mod tests {
         std::fs::write(&shim_path, "#!/bin/sh\n").unwrap();
 
         let scripts = vec!["scripts/deploy.sh".to_string(), "tools/lint.sh".to_string()];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_hostexec_scripts(&scripts, &shim_path, None)
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 2);
-        assert_eq!(opts.volumes[0].0, shim_path);
+        let shim_str = shim_path.display().to_string();
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, shim_str);
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/workspace/scripts/deploy.sh:ro")
+            req.volumes[0].container_path,
+            "/workspace/scripts/deploy.sh:ro"
         );
-        assert_eq!(opts.volumes[1].0, shim_path);
-        assert_eq!(
-            opts.volumes[1].1,
-            PathBuf::from("/workspace/tools/lint.sh:ro")
-        );
+        assert_eq!(req.volumes[1].host_path, shim_str);
+        assert_eq!(req.volumes[1].container_path, "/workspace/tools/lint.sh:ro");
     }
 
     #[test]
@@ -902,14 +906,14 @@ mod tests {
         // When workspace_path is None, no existence check is done — mount is added regardless.
         let shim_path = Path::new("/nonexistent/shim.sh");
         let scripts = vec!["run.sh".to_string()];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_hostexec_scripts(&scripts, shim_path, None)
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/nonexistent/shim.sh"));
-        assert_eq!(opts.volumes[0].1, PathBuf::from("/workspace/run.sh:ro"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/nonexistent/shim.sh");
+        assert_eq!(req.volumes[0].container_path, "/workspace/run.sh:ro");
     }
 
     #[test]
@@ -947,27 +951,28 @@ mod tests {
         std::fs::write(scripts_dir.join("deploy.sh"), "#!/bin/sh\necho deploy\n").unwrap();
 
         let scripts = vec!["scripts/deploy.sh".to_string()];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_project_hostexec_scripts(&scripts, &shim_path, Some(tmp.path()))
             .unwrap()
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, shim_path);
+        let shim_str = shim_path.display().to_string();
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, shim_str);
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/workspace/scripts/deploy.sh:ro")
+            req.volumes[0].container_path,
+            "/workspace/scripts/deploy.sh:ro"
         );
     }
 
     #[test]
     fn add_extra_skills_empty_is_noop() {
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_extra_skills(&[])
             .build();
 
-        assert!(opts.volumes.is_empty());
-        assert!(opts.env_vars.is_empty());
+        assert!(req.volumes.is_empty());
+        assert!(req.env_vars.is_empty());
     }
 
     #[test]
@@ -976,17 +981,17 @@ mod tests {
             "my-skill".to_string(),
             PathBuf::from("/host/skills/my-skill"),
         )];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_extra_skills(&mounts)
             .build();
 
-        assert_eq!(opts.volumes.len(), 1);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/skills/my-skill"));
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, "/host/skills/my-skill");
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/home/worker/.claude/potential-skills/my-skill:ro")
+            req.volumes[0].container_path,
+            "/home/worker/.claude/potential-skills/my-skill:ro"
         );
-        assert!(opts.env_vars.is_empty());
+        assert!(req.env_vars.is_empty());
     }
 
     #[test]
@@ -996,26 +1001,26 @@ mod tests {
             ("beta".to_string(), PathBuf::from("/host/skills/beta")),
             ("gamma".to_string(), PathBuf::from("/host/skills/gamma")),
         ];
-        let opts = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
             .add_extra_skills(&mounts)
             .build();
 
-        assert_eq!(opts.volumes.len(), 3);
-        assert_eq!(opts.volumes[0].0, PathBuf::from("/host/skills/alpha"));
+        assert_eq!(req.volumes.len(), 3);
+        assert_eq!(req.volumes[0].host_path, "/host/skills/alpha");
         assert_eq!(
-            opts.volumes[0].1,
-            PathBuf::from("/home/worker/.claude/potential-skills/alpha:ro")
+            req.volumes[0].container_path,
+            "/home/worker/.claude/potential-skills/alpha:ro"
         );
-        assert_eq!(opts.volumes[1].0, PathBuf::from("/host/skills/beta"));
+        assert_eq!(req.volumes[1].host_path, "/host/skills/beta");
         assert_eq!(
-            opts.volumes[1].1,
-            PathBuf::from("/home/worker/.claude/potential-skills/beta:ro")
+            req.volumes[1].container_path,
+            "/home/worker/.claude/potential-skills/beta:ro"
         );
-        assert_eq!(opts.volumes[2].0, PathBuf::from("/host/skills/gamma"));
+        assert_eq!(req.volumes[2].host_path, "/host/skills/gamma");
         assert_eq!(
-            opts.volumes[2].1,
-            PathBuf::from("/home/worker/.claude/potential-skills/gamma:ro")
+            req.volumes[2].container_path,
+            "/home/worker/.claude/potential-skills/gamma:ro"
         );
-        assert!(opts.env_vars.is_empty());
+        assert!(req.env_vars.is_empty());
     }
 }

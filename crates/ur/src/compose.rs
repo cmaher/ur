@@ -451,7 +451,6 @@ fn write_server_service(out: &mut String, params: &ComposeParams) {
 
     // Volumes
     writeln!(out, "    volumes:").unwrap();
-    writeln!(out, "      - /var/run/docker.sock:/var/run/docker.sock").unwrap();
     writeln!(out, "      - ${{UR_CONFIG:-~/.ur}}:/config").unwrap();
     writeln!(out, "      - ${{UR_WORKSPACE:-~/.ur/workspace}}:/workspace").unwrap();
     writeln!(out, "      - ${{UR_LOGS_DIR:-~/.ur/logs}}:/logs").unwrap();
@@ -826,7 +825,7 @@ mod tests {
         assert!(generated.contains("internal: true"));
 
         // Verify key server configuration
-        assert!(generated.contains("/var/run/docker.sock:/var/run/docker.sock"));
+        assert!(!generated.contains("/var/run/docker.sock:/var/run/docker.sock"));
         assert!(generated.contains("UR_CONFIG=/config"));
         assert!(generated.contains("host.docker.internal:host-gateway"));
         assert!(generated.contains("nc -z 127.0.0.1"));
