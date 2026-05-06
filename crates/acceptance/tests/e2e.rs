@@ -188,6 +188,8 @@ struct ProjectEntry {
     image: String,
     /// Paths to hostexec scripts declared for this project (e.g. `["host-only.sh"]`).
     hostexec_scripts: Vec<String>,
+    /// Additional volume mounts for this project (raw mount strings, e.g. `"/host/path:/mnt/test:ro"`).
+    mounts: Vec<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -279,12 +281,19 @@ fn write_test_config(
                 .collect();
             format!("hostexec_scripts = [{}]\n", quoted.join(", "))
         };
+        let mounts_line = if proj.mounts.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj.mounts.iter().map(|s| format!("\"{}\"", s)).collect();
+            format!("mounts = [{}]\n", quoted.join(", "))
+        };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}\n[projects.{key}.container]\nimage = \"{image}\"\n",
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
             key = proj.key,
             repo = proj.repo,
             scripts = scripts_line,
             image = image_ref,
+            mounts = mounts_line,
         ));
     }
 
@@ -445,6 +454,9 @@ struct TestEnv {
     runtime: String,
     names: TestNames,
     project_key: &'static str,
+    /// Host-only temp directory for mount regression tests (bind-mounted into workers).
+    /// Kept alive so the directory exists for the duration of the test run.
+    _host_mount_dir: tempfile::TempDir,
 }
 
 impl TestEnv {
@@ -484,6 +496,57 @@ fn init_test_logging(logs_dir: &Path) -> tracing_appender::non_blocking::WorkerG
         .init();
 
     guard
+}
+
+/// Set up project fixtures for mount regression tests.
+///
+/// Creates two project entries:
+/// - `mountproj`: has a host-only bind mount (`<tempdir>:/mnt/test:ro`). The source
+///   directory is outside `$UR_CONFIG`/`$UR_WORKSPACE`/`$UR_LOGS_DIR`, so it is not
+///   visible inside ur-server. Builderd (host-native) stat-checks and mounts it
+///   directly. Regression test for the prim-usai3 bug class.
+/// - `badmountproj`: has a mount source that does not exist. Verifies that builderd
+///   returns a `FailedPrecondition` error naming the missing path.
+///
+/// Returns the `TempDir` for the host-only mount (must stay alive for the test) and
+/// the two `ProjectEntry` values to include in `write_test_config`.
+fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEntry>) {
+    // Host-only mount dir — lives in the system temp directory, NOT under config_path,
+    // so it is NOT mounted inside the ur-server container.
+    let host_mount_dir = tempfile::tempdir().expect("failed to create host-only mount dir");
+    let host_mount_path = host_mount_dir.path().to_path_buf();
+    std::fs::write(host_mount_path.join("hello.txt"), "mount-test-content\n")
+        .expect("failed to write hello.txt in host mount dir");
+
+    // Nonexistent path for the missing-mount test. Remove any leftover from a prior run.
+    let missing_mount_path = host_mount_path
+        .parent()
+        .unwrap_or(&host_mount_path)
+        .join("ur-acceptance-nonexistent-mount-source");
+    let _ = std::fs::remove_dir_all(&missing_mount_path);
+
+    let mount_repos_dir = config_path.join("mount-repos");
+    std::fs::create_dir_all(&mount_repos_dir).expect("failed to create mount-repos dir");
+    let bare_repo_mount = create_bare_repo(&mount_repos_dir);
+    let repo = bare_repo_mount.to_string_lossy().into_owned();
+
+    let projects = vec![
+        ProjectEntry {
+            key: "mountproj".into(),
+            repo: repo.clone(),
+            image: "ur-worker".into(),
+            hostexec_scripts: vec![],
+            mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
+        },
+        ProjectEntry {
+            key: "badmountproj".into(),
+            repo,
+            image: "ur-worker".into(),
+            hostexec_scripts: vec![],
+            mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
+        },
+    ];
+    (host_mount_dir, projects)
 }
 
 /// Timeout for the entire acceptance test run (10 minutes).
@@ -545,30 +608,38 @@ fn e2e_all() {
         skill_path = skill_dir.display(),
     );
 
+    let (host_mount_dir, mount_projects) = setup_mount_projects(&config_path);
+
+    let mut projects = vec![
+        ProjectEntry {
+            key: project_key.into(),
+            repo: bare_repo.to_string_lossy().into_owned(),
+            image: "ur-worker".into(),
+            hostexec_scripts: vec![],
+            mounts: vec![],
+        },
+        ProjectEntry {
+            key: "rustproj".into(),
+            repo: bare_repo_rust.to_string_lossy().into_owned(),
+            image: "ur-worker-rust".into(),
+            hostexec_scripts: vec![],
+            mounts: vec![],
+        },
+        ProjectEntry {
+            key: "scriptproj".into(),
+            repo: bare_repo_script.to_string_lossy().into_owned(),
+            image: "ur-worker".into(),
+            hostexec_scripts: vec!["host-only.sh".into()],
+            mounts: vec![],
+        },
+    ];
+    projects.extend(mount_projects);
+
     write_test_config(
         &config_path,
         server_port,
         &names,
-        &[
-            ProjectEntry {
-                key: project_key.into(),
-                repo: bare_repo.to_string_lossy().into_owned(),
-                image: "ur-worker".into(),
-                hostexec_scripts: vec![],
-            },
-            ProjectEntry {
-                key: "rustproj".into(),
-                repo: bare_repo_rust.to_string_lossy().into_owned(),
-                image: "ur-worker-rust".into(),
-                hostexec_scripts: vec![],
-            },
-            ProjectEntry {
-                key: "scriptproj".into(),
-                repo: bare_repo_script.to_string_lossy().into_owned(),
-                image: "ur-worker".into(),
-                hostexec_scripts: vec!["host-only.sh".into()],
-            },
-        ],
+        &projects,
         &skills_extra_toml,
     );
 
@@ -582,6 +653,7 @@ fn e2e_all() {
         runtime,
         names,
         project_key,
+        _host_mount_dir: host_mount_dir,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
@@ -659,6 +731,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_global_skill_injection(&env);
         scenario_worker_label_pr_status(&env);
         scenario_manual_worker(&env);
+        scenario_host_only_mount(&env);
+        scenario_missing_mount_source(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -673,6 +747,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "script-pool-test",
         "scriptproj-ws-test",
         "global-skill-test",
+        "mount-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -2691,4 +2766,105 @@ fn scenario_worker_label_pr_status(env: &TestEnv) {
         force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
+}
+
+/// Host-only mount regression test (prim-usai3 bug class).
+///
+/// Launches a pool worker for "mountproj", which has a host-only bind mount configured
+/// (`<tempdir>:/mnt/test:ro`). The mount source lives outside `$UR_CONFIG`,
+/// `$UR_WORKSPACE`, and `$UR_LOGS_DIR` — so it is NOT visible inside the ur-server
+/// container. Builderd (running natively on the host) stat-checks and bind-mounts the
+/// path directly, so it must be reachable from the host without going through the server.
+///
+/// If this test were run against the pre-builderd code path (where the server called the
+/// Docker socket from inside its container), the mount source would not exist at the
+/// path the server sees (the server only sees `$UR_CONFIG`, `$UR_WORKSPACE`, `$UR_LOGS_DIR`),
+/// and Docker would silently create an empty directory there instead of mounting the host path.
+fn scenario_host_only_mount(env: &TestEnv) {
+    let ticket_id = "mount-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker for mountproj ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "mountproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p mountproj failed (host-only mount should work via builderd).\n\
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify the bind mount is visible inside the container ----
+        // hello.txt was written to the host-only tempdir before ur start.
+        let ls_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "/mnt/test/hello.txt"],
+        );
+        assert_exec_success(
+            &ls_output,
+            "bind-mounted file /mnt/test/hello.txt must be visible inside the worker container — \
+             if this fails, the host-only mount was silently dropped (prim-usai3 regression)",
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop (mount-test) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Missing mount source test.
+///
+/// Attempts to launch a pool worker for "badmountproj", which has a mount source that
+/// does not exist anywhere on the host. Builderd stat-checks each volume source before
+/// calling `docker run`, so it must return `FailedPrecondition` with the missing path
+/// in the error message, and the launch must fail.
+///
+/// This locks in the builderd-side validation behavior introduced to make prim-usai3
+/// visible as an error rather than a silent empty mount.
+fn scenario_missing_mount_source(env: &TestEnv) {
+    let ticket_id = "missing-mount-test";
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // ---- Launch should fail because the mount source does not exist ----
+    let launch_output = run_cmd(
+        &env.ur,
+        &["worker", "launch", "-p", "badmountproj", ticket_id],
+        &env_slice,
+    );
+    assert!(
+        !launch_output.status.success(),
+        "ur worker launch -p badmountproj should have FAILED due to missing mount source, \
+         but it succeeded.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+
+    // ---- Error output must name the missing path ----
+    let stderr = String::from_utf8_lossy(&launch_output.stderr);
+    assert!(
+        stderr.contains("ur-acceptance-nonexistent-mount-source"),
+        "error message should contain the missing path 'ur-acceptance-nonexistent-mount-source'.\n\
+         Got stderr: {stderr}"
+    );
 }
