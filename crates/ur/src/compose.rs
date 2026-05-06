@@ -349,6 +349,8 @@ fn write_squid_service(out: &mut String, params: &ComposeParams) {
         "      - ${{UR_CONFIG:-~/.ur}}/squid/allowlist.txt:/etc/squid/allowlist.txt:ro"
     )
     .unwrap();
+    writeln!(out, "    tmpfs:").unwrap();
+    writeln!(out, "      - /var/run").unwrap();
     writeln!(out, "    networks:").unwrap();
     writeln!(out, "      - infra").unwrap();
     writeln!(out, "      - workers").unwrap();
@@ -835,8 +837,19 @@ mod tests {
         assert!(generated.contains("${UR_LOGS_DIR:-~/.ur/logs}:/logs"));
         assert!(generated.contains("UR_HOST_LOGS_DIR="));
 
-        // Verify squid volume
+        // Verify squid volume and tmpfs (prevents pidfile crash-loop on restart)
         assert!(generated.contains("allowlist.txt:/etc/squid/allowlist.txt:ro"));
+        let squid_section = generated
+            .split("  ur-squid:")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(
+            squid_section.contains("tmpfs:") && squid_section.contains("- /var/run"),
+            "squid service must mount /var/run as tmpfs to prevent stale pidfile on restart"
+        );
 
         // Verify networks section
         assert!(generated.contains("networks:"));
