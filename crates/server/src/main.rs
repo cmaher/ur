@@ -6,7 +6,7 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use container::NetworkManager;
+use ur_server::network_manager::NetworkManager;
 
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -588,7 +588,6 @@ async fn init_managers(
     host_config_dir: &Path,
     logs_dir: &Path,
     worker_modes: WorkerModesConfig,
-    network_manager: NetworkManager,
     docker_command: &str,
 ) -> anyhow::Result<(
     String,
@@ -596,6 +595,7 @@ async fn init_managers(
     RepoPoolManager,
     WorkerManager,
     ProjectRegistry,
+    ur_server::builder_container_client::BuilderContainerClient,
 )> {
     let builderd_addr = std::env::var(ur_config::BUILDERD_ADDR_ENV)
         .unwrap_or_else(|_| format!("http://host.docker.internal:{}", cfg.builderd_port));
@@ -605,6 +605,9 @@ async fn init_managers(
             .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
     let builderd_client =
         ur_rpc::proto::builder::BuilderdClient::new(builderd_retry_channel.channel().clone());
+    let builder_container_client = ur_server::builder_container_client::BuilderContainerClient::new(
+        builderd_retry_channel.channel().clone(),
+    );
     let local_repo = local_repo::GitBackend {
         client: builderd_client.clone(),
     };
@@ -630,6 +633,10 @@ async fn init_managers(
         host_config_dir.to_path_buf(),
         project_registry.clone(),
     );
+    let network_manager = NetworkManager::new(
+        builder_container_client.clone(),
+        cfg.network.worker_name.clone(),
+    );
     let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| logs_dir.to_path_buf());
@@ -645,6 +652,7 @@ async fn init_managers(
         worker_modes,
         worker_repo.clone(),
         cfg.global_skills.clone(),
+        builder_container_client.clone(),
     );
 
     reconcile_workers(&worker_repo, docker_command).await?;
@@ -666,6 +674,7 @@ async fn init_managers(
         repo_pool_manager,
         worker_manager,
         project_registry,
+        builder_container_client,
     ))
 }
 
@@ -700,8 +709,6 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
     let docker_command = cfg.server.container_command.clone();
-    let network_manager =
-        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
     let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
         .map(PathBuf::from)
@@ -714,19 +721,24 @@ async fn main() -> anyhow::Result<()> {
 
     let (log_cleanup_shutdown_tx, log_cleanup_handle) = init_log_cleanup(&logs_dir);
 
-    let (builderd_addr, worker_repo, repo_pool_manager, worker_manager, project_registry) =
-        init_managers(
-            &cfg,
-            &pools.workflow_pool,
-            &local_workspace,
-            &host_workspace,
-            &host_config_dir,
-            &logs_dir,
-            worker_modes,
-            network_manager,
-            &docker_command,
-        )
-        .await?;
+    let (
+        builderd_addr,
+        worker_repo,
+        repo_pool_manager,
+        worker_manager,
+        project_registry,
+        _builder_container_client,
+    ) = init_managers(
+        &cfg,
+        &pools.workflow_pool,
+        &local_workspace,
+        &host_workspace,
+        &host_config_dir,
+        &logs_dir,
+        worker_modes,
+        &docker_command,
+    )
+    .await?;
 
     let result = init_and_serve(
         &cfg,

@@ -106,8 +106,6 @@ async fn make_components_with_db(
     std::fs::create_dir_all(&workspace).unwrap();
 
     let network_config = test_network_config();
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let config = test_config(dir, &workspace);
     let worker_repo = workflow_db::WorkerRepo::new(workflow_pool.clone());
     let graph_manager = ticket_db::GraphManager::new(ticket_pool.clone());
@@ -116,8 +114,14 @@ async fn make_components_with_db(
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
-        client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
     };
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        network_config.worker_name.clone(),
+    );
     let project_registry = ur_server::ProjectRegistry::new(
         HashMap::new(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -144,6 +148,7 @@ async fn make_components_with_db(
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
+        builder_container_client,
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),

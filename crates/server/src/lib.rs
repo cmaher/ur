@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod backup;
+pub mod builder_container_client;
 pub mod config;
 pub mod grpc;
 pub mod grpc_hostexec;
@@ -9,6 +10,7 @@ pub mod grpc_ticket;
 pub mod hostexec;
 pub mod log_cleanup;
 pub mod logging;
+pub mod network_manager;
 pub mod pool;
 pub mod project_registry;
 pub mod proxy;

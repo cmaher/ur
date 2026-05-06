@@ -26,10 +26,15 @@ ur CLI: process_launch()                              [crates/ur/src/main.rs]
     ▼  gRPC (TCP → 127.0.0.1:12321 → ur-server container)
     │
 ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.rs]
+    │   assembles RunOptsBuilder (volumes, env vars, network, image)
     │   bind-mounts ~/.ur/claude/.credentials.json
     │   → /home/worker/.claude/.credentials.json
     │
-    ▼  docker run (volume mount)
+    ▼  gRPC LaunchWorker RPC → builderd (host, native)
+    │                         [BuilderContainerService::launch_worker]
+    │   stats each volume source on host filesystem (host namespace — avoids
+    │   container-to-host path mismatch)
+    │   docker run (volume mount)
     │
 Container: Claude Code reads ~/.claude/.credentials.json
             Claude Code reads ~/.claude.json (baked into image)
@@ -65,15 +70,17 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    │   └── TCP on 0.0.0.0:<random_port> (reachable via Docker network)
    │
    └── Phase 2: WorkerManager.run_and_record()
-       ├── NetworkManager.ensure() (create Docker network if needed)
+       ├── NetworkManager.ensure() (InspectNetwork RPC → builderd; create if needed)
        ├── Build env vars:
        │   ├── UR_SERVER_ADDR = <server_hostname>:<grpc_port>
        │   ├── HTTP_PROXY / HTTPS_PROXY = http://ur-squid:3128
        │   └── NO_PROXY = ""
-       ├── Build volumes:
+       ├── Build volumes (RunOptsBuilder):
        │   ├── workspace_dir → /workspace (if provided)
        │   └── ~/.ur/claude/.credentials.json → /home/worker/.claude/.credentials.json
-       ├── docker run (image: ur-worker:latest, network: worker network)
+       ├── LaunchWorker RPC → builderd (host)
+       │   ├── stats each volume source on host filesystem
+       │   └── docker run (image: ur-worker:latest, network: worker network)
        └── Record ProcessEntry { container_id, grpc_port, server_handle }
 
 3. Container startup (entrypoint.sh)

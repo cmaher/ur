@@ -114,7 +114,12 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   └─ .build() → RunOpts
   │
   ▼
-docker run with -v volumes + -e env vars
+LaunchWorker RPC → builderd (host, native)
+  │
+  ├─ Validates each volume source path against the host filesystem
+  │   (host-namespace check — avoids false-negative from server container paths)
+  │
+  └─ docker run with -v volumes + -e env vars
 ```
 
 ## Local Project Files (Pool Mode Only)

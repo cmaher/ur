@@ -10,9 +10,13 @@ use uuid::Uuid;
 use ur_config::{GlobalSkillsConfig, NetworkConfig};
 use workflow_db::WorkerRepo;
 
-use container::{ContainerRuntime, NetworkManager};
+use crate::network_manager::NetworkManager;
+
+use tonic::Code;
+use ur_rpc::proto::builder_container::StopWorkerRequest;
 
 use crate::RepoPoolManager;
+use crate::builder_container_client::BuilderContainerClient;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
@@ -332,6 +336,8 @@ pub struct WorkerManager {
     worker_modes: WorkerModesConfig,
     worker_repo: WorkerRepo,
     global_skills: GlobalSkillsConfig,
+    /// gRPC client for launching/stopping containers via builderd on the host.
+    builder_container_client: BuilderContainerClient,
 }
 
 impl WorkerManager {
@@ -348,6 +354,7 @@ impl WorkerManager {
         worker_modes: WorkerModesConfig,
         worker_repo: WorkerRepo,
         global_skills: GlobalSkillsConfig,
+        builder_container_client: BuilderContainerClient,
     ) -> Self {
         Self {
             workspace,
@@ -361,6 +368,7 @@ impl WorkerManager {
             worker_modes,
             worker_repo,
             global_skills,
+            builder_container_client,
         }
     }
 
@@ -564,6 +572,7 @@ impl WorkerManager {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
+            .await
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
         // Generate worker secret for worker auth
@@ -633,26 +642,42 @@ impl WorkerManager {
         .add_env_vars(env_vars)
         .build();
 
-        // Run the container on the shared Docker network
-        let cid = {
-            let rt = container::runtime_from_env();
-            rt.run(&opts).map_err(|e| e.to_string())?
-        };
+        // Launch the container via builderd on the host, which stats each volume
+        // source against the host filesystem before calling docker run.
+        let launch_resp = self
+            .builder_container_client
+            .launch_worker(opts)
+            .await
+            .map_err(|s| format!("launch_worker gRPC error: {s}"))?;
+        let container_id = launch_resp.container_id;
 
         info!(
             process_id = config.process_id,
             worker_id = %config.worker_id,
-            container_id = cid.0,
+            container_id,
             "process launched"
         );
 
-        // Record in database
+        self.record_worker(config, container_id.clone(), worker_secret.clone())
+            .await?;
+
+        Ok((container_id, worker_secret))
+    }
+
+    /// Persist a newly launched worker to the database and link it to its pool
+    /// slot (if any). Called immediately after the container starts running.
+    async fn record_worker(
+        &self,
+        config: WorkerConfig,
+        container_id: String,
+        worker_secret: String,
+    ) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
         let worker = workflow_db::model::Worker {
             worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
-            container_id: cid.0.clone(),
+            container_id: container_id.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
             container_status: "running".to_owned(),
@@ -674,8 +699,7 @@ impl WorkerManager {
                 .await
                 .map_err(|e| format!("failed to link worker to slot: {e}"))?;
         }
-
-        Ok((cid.0, worker_secret))
+        Ok(())
     }
 
     /// Stop a running worker process by worker ID. Stops + removes the container.
@@ -694,18 +718,21 @@ impl WorkerManager {
             "stopping container"
         );
 
-        // 1. Stop + remove container (scoped so rt is dropped before await).
+        // 1. Stop + remove container via builderd.
         // Tolerate already-missing containers: external forces (docker restart,
         // manual `docker rm`, machine reboot) can delete the container out from
         // under us, but the DB still shows it running. Bailing on "No such
         // container" here would leave the worker row stuck as running forever,
         // blocking every future `ur worker kill`.
-        {
-            let rt = container::runtime_from_env();
-            let cid = container::ContainerId(worker.container_id.clone());
-            tolerate_missing(rt.stop(&cid), &cid, "stop")?;
-            tolerate_missing(rt.rm(&cid), &cid, "rm")?;
-        }
+        tolerate_missing(
+            self.builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    container_id: worker.container_id.clone(),
+                })
+                .await,
+            &worker.container_id,
+            "stop_worker",
+        )?;
 
         // 2. Release pool slot if this was a project-based launch
         let strategy = WorkerStrategy::from_name(&worker.strategy)
@@ -796,30 +823,24 @@ impl WorkerManager {
     }
 }
 
-/// Returns true if a container runtime error indicates the container no longer exists.
-/// Both `docker` and `nerdctl` surface this as "No such container" in stderr.
-fn is_missing_container_err(msg: &str) -> bool {
-    msg.contains("No such container")
-}
-
-/// Swallow "No such container" errors from a container runtime call, logging a
+/// Swallow `NotFound` responses from a builderd `stop_worker` call, logging a
 /// warning instead. All other errors bubble up as-is.
+///
+/// "Is missing acceptable here?" is server-side policy — builderd returns
+/// `Code::NotFound` for any already-absent container, and the caller decides
+/// whether to treat that as benign.
 fn tolerate_missing(
-    res: anyhow::Result<()>,
-    cid: &container::ContainerId,
+    res: Result<impl Sized, tonic::Status>,
+    container_id: &str,
     op: &str,
 ) -> Result<(), String> {
     match res {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if is_missing_container_err(&msg) {
-                warn!(container_id = %cid.0, op, "container already gone, skipping");
-                Ok(())
-            } else {
-                Err(msg)
-            }
+        Ok(_) => Ok(()),
+        Err(status) if status.code() == Code::NotFound => {
+            warn!(%container_id, op, "container already gone, skipping");
+            Ok(())
         }
+        Err(status) => Err(status.to_string()),
     }
 }
 
@@ -1049,8 +1070,9 @@ mod tests {
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
         };
+        let builder_container_client = BuilderContainerClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
@@ -1066,7 +1088,7 @@ mod tests {
             project_registry,
         );
         let network_manager = NetworkManager::new(
-            "docker".into(),
+            builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {
@@ -1087,6 +1109,7 @@ mod tests {
             WorkerModesConfig::default(),
             worker_repo,
             GlobalSkillsConfig::default(),
+            builder_container_client,
         );
         (mgr, workspace, test_db)
     }
@@ -1726,45 +1749,28 @@ model = "haiku"
         assert!(result.unwrap_err().contains("unknown worker"));
     }
 
-    #[tokio::test]
-    async fn stop_by_worker_id_tolerates_missing_container() {
-        let (mgr, _workspace, test_db) = test_manager().await;
-        let wid = WorkerId("self-stop-ab12".into());
-        mgr.register_worker(
-            wid.clone(),
-            "self-stop".into(),
-            String::new(),
-            None,
-            WorkerStrategy::Design,
-            "nonexistent-container-id-deadbeef".into(),
-            Uuid::new_v4().to_string(),
-        )
-        .await;
-
-        // The registered container_id doesn't exist in Docker, so `docker stop`
-        // returns "No such container". Previously this left the worker row stuck
-        // as `running` forever. Now stop_by_worker_id should treat the missing
-        // container as a no-op and still flip the DB to stopped.
-        mgr.stop_by_worker_id(&wid)
-            .await
-            .expect("stop should tolerate missing container");
-
-        let worker = mgr.worker_repo.get_worker(&wid.0).await.unwrap().unwrap();
-        assert_eq!(worker.container_status, "stopped");
-        drop(test_db);
+    #[test]
+    fn tolerate_missing_swallows_not_found() {
+        // A fake builderd NotFound response is treated as success (container already gone).
+        let not_found: Result<(), tonic::Status> =
+            Err(tonic::Status::not_found("container not found: abc123"));
+        tolerate_missing(not_found, "abc123", "stop_worker").expect("NotFound should be tolerated");
     }
 
     #[test]
-    fn is_missing_container_err_matches_docker_stderr() {
-        // Real stderr shape from `docker stop <missing>`:
-        // "docker stop failed: Error response from daemon: No such container: <id>"
-        assert!(is_missing_container_err(
-            "docker stop failed: Error response from daemon: No such container: abc123"
-        ));
-        assert!(is_missing_container_err(
-            "nerdctl rm failed: No such container: abc123"
-        ));
-        assert!(!is_missing_container_err("some unrelated docker error"));
+    fn tolerate_missing_propagates_other_errors() {
+        // Internal errors from builderd must not be swallowed.
+        let internal: Result<(), tonic::Status> =
+            Err(tonic::Status::internal("docker stop failed"));
+        let err = tolerate_missing(internal, "abc123", "stop_worker")
+            .expect_err("Internal error should propagate");
+        assert!(err.contains("docker stop failed"));
+    }
+
+    #[test]
+    fn tolerate_missing_ok_passes_through() {
+        let ok: Result<(), tonic::Status> = Ok(());
+        tolerate_missing(ok, "abc123", "stop_worker").expect("Ok result should pass through");
     }
 
     // ---- merge_global_skills tests ----
@@ -1783,8 +1789,9 @@ model = "haiku"
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
         };
+        let builder_container_client = BuilderContainerClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
@@ -1800,7 +1807,7 @@ model = "haiku"
             project_registry,
         );
         let network_manager = NetworkManager::new(
-            "docker".into(),
+            builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {
@@ -1821,6 +1828,7 @@ model = "haiku"
             WorkerModesConfig::default(),
             worker_repo,
             globals,
+            builder_container_client,
         );
         (mgr, workspace, test_db)
     }

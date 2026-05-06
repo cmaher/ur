@@ -111,8 +111,6 @@ async fn make_grpc_handler(
     std::fs::create_dir_all(&workspace).unwrap();
 
     let (config, network_config) = make_test_config(dir, &workspace);
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
     let ticket_pool = test_db.ticket_pool().clone();
     let workflow_pool = test_db.workflow_pool().clone();
@@ -123,8 +121,14 @@ async fn make_grpc_handler(
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
-        client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
     };
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        network_config.worker_name.clone(),
+    );
     let project_registry = ur_server::ProjectRegistry::new(
         std::collections::HashMap::new(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -151,6 +155,7 @@ async fn make_grpc_handler(
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
+        builder_container_client,
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager: worker_manager.clone(),
@@ -240,8 +245,10 @@ async fn make_worker_handler() -> (
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
     let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let local_repo = local_repo::GitBackend {
-        client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+        client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
     };
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
     let project_registry = ur_server::ProjectRegistry::new(
         std::collections::HashMap::new(),
         ur_server::hostexec::HostExecConfigManager::empty(),
@@ -263,8 +270,10 @@ async fn make_worker_handler() -> (
         workspace.join("config"),
         project_registry.clone(),
     );
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        network_config.worker_name.clone(),
+    );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
@@ -277,6 +286,7 @@ async fn make_worker_handler() -> (
         ur_server::worker::WorkerModesConfig::default(),
         worker_repo.clone(),
         ur_config::GlobalSkillsConfig::default(),
+        builder_container_client,
     );
     let launch_manager = ur_server::grpc::LaunchManager {
         worker_manager,

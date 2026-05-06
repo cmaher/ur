@@ -57,6 +57,33 @@ The `--workspace` flag is passed by `ur start` from `config.workspace` in ur.tom
 | `%WORKSPACE%` | `/Users/me/.ur/workspace` | `/Users/me/.ur/workspace` |
 | `/absolute/path` | (any) | `/absolute/path` (no replacement) |
 
+## BuilderContainerService
+
+Builderd also hosts a second gRPC service, `BuilderContainerService`, that owns all worker
+container lifecycle operations. Because builderd runs natively on the host, it has direct
+access to the Docker socket — the server container does not.
+
+### RPCs
+
+| RPC | When Used | Handler |
+|---|---|---|
+| `LaunchWorker` | `WorkerManager::run_and_record()` — launch a new worker container | `crates/builderd/src/container_handler.rs` |
+| `StopWorker` | `WorkerManager::stop()` — stop and remove a container by ID | `crates/builderd/src/container_handler.rs` |
+| `ExecContainer` | `SquidManager::signal_reconfigure()` — one-shot exec (`squid -k reconfigure`) | `crates/builderd/src/container_handler.rs` |
+| `InspectNetwork` | `NetworkManager::ensure()` — check whether a Docker network exists before creating it | `crates/builderd/src/container_handler.rs` |
+
+`LaunchWorker` stats every volume host path before calling `docker run` and returns
+`FailedPrecondition` if any source is missing. This resolves the namespace-mismatch
+problem: the server container cannot reliably validate host paths, but builderd can.
+
+### Client in the Server
+
+`BuilderContainerClient` (`crates/server/src/builder_container_client.rs`) is the thin
+clone-able wrapper used by the server. It connects to builderd via the same
+`UR_BUILDERD_ADDR` used by `BuilderdClient`.
+
+Proto: `proto/builder_container.proto` (`ur.builder_container` package).
+
 ## Two Client Paths
 
 Builderd has two clients in the server, serving different use cases:
@@ -75,12 +102,17 @@ Builderd has two clients in the server, serving different use cases:
 - **CWD source**: `RepoPoolManager::to_builderd_path()` constructs `%WORKSPACE%/pool/<project>/<slot>`
 - **File**: `crates/server/src/builderd_client.rs`
 
-## Proto Definition
+### 3. BuilderContainerClient (server-internal → builderd)
+
+- **Purpose**: Worker container lifecycle (launch, stop, exec, network inspect)
+- **Client**: Shared `BuilderContainerClient` wrapper, one method per RPC
+- **File**: `crates/server/src/builder_container_client.rs`
+
+## Proto Definitions
+
+### BuilderDaemonService (`proto/builder.proto`, package `ur.builder`)
 
 ```protobuf
-// proto/builder.proto
-package ur.builder;
-
 service BuilderDaemonService {
   rpc Exec(stream BuilderExecMessage) returns (stream ur.core.CommandOutput);
 }
@@ -101,6 +133,17 @@ message BuilderExecRequest {
 }
 ```
 
+### BuilderContainerService (`proto/builder_container.proto`, package `ur.builder_container`)
+
+```protobuf
+service BuilderContainerService {
+  rpc LaunchWorker(LaunchWorkerRequest) returns (LaunchWorkerResponse);
+  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);
+  rpc ExecContainer(ExecContainerRequest) returns (ExecContainerResponse);
+  rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
+}
+```
+
 ## Connection Path
 
 ```
@@ -112,9 +155,12 @@ ur-server container
 
 ## Key Files
 
-- `crates/builderd/src/main.rs` — CLI, gRPC server setup
+- `crates/builderd/src/main.rs` — CLI, gRPC server setup (both services)
 - `crates/builderd/src/handler.rs` — BuilderDaemonHandler, %WORKSPACE% resolution
-- `crates/server/src/builderd_client.rs` — Shared BuilderdClient (pool ops)
+- `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/exec/network)
+- `crates/server/src/builderd_client.rs` — Shared BuilderdClient (pool git ops)
+- `crates/server/src/builder_container_client.rs` — Shared BuilderContainerClient (container ops)
 - `crates/server/src/grpc_hostexec.rs` — HostExecServiceHandler (worker commands)
-- `proto/builder.proto` — gRPC service definition
+- `proto/builder.proto` — BuilderDaemonService proto
+- `proto/builder_container.proto` — BuilderContainerService proto
 - `crates/ur/src/builderd.rs` — Host lifecycle (start/stop)

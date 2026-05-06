@@ -28,6 +28,7 @@ ur start
         ├── ur-squid (forward proxy, infra + workers networks)
         └── ur-server (gRPC server, infra + workers networks)
             ├── Connects to builderd via UR_BUILDERD_ADDR
+            │   └── All container ops (launch/stop/exec/network inspect) go through builderd
             └── Connects to ur-postgres via DATABASE_URL (depends_on: ur-postgres healthy)
 ```
 
@@ -55,6 +56,13 @@ ur stop
 
 All ports derive from `server_port` when not explicitly set, ensuring test isolation
 when using a custom `server_port`.
+
+## Docker Socket
+
+The `ur-server` container does **not** have `/var/run/docker.sock` mounted. All container
+operations (worker launch, worker stop, squid exec, network inspect) are delegated to
+builderd via gRPC. builderd runs natively on the host and holds the Docker socket access.
+This means the server container requires no Docker privilege escalation.
 
 ## Compose Generation
 

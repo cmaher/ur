@@ -6,7 +6,6 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 chrono = "0.4"
-container = { path = "../container" }
 futures = "0.3"
 clap = { workspace = true }
 prost = { workspace = true }
