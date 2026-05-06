@@ -12,7 +12,13 @@ use workflow_db::WorkerRepo;
 
 use container::{ContainerRuntime, NetworkManager};
 
+use ur_rpc::proto::builder_container::{
+    AddHost as ProtoAddHost, EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap,
+    Volume as ProtoVolume,
+};
+
 use crate::RepoPoolManager;
+use crate::builder_container_client::BuilderContainerClient;
 use crate::run_opts_builder::RunOptsBuilder;
 use crate::strategy::WorkerStrategy;
 
@@ -332,6 +338,8 @@ pub struct WorkerManager {
     worker_modes: WorkerModesConfig,
     worker_repo: WorkerRepo,
     global_skills: GlobalSkillsConfig,
+    /// gRPC client for launching/stopping containers via builderd on the host.
+    builder_container_client: BuilderContainerClient,
 }
 
 impl WorkerManager {
@@ -348,6 +356,7 @@ impl WorkerManager {
         worker_modes: WorkerModesConfig,
         worker_repo: WorkerRepo,
         global_skills: GlobalSkillsConfig,
+        builder_container_client: BuilderContainerClient,
     ) -> Self {
         Self {
             workspace,
@@ -361,6 +370,7 @@ impl WorkerManager {
             worker_modes,
             worker_repo,
             global_skills,
+            builder_container_client,
         }
     }
 
@@ -633,11 +643,15 @@ impl WorkerManager {
         .add_env_vars(env_vars)
         .build();
 
-        // Run the container on the shared Docker network
-        let cid = {
-            let rt = container::runtime_from_env();
-            rt.run(&opts).map_err(|e| e.to_string())?
-        };
+        // Launch the container via builderd on the host, which stats each volume
+        // source against the host filesystem before calling docker run.
+        let launch_req = to_launch_request(&opts);
+        let launch_resp = self
+            .builder_container_client
+            .launch_worker(launch_req)
+            .await
+            .map_err(|s| format!("launch_worker gRPC error: {s}"))?;
+        let cid = container::ContainerId(launch_resp.container_id);
 
         info!(
             process_id = config.process_id,
@@ -793,6 +807,66 @@ impl WorkerManager {
             .ok_or_else(|| format!("unknown worker: {process_id}"))?;
         let worker_id = WorkerId::parse(&worker.worker_id)?;
         self.stop_by_worker_id(&worker_id).await
+    }
+}
+
+/// Convert a [`container::RunOpts`] to a [`LaunchWorkerRequest`] proto message.
+///
+/// All fields are mapped 1-to-1:
+/// - `image.0` → `image`
+/// - `name` → `name`
+/// - `cpus` → `cpus`
+/// - `memory` → `memory`
+/// - `volumes` → `volumes` (host_path + container_path as display strings)
+/// - `port_maps` → `port_maps` (u16 → u32 widening)
+/// - `env_vars` → `env_vars`
+/// - `workdir` → `workdir` (empty string when `None`)
+/// - `network` → `network` (empty string when `None`)
+/// - `add_hosts` → `add_hosts`
+fn to_launch_request(opts: &container::RunOpts) -> LaunchWorkerRequest {
+    LaunchWorkerRequest {
+        image: opts.image.0.clone(),
+        name: opts.name.clone(),
+        cpus: opts.cpus,
+        memory: opts.memory.clone(),
+        volumes: opts
+            .volumes
+            .iter()
+            .map(|(host, container)| ProtoVolume {
+                host_path: host.display().to_string(),
+                container_path: container.display().to_string(),
+            })
+            .collect(),
+        port_maps: opts
+            .port_maps
+            .iter()
+            .map(|pm| ProtoPortMap {
+                host_port: u32::from(pm.host_port),
+                container_port: u32::from(pm.container_port),
+            })
+            .collect(),
+        env_vars: opts
+            .env_vars
+            .iter()
+            .map(|(k, v)| ProtoEnvVar {
+                key: k.clone(),
+                value: v.clone(),
+            })
+            .collect(),
+        workdir: opts
+            .workdir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        network: opts.network.clone().unwrap_or_default(),
+        add_hosts: opts
+            .add_hosts
+            .iter()
+            .map(|(host, ip)| ProtoAddHost {
+                host: host.clone(),
+                ip: ip.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -1049,8 +1123,9 @@ mod tests {
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
         };
+        let builder_container_client = BuilderContainerClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
@@ -1087,6 +1162,7 @@ mod tests {
             WorkerModesConfig::default(),
             worker_repo,
             GlobalSkillsConfig::default(),
+            builder_container_client,
         );
         (mgr, workspace, test_db)
     }
@@ -1783,8 +1859,9 @@ model = "haiku"
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
         let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel),
+            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
         };
+        let builder_container_client = BuilderContainerClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
@@ -1821,6 +1898,7 @@ model = "haiku"
             WorkerModesConfig::default(),
             worker_repo,
             globals,
+            builder_container_client,
         );
         (mgr, workspace, test_db)
     }
@@ -1975,5 +2053,173 @@ model = "haiku"
             mgr.merge_global_skills(WorkerStrategy::Code, vec!["custom-skill".into()]);
         assert_eq!(merged, vec!["custom-skill", "common-skill"]);
         assert_eq!(extra, vec![("common-skill".to_string(), host)]);
+    }
+
+    // ---- to_launch_request tests ----
+
+    #[test]
+    fn to_launch_request_maps_all_scalar_fields() {
+        let opts = container::RunOpts {
+            image: container::ImageId("my-image:latest".into()),
+            name: "my-container".into(),
+            cpus: 4,
+            memory: "8g".into(),
+            volumes: vec![],
+            port_maps: vec![],
+            env_vars: vec![],
+            workdir: Some(PathBuf::from("/workspace")),
+            command: vec![],
+            network: Some("ur-workers".into()),
+            add_hosts: vec![],
+        };
+        let req = to_launch_request(&opts);
+        assert_eq!(req.image, "my-image:latest");
+        assert_eq!(req.name, "my-container");
+        assert_eq!(req.cpus, 4);
+        assert_eq!(req.memory, "8g");
+        assert_eq!(req.workdir, "/workspace");
+        assert_eq!(req.network, "ur-workers");
+    }
+
+    #[test]
+    fn to_launch_request_none_workdir_and_network_map_to_empty_string() {
+        let opts = container::RunOpts {
+            image: container::ImageId("img".into()),
+            name: "c".into(),
+            cpus: 1,
+            memory: "1g".into(),
+            volumes: vec![],
+            port_maps: vec![],
+            env_vars: vec![],
+            workdir: None,
+            command: vec![],
+            network: None,
+            add_hosts: vec![],
+        };
+        let req = to_launch_request(&opts);
+        assert_eq!(req.workdir, "");
+        assert_eq!(req.network, "");
+    }
+
+    #[test]
+    fn to_launch_request_volumes_encoded_as_strings() {
+        let opts = container::RunOpts {
+            image: container::ImageId("img".into()),
+            name: "c".into(),
+            cpus: 1,
+            memory: "1g".into(),
+            volumes: vec![
+                (
+                    PathBuf::from("/host/path"),
+                    PathBuf::from("/container/path"),
+                ),
+                (
+                    PathBuf::from("/host/creds"),
+                    PathBuf::from("/home/worker/.claude/.credentials.json"),
+                ),
+                (
+                    PathBuf::from("/host/claude"),
+                    PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro"),
+                ),
+            ],
+            port_maps: vec![],
+            env_vars: vec![],
+            workdir: None,
+            command: vec![],
+            network: None,
+            add_hosts: vec![],
+        };
+        let req = to_launch_request(&opts);
+        assert_eq!(req.volumes.len(), 3);
+        assert_eq!(req.volumes[0].host_path, "/host/path");
+        assert_eq!(req.volumes[0].container_path, "/container/path");
+        assert_eq!(req.volumes[1].host_path, "/host/creds");
+        assert_eq!(
+            req.volumes[1].container_path,
+            "/home/worker/.claude/.credentials.json"
+        );
+        // :ro suffix is preserved as-is (PathBuf display includes it)
+        assert_eq!(req.volumes[2].host_path, "/host/claude");
+        assert_eq!(
+            req.volumes[2].container_path,
+            "/var/ur/project-claude/CLAUDE.md:ro"
+        );
+    }
+
+    #[test]
+    fn to_launch_request_port_maps_widen_u16_to_u32() {
+        let opts = container::RunOpts {
+            image: container::ImageId("img".into()),
+            name: "c".into(),
+            cpus: 1,
+            memory: "1g".into(),
+            volumes: vec![],
+            port_maps: vec![container::PortMap {
+                host_port: 8080,
+                container_port: 80,
+            }],
+            env_vars: vec![],
+            workdir: None,
+            command: vec![],
+            network: None,
+            add_hosts: vec![],
+        };
+        let req = to_launch_request(&opts);
+        assert_eq!(req.port_maps.len(), 1);
+        assert_eq!(req.port_maps[0].host_port, 8080u32);
+        assert_eq!(req.port_maps[0].container_port, 80u32);
+    }
+
+    #[test]
+    fn to_launch_request_env_vars_and_add_hosts() {
+        let opts = container::RunOpts {
+            image: container::ImageId("img".into()),
+            name: "c".into(),
+            cpus: 1,
+            memory: "1g".into(),
+            volumes: vec![],
+            port_maps: vec![],
+            env_vars: vec![
+                ("KEY1".into(), "val1".into()),
+                ("KEY2".into(), "val2".into()),
+            ],
+            workdir: None,
+            command: vec![],
+            network: None,
+            add_hosts: vec![("host.docker.internal".into(), "host-gateway".into())],
+        };
+        let req = to_launch_request(&opts);
+        assert_eq!(req.env_vars.len(), 2);
+        assert_eq!(req.env_vars[0].key, "KEY1");
+        assert_eq!(req.env_vars[0].value, "val1");
+        assert_eq!(req.env_vars[1].key, "KEY2");
+        assert_eq!(req.env_vars[1].value, "val2");
+        assert_eq!(req.add_hosts.len(), 1);
+        assert_eq!(req.add_hosts[0].host, "host.docker.internal");
+        assert_eq!(req.add_hosts[0].ip, "host-gateway");
+    }
+
+    #[test]
+    fn to_launch_request_empty_opts_all_defaults() {
+        let opts = container::RunOpts {
+            image: container::ImageId(String::new()),
+            name: String::new(),
+            cpus: 0,
+            memory: String::new(),
+            volumes: vec![],
+            port_maps: vec![],
+            env_vars: vec![],
+            workdir: None,
+            command: vec![],
+            network: None,
+            add_hosts: vec![],
+        };
+        let req = to_launch_request(&opts);
+        assert!(req.volumes.is_empty());
+        assert!(req.port_maps.is_empty());
+        assert!(req.env_vars.is_empty());
+        assert!(req.add_hosts.is_empty());
+        assert_eq!(req.workdir, "");
+        assert_eq!(req.network, "");
     }
 }

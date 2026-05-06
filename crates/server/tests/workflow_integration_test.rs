@@ -234,10 +234,13 @@ async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
 }
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
-    let builderd_client = dummy_builderd_client();
+    let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
     let config = dummy_config();
     let local_repo = local_repo::GitBackend {
-        client: builderd_client.clone(),
+        client: dummy_builderd_client(),
     };
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
@@ -266,6 +269,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         Default::default(),
         worker_repo,
         Default::default(),
+        builder_container_client,
     )
 }
 
@@ -358,7 +362,10 @@ fn dummy_launch_manager(
     workflow_repo: WorkflowRepo,
 ) -> ur_server::grpc::LaunchManager {
     let config = dummy_config();
-    let builderd_client = dummy_builderd_client();
+    let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
+    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
+    let builder_container_client =
+        ur_server::builder_container_client::BuilderContainerClient::new(channel);
     let local_repo = local_repo::GitBackend {
         client: dummy_builderd_client(),
     };
@@ -389,6 +396,7 @@ fn dummy_launch_manager(
         Default::default(),
         worker_repo.clone(),
         Default::default(),
+        builder_container_client,
     );
     ur_server::grpc::LaunchManager {
         worker_manager,
