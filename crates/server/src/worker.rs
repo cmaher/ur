@@ -10,13 +10,12 @@ use uuid::Uuid;
 use ur_config::{GlobalSkillsConfig, NetworkConfig};
 use workflow_db::WorkerRepo;
 
-use container::ContainerRuntime;
-
 use crate::network_manager::NetworkManager;
 
+use tonic::Code;
 use ur_rpc::proto::builder_container::{
     AddHost as ProtoAddHost, EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap,
-    Volume as ProtoVolume,
+    StopWorkerRequest, Volume as ProtoVolume,
 };
 
 use crate::RepoPoolManager;
@@ -723,18 +722,21 @@ impl WorkerManager {
             "stopping container"
         );
 
-        // 1. Stop + remove container (scoped so rt is dropped before await).
+        // 1. Stop + remove container via builderd.
         // Tolerate already-missing containers: external forces (docker restart,
         // manual `docker rm`, machine reboot) can delete the container out from
         // under us, but the DB still shows it running. Bailing on "No such
         // container" here would leave the worker row stuck as running forever,
         // blocking every future `ur worker kill`.
-        {
-            let rt = container::runtime_from_env();
-            let cid = container::ContainerId(worker.container_id.clone());
-            tolerate_missing(rt.stop(&cid), &cid, "stop")?;
-            tolerate_missing(rt.rm(&cid), &cid, "rm")?;
-        }
+        tolerate_missing(
+            self.builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    container_id: worker.container_id.clone(),
+                })
+                .await,
+            &worker.container_id,
+            "stop_worker",
+        )?;
 
         // 2. Release pool slot if this was a project-based launch
         let strategy = WorkerStrategy::from_name(&worker.strategy)
@@ -885,30 +887,24 @@ fn to_launch_request(opts: &container::RunOpts) -> LaunchWorkerRequest {
     }
 }
 
-/// Returns true if a container runtime error indicates the container no longer exists.
-/// Both `docker` and `nerdctl` surface this as "No such container" in stderr.
-fn is_missing_container_err(msg: &str) -> bool {
-    msg.contains("No such container")
-}
-
-/// Swallow "No such container" errors from a container runtime call, logging a
+/// Swallow `NotFound` responses from a builderd `stop_worker` call, logging a
 /// warning instead. All other errors bubble up as-is.
+///
+/// "Is missing acceptable here?" is server-side policy — builderd returns
+/// `Code::NotFound` for any already-absent container, and the caller decides
+/// whether to treat that as benign.
 fn tolerate_missing(
-    res: anyhow::Result<()>,
-    cid: &container::ContainerId,
+    res: Result<impl Sized, tonic::Status>,
+    container_id: &str,
     op: &str,
 ) -> Result<(), String> {
     match res {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let msg = e.to_string();
-            if is_missing_container_err(&msg) {
-                warn!(container_id = %cid.0, op, "container already gone, skipping");
-                Ok(())
-            } else {
-                Err(msg)
-            }
+        Ok(_) => Ok(()),
+        Err(status) if status.code() == Code::NotFound => {
+            warn!(%container_id, op, "container already gone, skipping");
+            Ok(())
         }
+        Err(status) => Err(status.to_string()),
     }
 }
 
@@ -1817,45 +1813,28 @@ model = "haiku"
         assert!(result.unwrap_err().contains("unknown worker"));
     }
 
-    #[tokio::test]
-    async fn stop_by_worker_id_tolerates_missing_container() {
-        let (mgr, _workspace, test_db) = test_manager().await;
-        let wid = WorkerId("self-stop-ab12".into());
-        mgr.register_worker(
-            wid.clone(),
-            "self-stop".into(),
-            String::new(),
-            None,
-            WorkerStrategy::Design,
-            "nonexistent-container-id-deadbeef".into(),
-            Uuid::new_v4().to_string(),
-        )
-        .await;
-
-        // The registered container_id doesn't exist in Docker, so `docker stop`
-        // returns "No such container". Previously this left the worker row stuck
-        // as `running` forever. Now stop_by_worker_id should treat the missing
-        // container as a no-op and still flip the DB to stopped.
-        mgr.stop_by_worker_id(&wid)
-            .await
-            .expect("stop should tolerate missing container");
-
-        let worker = mgr.worker_repo.get_worker(&wid.0).await.unwrap().unwrap();
-        assert_eq!(worker.container_status, "stopped");
-        drop(test_db);
+    #[test]
+    fn tolerate_missing_swallows_not_found() {
+        // A fake builderd NotFound response is treated as success (container already gone).
+        let not_found: Result<(), tonic::Status> =
+            Err(tonic::Status::not_found("container not found: abc123"));
+        tolerate_missing(not_found, "abc123", "stop_worker").expect("NotFound should be tolerated");
     }
 
     #[test]
-    fn is_missing_container_err_matches_docker_stderr() {
-        // Real stderr shape from `docker stop <missing>`:
-        // "docker stop failed: Error response from daemon: No such container: <id>"
-        assert!(is_missing_container_err(
-            "docker stop failed: Error response from daemon: No such container: abc123"
-        ));
-        assert!(is_missing_container_err(
-            "nerdctl rm failed: No such container: abc123"
-        ));
-        assert!(!is_missing_container_err("some unrelated docker error"));
+    fn tolerate_missing_propagates_other_errors() {
+        // Internal errors from builderd must not be swallowed.
+        let internal: Result<(), tonic::Status> =
+            Err(tonic::Status::internal("docker stop failed"));
+        let err = tolerate_missing(internal, "abc123", "stop_worker")
+            .expect_err("Internal error should propagate");
+        assert!(err.contains("docker stop failed"));
+    }
+
+    #[test]
+    fn tolerate_missing_ok_passes_through() {
+        let ok: Result<(), tonic::Status> = Ok(());
+        tolerate_missing(ok, "abc123", "stop_worker").expect("Ok result should pass through");
     }
 
     // ---- merge_global_skills tests ----
