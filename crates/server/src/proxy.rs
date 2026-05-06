@@ -123,8 +123,8 @@ mod tests {
         BuilderContainerClient::new(channel)
     }
 
-    #[test]
-    fn writes_allowlist_file() {
+    #[tokio::test]
+    async fn writes_allowlist_file() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
@@ -139,8 +139,8 @@ mod tests {
         assert!(allowlist.contains("example.com"));
     }
 
-    #[test]
-    fn update_allowlist_rewrites_file() {
+    #[tokio::test]
+    async fn update_allowlist_rewrites_file() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
@@ -159,8 +159,8 @@ mod tests {
         assert!(!content.contains("api.anthropic.com"));
     }
 
-    #[test]
-    fn add_domain_appends() {
+    #[tokio::test]
+    async fn add_domain_appends() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
@@ -177,8 +177,8 @@ mod tests {
         assert!(domains.contains(&"api.anthropic.com".to_string()));
     }
 
-    #[test]
-    fn add_domain_deduplicates() {
+    #[tokio::test]
+    async fn add_domain_deduplicates() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
@@ -193,8 +193,8 @@ mod tests {
         assert_eq!(manager.list_domains().len(), 2);
     }
 
-    #[test]
-    fn remove_domain() {
+    #[tokio::test]
+    async fn remove_domain() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
@@ -211,8 +211,8 @@ mod tests {
         assert!(domains.contains(&"api.anthropic.com".to_string()));
     }
 
-    #[test]
-    fn list_domains_returns_current() {
+    #[tokio::test]
+    async fn list_domains_returns_current() {
         let tmp = TempDir::new().unwrap();
         let manager = SquidManager::new(
             tmp.path().to_path_buf(),
