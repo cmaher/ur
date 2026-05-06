@@ -1,0 +1,84 @@
+syntax = "proto3";
+package ur.builder_container;
+
+service BuilderContainerService {
+  // Launch a worker container with the given spec. Stats each volume source on
+  // the host before calling docker run; returns FailedPrecondition if any
+  // source is missing.
+  rpc LaunchWorker(LaunchWorkerRequest) returns (LaunchWorkerResponse);
+
+  // Stop and remove a container by ID. Returns NotFound when the container is
+  // already gone.
+  rpc StopWorker(StopWorkerRequest) returns (StopWorkerResponse);
+
+  // Execute a command inside a running container and return its output.
+  // Used for squid reconfigure and similar one-shot exec operations.
+  rpc ExecContainer(ExecContainerRequest) returns (ExecContainerResponse);
+
+  // Inspect whether a Docker network exists.
+  rpc InspectNetwork(InspectNetworkRequest) returns (InspectNetworkResponse);
+}
+
+message Volume {
+  string host_path = 1;
+  string container_path = 2;
+}
+
+message PortMap {
+  uint32 host_port = 1;
+  uint32 container_port = 2;
+}
+
+message EnvVar {
+  string key = 1;
+  string value = 2;
+}
+
+message AddHost {
+  string host = 1;
+  string ip = 2;
+}
+
+message LaunchWorkerRequest {
+  string image = 1;
+  string name = 2;
+  uint32 cpus = 3;
+  string memory = 4;
+  repeated Volume volumes = 5;
+  repeated PortMap port_maps = 6;
+  repeated EnvVar env_vars = 7;
+  string workdir = 8;
+  string network = 9;
+  repeated AddHost add_hosts = 10;
+}
+
+message LaunchWorkerResponse {
+  string container_id = 1;
+}
+
+message StopWorkerRequest {
+  string container_id = 1;
+}
+
+message StopWorkerResponse {}
+
+message ExecContainerRequest {
+  string container_id = 1;
+  string command = 2;
+  repeated string args = 3;
+  string workdir = 4;
+}
+
+message ExecContainerResponse {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}
+
+message InspectNetworkRequest {
+  string name = 1;
+}
+
+message InspectNetworkResponse {
+  bool exists = 1;
+}

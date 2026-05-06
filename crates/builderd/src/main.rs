@@ -6,7 +6,9 @@ use tonic::transport::Server;
 use tracing::info;
 
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonServiceServer;
+use ur_rpc::proto::builder_container::builder_container_service_server::BuilderContainerServiceServer;
 
+mod container_handler;
 mod handler;
 mod logging;
 mod registry;
@@ -57,8 +59,11 @@ async fn main() -> anyhow::Result<()> {
         registry,
     };
 
+    let container_handler = container_handler::BuilderContainerHandler::new();
+
     Server::builder()
         .add_service(BuilderDaemonServiceServer::new(handler))
+        .add_service(BuilderContainerServiceServer::new(container_handler))
         .serve(addr)
         .await?;
 

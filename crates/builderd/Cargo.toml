@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 anyhow = "1"
 clap = { workspace = true, features = ["env"] }
+container = { path = "../container" }
 prost = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
