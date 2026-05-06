@@ -10,6 +10,7 @@ pub mod grpc_ticket;
 pub mod hostexec;
 pub mod log_cleanup;
 pub mod logging;
+pub mod network_manager;
 pub mod pool;
 pub mod project_registry;
 pub mod proxy;

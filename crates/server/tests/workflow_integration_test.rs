@@ -256,7 +256,10 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         std::path::PathBuf::from("/tmp/test/config"),
         project_registry,
     );
-    let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        "ur-workers".into(),
+    );
     ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
@@ -383,7 +386,10 @@ fn dummy_launch_manager(
         std::path::PathBuf::from("/tmp/test/config"),
         project_registry.clone(),
     );
-    let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        "ur-workers".into(),
+    );
     let worker_manager = ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),

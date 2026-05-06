@@ -1,12 +1,10 @@
 mod docker;
-mod network;
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 
 pub use docker::DockerRuntime;
-pub use network::NetworkManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageId(pub String);

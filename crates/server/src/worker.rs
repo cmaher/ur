@@ -10,7 +10,9 @@ use uuid::Uuid;
 use ur_config::{GlobalSkillsConfig, NetworkConfig};
 use workflow_db::WorkerRepo;
 
-use container::{ContainerRuntime, NetworkManager};
+use container::ContainerRuntime;
+
+use crate::network_manager::NetworkManager;
 
 use ur_rpc::proto::builder_container::{
     AddHost as ProtoAddHost, EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap,
@@ -574,6 +576,7 @@ impl WorkerManager {
         // Ensure the Docker network exists before launching the container
         self.network_manager
             .ensure()
+            .await
             .map_err(|e| format!("failed to ensure Docker network: {e}"))?;
 
         // Generate worker secret for worker auth
@@ -660,13 +663,26 @@ impl WorkerManager {
             "process launched"
         );
 
-        // Record in database
+        self.record_worker(config, cid.0.clone(), worker_secret.clone())
+            .await?;
+
+        Ok((cid.0, worker_secret))
+    }
+
+    /// Persist a newly launched worker to the database and link it to its pool
+    /// slot (if any). Called immediately after the container starts running.
+    async fn record_worker(
+        &self,
+        config: WorkerConfig,
+        container_id: String,
+        worker_secret: String,
+    ) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
         let worker = workflow_db::model::Worker {
             worker_id: config.worker_id.0,
             process_id: config.process_id,
             project_key: config.project_key,
-            container_id: cid.0.clone(),
+            container_id: container_id.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
             container_status: "running".to_owned(),
@@ -688,8 +704,7 @@ impl WorkerManager {
                 .await
                 .map_err(|e| format!("failed to link worker to slot: {e}"))?;
         }
-
-        Ok((cid.0, worker_secret))
+        Ok(())
     }
 
     /// Stop a running worker process by worker ID. Stops + removes the container.
@@ -1141,7 +1156,7 @@ mod tests {
             project_registry,
         );
         let network_manager = NetworkManager::new(
-            "docker".into(),
+            builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {
@@ -1877,7 +1892,7 @@ model = "haiku"
             project_registry,
         );
         let network_manager = NetworkManager::new(
-            "docker".into(),
+            builder_container_client.clone(),
             ur_config::DEFAULT_WORKER_NETWORK_NAME.into(),
         );
         let network_config = NetworkConfig {

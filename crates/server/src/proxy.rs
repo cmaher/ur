@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
-use container::ContainerRuntime;
 use tracing::info;
+use ur_rpc::proto::builder_container::ExecContainerRequest;
+
+use crate::builder_container_client::BuilderContainerClient;
 
 /// Manages Squid proxy config files and runtime allowlist.
 ///
@@ -19,14 +21,22 @@ pub struct SquidManager {
     /// Container name used to exec `squid -k reconfigure` (e.g., "ur-squid").
     container_name: String,
     allowlist: Arc<RwLock<Vec<String>>>,
+    /// gRPC client used to exec commands in the Squid container via builderd.
+    builder_container_client: BuilderContainerClient,
 }
 
 impl SquidManager {
-    pub fn new(config_dir: PathBuf, container_name: String, allowlist: Vec<String>) -> Self {
+    pub fn new(
+        config_dir: PathBuf,
+        container_name: String,
+        allowlist: Vec<String>,
+        builder_container_client: BuilderContainerClient,
+    ) -> Self {
         Self {
             config_dir,
             container_name,
             allowlist: Arc::new(RwLock::new(allowlist)),
+            builder_container_client,
         }
     }
 
@@ -65,16 +75,20 @@ impl SquidManager {
     }
 
     /// Signal the Squid container to re-read config files.
-    /// Sends `squid -k reconfigure` via `docker exec`. Active connections are
+    /// Sends `squid -k reconfigure` via builderd exec. Active connections are
     /// preserved; new connections use the updated allowlist.
-    pub fn signal_reconfigure(&self) -> Result<()> {
-        let rt = container::runtime_from_env();
-        let cid = container::ContainerId(self.container_name.clone());
-        let opts = container::ExecOpts {
-            command: vec!["squid".into(), "-k".into(), "reconfigure".into()],
-            workdir: None,
+    pub async fn signal_reconfigure(&self) -> Result<()> {
+        let request = ExecContainerRequest {
+            container_id: self.container_name.clone(),
+            command: "squid".into(),
+            args: vec!["-k".into(), "reconfigure".into()],
+            workdir: String::new(),
         };
-        let output = rt.exec(&cid, &opts).context("signal squid reconfigure")?;
+        let output = self
+            .builder_container_client
+            .exec_container(request)
+            .await
+            .context("signal squid reconfigure")?;
         if output.exit_code != 0 {
             anyhow::bail!("squid reconfigure failed: {}", output.stderr);
         }
@@ -102,6 +116,13 @@ mod tests {
         vec!["api.anthropic.com".into(), "example.com".into()]
     }
 
+    fn dummy_client() -> BuilderContainerClient {
+        // Channel is lazy — it won't connect until a call is made.
+        // Tests here only exercise file I/O, not exec, so this is safe.
+        let channel = tonic::transport::Channel::from_static("http://127.0.0.1:1").connect_lazy();
+        BuilderContainerClient::new(channel)
+    }
+
     #[test]
     fn writes_allowlist_file() {
         let tmp = TempDir::new().unwrap();
@@ -109,6 +130,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         manager.update_allowlist(test_allowlist()).unwrap();
 
@@ -124,6 +146,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         manager.update_allowlist(test_allowlist()).unwrap();
 
@@ -143,6 +166,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         manager.update_allowlist(test_allowlist()).unwrap();
 
@@ -160,6 +184,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         manager.update_allowlist(test_allowlist()).unwrap();
 
@@ -175,6 +200,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         manager.update_allowlist(test_allowlist()).unwrap();
 
@@ -192,6 +218,7 @@ mod tests {
             tmp.path().to_path_buf(),
             "ur-squid".into(),
             test_allowlist(),
+            dummy_client(),
         );
         assert_eq!(manager.list_domains().len(), 2);
     }

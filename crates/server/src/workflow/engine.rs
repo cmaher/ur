@@ -358,7 +358,10 @@ mod tests {
             std::path::PathBuf::from("/tmp/test/config"),
             project_registry,
         );
-        let network_manager = container::NetworkManager::new("docker".into(), "ur-workers".into());
+        let network_manager = crate::network_manager::NetworkManager::new(
+            builder_container_client.clone(),
+            "ur-workers".into(),
+        );
         crate::WorkerManager::new(
             std::path::PathBuf::from("/tmp/test/workspace"),
             std::path::PathBuf::from("/tmp/test"),

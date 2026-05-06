@@ -6,7 +6,7 @@ use clap::Parser;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use container::NetworkManager;
+use ur_server::network_manager::NetworkManager;
 
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -588,7 +588,6 @@ async fn init_managers(
     host_config_dir: &Path,
     logs_dir: &Path,
     worker_modes: WorkerModesConfig,
-    network_manager: NetworkManager,
     docker_command: &str,
 ) -> anyhow::Result<(
     String,
@@ -633,6 +632,10 @@ async fn init_managers(
         worker_repo.clone(),
         host_config_dir.to_path_buf(),
         project_registry.clone(),
+    );
+    let network_manager = NetworkManager::new(
+        builder_container_client.clone(),
+        cfg.network.worker_name.clone(),
     );
     let host_logs_dir = std::env::var("UR_HOST_LOGS_DIR")
         .map(PathBuf::from)
@@ -706,8 +709,6 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::write(&pid_file, std::process::id().to_string()).await?;
 
     let docker_command = cfg.server.container_command.clone();
-    let network_manager =
-        NetworkManager::new(docker_command.clone(), cfg.network.worker_name.clone());
 
     let host_config_dir = std::env::var(ur_config::UR_HOST_CONFIG_ENV)
         .map(PathBuf::from)
@@ -735,7 +736,6 @@ async fn main() -> anyhow::Result<()> {
         &host_config_dir,
         &logs_dir,
         worker_modes,
-        network_manager,
         &docker_command,
     )
     .await?;

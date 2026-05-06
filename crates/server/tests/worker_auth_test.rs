@@ -92,8 +92,6 @@ async fn make_test_components(
     std::fs::create_dir_all(&workspace).unwrap();
 
     let (config, network_config) = make_test_config(dir, &workspace);
-    let network_manager =
-        container::NetworkManager::new("docker".to_string(), network_config.worker_name.clone());
     let test_db = ur_db_test::TestDb::new().await;
     let ticket_pool = test_db.ticket_pool().clone();
     let workflow_pool = test_db.workflow_pool().clone();
@@ -108,6 +106,10 @@ async fn make_test_components(
     };
     let builder_container_client =
         ur_server::builder_container_client::BuilderContainerClient::new(channel);
+    let network_manager = ur_server::network_manager::NetworkManager::new(
+        builder_container_client.clone(),
+        network_config.worker_name.clone(),
+    );
     let project_registry = ur_server::ProjectRegistry::new(
         HashMap::new(),
         ur_server::hostexec::HostExecConfigManager::empty(),
