@@ -311,6 +311,9 @@ pub struct WorkerConfig {
     /// Each entry is `(name, host_path)` — mounted read-only at
     /// `/home/worker/.claude/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
     pub extra_skill_mounts: Vec<(String, PathBuf)>,
+    /// Optional memory directory template string from project config.
+    /// Mounted at `/home/worker/.claude/projects/-workspace/memory` inside the container.
+    pub memory_dir: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -592,6 +595,13 @@ impl WorkerManager {
             &self.host_config_dir,
         );
 
+        // Resolve project memory dir: use explicit config or convention path
+        let memory_dir = resolve_memory_dir(
+            &config.memory_dir,
+            &config.project_key,
+            &self.host_config_dir,
+        );
+
         // Derive the shim host path from the config dir. The shim is materialized
         // at server startup; we only need the path here for volume mounting.
         let shim_host_path = self
@@ -616,6 +626,7 @@ impl WorkerManager {
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
+        .add_memory_dir(&memory_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
             &context_mount_configs(&config.context_mounts),
@@ -937,7 +948,6 @@ fn resolve_claude_md(
 /// When `memory_dir` is None and a non-empty `project_key` is provided, checks
 /// `<host_config_dir>/projects/<project_key>/memory/` — if it exists, returns
 /// the absolute path as a host path string.
-#[allow(dead_code)]
 fn resolve_memory_dir(
     memory_dir: &Option<String>,
     project_key: &str,
@@ -1319,6 +1329,7 @@ mod tests {
             context_mounts: Vec::new(),
             hostexec_scripts: Vec::new(),
             extra_skill_mounts: Vec::new(),
+            memory_dir: None,
         }
     }
 

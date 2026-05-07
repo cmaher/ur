@@ -397,6 +397,7 @@ impl LaunchManager {
         Vec<ur_config::PortMapping>,
         String,
         Vec<String>,
+        Option<String>,
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
@@ -407,6 +408,7 @@ impl LaunchManager {
                 proj.container.ports.clone(),
                 proj.container.image.clone(),
                 proj.hostexec_scripts.clone(),
+                proj.memory_dir.clone(),
             ),
             _ => (
                 None,
@@ -416,6 +418,7 @@ impl LaunchManager {
                 Vec::new(),
                 String::new(),
                 Vec::new(),
+                None,
             ),
         }
     }
@@ -453,6 +456,7 @@ impl LaunchManager {
             ports,
             resolved_image,
             hostexec_scripts,
+            memory_dir,
         ) = self.extract_project_launch_fields(&project_key);
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
@@ -494,6 +498,7 @@ impl LaunchManager {
             context_mounts,
             hostexec_scripts,
             extra_skill_mounts,
+            memory_dir,
         }
     }
 

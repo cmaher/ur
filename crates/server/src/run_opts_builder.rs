@@ -206,6 +206,54 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add project memory directory mount.
+    ///
+    /// - If `memory_dir` is `None`, this is a no-op.
+    /// - Otherwise, template-resolves via [`resolve_template_path`]. The result must be a
+    ///   [`ResolvedTemplatePath::HostPath`]; a `ProjectRelative` result returns `Err` because
+    ///   `%PROJECT%` is rejected for `memory_dir` at config validation time.
+    /// - Pre-creates the host directory and chowns it to [`ur_config::WORKER_UID`] so the
+    ///   non-root worker user can write to it (Docker would otherwise create the dir as root).
+    ///   Errors from create/chown propagate as `Err(...)` — a missing or unwritable memory dir
+    ///   would cause the mount to silently fail, so we surface the error early.
+    /// - Pushes a single volume mount: host path → `/home/worker/.claude/projects/-workspace/memory`.
+    /// - No env var is added; Claude Code discovers the dir by its cwd convention.
+    pub fn add_memory_dir(
+        mut self,
+        memory_dir: &Option<String>,
+        host_config_dir: &Path,
+    ) -> Result<Self, String> {
+        let Some(template) = memory_dir.as_deref() else {
+            return Ok(self);
+        };
+
+        let resolved = resolve_template_path(template, host_config_dir)
+            .map_err(|e| format!("failed to resolve memory_dir: {e}"))?;
+
+        let host_path = match resolved {
+            ResolvedTemplatePath::HostPath(host_path) => host_path,
+            ResolvedTemplatePath::ProjectRelative(_) => {
+                return Err("memory_dir resolved to a project-relative path, \
+                     which is not supported (use an absolute path or %URCONFIG%)"
+                    .to_string());
+            }
+        };
+
+        std::fs::create_dir_all(&host_path)
+            .map_err(|e| format!("failed to create memory_dir '{}': {e}", host_path.display()))?;
+        std::os::unix::fs::chown(
+            &host_path,
+            Some(ur_config::WORKER_UID),
+            Some(ur_config::WORKER_UID),
+        )
+        .map_err(|e| format!("failed to chown memory_dir '{}': {e}", host_path.display()))?;
+
+        let container_path = PathBuf::from("/home/worker/.claude/projects/-workspace/memory");
+        self.volumes.push((host_path, container_path));
+
+        Ok(self)
+    }
+
     /// Add project-configured volume mounts.
     ///
     /// Each mount entry has a template source (resolved to a host path) and an absolute
@@ -1022,5 +1070,73 @@ mod tests {
             "/home/worker/.claude/potential-skills/gamma:ro"
         );
         assert!(req.env_vars.is_empty());
+    }
+
+    #[test]
+    fn add_memory_dir_none_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_memory_dir(&None, tmp.path())
+            .unwrap()
+            .build();
+
+        assert!(req.volumes.is_empty());
+        assert!(req.env_vars.is_empty());
+    }
+
+    /// Test the HostPath success path: directory is created if missing, chowned,
+    /// and a single volume mount is pushed.
+    ///
+    /// Restricted to Linux because `chown` to `WORKER_UID` (1000) requires either
+    /// running as root or being that user; on macOS the test runner is typically a
+    /// different uid and the syscall returns EPERM.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn add_memory_dir_host_path_creates_dir_and_mounts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host_config_dir = tmp.path();
+        // Use an absolute path for the memory dir (no pre-existing directory).
+        let memory_host_path = tmp.path().join("shared_memory");
+        let memory_dir = Some(memory_host_path.display().to_string());
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_memory_dir(&memory_dir, host_config_dir)
+            .unwrap()
+            .build();
+
+        // Directory should have been created.
+        assert!(
+            memory_host_path.exists(),
+            "memory dir should be created on host"
+        );
+
+        // Exactly one volume, no env vars.
+        assert_eq!(req.volumes.len(), 1, "expected one volume mount");
+        assert_eq!(
+            req.volumes[0].host_path,
+            memory_host_path.display().to_string()
+        );
+        assert_eq!(
+            req.volumes[0].container_path,
+            "/home/worker/.claude/projects/-workspace/memory"
+        );
+        assert!(req.env_vars.is_empty(), "no env vars should be added");
+    }
+
+    #[test]
+    fn add_memory_dir_project_relative_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // %PROJECT%/... resolves to ProjectRelative — should be rejected defensively.
+        let memory_dir = Some("%PROJECT%/memory".to_string());
+
+        let result = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_memory_dir(&memory_dir, tmp.path());
+
+        assert!(result.is_err(), "ProjectRelative should return an error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("project-relative"),
+            "error should mention project-relative: {err}"
+        );
     }
 }
