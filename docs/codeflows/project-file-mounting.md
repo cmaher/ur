@@ -34,6 +34,7 @@ repo = "https://github.com/cmaher/ur.git"
 git_hooks_dir = "%PROJECT%/.git-hooks"
 skill_hooks_dir = "%URCONFIG%/skill-hooks/ur"
 claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
+memory_dir = "%URCONFIG%/projects/ur/memory"
 workflow_hooks_dir = "%PROJECT%/.workflow"
 
 [projects.ur.container]
@@ -41,7 +42,7 @@ image = "ur-worker:latest"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
-Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `git_hooks_dir`, `skill_hooks_dir`, `claude_md`, `workflow_hooks_dir`) and `ContainerConfig` (field: `mounts`).
+Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `git_hooks_dir`, `skill_hooks_dir`, `claude_md`, `memory_dir`, `workflow_hooks_dir`) and `ContainerConfig` (field: `mounts`).
 
 ## Mount Destinations
 
@@ -50,6 +51,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `git_h
 | `git_hooks_dir` | `/var/ur/git-hooks/` | `UR_GIT_HOOKS_DIR` | no |
 | `skill_hooks_dir` | `/var/ur/skill-hooks/` | `UR_SKILL_HOOKS_DIR` | no |
 | `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` | yes (`:ro`) |
+| `memory_dir` | `/home/worker/.claude/projects/-workspace/memory` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
 | `workflow_hooks_dir` | (not container-mounted — resolved server-side for builderd execution) | — | — |
 
@@ -69,6 +71,27 @@ When any of these resolve to `ProjectRelative`, no volume mount is created — o
 This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed.
 
 Source: `resolve_claude_md()` in `crates/server/src/worker.rs:723`
+
+## memory_dir Convention Fallback
+
+`memory_dir` follows the same convention pattern as `claude_md`. When not set in `ur.toml`, the server checks for a directory at the convention path:
+
+```
+1. If memory_dir is set in ur.toml → use it as-is (template resolution)
+2. If memory_dir is None → check <config_dir>/projects/<key>/memory/ on disk
+3. If that directory exists → use its absolute path (treated as HostPath)
+4. If not → no memory_dir mounted
+```
+
+This means creating `~/.ur/projects/ur/memory/` on the host is enough — no config change needed.
+
+**No-project rule**: `memory_dir` is only mounted when a project key is associated with the worker. Workers launched without a project (`-w` workspace mode with no project config) never get a `memory_dir` mount.
+
+**Auto-create and chown**: When `memory_dir` resolves to a host path, `add_memory_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount. This ensures the non-root worker user can write to the directory on first use without manual host-side setup.
+
+**Concurrent-write caveat**: Multiple parallel workers on the same project share a single `memory_dir` host path. If parallel workers (or the host Claude Code session) write to `MEMORY.md` simultaneously, updates can race and overwrite each other. This is a known limitation; no mitigation is in place.
+
+Source: `resolve_memory_dir()` in `crates/server/src/worker.rs`, `add_memory_dir()` in `crates/server/src/run_opts_builder.rs`
 
 ## Container Mounts
 
@@ -109,6 +132,7 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   ├─ .add_git_hooks()          → resolve_template_path → mount or env var
   │   ├─ .add_skill_hooks()        → resolve_template_path → mount or env var
   │   ├─ .add_project_claude_md()  → resolve_template_path → mount or env var
+  │   ├─ .add_memory_dir()         → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
   │   ├─ .add_mounts()             → resolve_template_path → mount for each entry
   │   ├─ .add_context_repos()      → /context/<key>:ro mounts
   │   └─ .build() → RunOpts
