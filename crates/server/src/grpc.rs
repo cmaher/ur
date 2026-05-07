@@ -260,6 +260,39 @@ impl LaunchManager {
 
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
     ///
+    /// For Manual strategy: when `project_key` is non-empty (pool slot) the process_id is
+    /// `{project_key}-man-{slot_name}` where slot_name is the last path component of
+    /// `workspace_dir` (e.g. "0"). When `project_key` is empty (workspace mount via `-w`
+    /// without `-p`), uses the workspace basename as the prefix and `"0"` as the suffix
+    /// (e.g. `/Users/me/myrepo` → `myrepo-man-0`).
+    fn generate_manual_process_id(project_key: &str, workspace_dir: Option<&PathBuf>) -> String {
+        let (prefix, slot_name) = if project_key.is_empty() {
+            let basename = workspace_dir
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace");
+            (basename.to_string(), "0".to_string())
+        } else {
+            let slot = workspace_dir
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("0")
+                .to_string();
+            (project_key.to_string(), slot)
+        };
+        let pid = format!("{prefix}-man-{slot_name}");
+        info!(
+            project_key = %project_key,
+            prefix = %prefix,
+            slot_name = %slot_name,
+            process_id = %pid,
+            "manual mode: auto-generated process_id from slot"
+        );
+        pid
+    }
+
+    /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
+    ///
     /// Extracted from `launch` to keep method body within the line limit.
     ///
     /// Returns `(workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model,
@@ -323,38 +356,11 @@ impl LaunchManager {
                 (None, String::new(), None)
             };
 
-        // For Manual strategy, auto-generate process_id from project key and slot name.
-        // When project_key is non-empty (pool slot), the slot name is the last path component
-        // (e.g., "0", "1", "2") of the workspace dir: process_id = "{project_key}-man-{slot_name}".
-        // When project_key is empty (workspace mount via -w without -p), use the workspace
-        // dir basename as the prefix and "0" as the slot suffix (no pool slot):
-        // process_id = "{workspace_basename}-man-0", e.g. "myrepo-man-0".
         let generated_process_id = if strategy == crate::WorkerStrategy::Manual {
-            let (prefix, slot_name) = if project_key.is_empty() {
-                let basename = workspace_dir
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("workspace");
-                (basename.to_string(), "0".to_string())
-            } else {
-                let slot = workspace_dir
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("0")
-                    .to_string();
-                (project_key.clone(), slot)
-            };
-            let pid = format!("{prefix}-man-{slot_name}");
-            info!(
-                project_key = %project_key,
-                prefix = %prefix,
-                slot_name = %slot_name,
-                process_id = %pid,
-                "manual mode: auto-generated process_id from slot"
-            );
-            Some(pid)
+            Some(Self::generate_manual_process_id(
+                &project_key,
+                workspace_dir.as_ref(),
+            ))
         } else {
             None
         };
