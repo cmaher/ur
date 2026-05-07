@@ -190,6 +190,8 @@ struct ProjectEntry {
     hostexec_scripts: Vec<String>,
     /// Additional volume mounts for this project (raw mount strings, e.g. `"/host/path:/mnt/test:ro"`).
     mounts: Vec<String>,
+    /// Optional `memory_dir` path to include in the project config.
+    memory_dir: Option<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -287,11 +289,17 @@ fn write_test_config(
             let quoted: Vec<String> = proj.mounts.iter().map(|s| format!("\"{}\"", s)).collect();
             format!("mounts = [{}]\n", quoted.join(", "))
         };
+        let memory_dir_line = if let Some(ref md) = proj.memory_dir {
+            format!("memory_dir = \"{md}\"\n")
+        } else {
+            String::new()
+        };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}{memory_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
             key = proj.key,
             repo = proj.repo,
             scripts = scripts_line,
+            memory_dir = memory_dir_line,
             image = image_ref,
             mounts = mounts_line,
         ));
@@ -457,6 +465,11 @@ struct TestEnv {
     /// Host-only temp directory for mount regression tests (bind-mounted into workers).
     /// Kept alive so the directory exists for the duration of the test run.
     _host_mount_dir: tempfile::TempDir,
+    /// Host directory used as memory dir for `memproj` memory mount tests.
+    /// Kept alive so it exists for the duration of the test run.
+    memory_dir: PathBuf,
+    /// TempDir parent keeping `memory_dir` alive on disk.
+    _memory_dir_parent: tempfile::TempDir,
 }
 
 impl TestEnv {
@@ -537,6 +550,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
+            memory_dir: None,
         },
         ProjectEntry {
             key: "badmountproj".into(),
@@ -544,9 +558,64 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
+            memory_dir: None,
         },
     ];
     (host_mount_dir, projects)
+}
+
+/// Holds the memory dir path and its parent TempDir for memory mount tests.
+struct MemoryDirInfo {
+    /// The actual memory directory path (pre-created by the test).
+    path: PathBuf,
+    /// The TempDir parent keeping `path` alive on disk.
+    parent: tempfile::TempDir,
+}
+
+/// Set up the project entry and host memory dir for per-project memory bind mount tests.
+///
+/// Creates a `memproj` project entry with `memory_dir` pointing to a pre-created host
+/// directory under a system temp dir. Seeds the directory with a `seed.md` file so
+/// container-side reads can verify the host → container direction.
+///
+/// Returns:
+/// - `MemoryDirInfo`: the memory dir path + its TempDir parent (must stay alive)
+/// - `Vec<ProjectEntry>`: the `memproj` project entry to include in `write_test_config`
+fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry>) {
+    // Create the memory dir under a system temp dir (outside config_path so it is
+    // NOT automatically mounted inside the ur-server container). The test pre-creates
+    // it with UID 1000 (the test runner's UID), so the worker user (also UID 1000)
+    // can write to it when Docker bind-mounts it.
+    let parent = tempfile::tempdir().expect("failed to create memory dir parent");
+    let memory_path = parent.path().join("memory");
+    std::fs::create_dir_all(&memory_path).expect("failed to create memory dir");
+
+    // Seed a file so the container can verify host → container direction.
+    std::fs::write(memory_path.join("seed.md"), "hello-from-host\n")
+        .expect("failed to write seed.md");
+
+    // Create a bare repo for the memory project.
+    let mem_repos_dir = config_path.join("mem-repos");
+    std::fs::create_dir_all(&mem_repos_dir).expect("failed to create mem-repos dir");
+    let bare_repo = create_bare_repo(&mem_repos_dir);
+    let repo = bare_repo.to_string_lossy().into_owned();
+
+    let projects = vec![ProjectEntry {
+        key: "memproj".into(),
+        repo,
+        image: "ur-worker".into(),
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: Some(memory_path.to_string_lossy().into_owned()),
+    }];
+
+    (
+        MemoryDirInfo {
+            path: memory_path,
+            parent,
+        },
+        projects,
+    )
 }
 
 /// Timeout for the entire acceptance test run (10 minutes).
@@ -610,6 +679,8 @@ fn e2e_all() {
 
     let (host_mount_dir, mount_projects) = setup_mount_projects(&config_path);
 
+    let (memory_dir, memory_projects) = setup_memory_projects(&config_path);
+
     let mut projects = vec![
         ProjectEntry {
             key: project_key.into(),
@@ -617,6 +688,7 @@ fn e2e_all() {
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![],
+            memory_dir: None,
         },
         ProjectEntry {
             key: "rustproj".into(),
@@ -624,6 +696,7 @@ fn e2e_all() {
             image: "ur-worker-rust".into(),
             hostexec_scripts: vec![],
             mounts: vec![],
+            memory_dir: None,
         },
         ProjectEntry {
             key: "scriptproj".into(),
@@ -631,9 +704,11 @@ fn e2e_all() {
             image: "ur-worker".into(),
             hostexec_scripts: vec!["host-only.sh".into()],
             mounts: vec![],
+            memory_dir: None,
         },
     ];
     projects.extend(mount_projects);
+    projects.extend(memory_projects);
 
     write_test_config(
         &config_path,
@@ -654,6 +729,8 @@ fn e2e_all() {
         names,
         project_key,
         _host_mount_dir: host_mount_dir,
+        memory_dir: memory_dir.path,
+        _memory_dir_parent: memory_dir.parent,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
@@ -733,6 +810,9 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_manual_worker(&env);
         scenario_host_only_mount(&env);
         scenario_missing_mount_source(&env);
+        scenario_memory_pool(&env);
+        scenario_memory_workspace_with_project(&env, &config_path);
+        scenario_memory_workspace_no_project(&env, &config_path);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -748,6 +828,9 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "scriptproj-ws-test",
         "global-skill-test",
         "mount-test",
+        "memory-pool-test",
+        "memproj-ws-test",
+        "nomem-ws-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -2867,4 +2950,290 @@ fn scenario_missing_mount_source(env: &TestEnv) {
         "error message should contain the missing path 'ur-acceptance-nonexistent-mount-source'.\n\
          Got stderr: {stderr}"
     );
+}
+
+/// Memory bind mount — pool launch axis.
+///
+/// Verifies the host → container and container → host directions for the per-project
+/// memory directory feature when launched as a pool slot (`-p memproj`).
+///
+/// Flow:
+/// 1. Host pre-seeds `seed.md` in the memory dir (done by `setup_memory_projects`).
+/// 2. Pool worker is launched for `memproj`.
+/// 3. Inside the container, `seed.md` is readable at the expected mount point.
+/// 4. Inside the container, a new `from-container.md` file is written.
+/// 5. Worker is stopped.
+/// 6. On the host, `from-container.md` is readable with the expected content.
+fn scenario_memory_pool(env: &TestEnv) {
+    let ticket_id = "memory-pool-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker for memproj ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "memproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p memproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Axis 1: host → container: seed.md seeded by test must be readable ----
+        let memory_container_path = "/home/worker/.claude/projects/-workspace/memory";
+        let seed_path = format!("{memory_container_path}/seed.md");
+        let cat_output = exec_in_container(&env.runtime, &container_name, &["cat", &seed_path]);
+        assert_exec_success(
+            &cat_output,
+            &format!(
+                "seed.md must be readable inside the container at {seed_path} — \
+                 memory dir bind mount was not established"
+            ),
+        );
+        let seed_content = String::from_utf8_lossy(&cat_output.stdout);
+        assert_eq!(
+            seed_content.trim(),
+            "hello-from-host",
+            "seed.md content mismatch — expected 'hello-from-host', got: {seed_content:?}"
+        );
+
+        // ---- Axis 2: container → host: write a file inside the container ----
+        let from_container_path = format!("{memory_container_path}/from-container.md");
+        let write_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &[
+                "sh",
+                "-c",
+                &format!("echo 'hello-from-container' > {from_container_path}"),
+            ],
+        );
+        assert_exec_success(
+            &write_output,
+            "writing from-container.md inside the container should succeed",
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- Verify container-written file is visible on the host ----
+        let host_from_container = env.memory_dir.join("from-container.md");
+        assert!(
+            host_from_container.exists(),
+            "from-container.md must exist on the host at {} after worker stop — \
+             container → host direction of memory bind mount did not work",
+            host_from_container.display()
+        );
+        let host_content = std::fs::read_to_string(&host_from_container)
+            .expect("failed to read from-container.md");
+        assert_eq!(
+            host_content.trim(),
+            "hello-from-container",
+            "from-container.md host content mismatch: {host_content:?}"
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Memory bind mount — workspace-with-project axis.
+///
+/// Verifies the per-project memory directory feature when a workspace-mount worker
+/// is launched with a ticket ID whose prefix matches a configured project key
+/// (`memproj`). The project key is derived automatically from the ticket ID prefix,
+/// so the project config (including `memory_dir`) applies.
+///
+/// Exercises the same host ↔ container round-trip as `scenario_memory_pool`.
+fn scenario_memory_workspace_with_project(env: &TestEnv, config_path: &std::path::Path) {
+    // "memproj-ws-test" prefix "memproj" matches the configured project key.
+    let ticket_id = "memproj-ws-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Prepare a workspace directory ----
+        let ws_dir = config_path.join("memory-workspace");
+        std::fs::create_dir_all(&ws_dir).expect("failed to create memory workspace dir");
+        let _ = Command::new("git")
+            .args(["init", ws_dir.to_str().unwrap()])
+            .output();
+
+        // ---- Launch with -w; project key derived from "memproj" prefix ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &[
+                "worker",
+                "launch",
+                "-w",
+                ws_dir.to_str().unwrap(),
+                ticket_id,
+            ],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -w for {ticket_id} failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify seed.md is readable inside the container ----
+        let memory_container_path = "/home/worker/.claude/projects/-workspace/memory";
+        let seed_path = format!("{memory_container_path}/seed.md");
+        let cat_output = exec_in_container(&env.runtime, &container_name, &["cat", &seed_path]);
+        assert_exec_success(
+            &cat_output,
+            &format!(
+                "seed.md must be readable at {seed_path} in workspace-with-project launch — \
+                 memory dir bind mount was not established for derived project key"
+            ),
+        );
+        let seed_content = String::from_utf8_lossy(&cat_output.stdout);
+        assert_eq!(
+            seed_content.trim(),
+            "hello-from-host",
+            "seed.md content mismatch in workspace launch: {seed_content:?}"
+        );
+
+        // ---- Write a file from inside the container ----
+        let ws_from_container = format!("{memory_container_path}/from-ws-container.md");
+        let write_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &[
+                "sh",
+                "-c",
+                &format!("echo 'hello-from-ws-container' > {ws_from_container}"),
+            ],
+        );
+        assert_exec_success(
+            &write_output,
+            "writing from-ws-container.md inside the container should succeed",
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- Verify container-written file is visible on the host ----
+        let host_ws_file = env.memory_dir.join("from-ws-container.md");
+        assert!(
+            host_ws_file.exists(),
+            "from-ws-container.md must exist on the host at {} after worker stop — \
+             container → host direction of memory mount did not work in workspace launch",
+            host_ws_file.display()
+        );
+        let host_content =
+            std::fs::read_to_string(&host_ws_file).expect("failed to read from-ws-container.md");
+        assert_eq!(
+            host_content.trim(),
+            "hello-from-ws-container",
+            "from-ws-container.md content mismatch: {host_content:?}"
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Memory bind mount — workspace-only (no project) axis.
+///
+/// Verifies that when a workspace-mount worker is launched with a ticket ID whose
+/// prefix does NOT match any configured project key, NO memory bind mount is
+/// created. The container's memory directory should not exist or should be empty
+/// (the memory dir is project-scoped; without a project there is no mount).
+fn scenario_memory_workspace_no_project(env: &TestEnv, config_path: &std::path::Path) {
+    // "nomem-ws-test" prefix "nomem" does not match any configured project key.
+    let ticket_id = "nomem-ws-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Prepare a workspace directory ----
+        let ws_dir = config_path.join("nomem-workspace");
+        std::fs::create_dir_all(&ws_dir).expect("failed to create nomem workspace dir");
+        let _ = Command::new("git")
+            .args(["init", ws_dir.to_str().unwrap()])
+            .output();
+
+        // ---- Launch with -w only; no project key derived ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &[
+                "worker",
+                "launch",
+                "-w",
+                ws_dir.to_str().unwrap(),
+                ticket_id,
+            ],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -w for {ticket_id} (no project) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify that the memory directory does NOT exist inside the container ----
+        // When no project is associated with the launch, `memory_dir` is never resolved,
+        // so the bind mount is absent. The container path should not exist.
+        let memory_container_path = "/home/worker/.claude/projects/-workspace/memory";
+        let ls_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", memory_container_path],
+        );
+        assert_ne!(
+            ls_output.status.code(),
+            Some(0),
+            "memory dir {memory_container_path} must NOT exist in a no-project workspace launch — \
+             a mount was unexpectedly established.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output.stdout),
+            String::from_utf8_lossy(&ls_output.stderr),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
 }
