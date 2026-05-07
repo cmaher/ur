@@ -621,50 +621,30 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
 /// Timeout for the entire acceptance test run (10 minutes).
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Single `#[test]` entry point. Sets up the environment once, runs all
-/// scenarios sequentially, then tears down.
-#[test]
-fn e2e_all() {
-    let runtime = detect_container_runtime();
-    let names = test_names("e2e");
-    let server_port = 19870u16;
-    let project_key = "poolproj";
+/// Bare repositories and project entries for the test environment.
+struct ProjectFixtures {
+    projects: Vec<ProjectEntry>,
+    skills_extra_toml: String,
+    host_mount_dir: tempfile::TempDir,
+    memory_dir: MemoryDirInfo,
+}
 
-    // ---- (0) Clean up stale resources from ANY prior e2e run ----
-    // Docker's name filter does substring matching, so "-e2e-" catches all
-    // ur-{id}-e2e-{role} containers regardless of which random run ID created them.
-    force_remove_by_prefix(&runtime, "-e2e-");
-    // Kill any orphaned builderd processes from prior failed runs. Builderd runs
-    // in its own process group (detached from the test), so it survives test crashes.
-    // We identify stale test builderds by their port (builderd_port = server_port + 2).
-    kill_process_on_port(server_port + 2);
+/// Create all bare git repositories, the test skill directory, and the complete
+/// project entry list needed by `write_test_config`. All temp directories in the
+/// returned struct must stay alive for the duration of the test.
+fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixtures {
+    let bare_repo = create_bare_repo(config_path);
 
-    // ---- (1) Create temp UR_CONFIG dir ----
-    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
-    let config_path = config_dir.path().to_path_buf();
-
-    // ---- (1a) Initialize file logging ----
-    let logs_dir = config_path.join("logs");
-    let _log_guard = init_test_logging(&logs_dir);
-
-    // Create bare repo BEFORE writing config (config references it)
-    let bare_repo = create_bare_repo(&config_path);
-
-    // Write config with the pool project
-    // Create a second bare repo for the rust-image project
     let rust_repos_dir = config_path.join("rust-repos");
     std::fs::create_dir_all(&rust_repos_dir).expect("failed to create rust-repos dir");
     let bare_repo_rust = create_bare_repo(&rust_repos_dir);
 
-    // Create a bare repo for the hostexec script project (contains host-only.sh)
     let script_repos_dir = config_path.join("script-repos");
     std::fs::create_dir_all(&script_repos_dir).expect("failed to create script-repos dir");
     let bare_repo_script = create_bare_repo_with_script(&script_repos_dir);
 
-    // Create a global skill directory for the global-skill-injection scenario.
-    // The absolute path is used directly in ur.toml so the server (which resolves
-    // absolute paths as host paths) and Docker (host daemon) both see the real
-    // filesystem path without any %URCONFIG% → /config remapping.
+    // Absolute path so server (host-path resolution) and Docker both see the real path
+    // without any %URCONFIG% → /config remapping.
     let skill_dir = config_path.join("skills").join("test-skill");
     std::fs::create_dir_all(&skill_dir).expect("failed to create test-skill dir");
     std::fs::write(
@@ -677,9 +657,8 @@ fn e2e_all() {
         skill_path = skill_dir.display(),
     );
 
-    let (host_mount_dir, mount_projects) = setup_mount_projects(&config_path);
-
-    let (memory_dir, memory_projects) = setup_memory_projects(&config_path);
+    let (host_mount_dir, mount_projects) = setup_mount_projects(config_path);
+    let (memory_dir, memory_projects) = setup_memory_projects(config_path);
 
     let mut projects = vec![
         ProjectEntry {
@@ -710,12 +689,48 @@ fn e2e_all() {
     projects.extend(mount_projects);
     projects.extend(memory_projects);
 
+    ProjectFixtures {
+        projects,
+        skills_extra_toml,
+        host_mount_dir,
+        memory_dir,
+    }
+}
+
+/// Single `#[test]` entry point. Sets up the environment once, runs all
+/// scenarios sequentially, then tears down.
+#[test]
+fn e2e_all() {
+    let runtime = detect_container_runtime();
+    let names = test_names("e2e");
+    let server_port = 19870u16;
+    let project_key = "poolproj";
+
+    // ---- (0) Clean up stale resources from ANY prior e2e run ----
+    // Docker's name filter does substring matching, so "-e2e-" catches all
+    // ur-{id}-e2e-{role} containers regardless of which random run ID created them.
+    force_remove_by_prefix(&runtime, "-e2e-");
+    // Kill any orphaned builderd processes from prior failed runs. Builderd runs
+    // in its own process group (detached from the test), so it survives test crashes.
+    // We identify stale test builderds by their port (builderd_port = server_port + 2).
+    kill_process_on_port(server_port + 2);
+
+    // ---- (1) Create temp UR_CONFIG dir ----
+    let config_dir = tempfile::tempdir().expect("failed to create temp config dir");
+    let config_path = config_dir.path().to_path_buf();
+
+    // ---- (1a) Initialize file logging ----
+    let logs_dir = config_path.join("logs");
+    let _log_guard = init_test_logging(&logs_dir);
+
+    let fixtures = create_project_fixtures(&config_path, project_key);
+
     write_test_config(
         &config_path,
         server_port,
         &names,
-        &projects,
-        &skills_extra_toml,
+        &fixtures.projects,
+        &fixtures.skills_extra_toml,
     );
 
     let ur = bin("ur");
@@ -728,9 +743,9 @@ fn e2e_all() {
         runtime,
         names,
         project_key,
-        _host_mount_dir: host_mount_dir,
-        memory_dir: memory_dir.path,
-        _memory_dir_parent: memory_dir.parent,
+        _host_mount_dir: fixtures.host_mount_dir,
+        memory_dir: fixtures.memory_dir.path,
+        _memory_dir_parent: fixtures.memory_dir.parent,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
