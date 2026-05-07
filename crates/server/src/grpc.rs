@@ -1477,11 +1477,15 @@ async fn handle_request_human_activity(
         .set_meta(&activity.id, "activity", "kind", "request-human")
         .await?;
 
+    workflow_repo
+        .set_workflow_stalled(ticket_id, message)
+        .await?;
+
     info!(
         worker_id = %worker_id,
         ticket_id = %ticket_id,
         activity_id = %activity.id,
-        "recorded request-human activity on ticket"
+        "recorded request-human activity on ticket and stalled workflow"
     );
 
     Ok(())
