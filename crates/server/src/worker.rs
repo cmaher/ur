@@ -931,6 +931,35 @@ fn resolve_claude_md(
     }
 }
 
+/// Resolve the project memory directory path, falling back to the convention path.
+///
+/// When `memory_dir` is already set (from project config), returns it as-is.
+/// When `memory_dir` is None and a non-empty `project_key` is provided, checks
+/// `<host_config_dir>/projects/<project_key>/memory/` — if it exists, returns
+/// the absolute path as a host path string.
+#[allow(dead_code)]
+fn resolve_memory_dir(
+    memory_dir: &Option<String>,
+    project_key: &str,
+    host_config_dir: &std::path::Path,
+) -> Option<String> {
+    if memory_dir.is_some() {
+        return memory_dir.clone();
+    }
+    if project_key.is_empty() {
+        return None;
+    }
+    let convention_path = host_config_dir
+        .join("projects")
+        .join(project_key)
+        .join("memory");
+    if convention_path.exists() {
+        Some(convention_path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
 /// Convert context mounts (project_key, host_path) to `MountConfig` entries.
 ///
 /// Each context repo is mounted read-only at `/context/<project_key>` inside
@@ -1737,6 +1766,38 @@ model = "haiku"
     fn resolve_claude_md_convention_fallback_no_file_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         let result = resolve_claude_md(&None, "myproj", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_memory_dir_returns_explicit_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_memory_dir(&Some("/custom/memory".into()), "myproj", tmp.path());
+        assert_eq!(result.as_deref(), Some("/custom/memory"));
+    }
+
+    #[test]
+    fn resolve_memory_dir_none_empty_project_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_memory_dir(&None, "", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_memory_dir_convention_fallback_when_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("projects").join("myproj").join("memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+
+        let result = resolve_memory_dir(&None, "myproj", tmp.path());
+        let expected = memory_dir.to_string_lossy().into_owned();
+        assert_eq!(result.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn resolve_memory_dir_convention_fallback_no_dir_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_memory_dir(&None, "myproj", tmp.path());
         assert_eq!(result, None);
     }
 
