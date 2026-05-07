@@ -75,6 +75,7 @@ mod tests {
             ignored_workflow_checks: vec![],
             hostexec_scripts: scripts.into_iter().map(|s| s.to_string()).collect(),
             push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
+            memory_dir: None,
         }
     }
 

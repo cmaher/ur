@@ -494,6 +494,10 @@ struct RawProjectConfig {
     hostexec_scripts: Vec<String>,
     /// Exit code the verify hook returns to signal "push again" without penalizing the implement cycle count.
     push_again_exit_code: Option<i32>,
+    /// Optional template path to the Claude auto-memory directory for this project.
+    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
+    memory_dir: Option<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -1183,6 +1187,11 @@ pub struct ProjectConfig {
     /// Exit code the verify hook returns to signal "push again" without penalizing the implement cycle count.
     /// Default: 200.
     pub push_again_exit_code: i32,
+    /// Optional template path to the Claude auto-memory directory for this project.
+    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
+    /// When `None`, the server-side convention fallback applies (separate ticket).
+    pub memory_dir: Option<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1510,6 +1519,7 @@ fn resolve_project_config(
         push_again_exit_code: raw_proj
             .push_again_exit_code
             .unwrap_or(DEFAULT_PUSH_AGAIN_EXIT_CODE),
+        memory_dir: raw_proj.memory_dir,
     };
     Ok((key, resolved))
 }
@@ -1802,6 +1812,16 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
     if let Some(ref tpl) = raw_proj.claude_md {
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': claude_md: {}", key, e))?;
+    }
+    if let Some(ref tpl) = raw_proj.memory_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': memory_dir: {}", key, e))?;
+        if tpl.starts_with("%PROJECT%") {
+            anyhow::bail!(
+                "project '{}': memory_dir: %PROJECT% is not allowed — memory must be project-stable, not workspace-relative",
+                key
+            );
+        }
     }
     // Mount validation is handled by parse_mount_entry during config loading.
     Ok(())
@@ -2534,6 +2554,89 @@ image = "ur-worker"
             cfg.projects["ur"].claude_md.as_deref(),
             Some("%URCONFIG%/projects/ur/CLAUDE.md")
         );
+    }
+
+    #[test]
+    fn memory_dir_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].memory_dir, None);
+    }
+
+    #[test]
+    fn memory_dir_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+memory_dir = "%URCONFIG%/projects/ur/memory"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].memory_dir.as_deref(),
+            Some("%URCONFIG%/projects/ur/memory")
+        );
+    }
+
+    #[test]
+    fn memory_dir_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+memory_dir = "/some/abs/path"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].memory_dir.as_deref(),
+            Some("/some/abs/path")
+        );
+    }
+
+    #[test]
+    fn memory_dir_rejects_project_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+memory_dir = "%PROJECT%/memory"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("memory_dir"), "{msg}");
+        assert!(msg.contains("%PROJECT%"), "{msg}");
     }
 
     #[test]
@@ -3855,6 +3958,7 @@ quit = ["q"]
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
+                    memory_dir: None,
                 },
             );
             m.insert(
@@ -3881,6 +3985,7 @@ quit = ["q"]
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
+                    memory_dir: None,
                 },
             );
             m
@@ -4001,6 +4106,7 @@ quit = ["q"]
                     ignored_workflow_checks: vec![],
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
+                    memory_dir: None,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not
