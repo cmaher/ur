@@ -1093,12 +1093,17 @@ async fn handle_worker_launch(
 ) -> Result<()> {
     let is_manual = mode == "manual";
 
+    // Non-manual mode: -w is not supported
+    if workspace.is_some() && !is_manual {
+        bail!("-w/--workspace is only supported in manual mode (-m manual)");
+    }
+
     // Manual mode validations
     if is_manual && dispatch {
         bail!("dispatch is not supported for manual mode");
     }
     if is_manual && project.is_none() && workspace.is_none() {
-        bail!("manual mode requires -p project");
+        bail!("manual mode requires -p project or -w workspace");
     }
 
     // Non-manual modes require a ticket_id
