@@ -19,8 +19,9 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    SubscribeUiEventsRequest, TicketExportRecord, TicketExportRequest, TicketImportResponse,
-    UiEventBatch, UpdateTicketRequest, UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
+    StallWorkflowRequest, StallWorkflowResponse, SubscribeUiEventsRequest, TicketExportRecord,
+    TicketExportRequest, TicketImportResponse, UiEventBatch, UpdateTicketRequest,
+    UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
 };
 use workflow_db::WorkflowRepo;
 
@@ -1145,6 +1146,21 @@ impl TicketService for TicketServiceHandler {
         Ok(Response::new(CancelWorkflowResponse {}))
     }
 
+    async fn stall_workflow(
+        &self,
+        req: Request<StallWorkflowRequest>,
+    ) -> Result<Response<StallWorkflowResponse>, Status> {
+        let req = req.into_inner();
+        info!(ticket_id = %req.ticket_id, "stall_workflow request");
+
+        self.workflow_repo
+            .set_workflow_stalled(&req.ticket_id, "Manually stalled")
+            .await
+            .map_err(|e| Status::internal(format!("stall_workflow failed: {e}")))?;
+
+        Ok(Response::new(StallWorkflowResponse {}))
+    }
+
     async fn redrive_ticket(
         &self,
         req: Request<RedriveTicketRequest>,
@@ -1765,6 +1781,70 @@ mod tests {
             .unwrap()
             .expect("workflow should exist");
         assert_eq!(wf.status, LifecycleStatus::Cancelled);
+    }
+
+    // ── stall_workflow tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stall_workflow_no_workflow_is_noop() {
+        let (_test_db, handler) = setup_handler().await;
+
+        // No workflow exists for this ticket — should succeed silently.
+        let resp = TicketService::stall_workflow(
+            &handler,
+            Request::new(StallWorkflowRequest {
+                ticket_id: "nonexistent".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stall_workflow_sets_stalled_and_reason() {
+        let (_test_db, handler) = setup_handler().await;
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-stall".into()),
+                type_: "code".into(),
+                priority: 1,
+                title: "Stall me".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        handler
+            .workflow_repo
+            .create_workflow("t-stall", LifecycleStatus::Implementing)
+            .await
+            .unwrap();
+
+        let resp = TicketService::stall_workflow(
+            &handler,
+            Request::new(StallWorkflowRequest {
+                ticket_id: "t-stall".into(),
+            }),
+        )
+        .await;
+
+        assert!(resp.is_ok());
+
+        let wf = handler
+            .workflow_repo
+            .get_latest_workflow_by_ticket("t-stall")
+            .await
+            .unwrap()
+            .expect("workflow should still exist");
+        assert!(wf.stalled, "workflow should be marked stalled");
+        assert_eq!(
+            wf.stall_reason, "Manually stalled",
+            "stall_reason should be set"
+        );
     }
 
     #[tokio::test]
