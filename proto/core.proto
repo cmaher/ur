@@ -73,6 +73,7 @@ message WorkerInfoRequest {
 
 message WorkerInfoResponse {
   string workspace_dir = 1;
+  string agent_status = 2;
 }
 
 message WorkerListRequest {}

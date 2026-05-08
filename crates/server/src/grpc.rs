@@ -692,7 +692,16 @@ impl CoreService for CoreServiceHandler {
         let workspace_dir = workspace_dir
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        Ok(Response::new(WorkerInfoResponse { workspace_dir }))
+        let worker = self
+            .worker_repo
+            .get_worker(&req.worker_id)
+            .await
+            .map_err(|e| Status::internal(format!("failed to get worker: {e}")))?;
+        let agent_status = worker.map(|w| w.agent_status).unwrap_or_default();
+        Ok(Response::new(WorkerInfoResponse {
+            workspace_dir,
+            agent_status,
+        }))
     }
 
     async fn worker_list(
