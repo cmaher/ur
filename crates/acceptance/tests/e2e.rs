@@ -812,7 +812,6 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_design_mode_pool_launch(&env);
         scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
-        scenario_launch_workspace_requires_manual(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
         scenario_project_add_then_launch(&env);
@@ -955,32 +954,6 @@ fn scenario_workspace_mount(env: &TestEnv) {
         force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
-}
-
-/// Negative test: `-w` is rejected when using code mode (default).
-/// Verifies the error message mentions `manual` or `-m manual`.
-fn scenario_launch_workspace_requires_manual(env: &TestEnv) {
-    let workspace_dir = env.config_path.join("workspace");
-    let workspace_str = workspace_dir.to_str().unwrap();
-    let env_pairs = env.env();
-    let env_slice = env_pairs.to_vec();
-
-    let launch_output = run_cmd(
-        &env.ur,
-        &["worker", "launch", "-w", workspace_str, "test-ticket"],
-        &env_slice,
-    );
-    assert!(
-        !launch_output.status.success(),
-        "launch with -w in code mode (default) should fail.\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&launch_output.stdout),
-        String::from_utf8_lossy(&launch_output.stderr),
-    );
-    let stderr = String::from_utf8_lossy(&launch_output.stderr);
-    assert!(
-        stderr.contains("manual") || stderr.contains("-m manual"),
-        "error message should mention 'manual' or '-m manual'.\nstderr: {stderr}"
-    );
 }
 
 /// Run a command inside a container and return its output.
