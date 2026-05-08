@@ -204,14 +204,14 @@ enum WorkerCommands {
     Dir { worker_id: String },
     /// Force-stop a running worker process (via server)
     Kill { worker_id: String },
-    /// Launch a new worker process (requires -p project or -w workspace)
+    /// Launch a new worker process (requires -p project or -w workspace; manual mode accepts both)
     Launch {
         ticket_id: Option<String>,
-        /// Mount a host directory as the container workspace (mutually exclusive with -p)
-        #[arg(short = 'w', long = "workspace", conflicts_with = "project")]
+        /// Mount a host directory as the container workspace
+        #[arg(short = 'w', long = "workspace")]
         workspace: Option<PathBuf>,
-        /// Project key — determines container image from project config (mutually exclusive with -w)
-        #[arg(short = 'p', long = "project", conflicts_with = "workspace")]
+        /// Project key — determines container image and config from project config
+        #[arg(short = 'p', long = "project")]
         project: Option<String>,
         /// Attach to the process after launching
         #[arg(short = 'a', long = "attach")]
