@@ -720,6 +720,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_design_mode_pool_launch(&env);
         scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
+        scenario_launch_workspace_requires_manual(&env);
         scenario_project_image_rust(&env);
         scenario_project_add_image_flag(&env);
         scenario_project_add_then_launch(&env);
@@ -737,7 +738,6 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
     for ticket in [
-        "ping-test",
         "pool-test",
         "design-test-1",
         "design-test-2",
@@ -745,13 +745,17 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "rust-image-test",
         "hotreload-test",
         "script-pool-test",
-        "scriptproj-ws-test",
         "global-skill-test",
         "mount-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
-    // Manual worker uses a generated process_id (poolproj-man-0), not a ticket ID
+    // Manual workers use generated process_ids, not ticket IDs
+    // workspace-mount scenario uses "workspace-man-0" (workspace dir basename + -man-0)
+    force_remove_container(&env.runtime, &env.container_name("workspace-man-0"));
+    // hostexec-script-workspace scenario uses "script-workspace-man-0"
+    force_remove_container(&env.runtime, &env.container_name("script-workspace-man-0"));
+    // Pool-based manual worker uses "{project_key}-man-0"
     force_remove_container(
         &env.runtime,
         &env.container_name(&format!("{}-man-0", env.project_key)),
@@ -774,62 +778,76 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
 // Scenarios
 // ---------------------------------------------------------------------------
 
-/// Workspace mount: verify `-w` launches and mounts the host directory.
+/// Workspace mount: verify `-m manual -w <path>` launches a manual worker, mounts the host
+/// directory, and generates a process_id matching the `{basename}-man-0` pattern.
 fn scenario_workspace_mount(env: &TestEnv) {
-    let ticket_id = "ping-test";
-    let container_name = env.container_name(ticket_id);
+    let workspace_dir = env.config_path.join("workspace");
+    let workspace_basename = workspace_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
+    let expected_process_id = format!("{workspace_basename}-man-0");
+    let container_name = env.container_name(&expected_process_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch worker with workspace mount ----
-        let workspace_dir = env.config_path.join("workspace");
+        // ---- Launch manual worker with workspace mount (no ticket_id) ----
         let workspace_str = workspace_dir.to_str().unwrap();
         let launch_output = run_cmd(
             &env.ur,
-            &["worker", "launch", "-w", workspace_str, ticket_id],
+            &[
+                "--output",
+                "json",
+                "worker",
+                "launch",
+                "-m",
+                "manual",
+                "-w",
+                workspace_str,
+            ],
             &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -m manual -w failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
 
-        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+        // ---- Parse JSON and verify process_id pattern ----
+        let launch_json: serde_json::Value = serde_json::from_slice(&launch_output.stdout)
+            .expect("launch output should be valid JSON");
+        let process_id = launch_json["data"]["worker_id"]
+            .as_str()
+            .expect("launch response should have data.worker_id")
+            .to_owned();
+        let man_prefix = format!("{workspace_basename}-man-");
+        let slot_suffix = process_id.strip_prefix(&man_prefix).unwrap_or_else(|| {
+            panic!(
+                "process_id '{process_id}' should start with '{man_prefix}' \
+                 (expected pattern: {workspace_basename}-man-{{digit}})"
+            )
+        });
         assert!(
-            launch_stdout.contains(&container_name),
-            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+            slot_suffix.chars().all(|c| c.is_ascii_digit()),
+            "process_id suffix '{slot_suffix}' should be all digits in '{process_id}'"
+        );
+        assert_eq!(
+            process_id, expected_process_id,
+            "process_id should be '{expected_process_id}', got '{process_id}'"
         );
 
         wait_for_healthy(&env.runtime, &container_name);
 
         // ---- exec ur-ping inside container ----
-        let ping_output = Command::new(&env.runtime)
-            .args(["exec", &container_name, "ur-ping"])
-            .output()
-            .expect("failed to exec ur-ping in container");
+        assert_ping_pong(&env.runtime, &container_name);
 
-        assert_eq!(
-            ping_output.status.code(),
-            Some(0),
-            "ur-ping should exit 0.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&ping_output.stdout),
-            String::from_utf8_lossy(&ping_output.stderr),
-        );
-        let ping_stdout = String::from_utf8_lossy(&ping_output.stdout);
-        assert_eq!(
-            ping_stdout.trim(),
-            "pong",
-            "ur-ping should return 'pong', got: {ping_stdout}"
-        );
-
-        // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        // ---- Stop worker using auto-generated process_id ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &process_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop {process_id} failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
@@ -839,6 +857,32 @@ fn scenario_workspace_mount(env: &TestEnv) {
         force_remove_container(&env.runtime, &container_name);
         std::panic::resume_unwind(e);
     }
+}
+
+/// Negative test: `-w` is rejected when using code mode (default).
+/// Verifies the error message mentions `manual` or `-m manual`.
+fn scenario_launch_workspace_requires_manual(env: &TestEnv) {
+    let workspace_dir = env.config_path.join("workspace");
+    let workspace_str = workspace_dir.to_str().unwrap();
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let launch_output = run_cmd(
+        &env.ur,
+        &["worker", "launch", "-w", workspace_str, "test-ticket"],
+        &env_slice,
+    );
+    assert!(
+        !launch_output.status.success(),
+        "launch with -w in code mode (default) should fail.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&launch_output.stderr);
+    assert!(
+        stderr.contains("manual") || stderr.contains("-m manual"),
+        "error message should mention 'manual' or '-m manual'.\nstderr: {stderr}"
+    );
 }
 
 /// Run a command inside a container and return its output.
@@ -2257,10 +2301,11 @@ fn scenario_hostexec_script_pool(env: &TestEnv) {
 /// the right allowlist. The host-side `host-only.sh` is present in the
 /// workspace directory so the existence check passes.
 fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Path) {
-    // Ticket ID prefix "scriptproj" matches the configured project key, so the
-    // project key is automatically derived from the ID even under -w mode.
-    let ticket_id = "scriptproj-ws-test";
-    let container_name = env.container_name(ticket_id);
+    // Manual-mode workspace workers have no project key, so the script registry
+    // must deny all script invocations — even scripts that are declared for a
+    // project that happens to share the workspace basename prefix.
+    let process_id = "script-workspace-man-0";
+    let container_name = env.container_name(process_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
@@ -2285,53 +2330,58 @@ fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Pa
         std::fs::set_permissions(&script_dest, std::fs::Permissions::from_mode(0o755))
             .expect("failed to set script permissions");
 
-        // ---- Launch with -w; project key is derived from ticket ID prefix ----
+        // ---- Launch in manual mode with -w (no project key) ----
         let ws_str = ws_dir.to_str().unwrap();
         let launch_output = run_cmd(
             &env.ur,
-            &["worker", "launch", "-w", ws_str, ticket_id],
+            &["worker", "launch", "-m", "manual", "-w", ws_str],
             &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch -w failed for {ticket_id}.\nstdout: {}\nstderr: {}",
+            "ur worker launch -m manual -w failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
 
-        let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
-        assert!(
-            launch_stdout.contains(&container_name),
-            "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
-        );
-
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Create a temp marker dir on the host ----
+        // ---- Scripts must be denied: no project key in manual-mode -w workers ----
         let marker_dir = tempfile::tempdir().expect("failed to create marker temp dir");
         let marker_path = marker_dir.path().join("marker.txt");
-
-        // ---- Invoke the declared script from inside the container ----
-        assert_hostexec_script_works(
+        let marker_str = marker_path.to_string_lossy().to_string();
+        let denied_output = exec_in_container(
             &env.runtime,
             &container_name,
-            "workspace-tag-67890",
-            &marker_path,
+            &[
+                "workertools",
+                "host-exec",
+                "--script",
+                "/workspace/host-only.sh",
+                "workspace-tag-67890",
+                &marker_str,
+            ],
         );
-
-        // ---- Verify original script in workspace is unmodified ----
-        let script_after =
-            std::fs::read_to_string(&script_dest).expect("failed to read host-only.sh after test");
-        assert_eq!(
-            script_content, script_after,
-            "original host-only.sh in workspace must be unmodified after the test"
+        assert_ne!(
+            denied_output.status.code(),
+            Some(0),
+            "script should be denied for manual-mode worker (no project key).\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&denied_output.stdout),
+            String::from_utf8_lossy(&denied_output.stderr),
+        );
+        let stderr = String::from_utf8_lossy(&denied_output.stderr);
+        assert!(
+            stderr.contains("not allowed")
+                || stderr.contains("SCRIPT_NOT_ALLOWED")
+                || stderr.contains("PermissionDenied"),
+            "error message should indicate script is not allowed.\nstderr: {stderr}"
         );
 
         // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", process_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop {process_id} failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
