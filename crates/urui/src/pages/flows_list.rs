@@ -619,6 +619,11 @@ impl InputHandler for FlowListHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "S".to_string(),
+                description: "Stall".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "V".to_string(),
                 description: "Move to Verify".to_string(),
                 common: false,
@@ -687,8 +692,9 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
     }
     match key.code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::FlowsApprove)),
-        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
+        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::FlowsStall)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowsRedrive)),
+        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
         _ => None,
     }
 }
@@ -998,6 +1004,16 @@ mod tests {
     }
 
     #[test]
+    fn handler_shift_s_captures_stall() {
+        let handler = FlowListHandler;
+        let key = make_key(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowsStall)) => {}
+            other => panic!("expected stall, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_shift_v_captures_redrive() {
         let handler = FlowListHandler;
         let key = make_key(KeyCode::Char('V'), KeyModifiers::SHIFT);
@@ -1022,6 +1038,10 @@ mod tests {
         let cmds = handler.footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Approve"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.key_label == "S" && c.description == "Stall")
+        );
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
         assert!(cmds.iter().any(|c| c.description == "Move to Verify"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));
