@@ -22,13 +22,33 @@ fn builderd_bin() -> std::path::PathBuf {
     std::path::PathBuf::from("builderd")
 }
 
-/// Check whether a process with the given PID is alive.
-fn is_pid_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
+/// Check whether the given PID is a live builderd process. PID files survive
+/// crashes and reboots, so a bare existence check (kill -0) can match an
+/// unrelated process that reused the PID — `start_builderd` would then short-
+/// circuit and no builderd would actually be running.
+fn is_builderd_running(pid: u32) -> bool {
+    process_command_name(pid).as_deref() == Some("builderd")
+}
+
+/// Return the command basename for a PID, or `None` if the process doesn't
+/// exist. Uses `ps -o comm=` for cross-platform support (Linux returns the
+/// basename, macOS returns the full path — `Path::file_name` normalizes).
+fn process_command_name(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    std::path::Path::new(&raw)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
 }
 
 #[instrument(skip(config, output), fields(builderd_port = config.builderd_port))]
@@ -52,12 +72,13 @@ pub fn start_builderd(config: &ur_config::Config, output: &OutputManager) -> Res
     if pid_file.exists() {
         let pid_str = std::fs::read_to_string(&pid_file)?;
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if is_pid_alive(pid) {
+            if is_builderd_running(pid) {
                 info!(pid, "builderd already running");
                 output.print_text(&format!("builderd already running (pid {pid})"));
                 return Ok(());
             }
-            debug!(pid, "removing stale PID file");
+            let other = process_command_name(pid);
+            info!(pid, ?other, "removing stale builderd PID file");
             std::fs::remove_file(&pid_file)?;
         }
     }
