@@ -411,6 +411,7 @@ impl CmdRunner {
         match op {
             FlowOpMsg::Cancel { ticket_id } => self.exec_flow_cancel(ticket_id),
             FlowOpMsg::Approve { ticket_id } => self.exec_flow_approve(ticket_id),
+            FlowOpMsg::Stall { ticket_id } => self.exec_flow_stall(ticket_id),
         }
     }
 
@@ -435,6 +436,19 @@ impl CmdRunner {
             let result = cancel_workflow(port, &ticket_id).await;
             let msg = FlowOpResultMsg::Cancelled {
                 result: result.map(|()| format!("Cancelled workflow for {ticket_id}")),
+            };
+            let _ = tx.send(Msg::FlowOpResult(msg));
+        });
+    }
+
+    fn exec_flow_stall(&self, ticket_id: String) {
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        tokio::spawn(async move {
+            debug!(port, %ticket_id, "v2: stalling workflow");
+            let result = stall_workflow(port, &ticket_id).await;
+            let msg = FlowOpResultMsg::Stalled {
+                result: result.map(|()| format!("Stalled workflow for {ticket_id}")),
             };
             let _ = tx.send(Msg::FlowOpResult(msg));
         });
@@ -1297,6 +1311,26 @@ async fn cancel_workflow(port: u16, ticket_id: &str) -> Result<(), String> {
         .await
         .map_err(|e| {
             error!(port, %ticket_id, error = %e, "v2: workflow cancel failed");
+            e.to_string()
+        })?;
+    Ok(())
+}
+
+/// Stall the active workflow for a ticket via `StallWorkflow` gRPC.
+async fn stall_workflow(port: u16, ticket_id: &str) -> Result<(), String> {
+    use ur_rpc::connection::connect;
+    use ur_rpc::proto::ticket::StallWorkflowRequest;
+    use ur_rpc::proto::ticket::ticket_service_client::TicketServiceClient;
+
+    let channel = connect(port).await.map_err(|e| e.to_string())?;
+    let mut client = TicketServiceClient::new(channel);
+    client
+        .stall_workflow(StallWorkflowRequest {
+            ticket_id: ticket_id.to_owned(),
+        })
+        .await
+        .map_err(|e| {
+            error!(port, %ticket_id, error = %e, "v2: workflow stall failed");
             e.to_string()
         })?;
     Ok(())

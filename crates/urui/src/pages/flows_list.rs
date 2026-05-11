@@ -439,6 +439,7 @@ pub fn handle_flows_nav(mut model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) 
         NavMsg::FlowsSelect => handle_select(model),
         NavMsg::FlowsCancel => handle_cancel(model),
         NavMsg::FlowsApprove => handle_approve(model),
+        NavMsg::FlowsStall => handle_stall(model),
         NavMsg::FlowsRedrive => handle_redrive(model),
         NavMsg::FlowsGoto => handle_goto(model),
         _ => (model, vec![]),
@@ -531,6 +532,18 @@ fn handle_approve(model: Model) -> (Model, Vec<Cmd>) {
     }
 }
 
+/// Stall the selected flow's workflow.
+fn handle_stall(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(wf) = selected_workflow(&model) {
+        let msg = Msg::FlowOp(FlowOpMsg::Stall {
+            ticket_id: wf.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
 /// Redrive the selected flow's workflow.
 fn handle_redrive(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(wf) = selected_workflow(&model) {
@@ -606,6 +619,11 @@ impl InputHandler for FlowListHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "S".to_string(),
+                description: "Stall".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "V".to_string(),
                 description: "Move to Verify".to_string(),
                 common: false,
@@ -674,8 +692,9 @@ fn handle_operation_key(key: KeyEvent) -> Option<Msg> {
     }
     match key.code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::FlowsApprove)),
-        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
+        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::FlowsStall)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowsRedrive)),
+        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowsCancel)),
         _ => None,
     }
 }
@@ -985,6 +1004,16 @@ mod tests {
     }
 
     #[test]
+    fn handler_shift_s_captures_stall() {
+        let handler = FlowListHandler;
+        let key = make_key(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowsStall)) => {}
+            other => panic!("expected stall, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_shift_v_captures_redrive() {
         let handler = FlowListHandler;
         let key = make_key(KeyCode::Char('V'), KeyModifiers::SHIFT);
@@ -1009,6 +1038,10 @@ mod tests {
         let cmds = handler.footer_commands();
         assert!(!cmds.is_empty());
         assert!(cmds.iter().any(|c| c.description == "Approve"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.key_label == "S" && c.description == "Stall")
+        );
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
         assert!(cmds.iter().any(|c| c.description == "Move to Verify"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));

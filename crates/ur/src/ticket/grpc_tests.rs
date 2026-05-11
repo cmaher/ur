@@ -369,6 +369,13 @@ impl TicketService for MockTicketStore {
         Err(Status::unimplemented("not implemented in mock"))
     }
 
+    async fn stall_workflow(
+        &self,
+        _req: Request<ur_rpc::proto::ticket::StallWorkflowRequest>,
+    ) -> Result<Response<ur_rpc::proto::ticket::StallWorkflowResponse>, Status> {
+        Err(Status::unimplemented("not implemented in mock"))
+    }
+
     async fn get_workflow(
         &self,
         _req: Request<ur_rpc::proto::ticket::GetWorkflowRequest>,

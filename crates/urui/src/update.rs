@@ -227,22 +227,16 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
             | NavMsg::FlowsRefresh
             | NavMsg::FlowsCancel
             | NavMsg::FlowsApprove
+            | NavMsg::FlowsStall
             | NavMsg::FlowsRedrive
             | NavMsg::FlowsGoto
-    ) {
-        return Some(super::pages::flows_list::handle_flows_nav(model, nav_msg));
-    }
-
-    if matches!(
-        nav_msg,
-        NavMsg::FlowDetailCancel
+            | NavMsg::FlowDetailCancel
             | NavMsg::FlowDetailApprove
+            | NavMsg::FlowDetailStall
             | NavMsg::FlowDetailRedrive
             | NavMsg::FlowDetailGoto
     ) {
-        return Some(super::pages::flow_detail::handle_flow_detail_nav(
-            model, nav_msg,
-        ));
+        return Some(dispatch_flow_page_nav(model, nav_msg));
     }
 
     if matches!(
@@ -260,6 +254,27 @@ fn dispatch_page_nav(model: Model, nav_msg: NavMsg) -> Option<(Model, Vec<Cmd>)>
     }
 
     Some(handle_global_nav(model, nav_msg))
+}
+
+/// Route flow-list and flow-detail NavMsg variants to their page handlers.
+fn dispatch_flow_page_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>) {
+    if matches!(
+        nav_msg,
+        NavMsg::FlowsNavigate { .. }
+            | NavMsg::FlowsPageRight
+            | NavMsg::FlowsPageLeft
+            | NavMsg::FlowsSelect
+            | NavMsg::FlowsRefresh
+            | NavMsg::FlowsCancel
+            | NavMsg::FlowsApprove
+            | NavMsg::FlowsStall
+            | NavMsg::FlowsRedrive
+            | NavMsg::FlowsGoto
+    ) {
+        return super::pages::flows_list::handle_flows_nav(model, nav_msg);
+    }
+
+    super::pages::flow_detail::handle_flow_detail_nav(model, nav_msg)
 }
 
 /// Handle global navigation actions: tab switching, pushing, popping, and goto.
@@ -674,6 +689,7 @@ fn handle_flow_op(model: Model, op: FlowOpMsg) -> (Model, Vec<Cmd>) {
     let status_text = match &op {
         FlowOpMsg::Cancel { ticket_id } => format!("Cancelling workflow for {ticket_id}..."),
         FlowOpMsg::Approve { ticket_id } => format!("Approving workflow for {ticket_id}..."),
+        FlowOpMsg::Stall { ticket_id } => format!("Stalling workflow for {ticket_id}..."),
     };
 
     let (model, mut cmds) = update(model, Msg::StatusShow(status_text));
@@ -690,6 +706,7 @@ fn handle_flow_op_result(model: Model, result_msg: FlowOpResultMsg) -> (Model, V
     let result = match result_msg {
         FlowOpResultMsg::Cancelled { result } => result,
         FlowOpResultMsg::Approved { result } => result,
+        FlowOpResultMsg::Stalled { result } => result,
     };
 
     match result {
@@ -2151,6 +2168,57 @@ mod tests {
             }),
         );
         assert!(new_model.status.is_none());
+    }
+
+    #[test]
+    fn flow_op_stall_sets_status_and_cmd() {
+        use crate::msg::FlowOpMsg;
+        let model = Model::initial();
+        let (new_model, cmds) = update(
+            model,
+            Msg::FlowOp(FlowOpMsg::Stall {
+                ticket_id: "ur-abc".into(),
+            }),
+        );
+        assert!(new_model.status.is_some());
+        assert!(new_model.status.as_ref().unwrap().text.contains("Stalling"));
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::FlowOp(_))));
+    }
+
+    #[test]
+    fn flow_op_result_stalled_success_shows_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Stalled {
+                result: Ok("Stalled workflow for ur-abc".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Success
+        );
+    }
+
+    #[test]
+    fn flow_op_result_stalled_error_shows_error_banner() {
+        use super::super::components::banner::BannerVariant;
+        use crate::msg::FlowOpResultMsg;
+        let model = Model::initial();
+        let (new_model, _) = update(
+            model,
+            Msg::FlowOpResult(FlowOpResultMsg::Stalled {
+                result: Err("connection refused".into()),
+            }),
+        );
+        assert!(new_model.banner.is_some());
+        assert_eq!(
+            new_model.banner.as_ref().unwrap().variant,
+            BannerVariant::Error
+        );
     }
 
     // ── Worker operation tests ────────────────────────────────────────

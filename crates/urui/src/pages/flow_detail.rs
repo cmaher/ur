@@ -290,6 +290,7 @@ pub fn handle_flow_detail_nav(model: Model, nav_msg: NavMsg) -> (Model, Vec<Cmd>
     match nav_msg {
         NavMsg::FlowDetailCancel => handle_cancel(model),
         NavMsg::FlowDetailApprove => handle_approve(model),
+        NavMsg::FlowDetailStall => handle_stall(model),
         NavMsg::FlowDetailRedrive => handle_redrive(model),
         NavMsg::FlowDetailGoto => handle_goto(model),
         _ => (model, vec![]),
@@ -312,6 +313,18 @@ fn handle_cancel(model: Model) -> (Model, Vec<Cmd>) {
 fn handle_approve(model: Model) -> (Model, Vec<Cmd>) {
     if let Some(ref detail) = model.flow_detail {
         let msg = Msg::FlowOp(FlowOpMsg::Approve {
+            ticket_id: detail.ticket_id.clone(),
+        });
+        crate::update::update(model, msg)
+    } else {
+        (model, vec![])
+    }
+}
+
+/// Stall the workflow shown in flow detail.
+fn handle_stall(model: Model) -> (Model, Vec<Cmd>) {
+    if let Some(ref detail) = model.flow_detail {
+        let msg = Msg::FlowOp(FlowOpMsg::Stall {
             ticket_id: detail.ticket_id.clone(),
         });
         crate::update::update(model, msg)
@@ -387,6 +400,11 @@ impl InputHandler for FlowDetailHandler {
                 common: false,
             },
             FooterCommand {
+                key_label: "S".to_string(),
+                description: "Stall".to_string(),
+                common: false,
+            },
+            FooterCommand {
                 key_label: "V".to_string(),
                 description: "Redrive".to_string(),
                 common: false,
@@ -413,8 +431,9 @@ impl InputHandler for FlowDetailHandler {
 fn handle_shift_key(code: KeyCode) -> Option<Msg> {
     match code {
         KeyCode::Char('A') => Some(Msg::Nav(NavMsg::FlowDetailApprove)),
-        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowDetailCancel)),
+        KeyCode::Char('S') => Some(Msg::Nav(NavMsg::FlowDetailStall)),
         KeyCode::Char('V') => Some(Msg::Nav(NavMsg::FlowDetailRedrive)),
+        KeyCode::Char('X') => Some(Msg::Nav(NavMsg::FlowDetailCancel)),
         _ => None,
     }
 }
@@ -605,6 +624,16 @@ mod tests {
     }
 
     #[test]
+    fn handler_shift_s_captures_stall() {
+        let handler = FlowDetailHandler;
+        let key = make_key(KeyCode::Char('S'), KeyModifiers::SHIFT);
+        match handler.handle_key(key) {
+            InputResult::Capture(Msg::Nav(NavMsg::FlowDetailStall)) => {}
+            other => panic!("expected stall, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn handler_shift_v_captures_redrive() {
         let handler = FlowDetailHandler;
         let key = make_key(KeyCode::Char('V'), KeyModifiers::SHIFT);
@@ -636,8 +665,12 @@ mod tests {
     fn handler_footer_has_expected_commands() {
         let handler = FlowDetailHandler;
         let cmds = handler.footer_commands();
-        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds.len(), 5);
         assert!(cmds.iter().any(|c| c.description == "Approve"));
+        assert!(
+            cmds.iter()
+                .any(|c| c.key_label == "S" && c.description == "Stall")
+        );
         assert!(cmds.iter().any(|c| c.description == "Redrive"));
         assert!(cmds.iter().any(|c| c.description == "Cancel"));
         assert!(cmds.iter().any(|c| c.description == "Goto"));

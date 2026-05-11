@@ -19,6 +19,7 @@ service TicketService {
   rpc RedriveTicket(RedriveTicketRequest) returns (RedriveTicketResponse);
   rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
   rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
+  rpc StallWorkflow(StallWorkflowRequest) returns (StallWorkflowResponse);
   rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
   rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
   rpc SubscribeUiEvents(SubscribeUiEventsRequest) returns (stream UiEventBatch);
@@ -295,6 +296,14 @@ message CancelWorkflowRequest {
 }
 
 message CancelWorkflowResponse {}
+
+// --- StallWorkflow ---
+
+message StallWorkflowRequest {
+  string ticket_id = 1;
+}
+
+message StallWorkflowResponse {}
 
 // --- WorkflowInfo ---
 
