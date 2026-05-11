@@ -43,7 +43,6 @@ pub struct WorkerDaemonServiceImpl {
     pub worker_secret: String,
     pub dispatch_buffer: Arc<Mutex<DispatchBuffer>>,
     pub dispatch_ticket_id: Arc<Mutex<Option<String>>>,
-    pub is_design_worker: bool,
 }
 
 impl WorkerDaemonServiceImpl {
@@ -452,12 +451,6 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         &self,
         request: Request<SetTicketRequest>,
     ) -> Result<Response<SetTicketResponse>, Status> {
-        if !self.is_design_worker {
-            return Err(Status::failed_precondition(
-                "SetTicket is only available in design mode",
-            ));
-        }
-
         let ticket_id = request.into_inner().ticket_id;
         info!(ticket_id = %ticket_id, "SetTicket received");
 
@@ -515,12 +508,6 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
         &self,
         _request: Request<DispatchTicketRequest>,
     ) -> Result<Response<DispatchTicketResponse>, Status> {
-        if !self.is_design_worker {
-            return Err(Status::failed_precondition(
-                "DispatchTicket is only available in design mode",
-            ));
-        }
-
         let ticket_id = {
             let stored = self.dispatch_ticket_id.lock().await;
             stored.clone()
