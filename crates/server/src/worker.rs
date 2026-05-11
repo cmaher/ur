@@ -611,6 +611,20 @@ impl WorkerManager {
 
         // Build RunOpts via the builder
         let container_name = format!("{}{}", self.network_config.worker_prefix, config.process_id);
+
+        // Remove any stopped/orphaned container with this name before launching.
+        // A crash can leave a container in Docker that isn't tracked in the DB,
+        // which would cause docker run to fail with a name conflict.
+        tolerate_missing(
+            self.builder_container_client
+                .stop_worker(StopWorkerRequest {
+                    container_id: container_name.clone(),
+                })
+                .await,
+            &container_name,
+            "pre-launch cleanup",
+        )?;
+
         let opts = RunOptsBuilder::new(
             config.image_id.clone(),
             container_name,
@@ -825,12 +839,31 @@ impl WorkerManager {
             .list_workers_by_container_status("running")
             .await
             .map_err(|e| format!("db error: {e}"))?;
-        let worker = workers
-            .iter()
-            .find(|w| w.process_id == process_id)
-            .ok_or_else(|| format!("unknown worker: {process_id}"))?;
-        let worker_id = WorkerId::parse(&worker.worker_id)?;
-        self.stop_by_worker_id(&worker_id).await
+        if let Some(worker) = workers.iter().find(|w| w.process_id == process_id) {
+            let worker_id = WorkerId::parse(&worker.worker_id)?;
+            return self.stop_by_worker_id(&worker_id).await;
+        }
+
+        // Not in DB — fall back to stopping by container name. This handles
+        // orphaned containers whose DB row was cleaned up after a crash.
+        let container_name = format!("{}{}", self.network_config.worker_prefix, process_id);
+        warn!(
+            process_id,
+            container_name, "worker not in database, attempting container stop by name"
+        );
+        match self
+            .builder_container_client
+            .stop_worker(StopWorkerRequest {
+                container_id: container_name,
+            })
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(status) if status.code() == Code::NotFound => {
+                Err(format!("unknown worker: {process_id}"))
+            }
+            Err(status) => Err(status.to_string()),
+        }
     }
 }
 
