@@ -136,6 +136,47 @@ impl WorkerDaemonServiceImpl {
         Ok(())
     }
 
+    /// Check whether this worker is currently stalled by querying the server's WorkerInfo RPC.
+    ///
+    /// Returns `true` if the worker is stalled. Returns `false` on any RPC failure (conservative:
+    /// a missed nudge is harmless; nudging a stalled worker is not).
+    async fn is_stalled(&self) -> bool {
+        let addr = format!("http://{}", self.server_addr);
+        let worker_id = self.worker_id.clone();
+        let worker_secret = self.worker_secret.clone();
+
+        let channel = match tonic::transport::Endpoint::try_from(addr).map(|ep| ep.connect_lazy()) {
+            Ok(ch) => ch,
+            Err(e) => {
+                warn!(error = %e, "failed to create channel for WorkerInfo (skipping nudge)");
+                return true;
+            }
+        };
+
+        let mut client = CoreServiceClient::new(channel);
+
+        let mut request = Request::new(ur_rpc::proto::core::WorkerInfoRequest {
+            worker_id: worker_id.clone(),
+        });
+        inject_auth_headers(request.metadata_mut(), &worker_id, &worker_secret);
+
+        match client.worker_info(request).await {
+            Ok(response) => {
+                let status = response.into_inner().agent_status;
+                if status == ur_rpc::agent_status::STALLED {
+                    info!("Worker is stalled, skipping nudge");
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "WorkerInfo RPC failed (skipping nudge)");
+                true
+            }
+        }
+    }
+
     /// Fire-and-forget: send WorkflowStepComplete RPC to the ur-server.
     fn send_workflow_step_complete(&self) {
         let addr = format!("http://{}", self.server_addr);
@@ -271,11 +312,17 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             }
 
             let step = buf.lifecycle_step.clone();
+            drop(buf);
+
+            // Check server for stall state before nudging. If stalled or RPC fails, skip.
+            if self.is_stalled().await {
+                return Ok(Response::new(NotifyIdleResponse {}));
+            }
+
             info!(
                 lifecycle_step = step.as_str(),
                 "Buffer drained but step not complete, nudging agent"
             );
-            drop(buf);
 
             let nudge_message = format!(
                 "Your '{step}' step is still in progress. Next steps:\n\
