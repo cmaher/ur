@@ -32,13 +32,21 @@ struct Cli {
     /// Directory for log files. Defaults to `<config_dir>/logs`.
     #[arg(long)]
     logs_dir: Option<PathBuf>,
+
+    /// Root config directory for project config files (e.g., projects/<key>/local/).
+    /// Defaults to `~/.ur` (same as $UR_CONFIG). Overrides the UR_CONFIG env var.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let config_dir = ur_config::resolve_config_dir()?;
+    let config_dir = match cli.config_dir {
+        Some(dir) => dir,
+        None => ur_config::resolve_config_dir()?,
+    };
     let logs_dir = cli.logs_dir.unwrap_or_else(|| config_dir.join("logs"));
     std::fs::create_dir_all(&logs_dir)?;
     let _log_guard = logging::init(&logs_dir);

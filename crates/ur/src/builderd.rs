@@ -128,6 +128,8 @@ fn builderd_args(config: &ur_config::Config) -> Vec<String> {
         config.workspace.display().to_string(),
         "--logs-dir".to_string(),
         config.logs_dir.display().to_string(),
+        "--config-dir".to_string(),
+        config.config_dir.display().to_string(),
     ]
 }
 
@@ -140,6 +142,8 @@ fn builderd_args(config: &ur_config::Config) -> Vec<String> {
         config.workspace.display().to_string(),
         "--logs-dir".to_string(),
         config.logs_dir.display().to_string(),
+        "--config-dir".to_string(),
+        config.config_dir.display().to_string(),
     ];
 
     // Bind builderd to the Docker bridge gateway IP so containers can reach it
