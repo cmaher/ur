@@ -215,6 +215,7 @@ dependencies = [
  "clap",
  "container",
  "prost",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -223,6 +224,7 @@ dependencies = [
  "tracing-subscriber",
  "ur_config",
  "ur_rpc",
+ "ur_utils",
 ]
 
 [[package]]
