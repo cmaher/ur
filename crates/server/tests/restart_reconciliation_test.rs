@@ -112,12 +112,9 @@ async fn make_components_with_db(
     let ticket_repo = ticket_db::TicketRepo::new(ticket_pool.clone(), graph_manager);
     let workflow_repo = workflow_db::WorkflowRepo::new(workflow_pool.clone());
     let channel = tonic::transport::Channel::from_static("http://localhost:12322").connect_lazy();
-    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
-    let local_repo = local_repo::GitBackend {
-        client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
-    };
     let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel);
+        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
+    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
     let network_manager = ur_server::network_manager::NetworkManager::new(
         builder_container_client.clone(),
         network_config.worker_name.clone(),
@@ -128,13 +125,9 @@ async fn make_components_with_db(
     );
     let repo_pool_manager = ur_server::RepoPoolManager::new(
         &config,
-        workspace.clone(),
-        workspace.clone(),
-        builderd_client,
-        local_repo,
         worker_repo.clone(),
-        workspace.join("config"),
         project_registry.clone(),
+        builder_pool_client,
     );
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),

@@ -235,26 +235,19 @@ async fn setup_db() -> (TestDb, TicketRepo, WorkflowRepo, WorkerRepo) {
 
 fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
     let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel);
+        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
+    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
     let config = dummy_config();
-    let local_repo = local_repo::GitBackend {
-        client: dummy_builderd_client(),
-    };
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
     );
     let pool = ur_server::RepoPoolManager::new(
         &config,
-        std::path::PathBuf::from("/tmp/test/workspace"),
-        std::path::PathBuf::from("/tmp/test/workspace"),
-        builderd_client,
-        local_repo,
         worker_repo.clone(),
-        std::path::PathBuf::from("/tmp/test/config"),
         project_registry,
+        builder_pool_client,
     );
     let network_manager = ur_server::network_manager::NetworkManager::new(
         builder_container_client.clone(),
@@ -366,25 +359,18 @@ fn dummy_launch_manager(
 ) -> ur_server::grpc::LaunchManager {
     let config = dummy_config();
     let channel = tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-    let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
     let builder_container_client =
-        ur_server::builder_container_client::BuilderContainerClient::new(channel);
-    let local_repo = local_repo::GitBackend {
-        client: dummy_builderd_client(),
-    };
+        ur_server::builder_container_client::BuilderContainerClient::new(channel.clone());
+    let builder_pool_client = ur_server::BuilderPoolClient::new(channel);
     let project_registry = ur_server::ProjectRegistry::new(
         config.projects.clone(),
         ur_server::hostexec::HostExecConfigManager::empty(),
     );
     let pool = ur_server::RepoPoolManager::new(
         &config,
-        std::path::PathBuf::from("/tmp/test/workspace"),
-        std::path::PathBuf::from("/tmp/test/workspace"),
-        builderd_client,
-        local_repo,
         worker_repo.clone(),
-        std::path::PathBuf::from("/tmp/test/config"),
         project_registry.clone(),
+        builder_pool_client,
     );
     let network_manager = ur_server::network_manager::NetworkManager::new(
         builder_container_client.clone(),

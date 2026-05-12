@@ -571,26 +571,19 @@ mod tests {
     fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
         let channel =
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let builder_container_client =
-            crate::builder_container_client::BuilderContainerClient::new(channel);
+            crate::builder_container_client::BuilderContainerClient::new(channel.clone());
+        let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let config = dummy_config();
-        let local_repo = local_repo::GitBackend {
-            client: dummy_builderd_client(),
-        };
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
         );
         let pool = crate::RepoPoolManager::new(
             &config,
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            builderd_client,
-            local_repo,
             worker_repo.clone(),
-            std::path::PathBuf::from("/tmp/test/config"),
             project_registry,
+            builder_pool_client,
         );
         let network_manager = crate::network_manager::NetworkManager::new(
             builder_container_client.clone(),
