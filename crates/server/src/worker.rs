@@ -649,19 +649,9 @@ impl WorkerManager {
         .add_project_hostexec_scripts(
             &config.hostexec_scripts,
             &shim_host_path,
-            config
-                .workspace_dir
-                .as_ref()
-                .and_then(|p| {
-                    let local = self.repo_pool_manager.host_to_local_path(p);
-                    // Pool-mode slots are under host_workspace and get converted to a
-                    // container-local path that is actually mounted in the server
-                    // container — existence check is meaningful there.
-                    // Workspace-mode paths are arbitrary host paths not mounted in
-                    // the server container; skip the check to avoid false negatives.
-                    if local != *p { Some(local) } else { None }
-                })
-                .as_deref(),
+            // Builderd's LaunchWorker validates volume mount sources against the host
+            // filesystem, so no local existence check is needed here.
+            None,
         )?
         .add_ports(&config.ports)
         .add_env_vars(env_vars)
@@ -1140,24 +1130,17 @@ mod tests {
         let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
-        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
-        let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
-        };
-        let builder_container_client = BuilderContainerClient::new(channel);
+        let builder_container_client = BuilderContainerClient::new(channel.clone());
+        let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
         );
         let repo_pool_manager = RepoPoolManager::new(
             &config,
-            workspace.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            builderd_client,
-            local_repo,
             worker_repo.clone(),
-            workspace.path().join("config"),
             project_registry,
+            builder_pool_client,
         );
         let network_manager = NetworkManager::new(
             builder_container_client.clone(),
@@ -1892,24 +1875,17 @@ model = "haiku"
         let (worker_repo, test_db) = test_worker_repo().await;
         let channel =
             tonic::transport::Channel::from_static("http://localhost:12323").connect_lazy();
-        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
-        let local_repo = local_repo::GitBackend {
-            client: ur_rpc::proto::builder::BuilderdClient::new(channel.clone()),
-        };
-        let builder_container_client = BuilderContainerClient::new(channel);
+        let builder_container_client = BuilderContainerClient::new(channel.clone());
+        let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
         );
         let repo_pool_manager = RepoPoolManager::new(
             &config,
-            workspace.path().to_path_buf(),
-            workspace.path().to_path_buf(),
-            builderd_client,
-            local_repo,
             worker_repo.clone(),
-            workspace.path().join("config"),
             project_registry,
+            builder_pool_client,
         );
         let network_manager = NetworkManager::new(
             builder_container_client.clone(),

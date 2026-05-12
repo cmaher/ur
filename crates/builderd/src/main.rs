@@ -7,10 +7,12 @@ use tracing::info;
 
 use ur_rpc::proto::builder::builder_daemon_service_server::BuilderDaemonServiceServer;
 use ur_rpc::proto::builder_container::builder_container_service_server::BuilderContainerServiceServer;
+use ur_rpc::proto::builder_pool::builder_pool_service_server::BuilderPoolServiceServer;
 
 mod container_handler;
 mod handler;
 mod logging;
+mod pool_handler;
 mod registry;
 
 #[derive(Parser)]
@@ -32,13 +34,21 @@ struct Cli {
     /// Directory for log files. Defaults to `<config_dir>/logs`.
     #[arg(long)]
     logs_dir: Option<PathBuf>,
+
+    /// Root config directory for project config files (e.g., projects/<key>/local/).
+    /// Defaults to `~/.ur` (same as $UR_CONFIG). Overrides the UR_CONFIG env var.
+    #[arg(long)]
+    config_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let config_dir = ur_config::resolve_config_dir()?;
+    let config_dir = match cli.config_dir {
+        Some(dir) => dir,
+        None => ur_config::resolve_config_dir()?,
+    };
     let logs_dir = cli.logs_dir.unwrap_or_else(|| config_dir.join("logs"));
     std::fs::create_dir_all(&logs_dir)?;
     let _log_guard = logging::init(&logs_dir);
@@ -54,6 +64,15 @@ async fn main() -> anyhow::Result<()> {
     let registry = registry::ProcessRegistry::new();
     registry.spawn_reap_task();
 
+    let pool_workspace = cli
+        .workspace
+        .clone()
+        .unwrap_or_else(|| config_dir.join("workspace"));
+    let pool_handler = pool_handler::BuilderPoolHandler {
+        workspace: pool_workspace,
+        config_dir: config_dir.clone(),
+    };
+
     let handler = handler::BuilderDaemonHandler {
         workspace: cli.workspace,
         registry,
@@ -64,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
     Server::builder()
         .add_service(BuilderDaemonServiceServer::new(handler))
         .add_service(BuilderContainerServiceServer::new(container_handler))
+        .add_service(BuilderPoolServiceServer::new(pool_handler))
         .serve(addr)
         .await?;
 

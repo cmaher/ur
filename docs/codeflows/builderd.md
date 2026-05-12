@@ -15,8 +15,11 @@ ur-server (container)
 ├── HostExecServiceHandler (worker commands: git, gh)
 │   └── BuilderDaemonServiceClient::exec() ──────┐
 │                                                  │
-├── RepoPoolManager (pool git operations)          │
-│   └── BuilderdClient::exec_and_check() ─────────┤
+├── RepoPoolManager (pool slot operations)         │
+│   └── BuilderPoolClient (6 pool RPCs) ──────────┤
+│                                                  │
+├── WorkerManager / NetworkManager / SquidManager  │
+│   └── BuilderContainerClient ───────────────────┤
 │                                                  │
 │                                                  ▼
 │                                     ┌─────────────────────┐
@@ -57,6 +60,39 @@ The `--workspace` flag is passed by `ur start` from `config.workspace` in ur.tom
 | `%WORKSPACE%` | `/Users/me/.ur/workspace` | `/Users/me/.ur/workspace` |
 | `/absolute/path` | (any) | `/absolute/path` (no replacement) |
 
+## BuilderPoolService
+
+Builderd hosts a third gRPC service, `BuilderPoolService`, that owns all pool slot
+filesystem and git operations. The server only performs DB orchestration (availability
+queries, slot row inserts/deletes, worker-slot linking); builderd does the actual
+cloning, resetting, and cleaning on the host filesystem.
+
+### RPCs
+
+| RPC | Purpose | Handler |
+|---|---|---|
+| `ScanSlots` | Scan the pool directory, return numeric slot indices | `crates/builderd/src/pool_handler.rs` |
+| `PrepareNewSlot` | Clone a repo into a fresh slot directory | `crates/builderd/src/pool_handler.rs` |
+| `RecycleSlot` | Fetch + reset an existing slot (reclone on failure) | `crates/builderd/src/pool_handler.rs` |
+| `PrepareSharedSlot` | Clone or refresh the shared (read-only) slot | `crates/builderd/src/pool_handler.rs` |
+| `CheckoutBranch` | Create a worker-specific branch in a slot | `crates/builderd/src/pool_handler.rs` |
+| `CleanSlot` | Fetch + reset a slot (without local overlay) before reuse | `crates/builderd/src/pool_handler.rs` |
+
+`PrepareNewSlot` and `RecycleSlot` both apply local overlay files from
+`<config_dir>/projects/<project>/local/` after each git operation.
+`CleanSlot` does not apply local overlays — it only resets to clean state.
+
+Pool slots live at `<workspace>/pool/<project-key>/<slot-name>/`.
+The `shared` slot is a special non-numeric slot for read-only multi-worker mounts.
+
+### Client in the Server
+
+`BuilderPoolClient` (`crates/server/src/builder_pool_client.rs`) is the thin
+clone-able wrapper used by `RepoPoolManager`. It connects to builderd via the same
+`UR_BUILDERD_ADDR` used by the other builderd clients.
+
+Proto: `proto/builder_pool.proto` (`ur.builder_pool` package).
+
 ## BuilderContainerService
 
 Builderd also hosts a second gRPC service, `BuilderContainerService`, that owns all worker
@@ -84,9 +120,9 @@ clone-able wrapper used by the server. It connects to builderd via the same
 
 Proto: `proto/builder_container.proto` (`ur.builder_container` package).
 
-## Two Client Paths
+## Client Paths
 
-Builderd has two clients in the server, serving different use cases:
+Builderd has three clients in the server, serving different use cases:
 
 ### 1. HostExecServiceHandler (worker → server → builderd)
 
@@ -95,12 +131,12 @@ Builderd has two clients in the server, serving different use cases:
 - **CWD source**: `map_working_dir()` replaces `/workspace` prefix with `%WORKSPACE%`
 - **File**: `crates/server/src/grpc_hostexec.rs`
 
-### 2. BuilderdClient (server-internal → builderd)
+### 2. BuilderPoolClient (server-internal → builderd)
 
-- **Purpose**: Pool git operations (clone, fetch, reset, clean)
-- **Client**: Shared `BuilderdClient` wrapper with `exec_and_check()` helper
-- **CWD source**: `RepoPoolManager::to_builderd_path()` constructs `%WORKSPACE%/pool/<project>/<slot>`
-- **File**: `crates/server/src/builderd_client.rs`
+- **Purpose**: Pool slot lifecycle (clone, fetch/reset, clean, branch checkout)
+- **Client**: Shared `BuilderPoolClient` wrapper with six typed async methods, one per RPC
+- **Used by**: `RepoPoolManager` in `crates/server/src/pool.rs`
+- **File**: `crates/server/src/builder_pool_client.rs`
 
 ### 3. BuilderContainerClient (server-internal → builderd)
 
@@ -144,6 +180,19 @@ service BuilderContainerService {
 }
 ```
 
+### BuilderPoolService (`proto/builder_pool.proto`, package `ur.builder_pool`)
+
+```protobuf
+service BuilderPoolService {
+  rpc ScanSlots(ScanSlotsRequest) returns (ScanSlotsResponse);
+  rpc PrepareNewSlot(PrepareNewSlotRequest) returns (PrepareNewSlotResponse);
+  rpc RecycleSlot(RecycleSlotRequest) returns (RecycleSlotResponse);
+  rpc PrepareSharedSlot(PrepareSharedSlotRequest) returns (PrepareSharedSlotResponse);
+  rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse);
+  rpc CleanSlot(CleanSlotRequest) returns (CleanSlotResponse);
+}
+```
+
 ## Connection Path
 
 ```
@@ -155,12 +204,16 @@ ur-server container
 
 ## Key Files
 
-- `crates/builderd/src/main.rs` — CLI, gRPC server setup (both services)
+- `crates/builderd/src/main.rs` — CLI, gRPC server setup (all three services)
 - `crates/builderd/src/handler.rs` — BuilderDaemonHandler, %WORKSPACE% resolution
 - `crates/builderd/src/container_handler.rs` — BuilderContainerHandler (launch/stop/exec/network)
-- `crates/server/src/builderd_client.rs` — Shared BuilderdClient (pool git ops)
+- `crates/builderd/src/pool_handler.rs` — BuilderPoolHandler (clone/reset/clean/checkout slots)
+- `crates/server/src/builderd_client.rs` — Shared BuilderdClient (worker hostexec helper)
 - `crates/server/src/builder_container_client.rs` — Shared BuilderContainerClient (container ops)
+- `crates/server/src/builder_pool_client.rs` — Shared BuilderPoolClient (pool slot ops)
+- `crates/server/src/pool.rs` — RepoPoolManager (DB orchestration, delegates to BuilderPoolClient)
 - `crates/server/src/grpc_hostexec.rs` — HostExecServiceHandler (worker commands)
 - `proto/builder.proto` — BuilderDaemonService proto
 - `proto/builder_container.proto` — BuilderContainerService proto
+- `proto/builder_pool.proto` — BuilderPoolService proto
 - `crates/ur/src/builderd.rs` — Host lifecycle (start/stop)

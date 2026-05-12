@@ -571,26 +571,19 @@ mod tests {
     fn dummy_worker_manager(worker_repo: WorkerRepo) -> crate::WorkerManager {
         let channel =
             tonic::transport::Endpoint::from_static("http://localhost:50051").connect_lazy();
-        let builderd_client = ur_rpc::proto::builder::BuilderdClient::new(channel.clone());
         let builder_container_client =
-            crate::builder_container_client::BuilderContainerClient::new(channel);
+            crate::builder_container_client::BuilderContainerClient::new(channel.clone());
+        let builder_pool_client = crate::BuilderPoolClient::new(channel);
         let config = dummy_config();
-        let local_repo = local_repo::GitBackend {
-            client: dummy_builderd_client(),
-        };
         let project_registry = crate::ProjectRegistry::new(
             config.projects.clone(),
             crate::hostexec::HostExecConfigManager::empty(),
         );
         let pool = crate::RepoPoolManager::new(
             &config,
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            std::path::PathBuf::from("/tmp/test/workspace"),
-            builderd_client,
-            local_repo,
             worker_repo.clone(),
-            std::path::PathBuf::from("/tmp/test/config"),
             project_registry,
+            builder_pool_client,
         );
         let network_manager = crate::network_manager::NetworkManager::new(
             builder_container_client.clone(),
@@ -827,18 +820,16 @@ mod tests {
         let coordinator = WorkflowCoordinator::new(rx, cancel_rx, ctx, &handlers);
         let join = coordinator.spawn(shutdown_rx);
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait for recovery to process and delete the stalled intent rather
+        // than using a fixed sleep, which is fragile under PostgreSQL load.
+        poll_until_intents_empty(&workflow_repo, 10000).await;
 
-        // Handler should NOT be called — workflow is stalled.
+        // Handler should NOT have been called — workflow was stalled.
         assert_eq!(
             call_count.load(Ordering::SeqCst),
             0,
             "stalled workflow intent should not trigger handler"
         );
-
-        // Intent should be deleted.
-        let intents = workflow_repo.list_intents().await.unwrap();
-        assert!(intents.is_empty(), "stalled intent should be deleted");
 
         // Workflow should still be stalled.
         let wf = workflow_repo
@@ -952,9 +943,9 @@ mod tests {
         .unwrap();
 
         // Wait for the handler to run and the workflow to be stalled.
-        poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 5000).await;
+        poll_until(|| call_count.load(Ordering::SeqCst) >= 1, 10000).await;
 
-        poll_until_stalled(&workflow_repo, "ur-fail1", 5000).await;
+        poll_until_stalled(&workflow_repo, "ur-fail1", 10000).await;
 
         // Workflow should be stalled with the error message.
         let wf = workflow_repo
@@ -966,7 +957,7 @@ mod tests {
         assert_eq!(wf.stall_reason, "intentional test failure");
 
         // Intent should be cleaned up (poll to account for async cleanup delay).
-        poll_until_intents_empty(&workflow_repo, 5000).await;
+        poll_until_intents_empty(&workflow_repo, 10000).await;
 
         shutdown_tx.send(true).unwrap();
         join.await.unwrap();

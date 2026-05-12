@@ -8,6 +8,8 @@ already-validated requests from ur-server and acts on the host filesystem and Do
 - Trusts ur-server completely — no command validation
 - Started/stopped by `ur start`/`ur stop`, PID tracked at `~/.ur/builderd.pid`
 - Resolves `%WORKSPACE%` prefixes in both `command` and `working_dir` via `--workspace` CLI flag or `BUILDERD_WORKSPACE` env var
-- Exposes two gRPC services:
-  - `BuilderDaemonService` (`proto/builder.proto`) — exec arbitrary commands on the host; used for pool git ops and worker hostexec (git, gh)
+- Exposes three gRPC services on the same port:
+  - `BuilderDaemonService` (`proto/builder.proto`) — exec arbitrary commands on the host; used for worker hostexec (git, gh via the three-hop pipeline)
   - `BuilderContainerService` (`proto/builder_container.proto`) — worker container lifecycle (launch, stop, exec, network inspect); owns the Docker socket on behalf of the server
+  - `BuilderPoolService` (`proto/builder_pool.proto`) — pool slot lifecycle (clone, reset, clean, branch checkout); owns all pool filesystem and git operations on behalf of `RepoPoolManager`
+- `--config-dir` flag (default `~/.ur`) sets the root config directory; used by `BuilderPoolHandler` to locate local overlay files at `<config_dir>/projects/<project>/local/`

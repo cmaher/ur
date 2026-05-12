@@ -603,14 +603,11 @@ async fn init_managers(
     let builderd_retry_channel =
         ur_rpc::retry::RetryChannel::new(&builderd_addr, ur_rpc::retry::RetryConfig::default())
             .map_err(|e| anyhow::anyhow!("failed to create builderd retry channel: {e}"))?;
-    let builderd_client =
-        ur_rpc::proto::builder::BuilderdClient::new(builderd_retry_channel.channel().clone());
     let builder_container_client = ur_server::builder_container_client::BuilderContainerClient::new(
         builderd_retry_channel.channel().clone(),
     );
-    let local_repo = local_repo::GitBackend {
-        client: builderd_client.clone(),
-    };
+    let builder_pool_client =
+        ur_server::BuilderPoolClient::new(builderd_retry_channel.channel().clone());
     let worker_repo = WorkerRepo::new(workflow_pool.clone());
 
     reconcile_slots(&worker_repo, cfg, local_workspace, host_workspace).await?;
@@ -625,13 +622,9 @@ async fn init_managers(
 
     let repo_pool_manager = RepoPoolManager::new(
         cfg,
-        local_workspace.to_path_buf(),
-        host_workspace.to_path_buf(),
-        builderd_client,
-        local_repo,
         worker_repo.clone(),
-        host_config_dir.to_path_buf(),
         project_registry.clone(),
+        builder_pool_client,
     );
     let network_manager = NetworkManager::new(
         builder_container_client.clone(),
