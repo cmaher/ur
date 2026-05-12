@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod backup;
 pub mod builder_container_client;
+pub mod builder_pool_client;
 pub mod config;
 pub mod grpc;
 pub mod grpc_hostexec;
@@ -27,6 +28,7 @@ pub mod workerd_client;
 pub mod workflow;
 
 pub use backup::BackupTaskManager;
+pub use builder_pool_client::BuilderPoolClient;
 pub use config::Config;
 pub use hostexec::materialize_shim;
 pub use log_cleanup::LogCleanupManager;
