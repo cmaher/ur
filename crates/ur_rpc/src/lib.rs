@@ -43,6 +43,10 @@ pub mod proto {
         tonic::include_proto!("ur.builder_container");
     }
     #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
+    pub mod builder_pool {
+        tonic::include_proto!("ur.builder_pool");
+    }
+    #[allow(clippy::excessive_nesting, clippy::too_many_lines)]
     pub mod ticket {
         tonic::include_proto!("ur.ticket");
     }

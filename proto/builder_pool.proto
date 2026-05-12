@@ -1,0 +1,75 @@
+syntax = "proto3";
+package ur.builder_pool;
+
+service BuilderPoolService {
+  // Scan the existing slots for a project and return their indices.
+  rpc ScanSlots(ScanSlotsRequest) returns (ScanSlotsResponse);
+
+  // Prepare a new slot by cloning the repo into a fresh slot directory.
+  rpc PrepareNewSlot(PrepareNewSlotRequest) returns (PrepareNewSlotResponse);
+
+  // Recycle an existing slot: fetch latest and reset to the default branch.
+  rpc RecycleSlot(RecycleSlotRequest) returns (RecycleSlotResponse);
+
+  // Prepare a shared (read-only) slot for the project, creating it if needed.
+  rpc PrepareSharedSlot(PrepareSharedSlotRequest) returns (PrepareSharedSlotResponse);
+
+  // Checkout a branch in the given slot from the shared slot base.
+  rpc CheckoutBranch(CheckoutBranchRequest) returns (CheckoutBranchResponse);
+
+  // Remove a slot directory and free its resources.
+  rpc CleanSlot(CleanSlotRequest) returns (CleanSlotResponse);
+}
+
+message ScanSlotsRequest {
+  string project_key = 1;
+}
+
+message ScanSlotsResponse {
+  repeated uint32 slot_indices = 1;
+}
+
+message PrepareNewSlotRequest {
+  string project_key = 1;
+  string slot_name = 2;
+  string repo_url = 3;
+}
+
+message PrepareNewSlotResponse {
+  string host_path = 1;
+}
+
+message RecycleSlotRequest {
+  string project_key = 1;
+  string slot_name = 2;
+  string repo_url = 3;
+}
+
+message RecycleSlotResponse {
+  string host_path = 1;
+}
+
+message PrepareSharedSlotRequest {
+  string project_key = 1;
+  string repo_url = 2;
+}
+
+message PrepareSharedSlotResponse {
+  string host_path = 1;
+}
+
+message CheckoutBranchRequest {
+  string project_key = 1;
+  string slot_name = 2;
+  string branch_prefix = 3;
+  string branch_name = 4;
+}
+
+message CheckoutBranchResponse {}
+
+message CleanSlotRequest {
+  string project_key = 1;
+  string slot_name = 2;
+}
+
+message CleanSlotResponse {}
