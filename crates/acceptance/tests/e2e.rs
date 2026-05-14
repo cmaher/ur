@@ -629,6 +629,148 @@ struct ProjectFixtures {
     memory_dir: MemoryDirInfo,
 }
 
+/// Create a bare repo whose HEAD commit includes `ur-hooks/git/pre-commit`
+/// containing the given sentinel string.
+///
+/// This exercises the in-repo hooks convention (`/workspace/ur-hooks/git/`).
+fn create_bare_repo_with_git_hooks(parent_dir: &Path, pre_commit_sentinel: &str) -> PathBuf {
+    let bare_repo = parent_dir.join("hook-repo.git");
+    let staging = parent_dir.join("hook-staging");
+
+    let output = Command::new("git")
+        .args(["init", "--bare", bare_repo.to_str().unwrap()])
+        .output()
+        .expect("failed to run git init --bare");
+    assert!(output.status.success(), "git init --bare failed");
+
+    let output = Command::new("git")
+        .args([
+            "-C",
+            bare_repo.to_str().unwrap(),
+            "config",
+            "uploadpack.allowFilter",
+            "true",
+        ])
+        .output()
+        .expect("failed to set uploadpack.allowFilter");
+    assert!(
+        output.status.success(),
+        "git config uploadpack.allowFilter failed"
+    );
+
+    let output = Command::new("git")
+        .args([
+            "clone",
+            bare_repo.to_str().unwrap(),
+            staging.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to clone bare repo into staging");
+    assert!(output.status.success(), "git clone failed");
+
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&staging)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&staging)
+        .output();
+
+    std::fs::write(staging.join("README.md"), "# Hook test repo\n")
+        .expect("failed to write README");
+
+    // Write in-repo git hook: ur-hooks/git/pre-commit
+    let hooks_dir = staging.join("ur-hooks").join("git");
+    std::fs::create_dir_all(&hooks_dir).expect("failed to create ur-hooks/git dir");
+    let hook_path = hooks_dir.join("pre-commit");
+    std::fs::write(&hook_path, pre_commit_sentinel).expect("failed to write pre-commit hook");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to set hook permissions");
+
+    let output = Command::new("git")
+        .args(["add", "."])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git add");
+    assert!(output.status.success(), "git add failed");
+
+    let output = Command::new("git")
+        .args(["commit", "-m", "initial commit with git hooks"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git commit");
+    assert!(output.status.success(), "git commit failed");
+
+    let output = Command::new("git")
+        .args(["push", "origin", "HEAD"])
+        .current_dir(&staging)
+        .output()
+        .expect("failed to git push");
+    assert!(
+        output.status.success(),
+        "git push failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    bare_repo
+}
+
+/// Set up the `hookproj` project entry and host overlay hook directories.
+///
+/// Creates:
+/// - A bare repo with an in-repo `ur-hooks/git/pre-commit` (sentinel A).
+/// - `<config_path>/projects/hookproj/hooks/git/pre-commit` (sentinel B — overlay wins).
+/// - `<config_path>/projects/hookproj/hooks/git/post-merge` (sentinel C — overlay-only file).
+/// - `<config_path>/projects/hookproj/hooks/skills/my-hook.sh` (sentinel D — skill overlay).
+///
+/// The `projects/hookproj/hooks/` directory lives under `config_path`, which is the
+/// test's `UR_CONFIG` directory. Builderd (host-native) stat-checks and mounts it directly
+/// as `/var/ur/host-hooks/git:ro` in the worker container.
+///
+/// Returns the `ProjectEntry` for `hookproj`.
+fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
+    let hook_repos_dir = config_path.join("hook-repos");
+    std::fs::create_dir_all(&hook_repos_dir).expect("failed to create hook-repos dir");
+    let bare_repo = create_bare_repo_with_git_hooks(&hook_repos_dir, "sentinel-A\n");
+    let repo = bare_repo.to_string_lossy().into_owned();
+
+    // Create host overlay git hooks under the convention path.
+    // Builderd will mount this as /var/ur/host-hooks/git:ro when the worker launches.
+    let git_overlay_dir = config_path
+        .join("projects")
+        .join("hookproj")
+        .join("hooks")
+        .join("git");
+    std::fs::create_dir_all(&git_overlay_dir).expect("failed to create git overlay hooks dir");
+    std::fs::write(git_overlay_dir.join("pre-commit"), "sentinel-B\n")
+        .expect("failed to write overlay pre-commit");
+    std::fs::write(git_overlay_dir.join("post-merge"), "sentinel-C\n")
+        .expect("failed to write overlay post-merge");
+
+    // Create host overlay skill hooks under the convention path.
+    // Builderd will mount this as /var/ur/host-hooks/skills:ro when the worker launches.
+    let skills_overlay_dir = config_path
+        .join("projects")
+        .join("hookproj")
+        .join("hooks")
+        .join("skills");
+    std::fs::create_dir_all(&skills_overlay_dir)
+        .expect("failed to create skills overlay hooks dir");
+    std::fs::write(skills_overlay_dir.join("my-hook.sh"), "sentinel-D\n")
+        .expect("failed to write overlay my-hook.sh");
+
+    vec![ProjectEntry {
+        key: "hookproj".into(),
+        repo,
+        image: "ur-worker".into(),
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: None,
+    }]
+}
+
 /// Create all bare git repositories, the test skill directory, and the complete
 /// project entry list needed by `write_test_config`. All temp directories in the
 /// returned struct must stay alive for the duration of the test.
@@ -659,6 +801,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
 
     let (host_mount_dir, mount_projects) = setup_mount_projects(config_path);
     let (memory_dir, memory_projects) = setup_memory_projects(config_path);
+    let hook_projects = setup_hook_overlay_projects(config_path);
 
     let mut projects = vec![
         ProjectEntry {
@@ -688,6 +831,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
     ];
     projects.extend(mount_projects);
     projects.extend(memory_projects);
+    projects.extend(hook_projects);
 
     ProjectFixtures {
         projects,
@@ -828,6 +972,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_memory_pool(&env);
         scenario_memory_workspace_with_project(&env, &config_path);
         scenario_memory_workspace_no_project(&env, &config_path);
+        scenario_hook_overlay_precedence(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -844,6 +989,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "memory-pool-test",
         "memproj-ws-test",
         "nomem-ws-test",
+        "hook-overlay-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -3265,6 +3411,154 @@ fn scenario_memory_workspace_no_project(env: &TestEnv, config_path: &std::path::
         assert!(
             stop_output.status.success(),
             "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Hook overlay precedence test.
+///
+/// Verifies that the two-layer merge (in-repo + host overlay) for git hooks and skill
+/// hooks produces the correct result inside a live worker:
+///
+/// - `pre-commit` is present in both the in-repo (`ur-hooks/git/pre-commit`, sentinel A)
+///   and the host overlay (`<config>/projects/hookproj/hooks/git/pre-commit`, sentinel B).
+///   The overlay must win — sentinel B is expected in `/workspace/.git/hooks/pre-commit`.
+///
+/// - `post-merge` exists only in the host overlay (sentinel C). It must appear in
+///   `/workspace/.git/hooks/post-merge`.
+///
+/// - Both installed hooks must be executable (`0o755`).
+///
+/// - `my-hook.sh` exists only in the host overlay for skills (sentinel D). It must appear
+///   in `/home/worker/.claude/skill-hooks/my-hook.sh`.
+///
+/// The overlay directories are created by `setup_hook_overlay_projects` under the
+/// convention path `<config_path>/projects/hookproj/hooks/{git,skills}/` before the
+/// server starts. Builderd auto-discovers and mounts them as
+/// `/var/ur/host-hooks/{git,skills}:ro` at worker launch time.
+fn scenario_hook_overlay_precedence(env: &TestEnv) {
+    let ticket_id = "hook-overlay-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker for hookproj ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "hookproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p hookproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Axis 1: overlay wins on conflict (pre-commit) ----
+        // In-repo sentinel A should be overwritten by overlay sentinel B.
+        let pre_commit_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["cat", "/workspace/.git/hooks/pre-commit"],
+        );
+        assert_exec_success(
+            &pre_commit_output,
+            "/workspace/.git/hooks/pre-commit must exist — hook overlay or in-repo copy failed",
+        );
+        let pre_commit_content = String::from_utf8_lossy(&pre_commit_output.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(
+            pre_commit_content, "sentinel-B",
+            "pre-commit must contain overlay sentinel-B (overlay wins over in-repo sentinel-A), \
+             got: {pre_commit_content:?}"
+        );
+
+        // ---- Axis 2: overlay-only file appears (post-merge) ----
+        let post_merge_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["cat", "/workspace/.git/hooks/post-merge"],
+        );
+        assert_exec_success(
+            &post_merge_output,
+            "/workspace/.git/hooks/post-merge must exist — overlay-only file was not copied",
+        );
+        let post_merge_content = String::from_utf8_lossy(&post_merge_output.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(
+            post_merge_content, "sentinel-C",
+            "post-merge must contain overlay sentinel-C (overlay-only file), \
+             got: {post_merge_content:?}"
+        );
+
+        // ---- Axis 3: hook permissions are 0o755 ----
+        // Use `stat -c %a` (GNU/Linux) inside the container.
+        let pre_commit_mode = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["stat", "-c", "%a", "/workspace/.git/hooks/pre-commit"],
+        );
+        assert_exec_success(&pre_commit_mode, "stat of pre-commit hook must succeed");
+        let mode_str = String::from_utf8_lossy(&pre_commit_mode.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(
+            mode_str, "755",
+            "pre-commit hook must have 0o755 permissions, got: {mode_str:?}"
+        );
+
+        let post_merge_mode = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["stat", "-c", "%a", "/workspace/.git/hooks/post-merge"],
+        );
+        assert_exec_success(&post_merge_mode, "stat of post-merge hook must succeed");
+        let mode_str = String::from_utf8_lossy(&post_merge_mode.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(
+            mode_str, "755",
+            "post-merge hook must have 0o755 permissions, got: {mode_str:?}"
+        );
+
+        // ---- Axis 4: skill overlay-only file appears ----
+        let skill_hook_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["cat", "/home/worker/.claude/skill-hooks/my-hook.sh"],
+        );
+        assert_exec_success(
+            &skill_hook_output,
+            "/home/worker/.claude/skill-hooks/my-hook.sh must exist — \
+             skill hook overlay-only file was not copied",
+        );
+        let skill_hook_content = String::from_utf8_lossy(&skill_hook_output.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(
+            skill_hook_content, "sentinel-D",
+            "my-hook.sh must contain overlay sentinel-D (skill hook overlay-only file), \
+             got: {skill_hook_content:?}"
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop (hook-overlay-test) failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
