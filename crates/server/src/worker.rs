@@ -320,6 +320,12 @@ pub struct WorkerManager {
     /// Host-side config directory path, used to construct volume mounts for
     /// worker containers (e.g., shared credentials file).
     host_config_dir: PathBuf,
+    /// Locally-accessible config directory path, used for filesystem existence
+    /// checks. Equals `host_config_dir` when the server runs natively; differs
+    /// when the server runs inside a container where the config dir is mounted
+    /// at a container-internal path (e.g. `/config`) while `host_config_dir`
+    /// holds the real host path passed to builderd for Docker volume mounts.
+    local_config_dir: PathBuf,
     /// Local (container-side) logs directory, used to create per-worker log
     /// directories before launching containers.
     logs_dir: PathBuf,
@@ -344,6 +350,7 @@ impl WorkerManager {
     pub fn new(
         workspace: PathBuf,
         host_config_dir: PathBuf,
+        local_config_dir: PathBuf,
         logs_dir: PathBuf,
         host_logs_dir: PathBuf,
         repo_pool_manager: RepoPoolManager,
@@ -358,6 +365,7 @@ impl WorkerManager {
         Self {
             workspace,
             host_config_dir,
+            local_config_dir,
             logs_dir,
             host_logs_dir,
             repo_pool_manager,
@@ -632,7 +640,11 @@ impl WorkerManager {
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
         .add_credentials(&self.host_config_dir)?
-        .add_host_hooks_overlay(&config.project_key, &self.host_config_dir)
+        .add_host_hooks_overlay(
+            &config.project_key,
+            &self.host_config_dir,
+            &self.local_config_dir,
+        )
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
         .add_memory_dir(&memory_dir, &self.host_config_dir)?

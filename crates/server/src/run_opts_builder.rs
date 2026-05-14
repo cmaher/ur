@@ -213,36 +213,53 @@ impl RunOptsBuilder {
 
     /// Add host-side per-project hook directories as read-only overlays.
     ///
-    /// Mounts the following paths when they exist on the host, using fixed container
+    /// Mounts the following paths when they exist, using fixed container
     /// destinations that workerd will read in a later ticket:
     ///
     /// - `<host_config_dir>/projects/<project_key>/hooks/git/` → `/var/ur/host-hooks/git/:ro`
     /// - `<host_config_dir>/projects/<project_key>/hooks/skills/` → `/var/ur/host-hooks/skills/:ro`
     ///
+    /// `local_config_dir` is the locally-accessible config directory used for existence
+    /// checks. When the server runs inside a container, `host_config_dir` is the host
+    /// filesystem path (passed to builderd as the volume mount source) while
+    /// `local_config_dir` is the container-internal mount point (e.g. `/config`) where
+    /// the same directory is actually reachable for `stat` calls.
+    ///
     /// Rules:
     /// - When `project_key` is empty (workspace-mode launch without a project), this is a no-op.
     /// - When a host directory does not exist, no mount is added for that type.
     /// - Both checks are independent — one mount can be added without the other.
-    pub fn add_host_hooks_overlay(mut self, project_key: &str, host_config_dir: &Path) -> Self {
+    pub fn add_host_hooks_overlay(
+        mut self,
+        project_key: &str,
+        host_config_dir: &Path,
+        local_config_dir: &Path,
+    ) -> Self {
         if project_key.is_empty() {
             return self;
         }
 
-        let hooks_base = host_config_dir
+        let local_hooks_base = local_config_dir
+            .join("projects")
+            .join(project_key)
+            .join("hooks");
+        let host_hooks_base = host_config_dir
             .join("projects")
             .join(project_key)
             .join("hooks");
 
-        let git_host = hooks_base.join("git");
-        if git_host.exists() {
-            self.volumes
-                .push((git_host, PathBuf::from("/var/ur/host-hooks/git:ro")));
+        if local_hooks_base.join("git").exists() {
+            self.volumes.push((
+                host_hooks_base.join("git"),
+                PathBuf::from("/var/ur/host-hooks/git:ro"),
+            ));
         }
 
-        let skills_host = hooks_base.join("skills");
-        if skills_host.exists() {
-            self.volumes
-                .push((skills_host, PathBuf::from("/var/ur/host-hooks/skills:ro")));
+        if local_hooks_base.join("skills").exists() {
+            self.volumes.push((
+                host_hooks_base.join("skills"),
+                PathBuf::from("/var/ur/host-hooks/skills:ro"),
+            ));
         }
 
         self
@@ -990,7 +1007,7 @@ mod tests {
         // Can't create a path with empty project key component meaningfully,
         // just verify empty key returns no volumes regardless.
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_host_hooks_overlay("", tmp.path())
+            .add_host_hooks_overlay("", tmp.path(), tmp.path())
             .build();
 
         assert!(
@@ -1020,7 +1037,7 @@ mod tests {
         std::fs::create_dir_all(&skills_dir).unwrap();
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_host_hooks_overlay("myproj", tmp.path())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
             .build();
 
         assert_eq!(req.volumes.len(), 2);
@@ -1046,7 +1063,7 @@ mod tests {
         // skills dir intentionally NOT created
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_host_hooks_overlay("myproj", tmp.path())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
             .build();
 
         assert_eq!(req.volumes.len(), 1);
@@ -1067,7 +1084,7 @@ mod tests {
         // git dir intentionally NOT created
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_host_hooks_overlay("myproj", tmp.path())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
             .build();
 
         assert_eq!(req.volumes.len(), 1);
@@ -1084,7 +1101,7 @@ mod tests {
         // No hooks directories created at all
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_host_hooks_overlay("myproj", tmp.path())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
             .build();
 
         assert!(
@@ -1092,6 +1109,44 @@ mod tests {
             "no existing dirs should produce no mounts: {:?}",
             req.volumes
         );
+    }
+
+    /// When the server runs inside a container, `local_config_dir` (e.g. `/config`)
+    /// differs from `host_config_dir` (e.g. `/actual/host/path`). The existence check
+    /// must use `local_config_dir` while the mount source must use `host_config_dir`.
+    #[test]
+    fn add_host_hooks_overlay_uses_local_for_check_host_for_mount() {
+        let local_tmp = tempfile::tempdir().unwrap();
+        let host_tmp = tempfile::tempdir().unwrap();
+
+        // Create the git hooks dir under the LOCAL path only.
+        let local_git_dir = local_tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        std::fs::create_dir_all(&local_git_dir).unwrap();
+
+        // The expected HOST-side mount source path (mirrors the local structure).
+        let expected_host_git = host_tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", host_tmp.path(), local_tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1, "expected one volume mount for git");
+        assert_eq!(
+            req.volumes[0].host_path,
+            expected_host_git.display().to_string(),
+            "mount source must use host_config_dir, not local_config_dir"
+        );
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
     }
 
     #[test]

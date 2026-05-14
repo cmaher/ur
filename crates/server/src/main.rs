@@ -636,6 +636,7 @@ async fn init_managers(
     let worker_manager = WorkerManager::new(
         local_workspace.to_path_buf(),
         host_config_dir.to_path_buf(),
+        cfg.config_dir.clone(),
         logs_dir.to_path_buf(),
         host_logs_dir,
         repo_pool_manager.clone(),
