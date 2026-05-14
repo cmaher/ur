@@ -287,6 +287,43 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
+    /// Add host-side per-project hook directories as read-only overlays.
+    ///
+    /// Mounts the following paths when they exist on the host, using fixed container
+    /// destinations that workerd will read in a later ticket:
+    ///
+    /// - `<host_config_dir>/projects/<project_key>/hooks/git/` → `/var/ur/host-hooks/git/:ro`
+    /// - `<host_config_dir>/projects/<project_key>/hooks/skills/` → `/var/ur/host-hooks/skills/:ro`
+    ///
+    /// Rules:
+    /// - When `project_key` is empty (workspace-mode launch without a project), this is a no-op.
+    /// - When a host directory does not exist, no mount is added for that type.
+    /// - Both checks are independent — one mount can be added without the other.
+    pub fn add_host_hooks_overlay(mut self, project_key: &str, host_config_dir: &Path) -> Self {
+        if project_key.is_empty() {
+            return self;
+        }
+
+        let hooks_base = host_config_dir
+            .join("projects")
+            .join(project_key)
+            .join("hooks");
+
+        let git_host = hooks_base.join("git");
+        if git_host.exists() {
+            self.volumes
+                .push((git_host, PathBuf::from("/var/ur/host-hooks/git:ro")));
+        }
+
+        let skills_host = hooks_base.join("skills");
+        if skills_host.exists() {
+            self.volumes
+                .push((skills_host, PathBuf::from("/var/ur/host-hooks/skills:ro")));
+        }
+
+        self
+    }
+
     /// Add per-worker logs directory mount.
     ///
     /// Mounts `<host_logs_dir>/workers/<worker_id>/` from the host into
@@ -1121,6 +1158,123 @@ mod tests {
             "/home/worker/.claude/projects/-workspace/memory"
         );
         assert!(req.env_vars.is_empty(), "no env vars should be added");
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_empty_project_key_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create the directories so existence is not the reason for no mount.
+        let hooks_git = tmp
+            .path()
+            .join("projects")
+            .join("")
+            .join("hooks")
+            .join("git");
+        // Can't create a path with empty project key component meaningfully,
+        // just verify empty key returns no volumes regardless.
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("", tmp.path())
+            .build();
+
+        assert!(
+            req.volumes.is_empty(),
+            "empty project key should add no mounts: {:?}",
+            req.volumes
+        );
+        let _ = hooks_git; // suppress unused warning
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_both_dirs_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        let skills_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("skills");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, git_dir.display().to_string());
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
+        assert_eq!(req.volumes[1].host_path, skills_dir.display().to_string());
+        assert_eq!(
+            req.volumes[1].container_path,
+            "/var/ur/host-hooks/skills:ro"
+        );
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_only_git_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        // skills dir intentionally NOT created
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, git_dir.display().to_string());
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_only_skills_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // git dir intentionally NOT created
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, skills_dir.display().to_string());
+        assert_eq!(
+            req.volumes[0].container_path,
+            "/var/ur/host-hooks/skills:ro"
+        );
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_neither_exists_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No hooks directories created at all
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path())
+            .build();
+
+        assert!(
+            req.volumes.is_empty(),
+            "no existing dirs should produce no mounts: {:?}",
+            req.volumes
+        );
     }
 
     #[test]

@@ -638,6 +638,7 @@ impl WorkerManager {
         .add_credentials(&self.host_config_dir)?
         .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
         .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
+        .add_host_hooks_overlay(&config.project_key, &self.host_config_dir)
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
         .add_memory_dir(&memory_dir, &self.host_config_dir)?
