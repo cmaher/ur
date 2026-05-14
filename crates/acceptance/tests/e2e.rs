@@ -3443,6 +3443,95 @@ fn scenario_memory_workspace_no_project(env: &TestEnv, config_path: &std::path::
 /// convention path `<config_path>/projects/hookproj/hooks/{git,skills}/` before the
 /// server starts. Builderd auto-discovers and mounts them as
 /// `/var/ur/host-hooks/{git,skills}:ro` at worker launch time.
+fn verify_hook_overlay_assertions(runtime: &str, container_name: &str) {
+    // Axis 1: overlay wins on conflict (pre-commit)
+    // In-repo sentinel A should be overwritten by overlay sentinel B.
+    let pre_commit_output = exec_in_container(
+        runtime,
+        container_name,
+        &["cat", "/workspace/.git/hooks/pre-commit"],
+    );
+    assert_exec_success(
+        &pre_commit_output,
+        "/workspace/.git/hooks/pre-commit must exist — hook overlay or in-repo copy failed",
+    );
+    let pre_commit_content = String::from_utf8_lossy(&pre_commit_output.stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(
+        pre_commit_content, "sentinel-B",
+        "pre-commit must contain overlay sentinel-B (overlay wins over in-repo sentinel-A), \
+         got: {pre_commit_content:?}"
+    );
+
+    // Axis 2: overlay-only file appears (post-merge)
+    let post_merge_output = exec_in_container(
+        runtime,
+        container_name,
+        &["cat", "/workspace/.git/hooks/post-merge"],
+    );
+    assert_exec_success(
+        &post_merge_output,
+        "/workspace/.git/hooks/post-merge must exist — overlay-only file was not copied",
+    );
+    let post_merge_content = String::from_utf8_lossy(&post_merge_output.stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(
+        post_merge_content, "sentinel-C",
+        "post-merge must contain overlay sentinel-C (overlay-only file), got: {post_merge_content:?}"
+    );
+
+    // Axis 3: hook permissions are 0o755 — use `stat -c %a` (GNU/Linux) inside the container.
+    let pre_commit_mode = exec_in_container(
+        runtime,
+        container_name,
+        &["stat", "-c", "%a", "/workspace/.git/hooks/pre-commit"],
+    );
+    assert_exec_success(&pre_commit_mode, "stat of pre-commit hook must succeed");
+    let mode_str = String::from_utf8_lossy(&pre_commit_mode.stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(
+        mode_str, "755",
+        "pre-commit hook must have 0o755 permissions, got: {mode_str:?}"
+    );
+
+    let post_merge_mode = exec_in_container(
+        runtime,
+        container_name,
+        &["stat", "-c", "%a", "/workspace/.git/hooks/post-merge"],
+    );
+    assert_exec_success(&post_merge_mode, "stat of post-merge hook must succeed");
+    let mode_str = String::from_utf8_lossy(&post_merge_mode.stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(
+        mode_str, "755",
+        "post-merge hook must have 0o755 permissions, got: {mode_str:?}"
+    );
+
+    // Axis 4: skill overlay-only file appears
+    let skill_hook_output = exec_in_container(
+        runtime,
+        container_name,
+        &["cat", "/home/worker/.claude/skill-hooks/my-hook.sh"],
+    );
+    assert_exec_success(
+        &skill_hook_output,
+        "/home/worker/.claude/skill-hooks/my-hook.sh must exist — \
+         skill hook overlay-only file was not copied",
+    );
+    let skill_hook_content = String::from_utf8_lossy(&skill_hook_output.stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(
+        skill_hook_content, "sentinel-D",
+        "my-hook.sh must contain overlay sentinel-D (skill hook overlay-only file), \
+         got: {skill_hook_content:?}"
+    );
+}
+
 fn scenario_hook_overlay_precedence(env: &TestEnv) {
     let ticket_id = "hook-overlay-test";
     let container_name = env.container_name(ticket_id);
@@ -3465,94 +3554,7 @@ fn scenario_hook_overlay_precedence(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Axis 1: overlay wins on conflict (pre-commit) ----
-        // In-repo sentinel A should be overwritten by overlay sentinel B.
-        let pre_commit_output = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["cat", "/workspace/.git/hooks/pre-commit"],
-        );
-        assert_exec_success(
-            &pre_commit_output,
-            "/workspace/.git/hooks/pre-commit must exist — hook overlay or in-repo copy failed",
-        );
-        let pre_commit_content = String::from_utf8_lossy(&pre_commit_output.stdout)
-            .trim()
-            .to_owned();
-        assert_eq!(
-            pre_commit_content, "sentinel-B",
-            "pre-commit must contain overlay sentinel-B (overlay wins over in-repo sentinel-A), \
-             got: {pre_commit_content:?}"
-        );
-
-        // ---- Axis 2: overlay-only file appears (post-merge) ----
-        let post_merge_output = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["cat", "/workspace/.git/hooks/post-merge"],
-        );
-        assert_exec_success(
-            &post_merge_output,
-            "/workspace/.git/hooks/post-merge must exist — overlay-only file was not copied",
-        );
-        let post_merge_content = String::from_utf8_lossy(&post_merge_output.stdout)
-            .trim()
-            .to_owned();
-        assert_eq!(
-            post_merge_content, "sentinel-C",
-            "post-merge must contain overlay sentinel-C (overlay-only file), \
-             got: {post_merge_content:?}"
-        );
-
-        // ---- Axis 3: hook permissions are 0o755 ----
-        // Use `stat -c %a` (GNU/Linux) inside the container.
-        let pre_commit_mode = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["stat", "-c", "%a", "/workspace/.git/hooks/pre-commit"],
-        );
-        assert_exec_success(&pre_commit_mode, "stat of pre-commit hook must succeed");
-        let mode_str = String::from_utf8_lossy(&pre_commit_mode.stdout)
-            .trim()
-            .to_owned();
-        assert_eq!(
-            mode_str, "755",
-            "pre-commit hook must have 0o755 permissions, got: {mode_str:?}"
-        );
-
-        let post_merge_mode = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["stat", "-c", "%a", "/workspace/.git/hooks/post-merge"],
-        );
-        assert_exec_success(&post_merge_mode, "stat of post-merge hook must succeed");
-        let mode_str = String::from_utf8_lossy(&post_merge_mode.stdout)
-            .trim()
-            .to_owned();
-        assert_eq!(
-            mode_str, "755",
-            "post-merge hook must have 0o755 permissions, got: {mode_str:?}"
-        );
-
-        // ---- Axis 4: skill overlay-only file appears ----
-        let skill_hook_output = exec_in_container(
-            &env.runtime,
-            &container_name,
-            &["cat", "/home/worker/.claude/skill-hooks/my-hook.sh"],
-        );
-        assert_exec_success(
-            &skill_hook_output,
-            "/home/worker/.claude/skill-hooks/my-hook.sh must exist — \
-             skill hook overlay-only file was not copied",
-        );
-        let skill_hook_content = String::from_utf8_lossy(&skill_hook_output.stdout)
-            .trim()
-            .to_owned();
-        assert_eq!(
-            skill_hook_content, "sentinel-D",
-            "my-hook.sh must contain overlay sentinel-D (skill hook overlay-only file), \
-             got: {skill_hook_content:?}"
-        );
+        verify_hook_overlay_assertions(&env.runtime, &container_name);
 
         // ---- Stop worker ----
         let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
