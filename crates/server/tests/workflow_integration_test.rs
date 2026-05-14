@@ -258,6 +258,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         std::path::PathBuf::from("/tmp/test"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
+        std::path::PathBuf::from("/tmp/test/logs"),
         pool,
         network_manager,
         config.network.clone(),
@@ -379,6 +380,7 @@ fn dummy_launch_manager(
     let worker_manager = ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
+        std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         pool.clone(),

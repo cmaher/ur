@@ -1164,6 +1164,7 @@ mod tests {
             workspace.path().to_path_buf(),
             workspace.path().join("logs"),
             workspace.path().join("logs"),
+            workspace.path().join("logs"),
             repo_pool_manager,
             network_manager,
             network_config,
@@ -1905,6 +1906,7 @@ model = "haiku"
         let mgr = WorkerManager::new(
             workspace.path().to_path_buf(),
             workspace.path().to_path_buf(),
+            workspace.path().join("logs"),
             workspace.path().join("logs"),
             workspace.path().join("logs"),
             repo_pool_manager,
