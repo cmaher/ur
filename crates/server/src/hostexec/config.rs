@@ -162,6 +162,14 @@ impl HostExecConfigManager {
                 bidi: false,
             },
         );
+        commands.insert(
+            "pnpm".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/pnpm.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
         commands
     }
 
@@ -175,6 +183,7 @@ impl HostExecConfigManager {
             "make" => Some(include_str!("default_scripts/make.lua").into()),
             "go" => Some(include_str!("default_scripts/go.lua").into()),
             "bazel" => Some(include_str!("default_scripts/bazel.lua").into()),
+            "pnpm" => Some(include_str!("default_scripts/pnpm.lua").into()),
             _ => None,
         }
     }
@@ -230,7 +239,9 @@ mod tests {
         assert!(!mgr.is_allowed("tk"));
         assert_eq!(
             mgr.command_names(),
-            vec!["bazel", "cargo", "docker", "gh", "git", "go", "make", "ur"]
+            vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+            ]
         );
     }
 
@@ -399,7 +410,9 @@ mod tests {
 
         assert_eq!(
             merged.command_names(),
-            vec!["bazel", "cargo", "docker", "gh", "git", "go", "make", "ur"]
+            vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+            ]
         );
     }
 
