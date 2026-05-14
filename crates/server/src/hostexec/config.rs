@@ -162,6 +162,14 @@ impl HostExecConfigManager {
                 bidi: false,
             },
         );
+        commands.insert(
+            "pnpm".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/pnpm.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
         commands
     }
 
@@ -175,6 +183,7 @@ impl HostExecConfigManager {
             "make" => Some(include_str!("default_scripts/make.lua").into()),
             "go" => Some(include_str!("default_scripts/go.lua").into()),
             "bazel" => Some(include_str!("default_scripts/bazel.lua").into()),
+            "pnpm" => Some(include_str!("default_scripts/pnpm.lua").into()),
             _ => None,
         }
     }
@@ -212,7 +221,9 @@ impl HostExecConfigManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hostexec::lua_transform::{LuaTransformManager, WorkerContext};
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use ur_config::{HostExecCommandConfig, HostExecConfig};
 
@@ -230,7 +241,9 @@ mod tests {
         assert!(!mgr.is_allowed("tk"));
         assert_eq!(
             mgr.command_names(),
-            vec!["bazel", "cargo", "docker", "gh", "git", "go", "make", "ur"]
+            vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+            ]
         );
     }
 
@@ -399,7 +412,9 @@ mod tests {
 
         assert_eq!(
             merged.command_names(),
-            vec!["bazel", "cargo", "docker", "gh", "git", "go", "make", "ur"]
+            vec![
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+            ]
         );
     }
 
@@ -471,5 +486,342 @@ mod tests {
         let rg_cfg = merged.get("rg").unwrap();
         assert!(!rg_cfg.long_lived);
         assert!(!rg_cfg.bidi);
+    }
+
+    // --- pnpm.lua tests ---
+
+    fn pnpm_script() -> &'static str {
+        include_str!("default_scripts/pnpm.lua")
+    }
+
+    fn pnpm_worker_context() -> WorkerContext {
+        WorkerContext {
+            worker_id: "worker-1".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
+            branch: "feature-branch".into(),
+        }
+    }
+
+    fn run_pnpm(args: &[&str], ctx: Option<&WorkerContext>) -> anyhow::Result<Vec<String>> {
+        let mgr = LuaTransformManager::new();
+        let string_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let result = mgr.run_transform(pnpm_script(), "pnpm", &string_args, "/workspace", ctx)?;
+        Ok(result.args)
+    }
+
+    // Blocked subcommands
+
+    #[test]
+    fn test_pnpm_blocks_add() {
+        let err = run_pnpm(&["add", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: add"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_remove() {
+        let err = run_pnpm(&["remove", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: remove"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_dlx() {
+        let err = run_pnpm(&["dlx", "create-react-app"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: dlx"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_create() {
+        let err = run_pnpm(&["create", "react-app"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: create"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_publish() {
+        let err = run_pnpm(&["publish"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: publish"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_login() {
+        let err = run_pnpm(&["login"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: login"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_logout() {
+        let err = run_pnpm(&["logout"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: logout"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_config() {
+        let err = run_pnpm(&["config", "set", "key", "val"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: config"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_setup() {
+        let err = run_pnpm(&["setup"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: setup"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_env() {
+        let err = run_pnpm(&["env", "use", "--global", "18"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: env"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_server() {
+        let err = run_pnpm(&["server", "start"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: server"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_store() {
+        let err = run_pnpm(&["store", "prune"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: store"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_patch() {
+        let err = run_pnpm(&["patch", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: patch"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_patch_commit() {
+        let err = run_pnpm(&["patch-commit", "/tmp/patch"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blocked pnpm subcommand: patch-commit")
+        );
+    }
+
+    #[test]
+    fn test_pnpm_blocks_rebuild() {
+        let err = run_pnpm(&["rebuild"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: rebuild"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_deploy() {
+        let err = run_pnpm(&["deploy", "--filter=app", "/tmp/out"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked pnpm subcommand: deploy"));
+    }
+
+    // Allowed subcommands
+
+    #[test]
+    fn test_pnpm_allows_install() {
+        let args = run_pnpm(&["install"], None).unwrap();
+        assert_eq!(args, vec!["install"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_install_frozen_lockfile() {
+        let args = run_pnpm(&["install", "--frozen-lockfile"], None).unwrap();
+        assert_eq!(args, vec!["install", "--frozen-lockfile"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_run_compile() {
+        let args = run_pnpm(&["run", "compile"], None).unwrap();
+        assert_eq!(args, vec!["run", "compile"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_run_lint() {
+        let args = run_pnpm(&["run", "lint"], None).unwrap();
+        assert_eq!(args, vec!["run", "lint"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_test() {
+        let args = run_pnpm(&["test"], None).unwrap();
+        assert_eq!(args, vec!["test"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_exec() {
+        let args = run_pnpm(&["exec", "turbo", "build"], None).unwrap();
+        assert_eq!(args, vec!["exec", "turbo", "build"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_bare_script_compile() {
+        let args = run_pnpm(&["compile"], None).unwrap();
+        assert_eq!(args, vec!["compile"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_bare_script_lint() {
+        let args = run_pnpm(&["lint"], None).unwrap();
+        assert_eq!(args, vec!["lint"]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_prettier() {
+        let args = run_pnpm(&["prettier", "--write", "."], None).unwrap();
+        assert_eq!(args, vec!["prettier", "--write", "."]);
+    }
+
+    #[test]
+    fn test_pnpm_allows_turbo_with_filter() {
+        let args = run_pnpm(
+            &[
+                "turbo",
+                "--filter=@pax/admin",
+                "build:e2e",
+                "compile",
+                "lint",
+                "prettier:ci",
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "turbo",
+                "--filter=@pax/admin",
+                "build:e2e",
+                "compile",
+                "lint",
+                "prettier:ci"
+            ]
+        );
+    }
+
+    // -C rewriting with worker_context
+
+    #[test]
+    fn test_pnpm_dash_c_rewrite_workspace() {
+        let ctx = pnpm_worker_context();
+        let args = run_pnpm(&["-C", "/workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec!["-C", "/home/user/.ur/workspace/pool/myproject/0", "install"]
+        );
+    }
+
+    #[test]
+    fn test_pnpm_dash_c_rewrite_project_key() {
+        let ctx = pnpm_worker_context();
+        let args = run_pnpm(&["-C", "myproject", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec!["-C", "/home/user/.ur/workspace/pool/myproject/0", "install"]
+        );
+    }
+
+    #[test]
+    fn test_pnpm_dash_c_blocks_wrong_path() {
+        let ctx = pnpm_worker_context();
+        let err = run_pnpm(&["-C", "/other/path", "install"], Some(&ctx)).unwrap_err();
+        assert!(err.to_string().contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_pnpm_dash_c_blocks_without_worker_context() {
+        let err = run_pnpm(&["-C", "/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -C"));
+    }
+
+    // --dir rewriting
+
+    #[test]
+    fn test_pnpm_dir_rewrite_workspace() {
+        let ctx = pnpm_worker_context();
+        let args = run_pnpm(&["--dir", "/workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--dir",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pnpm_dir_rewrite_project_key() {
+        let ctx = pnpm_worker_context();
+        let args = run_pnpm(&["--dir", "myproject", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--dir",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pnpm_dir_blocks_wrong_path() {
+        let ctx = pnpm_worker_context();
+        let err = run_pnpm(&["--dir", "/other/path", "install"], Some(&ctx)).unwrap_err();
+        assert!(err.to_string().contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_pnpm_dir_blocks_without_worker_context() {
+        let err = run_pnpm(&["--dir", "/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --dir"));
+    }
+
+    #[test]
+    fn test_pnpm_dir_equals_form_rejected() {
+        let err = run_pnpm(&["--dir=/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("--dir=<path>"));
+    }
+
+    // Blocked flag prefixes
+
+    #[test]
+    fn test_pnpm_blocks_global_dir() {
+        let err = run_pnpm(&["--global-dir", "/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global-dir"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_global_dir_equals() {
+        let err = run_pnpm(&["--global-dir=/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global-dir=/tmp"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_store_dir() {
+        let err = run_pnpm(&["--store-dir", "/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --store-dir"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_store_dir_equals() {
+        let err = run_pnpm(&["--store-dir=/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --store-dir=/tmp"));
+    }
+
+    // Normal flags passthrough
+
+    #[test]
+    fn test_pnpm_filter_flag_passthrough() {
+        let args = run_pnpm(&["--filter", "@pax/admin", "build"], None).unwrap();
+        assert_eq!(args, vec!["--filter", "@pax/admin", "build"]);
+    }
+
+    #[test]
+    fn test_pnpm_recursive_flag_passthrough() {
+        let args = run_pnpm(&["--recursive", "install"], None).unwrap();
+        assert_eq!(args, vec!["--recursive", "install"]);
+    }
+
+    #[test]
+    fn test_pnpm_frozen_lockfile_flag_passthrough() {
+        let args = run_pnpm(&["--frozen-lockfile", "install"], None).unwrap();
+        assert_eq!(args, vec!["--frozen-lockfile", "install"]);
     }
 }
