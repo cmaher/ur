@@ -822,10 +822,7 @@ fn project_cycle_limit_map(
             name: project_key.to_string(),
             pool_limit: 1,
             hostexec: vec![],
-            git_hooks_dir: None,
-            skill_hooks_dir: None,
             claude_md: None,
-            workflow_hooks_dir: None,
             container: ur_config::ContainerConfig {
                 image: String::new(),
                 mounts: vec![],

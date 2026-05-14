@@ -288,10 +288,6 @@ pub struct WorkerConfig {
     /// Empty string means no `UR_WORKER_MODEL` env var is set (falls back to
     /// `claude`'s built-in default).
     pub model: String,
-    /// Optional git hooks directory template string from project config.
-    pub git_hooks_dir: Option<String>,
-    /// Optional skill hooks directory template string from project config.
-    pub skill_hooks_dir: Option<String>,
     /// Optional project CLAUDE.md template string from project config.
     /// When None, the server falls back to `<config_dir>/projects/<project_key>/CLAUDE.md`.
     pub claude_md: Option<String>,
@@ -636,8 +632,6 @@ impl WorkerManager {
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
         .add_credentials(&self.host_config_dir)?
-        .add_git_hooks(&config.git_hooks_dir, &self.host_config_dir)?
-        .add_skill_hooks(&config.skill_hooks_dir, &self.host_config_dir)?
         .add_host_hooks_overlay(&config.project_key, &self.host_config_dir)
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
@@ -1337,8 +1331,6 @@ mod tests {
             strategy,
             skills: Vec::new(),
             model: model.into(),
-            git_hooks_dir: None,
-            skill_hooks_dir: None,
             claude_md: None,
             mounts: Vec::new(),
             ports: Vec::new(),

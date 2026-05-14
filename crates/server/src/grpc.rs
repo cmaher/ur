@@ -412,8 +412,6 @@ impl LaunchManager {
         project_key: &str,
     ) -> (
         Option<String>,
-        Option<String>,
-        Option<String>,
         Vec<ur_config::MountConfig>,
         Vec<ur_config::PortMapping>,
         String,
@@ -422,8 +420,6 @@ impl LaunchManager {
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
-                proj.git_hooks_dir.clone(),
-                proj.skill_hooks_dir.clone(),
                 proj.claude_md.clone(),
                 proj.container.mounts.clone(),
                 proj.container.ports.clone(),
@@ -432,8 +428,6 @@ impl LaunchManager {
                 proj.memory_dir.clone(),
             ),
             _ => (
-                None,
-                None,
                 None,
                 Vec::new(),
                 Vec::new(),
@@ -469,16 +463,8 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) = self
             .worker_manager
             .merge_global_skills(strategy, mode_skills);
-        let (
-            git_hooks_dir,
-            skill_hooks_dir,
-            claude_md,
-            mounts,
-            ports,
-            resolved_image,
-            hostexec_scripts,
-            memory_dir,
-        ) = self.extract_project_launch_fields(&project_key);
+        let (claude_md, mounts, ports, resolved_image, hostexec_scripts, memory_dir) =
+            self.extract_project_launch_fields(&project_key);
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
                 "ur-worker-rust:latest".to_owned()
@@ -510,8 +496,6 @@ impl LaunchManager {
             strategy,
             skills,
             model,
-            git_hooks_dir,
-            skill_hooks_dir,
             claude_md,
             mounts,
             ports,
