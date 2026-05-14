@@ -206,10 +206,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `pool_limit` | u32 | `10` | no | Max cached repo clones in the pool |
 | `hostexec` | string[] | `[]` | no | Additional host-exec commands workers may call for this project |
 | `hostexec_scripts` | string[] | `[]` | no | Relative paths to host-exec scripts workers may invoke |
-| `git_hooks_dir` | template path | — | no | Directory of git hook scripts |
-| `skill_hooks_dir` | template path | — | no | Directory of skill hook snippets (copied to `~/.claude/skill-hooks/`) |
 | `claude_md` | template path | — | no | Project-level CLAUDE.md. Falls back to `<config_dir>/projects/<key>/CLAUDE.md` |
-| `workflow_hooks_dir` | template path | — | no | Workflow hook scripts (server-side, not container-mounted) |
 | `max_fix_attempts` | u32 | `10` | no | Fix loop iterations before stalling the agent |
 | `protected_branches` | string[] | `["main", "master"]` | no | Branch patterns that cannot be force-pushed (supports globs) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to skip when evaluating workflow status |
@@ -233,8 +230,6 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 repo = "https://github.com/org/ur.git"
 pool_limit = 5
 hostexec = ["jq", "rg"]
-git_hooks_dir = "%PROJECT%/.git-hooks"
-skill_hooks_dir = "%URCONFIG%/skill-hooks/ur"
 claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
 max_fix_attempts = 8
 protected_branches = ["main", "master", "release/*"]
@@ -253,13 +248,13 @@ theme = "dark"
 
 ## Template Path System
 
-Fields like `git_hooks_dir`, `skill_hooks_dir`, `claude_md`, and `workflow_hooks_dir` use template strings resolved at container launch time.
+The `claude_md` field (and `container.mounts` source) uses template strings resolved at container launch time.
 
 | Form | Example | Resolves To | Effect |
 |------|---------|-------------|--------|
-| `%PROJECT%/...` | `%PROJECT%/.git-hooks` | `ProjectRelative` | No extra mount; path accessible at `/workspace/<rel_path>` via existing workspace mount |
-| `%URCONFIG%/...` | `%URCONFIG%/hooks/ur` | `HostPath` | Volume-mounted from `<config_dir>/hooks/ur` |
-| `/absolute/path` | `/opt/hooks` | `HostPath` | Volume-mounted from that path |
+| `%PROJECT%/...` | `%PROJECT%/CLAUDE.md` | `ProjectRelative` | No extra mount; path accessible at `/workspace/<rel_path>` via existing workspace mount |
+| `%URCONFIG%/...` | `%URCONFIG%/projects/ur/CLAUDE.md` | `HostPath` | Volume-mounted from `<config_dir>/projects/ur/CLAUDE.md` |
+| `/absolute/path` | `/opt/docs/CLAUDE.md` | `HostPath` | Volume-mounted from that path |
 
 Validation runs at config load time. Unrecognized `%VAR%` patterns cause an immediate error.
 
@@ -267,11 +262,25 @@ Validation runs at config load time. Unrecognized `%VAR%` patterns cause an imme
 
 | Config Field | Container Path | Env Var |
 |---|---|---|
-| `git_hooks_dir` | `/var/ur/git-hooks/` | `UR_GIT_HOOKS_DIR` |
-| `skill_hooks_dir` | `/var/ur/skill-hooks/` | `UR_SKILL_HOOKS_DIR` |
 | `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` |
 | `container.mounts` | user-specified destination | (none) |
-| `workflow_hooks_dir` | (not container-mounted — used server-side) | — |
+| host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) |
+| host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) |
+
+### Hook Convention Paths (No Config Fields)
+
+Git and skill hooks use a two-layer overlay resolved from fixed convention paths — no `ur.toml` fields needed.
+
+| Layer | Host Path | Container Path | Precedence |
+|-------|-----------|----------------|------------|
+| Host overlay — git | `~/.ur/projects/<key>/hooks/git/` | `/var/ur/host-hooks/git/:ro` | wins on conflict |
+| In-repo — git | `<workspace>/ur-hooks/git/` | `/workspace/ur-hooks/git/` | applied first |
+| Host overlay — skills | `~/.ur/projects/<key>/hooks/skills/` | `/var/ur/host-hooks/skills/:ro` | wins on conflict |
+| In-repo — skills | `<workspace>/ur-hooks/skills/` | `/workspace/ur-hooks/skills/` | applied first |
+
+Workflow hooks (server-side, not container-mounted) follow the same overlay order:
+1. `~/.ur/projects/<key>/hooks/workflow/pre-push` (host overlay — wins)
+2. `<slot>/ur-hooks/workflow/pre-push` (in-repo — fallback)
 
 ---
 
@@ -282,6 +291,9 @@ Several behaviors trigger automatically when files exist at expected paths under
 | Convention Path | Effect |
 |-----------------|--------|
 | `~/.ur/projects/<key>/CLAUDE.md` | Auto-mounted as the project CLAUDE.md if `claude_md` is not set in ur.toml |
+| `~/.ur/projects/<key>/hooks/git/` | Host overlay for git hooks — mounted at `/var/ur/host-hooks/git/:ro`, wins over in-repo `ur-hooks/git/` |
+| `~/.ur/projects/<key>/hooks/skills/` | Host overlay for skill hooks — mounted at `/var/ur/host-hooks/skills/:ro`, wins over in-repo `ur-hooks/skills/` |
+| `~/.ur/projects/<key>/hooks/workflow/pre-push` | Host overlay for workflow verify hook — wins over in-repo `ur-hooks/workflow/pre-push` |
 | `~/.ur/projects/<key>/local/` | Files here are recursively copied into pool slot workspaces at acquire time (mirrors workspace root; pool mode only) |
 | `~/.ur/hostexec/<script.lua>` | Referenced by filename from `[hostexec.commands.<name>].lua` |
 
@@ -420,7 +432,6 @@ implement = "%URCONFIG%/skills/implement"
 repo = "https://github.com/org/myrepo.git"
 pool_limit = 8
 hostexec = ["jq", "rg"]
-git_hooks_dir = "%PROJECT%/.git-hooks"
 claude_md = "%URCONFIG%/projects/myrepo/CLAUDE.md"
 protected_branches = ["main", "release/*"]
 ignored_workflow_checks = ["slow-e2e"]

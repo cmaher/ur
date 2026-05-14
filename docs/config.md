@@ -258,10 +258,7 @@ repo = "https://github.com/cmaher/ur.git"
 name = "Ur"
 pool_limit = 10
 hostexec = ["ur"]
-git_hooks_dir = "%PROJECT%/ur-hooks/git"
-skill_hooks_dir = "%URCONFIG%/skills/ur"
 claude_md = "%PROJECT%/CLAUDE.md"
-workflow_hooks_dir = "%URCONFIG%/hooks/ur/workflow"
 max_fix_attempts = 10
 protected_branches = ["main", "master"]
 ignored_workflow_checks = []
@@ -273,10 +270,7 @@ ignored_workflow_checks = []
 | `name` | string | `<key>` | no | Display-friendly label |
 | `pool_limit` | u32 | `10` | no | Max cached repo clones in pool |
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands granted to this project |
-| `git_hooks_dir` | string | — | no | Template path to directory of git hook scripts |
-| `skill_hooks_dir` | string | — | no | Template path to directory of skill hook snippets |
 | `claude_md` | string | — | no | Template path to project-level CLAUDE.md file |
-| `workflow_hooks_dir` | string | — | no | Template path to directory of workflow hook scripts |
 | `max_fix_attempts` | u32 | `10` | no | Max fix loop iterations before stalling agent |
 | `protected_branches` | string[] | `["main", "master"]` | no | Branches that cannot be force-pushed (glob patterns supported) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to ignore when evaluating workflow status |
@@ -333,15 +327,35 @@ theme = "nord"
 
 ## Template Paths
 
-Several project fields (`git_hooks_dir`, `skill_hooks_dir`, `claude_md`, `workflow_hooks_dir`) accept template path strings. Three forms are supported:
+The `claude_md` field (and `container.mounts` source) accepts template path strings. Three forms are supported:
 
 | Form | Example | Resolves To |
 |------|---------|-------------|
-| `%PROJECT%/...` | `%PROJECT%/.git-hooks` | Path relative to the project root inside the container (`/workspace/<rel>`) |
-| `%URCONFIG%/...` | `%URCONFIG%/hooks/ur` | Absolute host-side path under the config directory |
-| `/absolute/path` | `/opt/hooks` | Literal host-side path |
+| `%PROJECT%/...` | `%PROJECT%/CLAUDE.md` | Path relative to the project root inside the container (`/workspace/<rel>`) |
+| `%URCONFIG%/...` | `%URCONFIG%/projects/ur/CLAUDE.md` | Absolute host-side path under the config directory |
+| `/absolute/path` | `/opt/docs/CLAUDE.md` | Literal host-side path |
 
 Template paths are validated at config load time. Unrecognized `%VAR%` patterns cause a descriptive error.
+
+## Hook Convention Paths
+
+Git and skill hooks no longer use config fields. Instead, they are resolved automatically from two fixed locations per project:
+
+| Layer | Host Path | Container Mount |
+|-------|-----------|----------------|
+| Host overlay — git | `~/.ur/projects/<key>/hooks/git/` | `/var/ur/host-hooks/git/:ro` |
+| Host overlay — skills | `~/.ur/projects/<key>/hooks/skills/` | `/var/ur/host-hooks/skills/:ro` |
+| In-repo — git | `<workspace>/ur-hooks/git/` | accessed via `/workspace/ur-hooks/git/` |
+| In-repo — skills | `<workspace>/ur-hooks/skills/` | accessed via `/workspace/ur-hooks/skills/` |
+
+The host overlay wins on identical filenames. Mounts are added only if the host directory exists. Workerd merges both sources into the active hook directory at container startup.
+
+Workflow hooks (server-side, not container-mounted) follow the same pattern:
+
+| Layer | Host Path |
+|-------|-----------|
+| Host overlay | `~/.ur/projects/<key>/hooks/workflow/pre-push` |
+| In-repo | `<slot>/ur-hooks/workflow/pre-push` |
 
 ## Full Example
 
@@ -395,8 +409,6 @@ projects = ["ur"]
 repo = "https://github.com/cmaher/ur.git"
 pool_limit = 10
 hostexec = ["ur"]
-git_hooks_dir = "%PROJECT%/ur-hooks/git"
-skill_hooks_dir = "%URCONFIG%/skills/ur"
 claude_md = "%PROJECT%/CLAUDE.md"
 protected_branches = ["main", "master"]
 

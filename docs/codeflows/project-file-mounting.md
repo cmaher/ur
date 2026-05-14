@@ -31,31 +31,63 @@ Configured in `ur.toml` under `[projects.<key>]`:
 ```toml
 [projects.ur]
 repo = "https://github.com/cmaher/ur.git"
-git_hooks_dir = "%PROJECT%/.git-hooks"
-skill_hooks_dir = "%URCONFIG%/skill-hooks/ur"
 claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
 memory_dir = "%URCONFIG%/projects/ur/memory"
-workflow_hooks_dir = "%PROJECT%/.workflow"
 
 [projects.ur.container]
 image = "ur-worker:latest"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
-Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `git_hooks_dir`, `skill_hooks_dir`, `claude_md`, `memory_dir`, `workflow_hooks_dir`) and `ContainerConfig` (field: `mounts`).
+Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claude_md`, `memory_dir`) and `ContainerConfig` (field: `mounts`).
 
 ## Mount Destinations
 
 | Config Field | Container Mount Point | Env Var | Read-only? |
 |---|---|---|---|
-| `git_hooks_dir` | `/var/ur/git-hooks/` | `UR_GIT_HOOKS_DIR` | no |
-| `skill_hooks_dir` | `/var/ur/skill-hooks/` | `UR_SKILL_HOOKS_DIR` | no |
 | `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` | yes (`:ro`) |
 | `memory_dir` | `/home/worker/.claude/projects/-workspace/memory` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
-| `workflow_hooks_dir` | (not container-mounted — resolved server-side for builderd execution) | — | — |
+| host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) | yes (`:ro`) |
+| host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) | yes (`:ro`) |
+| workflow hooks (server-side) | (not container-mounted — resolved server-side) | — | — |
 
-When any of these resolve to `ProjectRelative`, no volume mount is created — only the env var is set, pointing to `/workspace/<rel_path>`.
+When `claude_md` resolves to `ProjectRelative`, no volume mount is created — only the env var is set, pointing to `/workspace/<rel_path>`.
+
+## Hook Overlay Model
+
+Git and skill hooks use a two-layer overlay with **no config fields**. Sources are fixed by convention; the host overlay wins on identical filenames.
+
+### Git Hooks
+
+| Layer | Source (container-visible) | Precedence |
+|---|---|---|
+| In-repo | `/workspace/ur-hooks/git/` | applied first |
+| Host overlay | `/var/ur/host-hooks/git/:ro` | applied second, wins on conflict |
+
+The host overlay path `/var/ur/host-hooks/git/` is volume-mounted from `<config_dir>/projects/<key>/hooks/git/` on the host (via `add_host_hooks_overlay()` in `RunOptsBuilder`). The mount is added only if the host directory exists.
+
+Workerd copies both sources into `/workspace/.git/hooks/` at container startup.
+
+### Skill Hooks
+
+| Layer | Source (container-visible) | Precedence |
+|---|---|---|
+| In-repo | `/workspace/ur-hooks/skills/` | applied first |
+| Host overlay | `/var/ur/host-hooks/skills/:ro` | applied second, wins on conflict |
+
+The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/.claude/skill-hooks/` at container startup.
+
+### Workflow Hooks (Server-Side, Not Container-Mounted)
+
+Workflow hooks also use a two-layer overlay but are resolved and executed server-side via builderd. No container mount is involved.
+
+| Layer | Host Path | Precedence |
+|---|---|---|
+| Host overlay | `<config_dir>/projects/<key>/hooks/workflow/pre-push` | checked first, wins |
+| In-repo | `<slot_path>/ur-hooks/workflow/pre-push` | fallback |
+
+Source: `crates/server/src/workflow/handlers/verify.rs`
 
 ## CLAUDE.md Convention Fallback
 
@@ -117,7 +149,7 @@ CLI: ur worker launch <ticket> -p <project>
 ur-server: CoreServiceHandler::worker_launch()   [server/src/grpc.rs]
   │
   ├─ Reads ProjectConfig from projects HashMap
-  │   └─ Extracts: git_hooks_dir, skill_hooks_dir, claude_md, mounts, ports
+  │   └─ Extracts: claude_md, mounts, ports
   │
   ├─ Builds WorkerConfig                         [server/src/worker.rs]
   │
@@ -127,14 +159,15 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   ├─ resolve_claude_md()     ← convention fallback for CLAUDE.md
   │
   ├─ RunOptsBuilder          [server/src/run_opts_builder.rs]
-  │   ├─ .add_workspace()          → /workspace mount
-  │   ├─ .add_credentials()        → shared OAuth credentials
-  │   ├─ .add_git_hooks()          → resolve_template_path → mount or env var
-  │   ├─ .add_skill_hooks()        → resolve_template_path → mount or env var
-  │   ├─ .add_project_claude_md()  → resolve_template_path → mount or env var
-  │   ├─ .add_memory_dir()         → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
-  │   ├─ .add_mounts()             → resolve_template_path → mount for each entry
-  │   ├─ .add_context_repos()      → /context/<key>:ro mounts
+  │   ├─ .add_workspace()              → /workspace mount
+  │   ├─ .add_credentials()            → shared OAuth credentials
+  │   ├─ .add_host_hooks_overlay()     → <config_dir>/projects/<key>/hooks/git/ → /var/ur/host-hooks/git/:ro
+  │   │                                  <config_dir>/projects/<key>/hooks/skills/ → /var/ur/host-hooks/skills/:ro
+  │   │                                  (each mount added only if the host dir exists)
+  │   ├─ .add_project_claude_md()      → resolve_template_path → mount or env var
+  │   ├─ .add_memory_dir()             → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
+  │   ├─ .add_mounts()                 → resolve_template_path → mount for each entry
+  │   ├─ .add_context_repos()          → /context/<key>:ro mounts
   │   └─ .build() → RunOpts
   │
   ▼
@@ -229,8 +262,3 @@ RepoPoolManager::acquire_slot()                 [server/src/pool.rs]
 Slot returned → container launch with /workspace mount
 ```
 
-## Workflow Hooks (Server-Side, Not Container-Mounted)
-
-`workflow_hooks_dir` is the exception — it is **not mounted into worker containers**. Instead, the server resolves it when running workflow verification steps (e.g., pre-push hooks) and executes hooks via builderd on the host.
-
-Source: `crates/server/src/workflow/handlers/verify.rs:140`

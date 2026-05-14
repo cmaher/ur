@@ -153,7 +153,7 @@ grep "builderd" ~/.ur/logs/server.log.$(date +%Y-%m-%d) | grep -E '"ERROR"|"WARN
 | Pattern to grep | Likely cause |
 |-----------------|--------------|
 | `"skill"` + ERROR/WARN | Skill not found in potential-skills |
-| `"git hook"` + ERROR | git_hooks_dir path missing or wrong template |
+| `"git hook"` + ERROR | hook source dir missing (check `ur-hooks/git/` in repo or `~/.ur/projects/<key>/hooks/git/`) |
 | `"ListHostExecCommands"` + ERROR | Worker couldn't connect to server at startup |
 | `"credentials"` | Claude Code credentials not injected; re-seed |
 
