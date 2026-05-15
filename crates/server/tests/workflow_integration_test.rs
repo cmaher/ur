@@ -258,6 +258,7 @@ fn dummy_worker_manager(worker_repo: WorkerRepo) -> ur_server::WorkerManager {
         std::path::PathBuf::from("/tmp/test"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
+        std::path::PathBuf::from("/tmp/test/logs"),
         pool,
         network_manager,
         config.network.clone(),
@@ -379,6 +380,7 @@ fn dummy_launch_manager(
     let worker_manager = ur_server::WorkerManager::new(
         std::path::PathBuf::from("/tmp/test/workspace"),
         std::path::PathBuf::from("/tmp/test"),
+        std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         std::path::PathBuf::from("/tmp/test/logs"),
         pool.clone(),
@@ -822,10 +824,7 @@ fn project_cycle_limit_map(
             name: project_key.to_string(),
             pool_limit: 1,
             hostexec: vec![],
-            git_hooks_dir: None,
-            skill_hooks_dir: None,
             claude_md: None,
-            workflow_hooks_dir: None,
             container: ur_config::ContainerConfig {
                 image: String::new(),
                 mounts: vec![],

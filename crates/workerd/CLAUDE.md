@@ -22,7 +22,7 @@ Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var
 - Copies strategy-specific CLAUDE.md from potential-claudes based on `$UR_WORKER_CLAUDE` env var
 - Copies `~/.claude/potential-settings.json` (baked into the image) to `~/.claude/settings.json` so Claude Code picks up hooks/permissions. The `model` key is intentionally NOT injected here — see step 2 of the daemon startup sequence above for why.
-- Copies git hooks from `$UR_GIT_HOOKS_DIR` (or default `/workspace/ur-hooks/git/`) into `/workspace/.git/hooks/`
-- Copies skill hooks from `$UR_SKILL_HOOKS_DIR` (or default `/workspace/ur-hooks/skills/`) into `~/.claude/skill-hooks/`
+- Copies git hooks from `/workspace/ur-hooks/git/` (in-repo), then `/var/ur/host-hooks/git/` (host overlay, wins on conflict), into `/workspace/.git/hooks/`
+- Copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), into `~/.claude/skill-hooks/`
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)
 - Generates shims in `~/.local/bin/` that call `workertools host-exec <command> "$@"`

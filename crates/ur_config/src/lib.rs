@@ -467,15 +467,17 @@ struct RawProjectConfig {
     pool_limit: Option<u32>,
     #[serde(default)]
     hostexec: Vec<String>,
-    git_hooks_dir: Option<String>,
-    skill_hooks_dir: Option<String>,
+    /// Removed field — emits a hard error if present.
+    git_hooks_dir: Option<serde::de::IgnoredAny>,
+    /// Removed field — emits a hard error if present.
+    skill_hooks_dir: Option<serde::de::IgnoredAny>,
     claude_md: Option<String>,
     container: Option<RawContainerConfig>,
     /// Reject mounts at the project root level with a helpful error.
     #[serde(default)]
     mounts: Option<serde::de::IgnoredAny>,
-    /// Template path to a directory of workflow hook scripts.
-    workflow_hooks_dir: Option<String>,
+    /// Removed field — emits a hard error if present.
+    workflow_hooks_dir: Option<serde::de::IgnoredAny>,
     /// Maximum fix loop iterations before stalling agent.
     max_fix_attempts: Option<u32>,
     /// Maximum implement cycles before stalling the workflow.
@@ -1148,15 +1150,6 @@ pub struct ProjectConfig {
     /// Additional passthrough hostexec commands for this project.
     /// These are added to the global allowlist when agents run against this project.
     pub hostexec: Vec<String>,
-    /// Optional template path to a directory of git hook scripts.
-    /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
-    /// Resolve with [`resolve_template_path`] at use time.
-    pub git_hooks_dir: Option<String>,
-    /// Optional template path to a directory of skill hook snippets.
-    /// Supports `%PROJECT%/...` and `%URCONFIG%/...` template variables, or absolute paths.
-    /// Resolve with [`resolve_template_path`] at use time.
-    /// Contents are copied to `~/.claude/skill-hooks/` at container startup.
-    pub skill_hooks_dir: Option<String>,
     /// Optional template path to a project-level CLAUDE.md file.
     /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
@@ -1164,10 +1157,6 @@ pub struct ProjectConfig {
     pub claude_md: Option<String>,
     /// Container configuration (image, mounts).
     pub container: ContainerConfig,
-    /// Optional template path to a directory of workflow hook scripts.
-    /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
-    /// Resolve with [`resolve_template_path`] at use time.
-    pub workflow_hooks_dir: Option<String>,
     /// Maximum fix loop iterations before stalling the agent (default: 5).
     pub max_fix_attempts: u32,
     /// Effective maximum implement cycles for this project.
@@ -1453,6 +1442,29 @@ fn resolve_project_config(
         );
     }
 
+    // Hard errors for removed config fields.
+    if raw_proj.git_hooks_dir.is_some() {
+        anyhow::bail!(
+            "project '{key}': `git_hooks_dir` is no longer configurable — place files in \
+             `<config_dir>/projects/{key}/hooks/git/` or `<repo>/ur-hooks/git/`. \
+             See docs/codeflows/project-file-mounting.md."
+        );
+    }
+    if raw_proj.skill_hooks_dir.is_some() {
+        anyhow::bail!(
+            "project '{key}': `skill_hooks_dir` is no longer configurable — place files in \
+             `<config_dir>/projects/{key}/hooks/skills/` or `<repo>/ur-hooks/skills/`. \
+             See docs/codeflows/project-file-mounting.md."
+        );
+    }
+    if raw_proj.workflow_hooks_dir.is_some() {
+        anyhow::bail!(
+            "project '{key}': `workflow_hooks_dir` is no longer configurable — place files in \
+             `<config_dir>/projects/{key}/hooks/workflow/` or `<repo>/ur-hooks/workflow/`. \
+             See docs/codeflows/project-file-mounting.md."
+        );
+    }
+
     validate_project_templates(&key, &raw_proj)?;
 
     let raw_container = raw_proj.container.unwrap_or(RawContainerConfig {
@@ -1498,11 +1510,8 @@ fn resolve_project_config(
         pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
         key: key.clone(),
         hostexec: raw_proj.hostexec,
-        git_hooks_dir: raw_proj.git_hooks_dir,
-        skill_hooks_dir: raw_proj.skill_hooks_dir,
         claude_md: raw_proj.claude_md,
         container,
-        workflow_hooks_dir: raw_proj.workflow_hooks_dir,
         max_fix_attempts: raw_proj
             .max_fix_attempts
             .unwrap_or(DEFAULT_MAX_FIX_ATTEMPTS),
@@ -1797,18 +1806,6 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
 
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
 fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
-    if let Some(ref tpl) = raw_proj.git_hooks_dir {
-        template_path::validate_template_str(tpl)
-            .map_err(|e| anyhow::anyhow!("project '{}': git_hooks_dir: {}", key, e))?;
-    }
-    if let Some(ref tpl) = raw_proj.skill_hooks_dir {
-        template_path::validate_template_str(tpl)
-            .map_err(|e| anyhow::anyhow!("project '{}': skill_hooks_dir: {}", key, e))?;
-    }
-    if let Some(ref tpl) = raw_proj.workflow_hooks_dir {
-        template_path::validate_template_str(tpl)
-            .map_err(|e| anyhow::anyhow!("project '{}': workflow_hooks_dir: {}", key, e))?;
-    }
     if let Some(ref tpl) = raw_proj.claude_md {
         template_path::validate_template_str(tpl)
             .map_err(|e| anyhow::anyhow!("project '{}': claude_md: {}", key, e))?;
@@ -2347,25 +2344,7 @@ name = "Missing Repo"
     }
 
     #[test]
-    fn git_hooks_dir_none_when_absent() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[projects.ur]
-repo = "git@github.com:cmaher/ur.git"
-[projects.ur.container]
-image = "ur-worker"
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].git_hooks_dir, None);
-    }
-
-    #[test]
-    fn git_hooks_dir_stores_template_string() {
+    fn git_hooks_dir_rejected_with_hard_error() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2379,15 +2358,24 @@ image = "ur-worker"
 "#,
         )
         .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            cfg.projects["ur"].git_hooks_dir.as_deref(),
-            Some("%PROJECT%/.git-hooks")
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("git_hooks_dir"),
+            "error should name the removed key: {msg}"
+        );
+        assert!(
+            msg.contains("no longer configurable"),
+            "error should say 'no longer configurable': {msg}"
+        );
+        assert!(
+            msg.contains("docs/codeflows/project-file-mounting.md"),
+            "error should mention the codeflow doc: {msg}"
         );
     }
 
     #[test]
-    fn git_hooks_dir_rejects_unrecognized_variable() {
+    fn skill_hooks_dir_rejected_with_hard_error() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2395,7 +2383,7 @@ image = "ur-worker"
 node_id = "n"
 [projects.ur]
 repo = "git@github.com:cmaher/ur.git"
-git_hooks_dir = "%BADVAR%/hooks"
+skill_hooks_dir = "%URCONFIG%/hooks/ur"
 [projects.ur.container]
 image = "ur-worker"
 "#,
@@ -2403,51 +2391,17 @@ image = "ur-worker"
         .unwrap();
         let err = Config::load_from(tmp.path()).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unrecognized template variable"), "{msg}");
-        assert!(msg.contains("project 'ur'"), "{msg}");
-    }
-
-    #[test]
-    fn git_hooks_dir_accepts_absolute_path() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[projects.ur]
-repo = "git@github.com:cmaher/ur.git"
-git_hooks_dir = "/opt/hooks/ur"
-[projects.ur.container]
-image = "ur-worker"
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            cfg.projects["ur"].git_hooks_dir.as_deref(),
-            Some("/opt/hooks/ur")
+        assert!(
+            msg.contains("skill_hooks_dir"),
+            "error should name the removed key: {msg}"
         );
-    }
-
-    #[test]
-    fn git_hooks_dir_accepts_urconfig_template() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[projects.ur]
-repo = "git@github.com:cmaher/ur.git"
-git_hooks_dir = "%URCONFIG%/hooks/ur"
-[projects.ur.container]
-image = "ur-worker"
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            cfg.projects["ur"].git_hooks_dir.as_deref(),
-            Some("%URCONFIG%/hooks/ur")
+        assert!(
+            msg.contains("no longer configurable"),
+            "error should say 'no longer configurable': {msg}"
+        );
+        assert!(
+            msg.contains("docs/codeflows/project-file-mounting.md"),
+            "error should mention the codeflow doc: {msg}"
         );
     }
 
@@ -3291,7 +3245,6 @@ image = "ur-worker"
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["myproj"];
-        assert_eq!(proj.workflow_hooks_dir, None);
         assert_eq!(proj.max_fix_attempts, DEFAULT_MAX_FIX_ATTEMPTS);
         assert_eq!(proj.protected_branches, default_protected_branches());
     }
@@ -3305,7 +3258,6 @@ image = "ur-worker"
 node_id = "n"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
-workflow_hooks_dir = "%PROJECT%/.workflow"
 max_fix_attempts = 3
 protected_branches = ["main", "release/*"]
 [projects.myproj.container]
@@ -3315,16 +3267,12 @@ image = "ur-worker"
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["myproj"];
-        assert_eq!(
-            proj.workflow_hooks_dir.as_deref(),
-            Some("%PROJECT%/.workflow")
-        );
         assert_eq!(proj.max_fix_attempts, 3);
         assert_eq!(proj.protected_branches, vec!["main", "release/*"]);
     }
 
     #[test]
-    fn project_workflow_hooks_dir_validates_template() {
+    fn workflow_hooks_dir_rejected_with_hard_error() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -3332,7 +3280,7 @@ image = "ur-worker"
 node_id = "n"
 [projects.myproj]
 repo = "git@github.com:example/myproj.git"
-workflow_hooks_dir = "relative/path"
+workflow_hooks_dir = "%PROJECT%/.workflow"
 [projects.myproj.container]
 image = "ur-worker"
 "#,
@@ -3342,7 +3290,15 @@ image = "ur-worker"
         let msg = err.to_string();
         assert!(
             msg.contains("workflow_hooks_dir"),
-            "expected workflow_hooks_dir error, got: {msg}"
+            "error should name the removed key: {msg}"
+        );
+        assert!(
+            msg.contains("no longer configurable"),
+            "error should say 'no longer configurable': {msg}"
+        );
+        assert!(
+            msg.contains("docs/codeflows/project-file-mounting.md"),
+            "error should mention the codeflow doc: {msg}"
         );
     }
 
@@ -3942,10 +3898,7 @@ quit = ["q"]
                     name: "ur".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
-                    git_hooks_dir: None,
-                    skill_hooks_dir: None,
                     claude_md: None,
-                    workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],
@@ -3969,10 +3922,7 @@ quit = ["q"]
                     name: "sample".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
-                    git_hooks_dir: None,
-                    skill_hooks_dir: None,
                     claude_md: None,
-                    workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],
@@ -4090,10 +4040,7 @@ quit = ["q"]
                     name: "ur".to_owned(), // name matches the "ur" key
                     pool_limit: 10,
                     hostexec: vec![],
-                    git_hooks_dir: None,
-                    skill_hooks_dir: None,
                     claude_md: None,
-                    workflow_hooks_dir: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],

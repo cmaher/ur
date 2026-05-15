@@ -89,82 +89,6 @@ impl RunOptsBuilder {
         Ok(self)
     }
 
-    /// Add git hooks volume mount and env var based on project configuration.
-    ///
-    /// - If `git_hooks_dir` is `None`, defaults to `%PROJECT%/ur-hooks/git` (convention path),
-    ///   setting `UR_GIT_HOOKS_DIR=/workspace/ur-hooks/git` with no volume mount.
-    /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a volume mount
-    ///   from the host path to `/var/ur/git-hooks` and sets `UR_GIT_HOOKS_DIR=/var/ur/git-hooks`.
-    /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
-    ///   mount and sets `UR_GIT_HOOKS_DIR=/workspace/<path>`.
-    pub fn add_git_hooks(
-        mut self,
-        git_hooks_dir: &Option<String>,
-        host_config_dir: &Path,
-    ) -> Result<Self, String> {
-        let default_template = "%PROJECT%/ur-hooks/git".to_string();
-        let template = git_hooks_dir.as_deref().unwrap_or(&default_template);
-
-        let resolved = resolve_template_path(template, host_config_dir)
-            .map_err(|e| format!("failed to resolve git_hooks_dir: {e}"))?;
-
-        match resolved {
-            ResolvedTemplatePath::HostPath(host_path) => {
-                let container_path = PathBuf::from("/var/ur/git-hooks");
-                self.volumes.push((host_path, container_path));
-                self.env_vars
-                    .push(("UR_GIT_HOOKS_DIR".into(), "/var/ur/git-hooks".into()));
-            }
-            ResolvedTemplatePath::ProjectRelative(rel_path) => {
-                let container_hooks_dir = PathBuf::from("/workspace").join(&rel_path);
-                self.env_vars.push((
-                    "UR_GIT_HOOKS_DIR".into(),
-                    container_hooks_dir.to_string_lossy().into_owned(),
-                ));
-            }
-        }
-
-        Ok(self)
-    }
-
-    /// Add skill hooks volume mount and env var based on project configuration.
-    ///
-    /// - If `skill_hooks_dir` is `None`, this is a no-op.
-    /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a volume mount
-    ///   from the host path to `/var/ur/skill-hooks` and sets `UR_SKILL_HOOKS_DIR=/var/ur/skill-hooks`.
-    /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
-    ///   mount and sets `UR_SKILL_HOOKS_DIR=/workspace/<path>`.
-    pub fn add_skill_hooks(
-        mut self,
-        skill_hooks_dir: &Option<String>,
-        host_config_dir: &Path,
-    ) -> Result<Self, String> {
-        let Some(template) = skill_hooks_dir.as_deref() else {
-            return Ok(self);
-        };
-
-        let resolved = resolve_template_path(template, host_config_dir)
-            .map_err(|e| format!("failed to resolve skill_hooks_dir: {e}"))?;
-
-        match resolved {
-            ResolvedTemplatePath::HostPath(host_path) => {
-                let container_path = PathBuf::from("/var/ur/skill-hooks");
-                self.volumes.push((host_path, container_path));
-                self.env_vars
-                    .push(("UR_SKILL_HOOKS_DIR".into(), "/var/ur/skill-hooks".into()));
-            }
-            ResolvedTemplatePath::ProjectRelative(rel_path) => {
-                let container_hooks_dir = PathBuf::from("/workspace").join(&rel_path);
-                self.env_vars.push((
-                    "UR_SKILL_HOOKS_DIR".into(),
-                    container_hooks_dir.to_string_lossy().into_owned(),
-                ));
-            }
-        }
-
-        Ok(self)
-    }
-
     /// Add project CLAUDE.md mount and env var based on project configuration.
     ///
     /// - If `claude_md` is `None`, this is a no-op.
@@ -285,6 +209,60 @@ impl RunOptsBuilder {
             self.volumes.push((host_path, container_path));
         }
         Ok(self)
+    }
+
+    /// Add host-side per-project hook directories as read-only overlays.
+    ///
+    /// Mounts the following paths when they exist, using fixed container
+    /// destinations that workerd will read in a later ticket:
+    ///
+    /// - `<host_config_dir>/projects/<project_key>/hooks/git/` → `/var/ur/host-hooks/git/:ro`
+    /// - `<host_config_dir>/projects/<project_key>/hooks/skills/` → `/var/ur/host-hooks/skills/:ro`
+    ///
+    /// `local_config_dir` is the locally-accessible config directory used for existence
+    /// checks. When the server runs inside a container, `host_config_dir` is the host
+    /// filesystem path (passed to builderd as the volume mount source) while
+    /// `local_config_dir` is the container-internal mount point (e.g. `/config`) where
+    /// the same directory is actually reachable for `stat` calls.
+    ///
+    /// Rules:
+    /// - When `project_key` is empty (workspace-mode launch without a project), this is a no-op.
+    /// - When a host directory does not exist, no mount is added for that type.
+    /// - Both checks are independent — one mount can be added without the other.
+    pub fn add_host_hooks_overlay(
+        mut self,
+        project_key: &str,
+        host_config_dir: &Path,
+        local_config_dir: &Path,
+    ) -> Self {
+        if project_key.is_empty() {
+            return self;
+        }
+
+        let local_hooks_base = local_config_dir
+            .join("projects")
+            .join(project_key)
+            .join("hooks");
+        let host_hooks_base = host_config_dir
+            .join("projects")
+            .join(project_key)
+            .join("hooks");
+
+        if local_hooks_base.join("git").exists() {
+            self.volumes.push((
+                host_hooks_base.join("git"),
+                PathBuf::from("/var/ur/host-hooks/git:ro"),
+            ));
+        }
+
+        if local_hooks_base.join("skills").exists() {
+            self.volumes.push((
+                host_hooks_base.join("skills"),
+                PathBuf::from("/var/ur/host-hooks/skills:ro"),
+            ));
+        }
+
+        self
     }
 
     /// Add per-worker logs directory mount.
@@ -635,113 +613,6 @@ mod tests {
         assert_eq!(req.volumes[0].container_path, "/container/a:ro");
         assert_eq!(req.volumes[1].host_path, "/host/b");
         assert_eq!(req.volumes[1].container_path, "/container/b");
-    }
-
-    #[test]
-    fn add_git_hooks_none_defaults_to_convention_path() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_git_hooks(&None, Path::new("/unused"))
-            .unwrap()
-            .build();
-
-        assert!(req.volumes.is_empty());
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/workspace/ur-hooks/git");
-    }
-
-    #[test]
-    fn add_git_hooks_host_path_adds_mount_and_env() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_git_hooks(
-                &Some("%URCONFIG%/hooks/myproject".into()),
-                Path::new("/home/user/.ur"),
-            )
-            .unwrap()
-            .build();
-
-        assert_eq!(req.volumes.len(), 1);
-        assert_eq!(req.volumes[0].host_path, "/home/user/.ur/hooks/myproject");
-        assert_eq!(req.volumes[0].container_path, "/var/ur/git-hooks");
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/var/ur/git-hooks");
-    }
-
-    #[test]
-    fn add_git_hooks_absolute_path_adds_mount_and_env() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_git_hooks(
-                &Some("/opt/git-hooks/myproject".into()),
-                Path::new("/unused"),
-            )
-            .unwrap()
-            .build();
-
-        assert_eq!(req.volumes.len(), 1);
-        assert_eq!(req.volumes[0].host_path, "/opt/git-hooks/myproject");
-        assert_eq!(req.volumes[0].container_path, "/var/ur/git-hooks");
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/var/ur/git-hooks");
-    }
-
-    #[test]
-    fn add_git_hooks_project_relative_no_mount() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_git_hooks(&Some("%PROJECT%/.git-hooks".into()), Path::new("/unused"))
-            .unwrap()
-            .build();
-
-        assert!(req.volumes.is_empty());
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_GIT_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/workspace/.git-hooks");
-    }
-
-    #[test]
-    fn add_skill_hooks_none_is_noop() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_skill_hooks(&None, Path::new("/unused"))
-            .unwrap()
-            .build();
-
-        assert!(req.volumes.is_empty());
-        assert!(req.env_vars.is_empty());
-    }
-
-    #[test]
-    fn add_skill_hooks_host_path_adds_mount_and_env() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_skill_hooks(
-                &Some("%URCONFIG%/skill-hooks".into()),
-                Path::new("/home/user/.ur"),
-            )
-            .unwrap()
-            .build();
-
-        assert_eq!(req.volumes.len(), 1);
-        assert_eq!(req.volumes[0].host_path, "/home/user/.ur/skill-hooks");
-        assert_eq!(req.volumes[0].container_path, "/var/ur/skill-hooks");
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_SKILL_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/var/ur/skill-hooks");
-    }
-
-    #[test]
-    fn add_skill_hooks_project_relative_no_mount() {
-        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_skill_hooks(
-                &Some("%PROJECT%/ur-hooks/skills".into()),
-                Path::new("/unused"),
-            )
-            .unwrap()
-            .build();
-
-        assert!(req.volumes.is_empty());
-        assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_SKILL_HOOKS_DIR");
-        assert_eq!(req.env_vars[0].value, "/workspace/ur-hooks/skills");
     }
 
     #[test]
@@ -1121,6 +992,161 @@ mod tests {
             "/home/worker/.claude/projects/-workspace/memory"
         );
         assert!(req.env_vars.is_empty(), "no env vars should be added");
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_empty_project_key_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create the directories so existence is not the reason for no mount.
+        let hooks_git = tmp
+            .path()
+            .join("projects")
+            .join("")
+            .join("hooks")
+            .join("git");
+        // Can't create a path with empty project key component meaningfully,
+        // just verify empty key returns no volumes regardless.
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("", tmp.path(), tmp.path())
+            .build();
+
+        assert!(
+            req.volumes.is_empty(),
+            "empty project key should add no mounts: {:?}",
+            req.volumes
+        );
+        let _ = hooks_git; // suppress unused warning
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_both_dirs_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        let skills_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("skills");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 2);
+        assert_eq!(req.volumes[0].host_path, git_dir.display().to_string());
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
+        assert_eq!(req.volumes[1].host_path, skills_dir.display().to_string());
+        assert_eq!(
+            req.volumes[1].container_path,
+            "/var/ur/host-hooks/skills:ro"
+        );
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_only_git_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        // skills dir intentionally NOT created
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, git_dir.display().to_string());
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_only_skills_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        // git dir intentionally NOT created
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1);
+        assert_eq!(req.volumes[0].host_path, skills_dir.display().to_string());
+        assert_eq!(
+            req.volumes[0].container_path,
+            "/var/ur/host-hooks/skills:ro"
+        );
+    }
+
+    #[test]
+    fn add_host_hooks_overlay_neither_exists_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No hooks directories created at all
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", tmp.path(), tmp.path())
+            .build();
+
+        assert!(
+            req.volumes.is_empty(),
+            "no existing dirs should produce no mounts: {:?}",
+            req.volumes
+        );
+    }
+
+    /// When the server runs inside a container, `local_config_dir` (e.g. `/config`)
+    /// differs from `host_config_dir` (e.g. `/actual/host/path`). The existence check
+    /// must use `local_config_dir` while the mount source must use `host_config_dir`.
+    #[test]
+    fn add_host_hooks_overlay_uses_local_for_check_host_for_mount() {
+        let local_tmp = tempfile::tempdir().unwrap();
+        let host_tmp = tempfile::tempdir().unwrap();
+
+        // Create the git hooks dir under the LOCAL path only.
+        let local_git_dir = local_tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+        std::fs::create_dir_all(&local_git_dir).unwrap();
+
+        // The expected HOST-side mount source path (mirrors the local structure).
+        let expected_host_git = host_tmp
+            .path()
+            .join("projects")
+            .join("myproj")
+            .join("hooks")
+            .join("git");
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_host_hooks_overlay("myproj", host_tmp.path(), local_tmp.path())
+            .build();
+
+        assert_eq!(req.volumes.len(), 1, "expected one volume mount for git");
+        assert_eq!(
+            req.volumes[0].host_path,
+            expected_host_git.display().to_string(),
+            "mount source must use host_config_dir, not local_config_dir"
+        );
+        assert_eq!(req.volumes[0].container_path, "/var/ur/host-hooks/git:ro");
     }
 
     #[test]

@@ -4,7 +4,6 @@ use local_repo::LocalRepo;
 use tracing::{info, warn};
 
 use ticket_db::LifecycleStatus;
-use ur_config::{ResolvedTemplatePath, resolve_template_path};
 
 use crate::workflow::handlers::hook_log::write_hook_failure_log;
 use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, WorkflowHandler};
@@ -14,14 +13,13 @@ use crate::workflow::{HandlerFuture, TransitionRequest, WorkflowContext, Workflo
 /// Runs the project's `pre-push` workflow hook (if configured) to verify
 /// that the worker's changes pass local checks before pushing.
 ///
-/// Hook resolution:
-/// 1. Read the ticket's project to find the `ProjectConfig`.
-/// 2. Read `workflow_hooks_dir` from the project config.
-/// 3. Resolve the template path and locate `pre-push` inside it.
-/// 4. Execute via `local_repo.run_hook()` through builderd.
+/// Hook resolution (two-layer overlay):
+/// 1. Check host overlay: `<config_dir>/projects/<project_key>/hooks/workflow/pre-push`
+/// 2. Check in-repo: `<slot.host_path>/ur-hooks/workflow/pre-push`
+/// 3. Neither found: skip verification, transition to Pushing.
 ///
 /// Outcomes:
-/// - Hook not configured or not found: skip verification, transition to Pushing.
+/// - Hook not found: skip verification, transition to Pushing.
 /// - Hook passes (exit 0): transition to Pushing.
 /// - Hook fails: transition to Implementing for another attempt. The implement
 ///   cycle limit is enforced in `dispatch_implement`, not here.
@@ -62,7 +60,7 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
 
     // 3. Resolve the hook path and working directory.
     let (hook_path_str, working_dir) =
-        match resolve_hook_context(ctx, ticket_id, project_key, project_config).await? {
+        match resolve_hook_context(ctx, ticket_id, project_key).await? {
             Some(resolved) => resolved,
             None => {
                 // No hook configured — already advanced to pushing inside resolve_hook_context.
@@ -152,31 +150,17 @@ async fn run_verification(ctx: &WorkflowContext, ticket_id: &str) -> anyhow::Res
 
 /// Resolve the hook script path and working directory for verification.
 ///
-/// Returns `None` if no hook is configured (and advances the ticket to Pushing).
+/// Uses a two-layer overlay convention:
+/// 1. Host overlay: `<config_dir>/projects/<project_key>/hooks/workflow/pre-push`
+/// 2. In-repo: `<slot.host_path>/ur-hooks/workflow/pre-push`
+///
+/// Returns `None` if neither path exists (and advances the ticket to Pushing).
 /// Returns `Some((hook_path, working_dir))` if a hook was resolved.
 async fn resolve_hook_context(
     ctx: &WorkflowContext,
     ticket_id: &str,
     project_key: &str,
-    project_config: &ur_config::ProjectConfig,
 ) -> anyhow::Result<Option<(String, String)>> {
-    // Read workflow_hooks_dir from project config.
-    let hooks_dir_template = match &project_config.workflow_hooks_dir {
-        Some(dir) => dir,
-        None => {
-            info!(
-                ticket_id = %ticket_id,
-                project_key = %project_key,
-                "no workflow_hooks_dir configured — skipping verification, advancing to pushing"
-            );
-            advance_to_pushing(ctx, ticket_id).await?;
-            return Ok(None);
-        }
-    };
-
-    // Resolve the template path.
-    let resolved = resolve_template_path(hooks_dir_template, &ctx.config.config_dir)?;
-
     // Resolve worker and slot to get the working directory.
     let workflow = ctx
         .workflow_repo
@@ -202,16 +186,58 @@ async fn resolve_hook_context(
 
     let working_dir = &slot.host_path;
 
-    // Compute the hook script path based on the resolved template.
-    let hook_script_path = match resolved {
-        ResolvedTemplatePath::ProjectRelative(rel_path) => {
-            PathBuf::from(working_dir).join(rel_path).join("pre-push")
+    // Resolve using two-layer overlay: host overlay → in-repo → None.
+    match find_workflow_hook_path(&ctx.config.config_dir, project_key, working_dir) {
+        Some(hook_path) => {
+            let hook_path_str = hook_path.to_string_lossy().into_owned();
+            Ok(Some((hook_path_str, working_dir.clone())))
         }
-        ResolvedTemplatePath::HostPath(abs_path) => abs_path.join("pre-push"),
-    };
+        None => {
+            info!(
+                ticket_id = %ticket_id,
+                project_key = %project_key,
+                "no workflow hooks configured — skipping verification, advancing to pushing"
+            );
+            advance_to_pushing(ctx, ticket_id).await?;
+            Ok(None)
+        }
+    }
+}
 
-    let hook_path_str = hook_script_path.to_string_lossy().to_string();
-    Ok(Some((hook_path_str, working_dir.clone())))
+/// Resolve the workflow hook path using the two-layer overlay convention.
+///
+/// This is the pure filesystem portion of the resolution, extracted for testing.
+///
+/// Priority:
+/// 1. `<config_dir>/projects/<project_key>/hooks/workflow/pre-push` (host overlay)
+/// 2. `<slot_host_path>/ur-hooks/workflow/pre-push` (in-repo)
+/// 3. Neither → `None`
+fn find_workflow_hook_path(
+    config_dir: &std::path::Path,
+    project_key: &str,
+    slot_host_path: &str,
+) -> Option<PathBuf> {
+    let host_overlay = config_dir
+        .join("projects")
+        .join(project_key)
+        .join("hooks")
+        .join("workflow")
+        .join("pre-push");
+
+    if host_overlay.exists() {
+        return Some(host_overlay);
+    }
+
+    let in_repo = PathBuf::from(slot_host_path)
+        .join("ur-hooks")
+        .join("workflow")
+        .join("pre-push");
+
+    if in_repo.exists() {
+        return Some(in_repo);
+    }
+
+    None
 }
 
 /// Handle a failed hook: transition back to Implementing for another attempt.
@@ -390,5 +416,77 @@ mod tests {
         let s = build_output_summary(&long, "");
         assert!(s.len() < 5000);
         assert!(s.ends_with("...(truncated)"));
+    }
+
+    // --- Hook overlay resolution tests ---
+
+    fn create_file(path: &std::path::Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+    }
+
+    #[test]
+    fn hook_resolution_overlay_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let slot_dir = tmp.path().join("slot");
+
+        let overlay = config_dir
+            .join("projects")
+            .join("myproject")
+            .join("hooks")
+            .join("workflow")
+            .join("pre-push");
+        create_file(&overlay);
+
+        let result = find_workflow_hook_path(&config_dir, "myproject", slot_dir.to_str().unwrap());
+        assert_eq!(result, Some(overlay));
+    }
+
+    #[test]
+    fn hook_resolution_in_repo_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let slot_dir = tmp.path().join("slot");
+
+        let in_repo = slot_dir.join("ur-hooks").join("workflow").join("pre-push");
+        create_file(&in_repo);
+
+        let result = find_workflow_hook_path(&config_dir, "myproject", slot_dir.to_str().unwrap());
+        assert_eq!(result, Some(in_repo));
+    }
+
+    #[test]
+    fn hook_resolution_overlay_wins_when_both_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let slot_dir = tmp.path().join("slot");
+
+        let overlay = config_dir
+            .join("projects")
+            .join("myproject")
+            .join("hooks")
+            .join("workflow")
+            .join("pre-push");
+        create_file(&overlay);
+
+        let in_repo = slot_dir.join("ur-hooks").join("workflow").join("pre-push");
+        create_file(&in_repo);
+
+        let result = find_workflow_hook_path(&config_dir, "myproject", slot_dir.to_str().unwrap());
+        // Host overlay takes priority over in-repo.
+        assert_eq!(result, Some(overlay));
+    }
+
+    #[test]
+    fn hook_resolution_neither_present_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let slot_dir = tmp.path().join("slot");
+
+        let result = find_workflow_hook_path(&config_dir, "myproject", slot_dir.to_str().unwrap());
+        assert_eq!(result, None);
     }
 }

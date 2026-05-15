@@ -63,11 +63,11 @@ Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifie
 
 - **`container.image`** — Container image for workers; optional, defaults to `"ur-worker"` (e.g. `"ur-worker-rust"` for Rust projects)
 - **`container.mounts`** — Additional volume mounts for the container
-- **`git_hooks_dir`** — Template path to git hook scripts run during verification (e.g. `"%PROJECT%/.ur/git-hooks"`)
-- **`skill_hooks_dir`** — Template path to skill hook snippets copied to `~/.claude/skill-hooks/` at container startup (e.g. `"%PROJECT%/.ur/skill-hooks"`)
-- **`workflow_hooks_dir`** — Template path to workflow hook scripts for lifecycle automation
+- **`claude_md`** — Template path to project-level CLAUDE.md file (e.g. `"%PROJECT%/CLAUDE.md"`)
 
 Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
+
+Git and skill hooks are loaded from two fixed convention paths (no config needed): `<workspace>/ur-hooks/<type>/` in-repo, and `~/.ur/projects/<key>/hooks/<type>/` as a host overlay. The host overlay wins on identical filenames.
 
 ## How It Works
 

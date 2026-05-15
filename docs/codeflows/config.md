@@ -90,22 +90,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `name` | string | `<key>` | no | Display-friendly label |
 | `pool_limit` | u32 | 10 | no | Max cached repo clones |
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec |
-| `git_hooks_dir` | string | — | no | Template path to git hook scripts directory |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
-
-### Template Path System
-
-`git_hooks_dir` uses template path strings. Three forms are supported:
-
-| Form | Example | Resolves To |
-|------|---------|-------------|
-| `%PROJECT%/...` | `%PROJECT%/.git-hooks` | `ProjectRelative(".git-hooks")` — path relative to project root inside container (`/workspace/<rel>`) |
-| `%URCONFIG%/...` | `%URCONFIG%/hooks/ur` | `HostPath("<config_dir>/hooks/ur")` — absolute host-side path |
-| `/absolute/path` | `/opt/hooks` | `HostPath("/opt/hooks")` — literal host-side path |
-
-Validation happens at config load time (`validate_template_str`). Unrecognized `%VAR%` patterns cause config load to fail with a descriptive error including the project key and array index.
-
-Resolution happens at use time (`resolve_template_path` in `crates/ur_config/src/template_path.rs`).
 
 ### Mount Format
 
@@ -122,9 +107,9 @@ Example: `"/Users/me/projects/ur/.tickets:/workspace/.tickets"` mounts a host di
 
 How each resolved variant maps to container behavior:
 
-- **`ProjectRelative(rel_path)`**: The path exists inside the already-mounted workspace. No additional volume mount is created. The container path is `/workspace/<rel_path>`. Works for both `-w` workspace mode (user's checkout) and `-p` pool mode (pool slot's clone) — but only if the path exists in the repo checkout. Used by `git_hooks_dir` only.
+- **`ProjectRelative(rel_path)`**: The path exists inside the already-mounted workspace. No additional volume mount is created. The container path is `/workspace/<rel_path>`. Works for both `-w` workspace mode (user's checkout) and `-p` pool mode (pool slot's clone) — but only if the path exists in the repo checkout.
 
-- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/hooks/ur` or `/opt/hooks`). Used by `git_hooks_dir` and `mounts`.
+- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...` or `/opt/...`). Used by `mounts` and `claude_md`.
 
 ## Config Flow Through the System
 
@@ -135,17 +120,17 @@ ur.toml
 
 CLI launch request
   → grpc.rs: CoreServiceHandler::worker_launch()
-    → reads ProjectConfig fields (git_hooks_dir, mounts, hostexec, etc.)
+    → reads ProjectConfig fields (claude_md, mounts, hostexec, etc.)
     → builds WorkerConfig struct (crates/server/src/worker.rs)
 
 WorkerConfig
   → WorkerManager::run_and_record()
     → RunOptsBuilder (crates/server/src/run_opts_builder.rs)
-      .add_workspace()     — mounts workspace_dir → /workspace
-      .add_credentials()   — mounts credentials file
-      .add_git_hooks()     — mounts git hooks (HostPath only; ProjectRelative sets env var)
-      .add_mounts()        — mounts project-configured volumes (source → destination)
-      .add_env_vars()      — proxy vars, worker ID, server addr, skills
+      .add_workspace()           — mounts workspace_dir → /workspace
+      .add_credentials()         — mounts credentials file
+      .add_host_hooks_overlay()  — convention hook dirs → /var/ur/host-hooks/{git,skills}/:ro
+      .add_mounts()              — mounts project-configured volumes (source → destination)
+      .add_env_vars()            — proxy vars, worker ID, server addr, skills
       .build() → RunOpts → container runtime
 ```
 
@@ -153,9 +138,9 @@ WorkerConfig
 
 | ProjectConfig field | Passed to WorkerConfig | Consumed by RunOptsBuilder | Notes |
 |--------------------|-----------------------|---------------------------|-------|
-| `git_hooks_dir` | yes | `add_git_hooks()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
 | `mounts` | yes | `add_mounts()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
 | `hostexec` | no (handled separately) | — | Used by HostExecServiceHandler for allowlist |
+| (hook overlay) | via project_key + host_config_dir | `add_host_hooks_overlay()` | Convention paths; no config fields |
 
 ## Example Config
 
@@ -174,7 +159,6 @@ server_hostname = "ur-server"
 [projects.ur]
 repo = "https://github.com/cmaher/ur.git"
 hostexec = ["ur"]
-git_hooks_dir = "%PROJECT%/scripts/git-hooks"
 mounts = ["/Users/me/projects/ur/.tickets:/workspace/.tickets"]
 
 [skills.common]

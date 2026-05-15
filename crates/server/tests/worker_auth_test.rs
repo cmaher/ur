@@ -122,6 +122,7 @@ async fn make_test_components(
         workspace.clone(),
         workspace.join("logs"),
         workspace.join("logs"),
+        workspace.join("logs"),
         repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),

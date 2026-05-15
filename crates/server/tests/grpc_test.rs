@@ -141,6 +141,7 @@ async fn make_grpc_handler(
         workspace.clone(),
         workspace.join("logs"),
         workspace.join("logs"),
+        workspace.join("logs"),
         repo_pool_manager.clone(),
         network_manager,
         network_config.clone(),
@@ -263,6 +264,7 @@ async fn make_worker_handler() -> (
     let worker_manager = ur_server::WorkerManager::new(
         workspace.clone(),
         workspace.clone(),
+        workspace.join("logs"),
         workspace.join("logs"),
         workspace.join("logs"),
         repo_pool_manager.clone(),
