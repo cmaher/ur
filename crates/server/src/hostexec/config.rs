@@ -178,6 +178,14 @@ impl HostExecConfigManager {
                 bidi: false,
             },
         );
+        commands.insert(
+            "tsc".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/tsc.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
         commands
     }
 
@@ -193,6 +201,7 @@ impl HostExecConfigManager {
             "bazel" => Some(include_str!("default_scripts/bazel.lua").into()),
             "npm" => Some(include_str!("default_scripts/npm.lua").into()),
             "pnpm" => Some(include_str!("default_scripts/pnpm.lua").into()),
+            "tsc" => Some(include_str!("default_scripts/tsc.lua").into()),
             _ => None,
         }
     }
@@ -251,7 +260,7 @@ mod tests {
         assert_eq!(
             mgr.command_names(),
             vec![
-                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "ur"
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur"
             ]
         );
     }
@@ -422,7 +431,7 @@ mod tests {
         assert_eq!(
             merged.command_names(),
             vec![
-                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "ur"
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "tsc", "ur"
             ]
         );
     }
@@ -1339,5 +1348,283 @@ mod tests {
     fn test_pnpm_frozen_lockfile_flag_passthrough() {
         let args = run_pnpm(&["--frozen-lockfile", "install"], None).unwrap();
         assert_eq!(args, vec!["--frozen-lockfile", "install"]);
+    }
+
+    // --- tsc.lua tests ---
+
+    fn tsc_script() -> &'static str {
+        include_str!("default_scripts/tsc.lua")
+    }
+
+    fn tsc_worker_context() -> WorkerContext {
+        WorkerContext {
+            worker_id: "worker-1".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
+            branch: "feature-branch".into(),
+        }
+    }
+
+    fn run_tsc(args: &[&str], ctx: Option<&WorkerContext>) -> anyhow::Result<Vec<String>> {
+        let mgr = LuaTransformManager::new();
+        let string_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let result = mgr.run_transform(tsc_script(), "tsc", &string_args, "/workspace", ctx)?;
+        Ok(result.args)
+    }
+
+    // Allowed: basic invocations
+
+    #[test]
+    fn test_tsc_allows_bare() {
+        let args = run_tsc(&[], None).unwrap();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_tsc_allows_no_emit() {
+        let args = run_tsc(&["--noEmit"], None).unwrap();
+        assert_eq!(args, vec!["--noEmit"]);
+    }
+
+    #[test]
+    fn test_tsc_allows_strict() {
+        let args = run_tsc(&["--strict"], None).unwrap();
+        assert_eq!(args, vec!["--strict"]);
+    }
+
+    #[test]
+    fn test_tsc_allows_target() {
+        let args = run_tsc(&["--target", "ES2020"], None).unwrap();
+        assert_eq!(args, vec!["--target", "ES2020"]);
+    }
+
+    #[test]
+    fn test_tsc_allows_module_and_target() {
+        let args = run_tsc(&["--module", "ESNext", "--target", "ES2020"], None).unwrap();
+        assert_eq!(args, vec!["--module", "ESNext", "--target", "ES2020"]);
+    }
+
+    // --project / -p relative passthrough
+
+    #[test]
+    fn test_tsc_project_short_relative_passthrough() {
+        let args = run_tsc(&["-p", "tsconfig.build.json"], None).unwrap();
+        assert_eq!(args, vec!["-p", "tsconfig.build.json"]);
+    }
+
+    #[test]
+    fn test_tsc_project_long_relative_passthrough() {
+        let args = run_tsc(&["--project", "./pkg/tsconfig.json"], None).unwrap();
+        assert_eq!(args, vec!["--project", "./pkg/tsconfig.json"]);
+    }
+
+    // --project / -p absolute rewriting
+
+    #[test]
+    fn test_tsc_project_absolute_workspace_rewrite() {
+        let ctx = tsc_worker_context();
+        let args = run_tsc(&["--project", "/workspace"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec!["--project", "/home/user/.ur/workspace/pool/myproject/0"]
+        );
+    }
+
+    #[test]
+    fn test_tsc_project_short_absolute_workspace_rewrite() {
+        let ctx = tsc_worker_context();
+        let args = run_tsc(&["-p", "/workspace"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec!["-p", "/home/user/.ur/workspace/pool/myproject/0"]
+        );
+    }
+
+    #[test]
+    fn test_tsc_project_absolute_project_key_rewrite() {
+        let ctx = tsc_worker_context();
+        let args = run_tsc(&["--project", "/some/path/myproject"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec!["--project", "/home/user/.ur/workspace/pool/myproject/0"]
+        );
+    }
+
+    #[test]
+    fn test_tsc_project_wrong_absolute_blocked() {
+        let ctx = tsc_worker_context();
+        let err = run_tsc(&["--project", "/other/path"], Some(&ctx)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not match project key or 'workspace'")
+        );
+    }
+
+    #[test]
+    fn test_tsc_project_no_context_absolute_blocked() {
+        let err = run_tsc(&["--project", "/workspace"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("absolute path requires worker context")
+        );
+    }
+
+    #[test]
+    fn test_tsc_project_equals_form_rejected() {
+        let err = run_tsc(&["--project=/workspace"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blocked flag: --project=<path> (use --project <path> instead)")
+        );
+    }
+
+    #[test]
+    fn test_tsc_p_equals_form_rejected() {
+        let err = run_tsc(&["-p=/workspace"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blocked flag: -p=<path> (use -p <path> instead)")
+        );
+    }
+
+    // Blocked output flags (spaced form — flag name only is an error too)
+
+    #[test]
+    fn test_tsc_blocks_out_file() {
+        let err = run_tsc(&["--outFile", "dist/bundle.js"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --outFile"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_out_file_equals() {
+        let err = run_tsc(&["--outFile=dist/bundle.js"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --outFile"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_out_dir() {
+        let err = run_tsc(&["--outDir", "dist"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --outDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_out_dir_equals() {
+        let err = run_tsc(&["--outDir=dist"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --outDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_declaration_dir() {
+        let err = run_tsc(&["--declarationDir", "types"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --declarationDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_declaration_dir_equals() {
+        let err = run_tsc(&["--declarationDir=types"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --declarationDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_ts_build_info_file() {
+        let err = run_tsc(&["--tsBuildInfoFile", ".tsbuildinfo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --tsBuildInfoFile"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_ts_build_info_file_equals() {
+        let err = run_tsc(&["--tsBuildInfoFile=.tsbuildinfo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --tsBuildInfoFile"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_base_url() {
+        let err = run_tsc(&["--baseUrl", "."], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --baseUrl"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_base_url_equals() {
+        let err = run_tsc(&["--baseUrl=."], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --baseUrl"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_root_dir() {
+        let err = run_tsc(&["--rootDir", "src"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --rootDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_root_dir_equals() {
+        let err = run_tsc(&["--rootDir=src"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --rootDir"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_root_dirs() {
+        let err = run_tsc(&["--rootDirs", "src,lib"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --rootDirs"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_root_dirs_equals() {
+        let err = run_tsc(&["--rootDirs=src,lib"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --rootDirs"));
+    }
+
+    // Blocked watch flags
+
+    #[test]
+    fn test_tsc_blocks_watch() {
+        let err = run_tsc(&["--watch"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --watch"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_watch_short() {
+        let err = run_tsc(&["-w"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -w"));
+    }
+
+    // Blocked build flags
+
+    #[test]
+    fn test_tsc_blocks_build() {
+        let err = run_tsc(&["--build"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --build"));
+    }
+
+    #[test]
+    fn test_tsc_blocks_build_short() {
+        let err = run_tsc(&["-b"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -b"));
+    }
+
+    // Passthrough flags
+
+    #[test]
+    fn test_tsc_passthrough_declaration() {
+        let args = run_tsc(&["--declaration"], None).unwrap();
+        assert_eq!(args, vec!["--declaration"]);
+    }
+
+    #[test]
+    fn test_tsc_passthrough_source_map() {
+        let args = run_tsc(&["--sourceMap"], None).unwrap();
+        assert_eq!(args, vec!["--sourceMap"]);
+    }
+
+    #[test]
+    fn test_tsc_passthrough_list_files() {
+        let args = run_tsc(&["--listFiles"], None).unwrap();
+        assert_eq!(args, vec!["--listFiles"]);
+    }
+
+    #[test]
+    fn test_tsc_passthrough_init() {
+        let args = run_tsc(&["--init"], None).unwrap();
+        assert_eq!(args, vec!["--init"]);
     }
 }
