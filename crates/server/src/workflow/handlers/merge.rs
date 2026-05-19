@@ -37,7 +37,22 @@ async fn execute_merge(
         .await?
         .ok_or_else(|| anyhow::anyhow!("ticket not found: {ticket_id}"))?;
 
-    // 2. Read worker_id from workflow table, pr_number/gh_repo from ticket metadata.
+    // 2. Read ticket metadata (needed for autoapprove check and pr_number/gh_repo).
+    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
+
+    // 3. If autoapprove is set, promote review_status to approved before the gate.
+    if meta.contains_key(ur_rpc::ticket_meta::AUTOAPPROVE) {
+        ctx.workflow_repo
+            .update_workflow_condition(
+                ticket_id,
+                workflow_condition::WorkflowCondition::ReviewStatus,
+                workflow_condition::review_status::APPROVED,
+            )
+            .await?;
+        info!(ticket_id = %ticket_id, "autoapprove set — review_status promoted to approved for merge");
+    }
+
+    // 4. Load workflow (after any autoapprove update so conditions are current).
     let workflow = ctx
         .workflow_repo
         .get_workflow_by_ticket(ticket_id)
@@ -48,10 +63,8 @@ async fn execute_merge(
     }
     let worker_id = &workflow.worker_id;
 
-    // 3. Pre-merge gate: verify all three conditions before attempting merge.
+    // 5. Pre-merge gate: verify all three conditions before attempting merge.
     check_pre_merge_conditions(&workflow, ticket_id)?;
-
-    let meta = ctx.ticket_repo.get_meta(ticket_id, "ticket").await?;
 
     let pr_number = meta.get("pr_number").ok_or_else(|| {
         anyhow::anyhow!("no pr_number metadata on ticket {ticket_id} — cannot merge PR")
