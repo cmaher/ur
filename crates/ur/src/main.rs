@@ -1,3 +1,4 @@
+mod builder;
 mod builderd;
 mod compose;
 pub(crate) mod connection;
@@ -53,6 +54,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Inspect and interact with the builderd exec helper
+    Builder {
+        #[command(subcommand)]
+        command: builder::BuilderCommands,
+    },
     /// Database backup and restore
     Db {
         #[command(subcommand)]
@@ -1430,6 +1436,7 @@ async fn run(cli: Cli, output: &OutputManager) -> Result<()> {
     let compose = compose_manager_from_config(&config);
 
     match cli.command {
+        Commands::Builder { command } => builder::handle(command)?,
         Commands::Db { command } => match command {
             DbCommands::Backup => db::backup(&config, output).await?,
             DbCommands::List => db::list(&config, output)?,
