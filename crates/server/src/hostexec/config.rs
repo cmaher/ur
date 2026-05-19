@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_pnpm_blocks_env() {
-        let err = run_pnpm(&["env", "use", "--global", "18"], None).unwrap_err();
+        let err = run_pnpm(&["env", "use", "18"], None).unwrap_err();
         assert!(err.to_string().contains("blocked pnpm subcommand: env"));
     }
 
@@ -803,6 +803,42 @@ mod tests {
     fn test_pnpm_blocks_store_dir_equals() {
         let err = run_pnpm(&["--store-dir=/tmp"], None).unwrap_err();
         assert!(err.to_string().contains("blocked flag: --store-dir=/tmp"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_dash_g() {
+        let err = run_pnpm(&["-g", "install", "foo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -g"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_global() {
+        let err = run_pnpm(&["--global", "install", "foo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_install_dash_g_pkg() {
+        let err = run_pnpm(&["install", "-g", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -g"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_install_global_pkg() {
+        let err = run_pnpm(&["install", "--global", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global"));
+    }
+
+    #[test]
+    fn test_pnpm_blocks_global_bin_dir() {
+        let err = run_pnpm(&["--global-bin-dir", "/tmp", "install", "foo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global-bin-dir"));
+    }
+
+    #[test]
+    fn test_pnpm_still_blocks_global_dir() {
+        let err = run_pnpm(&["--global-dir", "/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global-dir"));
     }
 
     // Normal flags passthrough

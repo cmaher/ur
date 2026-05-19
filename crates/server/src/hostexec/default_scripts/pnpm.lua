@@ -25,10 +25,16 @@ function transform(command, args, working_dir, worker_context)
     }
 
     -- Blocked flag prefixes — reject any arg starting with these
-    -- (catches both --global-dir=X and bare --global-dir X forms)
+    -- (catches --global, --global-dir, --global-bin-dir, equals forms, and --store-dir)
     local blocked_flag_prefixes = {
-        "--global-dir",
+        "--global",
         "--store-dir",
+    }
+
+    -- Blocked exact flags — short flags that must match exactly
+    -- (prefix match would over-block unrelated short flags starting with the same letter)
+    local blocked_exact_flags = {
+        ["-g"] = true,
     }
 
     -- Global flags that consume the next token (skip when searching for subcommand)
@@ -65,6 +71,10 @@ function transform(command, args, working_dir, worker_context)
             error("blocked flag: --dir=<path> (use --dir <path> instead)")
 
         else
+            -- Check blocked exact flags
+            if blocked_exact_flags[arg] then
+                error("blocked flag: " .. arg)
+            end
             -- Check blocked flag prefixes
             for _, prefix in ipairs(blocked_flag_prefixes) do
                 if arg:sub(1, #prefix) == prefix then
