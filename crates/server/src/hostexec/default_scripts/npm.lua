@@ -1,55 +1,68 @@
--- crates/server/src/hostexec/default_scripts/pnpm.lua
--- Default pnpm argument transform: blocks dangerous subcommands,
--- rewrites -C/--dir for workers, blocks path-escape flags.
+-- crates/server/src/hostexec/default_scripts/npm.lua
+-- Default npm argument transform: blocks dangerous subcommands,
+-- rewrites --prefix/--cwd for workers, blocks path-escape flags.
 
 function transform(command, args, working_dir, worker_context)
 
-    -- Subcommands that mutate global state, the registry, or the store
+    -- Subcommands that mutate global state, the registry, or perform unsafe operations
     local blocked_subcommands = {
-        ["add"]          = true,
-        ["remove"]       = true,
-        ["dlx"]          = true,
-        ["create"]       = true,
-        ["publish"]      = true,
-        ["login"]        = true,
-        ["logout"]       = true,
-        ["config"]       = true,
-        ["setup"]        = true,
-        ["env"]          = true,
-        ["server"]       = true,
-        ["store"]        = true,
-        ["patch"]        = true,
-        ["patch-commit"] = true,
-        ["rebuild"]      = true,
-        ["deploy"]       = true,
-    }
-
-    -- Blocked flag prefixes — reject any arg starting with these
-    -- (catches --global, --global-dir, --global-bin-dir, equals forms, and --store-dir)
-    local blocked_flag_prefixes = {
-        "--global",
-        "--store-dir",
+        ["add"]        = true,
+        ["uninstall"]  = true,
+        ["remove"]     = true,
+        ["rm"]         = true,
+        ["un"]         = true,
+        ["unlink"]     = true,
+        ["publish"]    = true,
+        ["login"]      = true,
+        ["logout"]     = true,
+        ["adduser"]    = true,
+        ["config"]     = true,
+        ["set"]        = true,
+        ["get"]        = true,
+        ["version"]    = true,
+        ["link"]       = true,
+        ["token"]      = true,
+        ["owner"]      = true,
+        ["profile"]    = true,
+        ["team"]       = true,
+        ["org"]        = true,
+        ["hook"]       = true,
+        ["access"]     = true,
+        ["deprecate"]  = true,
+        ["dist-tag"]   = true,
+        ["star"]       = true,
+        ["unstar"]     = true,
+        ["init"]       = true,
+        ["rebuild"]    = true,
     }
 
     -- Blocked exact flags — short flags that must match exactly
-    -- (prefix match would over-block unrelated short flags starting with the same letter)
     local blocked_exact_flags = {
-        ["-g"] = true,
+        ["-g"]       = true,
+        ["--global"] = true,
+    }
+
+    -- Blocked flag prefixes — reject any arg starting with these
+    local blocked_flag_prefixes = {
+        "--cache",
+        "--globalconfig",
+        "--userconfig",
+        "--location",
     }
 
     -- Global flags that consume the next token (skip when searching for subcommand)
     local global_flags_with_value = {
-        ["-C"]    = true,
-        ["--dir"] = true,
+        ["--prefix"] = true,
+        ["--cwd"]    = true,
     }
 
-    -- Step 1: scan all args to handle -C/--dir rewriting and blocked flag prefixes.
+    -- Step 1: scan all args to handle --prefix/--cwd rewriting and blocked flags.
     local i = 1
     while i <= #args do
         local arg = args[i]
 
-        -- Handle -C / --dir: rewrite if worker_context allows, block otherwise
-        if arg == "-C" or arg == "--dir" then
+        -- Handle --prefix / --cwd: rewrite if worker_context allows, block otherwise
+        if arg == "--prefix" or arg == "--cwd" then
             if worker_context == nil then
                 error("blocked flag: " .. arg)
             end
@@ -66,9 +79,11 @@ function transform(command, args, working_dir, worker_context)
                 error("blocked flag: " .. arg .. " (path '" .. path_arg .. "' does not match project key or 'workspace')")
             end
 
-        -- Block --dir=<path> equals form outright
-        elseif arg:sub(1, 6) == "--dir=" then
-            error("blocked flag: --dir=<path> (use --dir <path> instead)")
+        -- Block --prefix=<path> and --cwd=<path> equals forms outright
+        elseif arg:sub(1, 9) == "--prefix=" then
+            error("blocked flag: --prefix=<path> (use --prefix <path> instead)")
+        elseif arg:sub(1, 6) == "--cwd=" then
+            error("blocked flag: --cwd=<path> (use --cwd <path> instead)")
 
         else
             -- Check blocked exact flags
@@ -96,7 +111,7 @@ function transform(command, args, working_dir, worker_context)
         else
             -- Found the subcommand
             if blocked_subcommands[a] then
-                error("blocked pnpm subcommand: " .. a)
+                error("blocked npm subcommand: " .. a)
             end
             break
         end
