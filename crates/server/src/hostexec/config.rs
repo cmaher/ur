@@ -163,6 +163,14 @@ impl HostExecConfigManager {
             },
         );
         commands.insert(
+            "npm".into(),
+            CommandConfig {
+                lua_source: Some(include_str!("default_scripts/npm.lua").into()),
+                long_lived: false,
+                bidi: false,
+            },
+        );
+        commands.insert(
             "pnpm".into(),
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/pnpm.lua").into()),
@@ -183,6 +191,7 @@ impl HostExecConfigManager {
             "make" => Some(include_str!("default_scripts/make.lua").into()),
             "go" => Some(include_str!("default_scripts/go.lua").into()),
             "bazel" => Some(include_str!("default_scripts/bazel.lua").into()),
+            "npm" => Some(include_str!("default_scripts/npm.lua").into()),
             "pnpm" => Some(include_str!("default_scripts/pnpm.lua").into()),
             _ => None,
         }
@@ -242,7 +251,7 @@ mod tests {
         assert_eq!(
             mgr.command_names(),
             vec![
-                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "ur"
             ]
         );
     }
@@ -413,7 +422,7 @@ mod tests {
         assert_eq!(
             merged.command_names(),
             vec![
-                "bazel", "cargo", "docker", "gh", "git", "go", "make", "pnpm", "ur"
+                "bazel", "cargo", "docker", "gh", "git", "go", "make", "npm", "pnpm", "ur"
             ]
         );
     }
@@ -486,6 +495,477 @@ mod tests {
         let rg_cfg = merged.get("rg").unwrap();
         assert!(!rg_cfg.long_lived);
         assert!(!rg_cfg.bidi);
+    }
+
+    // --- npm.lua tests ---
+
+    fn npm_script() -> &'static str {
+        include_str!("default_scripts/npm.lua")
+    }
+
+    fn npm_worker_context() -> WorkerContext {
+        WorkerContext {
+            worker_id: "worker-1".into(),
+            process_id: "ur-abc12".into(),
+            project_key: "myproject".into(),
+            slot_path: PathBuf::from("/home/user/.ur/workspace/pool/myproject/0"),
+            branch: "feature-branch".into(),
+        }
+    }
+
+    fn run_npm(args: &[&str], ctx: Option<&WorkerContext>) -> anyhow::Result<Vec<String>> {
+        let mgr = LuaTransformManager::new();
+        let string_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let result = mgr.run_transform(npm_script(), "npm", &string_args, "/workspace", ctx)?;
+        Ok(result.args)
+    }
+
+    // Blocked subcommands
+
+    #[test]
+    fn test_npm_blocks_add() {
+        let err = run_npm(&["add", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: add"));
+    }
+
+    #[test]
+    fn test_npm_blocks_uninstall() {
+        let err = run_npm(&["uninstall", "react"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blocked npm subcommand: uninstall")
+        );
+    }
+
+    #[test]
+    fn test_npm_blocks_remove() {
+        let err = run_npm(&["remove", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: remove"));
+    }
+
+    #[test]
+    fn test_npm_blocks_rm() {
+        let err = run_npm(&["rm", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: rm"));
+    }
+
+    #[test]
+    fn test_npm_blocks_un() {
+        let err = run_npm(&["un", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: un"));
+    }
+
+    #[test]
+    fn test_npm_blocks_unlink() {
+        let err = run_npm(&["unlink"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: unlink"));
+    }
+
+    #[test]
+    fn test_npm_blocks_publish() {
+        let err = run_npm(&["publish"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: publish"));
+    }
+
+    #[test]
+    fn test_npm_blocks_login() {
+        let err = run_npm(&["login"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: login"));
+    }
+
+    #[test]
+    fn test_npm_blocks_logout() {
+        let err = run_npm(&["logout"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: logout"));
+    }
+
+    #[test]
+    fn test_npm_blocks_adduser() {
+        let err = run_npm(&["adduser"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: adduser"));
+    }
+
+    #[test]
+    fn test_npm_blocks_config() {
+        let err = run_npm(&["config", "set", "key", "val"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: config"));
+    }
+
+    #[test]
+    fn test_npm_blocks_set() {
+        let err = run_npm(&["set", "key=val"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: set"));
+    }
+
+    #[test]
+    fn test_npm_blocks_get() {
+        let err = run_npm(&["get", "key"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: get"));
+    }
+
+    #[test]
+    fn test_npm_blocks_version() {
+        let err = run_npm(&["version", "patch"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: version"));
+    }
+
+    #[test]
+    fn test_npm_blocks_link() {
+        let err = run_npm(&["link"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: link"));
+    }
+
+    #[test]
+    fn test_npm_blocks_token() {
+        let err = run_npm(&["token", "list"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: token"));
+    }
+
+    #[test]
+    fn test_npm_blocks_owner() {
+        let err = run_npm(&["owner", "add", "user", "pkg"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: owner"));
+    }
+
+    #[test]
+    fn test_npm_blocks_profile() {
+        let err = run_npm(&["profile", "get"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: profile"));
+    }
+
+    #[test]
+    fn test_npm_blocks_team() {
+        let err = run_npm(&["team", "ls", "org"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: team"));
+    }
+
+    #[test]
+    fn test_npm_blocks_org() {
+        let err = run_npm(&["org", "set", "org", "user"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: org"));
+    }
+
+    #[test]
+    fn test_npm_blocks_hook() {
+        let err = run_npm(&["hook", "ls"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: hook"));
+    }
+
+    #[test]
+    fn test_npm_blocks_access() {
+        let err = run_npm(&["access", "public", "pkg"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: access"));
+    }
+
+    #[test]
+    fn test_npm_blocks_deprecate() {
+        let err = run_npm(&["deprecate", "pkg@1.0.0", "msg"], None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blocked npm subcommand: deprecate")
+        );
+    }
+
+    #[test]
+    fn test_npm_blocks_dist_tag() {
+        let err = run_npm(&["dist-tag", "add", "pkg@1.0.0", "latest"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: dist-tag"));
+    }
+
+    #[test]
+    fn test_npm_blocks_star() {
+        let err = run_npm(&["star", "pkg"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: star"));
+    }
+
+    #[test]
+    fn test_npm_blocks_unstar() {
+        let err = run_npm(&["unstar", "pkg"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: unstar"));
+    }
+
+    #[test]
+    fn test_npm_blocks_init() {
+        let err = run_npm(&["init", "react-app"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: init"));
+    }
+
+    #[test]
+    fn test_npm_blocks_rebuild() {
+        let err = run_npm(&["rebuild"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked npm subcommand: rebuild"));
+    }
+
+    // Allowed subcommands
+
+    #[test]
+    fn test_npm_allows_install() {
+        let args = run_npm(&["install"], None).unwrap();
+        assert_eq!(args, vec!["install"]);
+    }
+
+    #[test]
+    fn test_npm_allows_install_save_exact() {
+        let args = run_npm(&["install", "--save-exact"], None).unwrap();
+        assert_eq!(args, vec!["install", "--save-exact"]);
+    }
+
+    #[test]
+    fn test_npm_allows_install_with_package() {
+        let args = run_npm(&["install", "react"], None).unwrap();
+        assert_eq!(args, vec!["install", "react"]);
+    }
+
+    #[test]
+    fn test_npm_allows_ci() {
+        let args = run_npm(&["ci"], None).unwrap();
+        assert_eq!(args, vec!["ci"]);
+    }
+
+    #[test]
+    fn test_npm_allows_run_build() {
+        let args = run_npm(&["run", "build"], None).unwrap();
+        assert_eq!(args, vec!["run", "build"]);
+    }
+
+    #[test]
+    fn test_npm_allows_run_lint() {
+        let args = run_npm(&["run", "lint"], None).unwrap();
+        assert_eq!(args, vec!["run", "lint"]);
+    }
+
+    #[test]
+    fn test_npm_allows_test() {
+        let args = run_npm(&["test"], None).unwrap();
+        assert_eq!(args, vec!["test"]);
+    }
+
+    #[test]
+    fn test_npm_allows_exec_turbo_build() {
+        let args = run_npm(&["exec", "turbo", "build"], None).unwrap();
+        assert_eq!(args, vec!["exec", "turbo", "build"]);
+    }
+
+    // --prefix rewriting
+
+    #[test]
+    fn test_npm_prefix_rewrite_workspace() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--prefix", "/workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--prefix",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_npm_prefix_rewrite_project_key() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--prefix", "myproject", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--prefix",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_npm_prefix_blocks_wrong_absolute_path() {
+        let ctx = npm_worker_context();
+        let err = run_npm(&["--prefix", "/other/path", "install"], Some(&ctx)).unwrap_err();
+        assert!(err.to_string().contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_npm_prefix_blocks_without_worker_context() {
+        let err = run_npm(&["--prefix", "/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --prefix"));
+    }
+
+    #[test]
+    fn test_npm_prefix_equals_form_rejected() {
+        let err = run_npm(&["--prefix=/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("--prefix=<path>"));
+    }
+
+    #[test]
+    fn test_npm_prefix_relative_passthrough() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--prefix", "workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--prefix",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    // --cwd rewriting
+
+    #[test]
+    fn test_npm_cwd_rewrite_workspace() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--cwd", "/workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--cwd",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_npm_cwd_rewrite_project_key() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--cwd", "myproject", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--cwd",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_npm_cwd_blocks_wrong_absolute_path() {
+        let ctx = npm_worker_context();
+        let err = run_npm(&["--cwd", "/other/path", "install"], Some(&ctx)).unwrap_err();
+        assert!(err.to_string().contains("does not match project key"));
+    }
+
+    #[test]
+    fn test_npm_cwd_blocks_without_worker_context() {
+        let err = run_npm(&["--cwd", "/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --cwd"));
+    }
+
+    #[test]
+    fn test_npm_cwd_equals_form_rejected() {
+        let err = run_npm(&["--cwd=/workspace", "install"], None).unwrap_err();
+        assert!(err.to_string().contains("--cwd=<path>"));
+    }
+
+    #[test]
+    fn test_npm_cwd_relative_passthrough() {
+        let ctx = npm_worker_context();
+        let args = run_npm(&["--cwd", "workspace", "install"], Some(&ctx)).unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "--cwd",
+                "/home/user/.ur/workspace/pool/myproject/0",
+                "install"
+            ]
+        );
+    }
+
+    // Blocked exact flags
+
+    #[test]
+    fn test_npm_blocks_dash_g() {
+        let err = run_npm(&["-g", "install", "foo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -g"));
+    }
+
+    #[test]
+    fn test_npm_blocks_global() {
+        let err = run_npm(&["--global", "install", "foo"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global"));
+    }
+
+    #[test]
+    fn test_npm_blocks_install_dash_g_pkg() {
+        let err = run_npm(&["install", "-g", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: -g"));
+    }
+
+    #[test]
+    fn test_npm_blocks_install_global_pkg() {
+        let err = run_npm(&["install", "--global", "react"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --global"));
+    }
+
+    // Blocked flag prefixes
+
+    #[test]
+    fn test_npm_blocks_cache_flag() {
+        let err = run_npm(&["--cache", "/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --cache"));
+    }
+
+    #[test]
+    fn test_npm_blocks_cache_equals_form() {
+        let err = run_npm(&["--cache=/tmp"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --cache=/tmp"));
+    }
+
+    #[test]
+    fn test_npm_blocks_globalconfig() {
+        let err = run_npm(&["--globalconfig", "/tmp/.npmrc"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --globalconfig"));
+    }
+
+    #[test]
+    fn test_npm_blocks_userconfig() {
+        let err = run_npm(&["--userconfig", "/tmp/.npmrc"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --userconfig"));
+    }
+
+    #[test]
+    fn test_npm_blocks_location_equals_global() {
+        let err = run_npm(&["--location=global"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --location=global"));
+    }
+
+    #[test]
+    fn test_npm_blocks_location_user() {
+        let err = run_npm(&["--location", "user"], None).unwrap_err();
+        assert!(err.to_string().contains("blocked flag: --location"));
+    }
+
+    // Passthrough flags
+
+    #[test]
+    fn test_npm_passthrough_save() {
+        let args = run_npm(&["install", "--save"], None).unwrap();
+        assert_eq!(args, vec!["install", "--save"]);
+    }
+
+    #[test]
+    fn test_npm_passthrough_save_dev() {
+        let args = run_npm(&["install", "--save-dev"], None).unwrap();
+        assert_eq!(args, vec!["install", "--save-dev"]);
+    }
+
+    #[test]
+    fn test_npm_passthrough_workspace_equals() {
+        let args = run_npm(&["install", "--workspace=foo"], None).unwrap();
+        assert_eq!(args, vec!["install", "--workspace=foo"]);
+    }
+
+    #[test]
+    fn test_npm_passthrough_workspace_short() {
+        let args = run_npm(&["install", "-w", "foo"], None).unwrap();
+        assert_eq!(args, vec!["install", "-w", "foo"]);
+    }
+
+    #[test]
+    fn test_npm_passthrough_workspaces() {
+        let args = run_npm(&["install", "--workspaces"], None).unwrap();
+        assert_eq!(args, vec!["install", "--workspaces"]);
     }
 
     // --- pnpm.lua tests ---
