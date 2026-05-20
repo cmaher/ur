@@ -202,3 +202,16 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 | `crates/workerd/src/init_skills.rs` | Copies skills, composes strategy CLAUDE.md, writes settings.json with model |
 | `crates/server/src/strategy.rs` | Default skill lists and models per mode (`WorkerStrategy::skills()`, `common_skills()`, `default_model()`) |
 | `crates/server/src/worker.rs` | Mode resolution, injects UR_WORKER_SKILLS, UR_WORKER_CLAUDE, and UR_WORKER_MODEL env vars |
+
+## Skill Hook Integration
+
+Some skills support project-specific customization via skill hooks. These hooks are Markdown files that skills reference via `@` directives — Claude Code expands them inline at session start. The hook files are delivered via the two-layer overlay described in [project-file-mounting.md](project-file-mounting.md#skill-hooks).
+
+### Skills with Hook Support
+
+| Skill | Hook Directory | Hook Files | Purpose |
+|-------|---------------|------------|---------|
+| `implement` | `implement/` | `after-ticket-claim.md`, `subtask-verifications.md`, `before-dispatch.md`, `final-verifications.md` | Verification commands at workflow checkpoints |
+| `code-review` | `code-review/` | `review-guidelines.md` | Project-specific review rules (rendered under "Project Rules" header) |
+
+To add project-specific hooks, place files in `ur-hooks/skills/<skill>/` in the project repo. Host overlays at `<config_dir>/projects/<key>/hooks/skills/<skill>/` take precedence on conflict.
