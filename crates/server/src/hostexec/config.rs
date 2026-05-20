@@ -1162,7 +1162,7 @@ mod tests {
         let args = run_pnpm(
             &[
                 "turbo",
-                "--filter=@pax/admin",
+                "--filter=@acme/admin",
                 "build:e2e",
                 "compile",
                 "lint",
@@ -1175,7 +1175,7 @@ mod tests {
             args,
             vec![
                 "turbo",
-                "--filter=@pax/admin",
+                "--filter=@acme/admin",
                 "build:e2e",
                 "compile",
                 "lint",
@@ -1334,8 +1334,8 @@ mod tests {
 
     #[test]
     fn test_pnpm_filter_flag_passthrough() {
-        let args = run_pnpm(&["--filter", "@pax/admin", "build"], None).unwrap();
-        assert_eq!(args, vec!["--filter", "@pax/admin", "build"]);
+        let args = run_pnpm(&["--filter", "@acme/admin", "build"], None).unwrap();
+        assert_eq!(args, vec!["--filter", "@acme/admin", "build"]);
     }
 
     #[test]

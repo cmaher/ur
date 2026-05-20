@@ -1220,7 +1220,7 @@ mod tests {
         // We check that '#' appears in the column — valid regardless of OSC8 mode
         // because the display text itself contains '#'.
         let mut wf = make_workflow("ur-abc", "implementing");
-        wf.pr_url = "https://github.com/paxos/ur/pull/324".to_string();
+        wf.pr_url = "https://github.com/example/repo/pull/324".to_string();
         let buf = render_pr_links_into_buf(&[wf], 0, 0);
         // The raw symbols may contain ESC sequences (OSC8) or plain text; either
         // way the visible character '#' must appear somewhere in the column.
@@ -1249,9 +1249,9 @@ mod tests {
     #[test]
     fn pr_links_scroll_offset_skips_first_row() {
         let mut wf0 = make_workflow("ur-0", "implementing");
-        wf0.pr_url = "https://github.com/paxos/ur/pull/1".to_string();
+        wf0.pr_url = "https://github.com/example/repo/pull/1".to_string();
         let mut wf1 = make_workflow("ur-1", "implementing");
-        wf1.pr_url = "https://github.com/paxos/ur/pull/2".to_string();
+        wf1.pr_url = "https://github.com/example/repo/pull/2".to_string();
 
         let area = ratatui::layout::Rect::new(0, 0, 110, 10);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -1284,7 +1284,7 @@ mod tests {
         // The exact color depends on the theme; we check it differs from the
         // default base_content by using a theme-aware assertion.
         let mut wf = make_workflow("ur-abc", "implementing");
-        wf.pr_url = "https://github.com/paxos/ur/pull/324".to_string();
+        wf.pr_url = "https://github.com/example/repo/pull/324".to_string();
         let buf = render_pr_links_into_buf(&[wf], 0, 0); // row 0 is selected
         let ctx = make_ctx();
         // The first cell of the PR URL column should carry the primary_content fg

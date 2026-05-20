@@ -178,31 +178,31 @@ mod tests {
     #[test]
     fn pr_short_happy_path() {
         assert_eq!(
-            format_pr_short("https://github.com/paxos/ur/pull/324"),
-            Some("paxos/ur#324".to_string())
+            format_pr_short("https://github.com/example/repo/pull/324"),
+            Some("example/repo#324".to_string())
         );
     }
 
     #[test]
     fn pr_short_trailing_slash() {
         assert_eq!(
-            format_pr_short("https://github.com/paxos/ur/pull/324/"),
-            Some("paxos/ur#324".to_string())
+            format_pr_short("https://github.com/example/repo/pull/324/"),
+            Some("example/repo#324".to_string())
         );
     }
 
     #[test]
     fn pr_short_query_string() {
         assert_eq!(
-            format_pr_short("https://github.com/paxos/ur/pull/324?foo=bar"),
-            Some("paxos/ur#324".to_string())
+            format_pr_short("https://github.com/example/repo/pull/324?foo=bar"),
+            Some("example/repo#324".to_string())
         );
     }
 
     #[test]
     fn pr_short_issues_url_returns_none() {
         assert_eq!(
-            format_pr_short("https://github.com/paxos/ur/issues/10"),
+            format_pr_short("https://github.com/example/repo/issues/10"),
             None
         );
     }
@@ -210,27 +210,30 @@ mod tests {
     #[test]
     fn pr_short_gitlab_url_returns_none() {
         assert_eq!(
-            format_pr_short("https://gitlab.com/paxos/ur/merge_requests/5"),
+            format_pr_short("https://gitlab.com/example/repo/merge_requests/5"),
             None
         );
     }
 
     #[test]
     fn pr_short_no_pull_segment_returns_none() {
-        assert_eq!(format_pr_short("https://github.com/paxos/ur"), None);
+        assert_eq!(format_pr_short("https://github.com/example/repo"), None);
     }
 
     #[test]
     fn pr_short_non_numeric_number_returns_none() {
         assert_eq!(
-            format_pr_short("https://github.com/paxos/ur/pull/abc"),
+            format_pr_short("https://github.com/example/repo/pull/abc"),
             None
         );
     }
 
     #[test]
     fn pr_short_empty_number_returns_none() {
-        assert_eq!(format_pr_short("https://github.com/paxos/ur/pull/"), None);
+        assert_eq!(
+            format_pr_short("https://github.com/example/repo/pull/"),
+            None
+        );
     }
 
     // ── supports_osc8 environment overrides ───────────────────────────────────
@@ -384,7 +387,7 @@ mod tests {
 
     #[test]
     fn osc8_cell0_has_full_display_in_symbol() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(8, 1);
         let rect = Rect::new(0, 0, 8, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
@@ -399,7 +402,7 @@ mod tests {
 
     #[test]
     fn osc8_inner_cells_are_skip() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(8, 1);
         let rect = Rect::new(0, 0, 8, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
@@ -411,7 +414,7 @@ mod tests {
 
     #[test]
     fn osc8_trailing_cells_are_spaces_not_skip() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(8, 1);
         let rect = Rect::new(0, 0, 8, 1);
         // "hello" = 5 chars → cells 5..7 are trailing spaces.
@@ -425,7 +428,7 @@ mod tests {
 
     #[test]
     fn osc8_single_char_no_skip_cells() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(4, 1);
         let rect = Rect::new(0, 0, 4, 1);
         render_osc8_test(&mut buf, rect, url, "X", Color::White, Color::Black);
@@ -445,7 +448,7 @@ mod tests {
 
     #[test]
     fn osc8_truncates_to_rect_width() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(3, 1);
         let rect = Rect::new(0, 0, 3, 1);
         render_osc8_test(&mut buf, rect, url, "hello", Color::White, Color::Black);
@@ -464,7 +467,7 @@ mod tests {
 
     #[test]
     fn osc8_uses_bel_not_st() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(5, 1);
         let rect = Rect::new(0, 0, 5, 1);
         render_osc8_test(&mut buf, rect, url, "abc", Color::White, Color::Black);
@@ -480,7 +483,7 @@ mod tests {
 
     #[test]
     fn osc8_cell0_style_applied() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(6, 1);
         let rect = Rect::new(0, 0, 6, 1);
         render_osc8_test(&mut buf, rect, url, "test", Color::Green, Color::Magenta);
@@ -492,7 +495,7 @@ mod tests {
 
     #[test]
     fn osc8_trailing_cells_carry_style() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(8, 1);
         let rect = Rect::new(0, 0, 8, 1);
         render_osc8_test(&mut buf, rect, url, "test", Color::Green, Color::Magenta);
@@ -506,7 +509,7 @@ mod tests {
 
     #[test]
     fn osc8_empty_display_fills_spaces() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(4, 1);
         let rect = Rect::new(0, 0, 4, 1);
         render_osc8_test(&mut buf, rect, url, "", Color::White, Color::Black);
@@ -521,7 +524,7 @@ mod tests {
     fn osc8_diff_trailing_spaces_in_output() {
         // Regression: trailing spaces (beyond display text) must appear in
         // buffer diff so style changes (e.g. row selection) propagate correctly.
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let area = Rect::new(0, 0, 10, 1);
         let prev = Buffer::empty(area);
         let mut next = Buffer::empty(area);
@@ -542,7 +545,7 @@ mod tests {
 
     #[test]
     fn osc8_fg_bg_applied() {
-        let url = "https://github.com/paxos/ur/pull/1";
+        let url = "https://github.com/example/repo/pull/1";
         let mut buf = make_buf(3, 1);
         let rect = Rect::new(0, 0, 3, 1);
         render_osc8_test(&mut buf, rect, url, "hi", Color::Red, Color::Blue);
