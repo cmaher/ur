@@ -831,10 +831,10 @@ mod tests {
     #[test]
     fn pr_url_github_displays_short_format() {
         let mut wf = make_workflow("done");
-        wf.pr_url = "https://github.com/paxos/ur/pull/42".to_string();
+        wf.pr_url = "https://github.com/example/repo/pull/42".to_string();
         let display = render_pr_hyperlink_display(&wf, 80);
         assert!(
-            display.contains("paxos/ur#42"),
+            display.contains("example/repo#42"),
             "expected short PR format in output, got: {display:?}"
         );
     }
