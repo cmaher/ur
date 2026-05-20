@@ -88,3 +88,7 @@ OUTPUT FORMAT:
 * Line ranges must be as short as possible for interpreting the issue (avoid ranges over 5–10 lines; pick the most suitable subrange).
 * The code_location should overlap with the diff.
 * Do not generate a PR fix.
+
+## Project Rules
+
+@/home/worker/.claude/skill-hooks/code-review/review-guidelines.md
