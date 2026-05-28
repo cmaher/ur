@@ -10,6 +10,7 @@ local allowed_subcommands = {
         ["view"] = true, ["checks"] = true, ["list"] = true,
         ["status"] = true, ["diff"] = true,
         ["comment"] = true, ["edit"] = true, ["create"] = true,
+        ["review"] = "flag_gated",
     },
     ["run"] = { ["view"] = true, ["list"] = true },
     ["api"] = true,  -- special: method + endpoint validation below
@@ -25,6 +26,7 @@ local comment_endpoint_patterns = {
     "^/repos/[^/]+/[^/]+/pulls/%d+/reviews$",
     "^/repos/[^/]+/[^/]+/issues/comments/%d+$",
     "^/repos/[^/]+/[^/]+/pulls/comments/%d+$",
+    "^/repos/[^/]+/[^/]+/pulls/comments/%d+/replies$",
 }
 
 -- Check if an API endpoint matches an allowed comment/review pattern
@@ -133,6 +135,27 @@ function transform(command, args, working_dir, worker_context)
         local sub = positionals[2]
         if not allowed[sub] then
             error("blocked: gh " .. top .. " " .. sub .. " is not allowed (read-only access only)")
+        end
+
+        -- Handle flag-gated subcommands
+        if allowed[sub] == "flag_gated" then
+            -- Scan args for blocked flags
+            for _, a in ipairs(args) do
+                if a == "--approve" or a == "-a" or a == "--request-changes" or a == "-r" then
+                    error("blocked: gh pr review --approve/--request-changes is not allowed")
+                end
+            end
+            -- Require --comment or -c
+            local has_comment = false
+            for _, a in ipairs(args) do
+                if a == "--comment" or a == "-c" then
+                    has_comment = true
+                    break
+                end
+            end
+            if not has_comment then
+                error("blocked: gh pr review requires --comment flag")
+            end
         end
     end
 

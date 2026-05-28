@@ -1172,6 +1172,118 @@ mod tests {
         assert_eq!(result.args, args);
     }
 
+    #[test]
+    fn test_gh_allows_pr_review_comment() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "review".into(),
+            "123".into(),
+            "--comment".into(),
+            "-b".into(),
+            "text".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_pr_review_comment_short_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "review".into(),
+            "123".into(),
+            "-c".into(),
+            "-b".into(),
+            "text".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_review_approve() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "review".into(),
+            "123".into(),
+            "--approve".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_review_approve_short() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "review".into(), "123".into(), "-a".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_review_request_changes() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "review".into(),
+            "123".into(),
+            "--request-changes".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_review_request_changes_short() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "review".into(), "123".into(), "-r".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_review_no_type_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "review".into(), "123".into()];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_pr_comment_replies() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "/repos/o/r/pulls/comments/123/replies".into(),
+            "-X".into(),
+            "POST".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
     // --- cargo.lua tests ---
 
     #[test]
