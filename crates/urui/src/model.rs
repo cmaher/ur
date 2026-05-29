@@ -596,6 +596,9 @@ pub struct Model {
     pub pending_theme_swap: Option<String>,
     /// Custom theme names from [tui.themes.*] in ur.toml, for the settings overlay.
     pub custom_theme_names: Vec<String>,
+    /// Project filter scope, if any (e.g. `-p myproject`). Used by `update` to
+    /// filter UI events by project.
+    pub project_filter: Option<String>,
 }
 
 impl Model {
@@ -640,6 +643,7 @@ impl Model {
             notifications: NotificationModel::new(ur_config::NotificationConfig::default()),
             pending_theme_swap: None,
             custom_theme_names: vec![],
+            project_filter: None,
         }
     }
 

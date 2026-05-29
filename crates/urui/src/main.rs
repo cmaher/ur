@@ -176,6 +176,7 @@ async fn tea_loop(
     model.notifications = notifications::NotificationModel::new(config.tui.notifications.clone());
     model.custom_theme_names = ctx.tui_config.custom_themes.keys().cloned().collect();
     model.custom_theme_names.sort();
+    model.project_filter = project_filter.clone();
 
     // Subscribe to the server's UI event stream for live updates.
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);
