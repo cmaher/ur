@@ -215,50 +215,90 @@ rustc-wrapper = "/usr/bin/sccache"
 
 Every pool slot acquired for the `ur` project will have `.cargo/config.toml` copied into its workspace root, enabling sccache for all Cargo builds without any `ur.toml` configuration.
 
+### Overriding Tracked Files (e.g., CLAUDE.md)
+
+The same `local/` overlay mechanism works for **tracked** files that already exist in the repository (e.g., `CLAUDE.md`, `.cargo/config.toml` if it is committed). After copying, `apply_local_files()` runs:
+
+```
+git update-index --skip-worktree <file>
+```
+
+for every file that was placed on top of a tracked path. `--skip-worktree` tells git to ignore the working-tree content of that file: the index records the original repo version while the working tree holds the overridden content.
+
+**Practical effect inside a worker:**
+
+- `git status` is clean — the override is invisible.
+- `git add .`, `git commit -a`, and `git push` cannot include the overridden content.
+- Workers operate as if the file came from the repo, but Claude Code reads the host-supplied version.
+
+**CLAUDE.md example:**
+
+Drop a project-specific CLAUDE.md at:
+
+```
+~/.ur/projects/<key>/local/CLAUDE.md
+```
+
+Workers on that project will read your local CLAUDE.md instead of the repo's version, with no `ur.toml` change required and no risk of accidentally committing the override.
+
+**Reverting:** Removing the file from `local/` reverts the slot's working copy to repo HEAD on the next recycle. `reset_slot()` clears all `skip-worktree` bits before resetting, so `git reset --hard` and `git clean -fdx` operate normally.
+
+**Pool mode only.** This mechanism is exclusive to pool slots. Workers launched with `-w` (workspace mode) mount the caller's working directory directly and do not use the `local/` overlay.
+
 ### Copy Timing
 
 The copy runs **after** clone/reset and **before** container launch:
 
 1. `acquire_slot()` clones or resets the slot (via builderd)
-2. `apply_local_files()` copies from `<config_dir>/projects/<key>/local/` into the slot
+2. `apply_local_files()` runs against `<config_dir>/projects/<key>/local/`:
+   a. For each file, copy into the slot workspace (overwrites existing content)
+   b. If the file is tracked by git, run `git update-index --skip-worktree <file>` so the override is invisible to git
 3. Worker branch checkout (`git checkout -b <worker_id>`)
 4. Container launched with the slot as `/workspace`
 
-On slot release, `git clean -fdx` (part of `reset_slot()`) removes the copied files, and they are re-copied on the next acquire.
+On slot release, `reset_slot()` first clears all `skip-worktree` bits (`git update-index --no-skip-worktree`) so that `git reset --hard origin/master` and `git clean -fdx` can restore every file to repo HEAD. Local files are re-copied on the next acquire.
 
 ### Error Behavior
 
 - **Missing directory**: If `<config_dir>/projects/<key>/local/` does not exist or is empty, the copy step is a **no-op** (no error).
-- **Copy failure**: If the directory exists but a copy operation fails (e.g., permission error, disk full), the error **propagates from `acquire_slot()`** and surfaces to the CLI as an acquire error. The slot is not handed out.
+- **Copy failure**: If the directory exists but a copy operation fails (e.g., permission error, disk full), the error **propagates from `apply_local_files()`** and surfaces to the CLI as an acquire error. The slot is not handed out.
+- **`git update-index` failure**: If `git update-index --skip-worktree` fails for a file (e.g., the git index is corrupt, or the file path is malformed), the error propagates from `apply_local_files()` and the slot is not acquired. This prevents a worker from launching in a state where the override would be accidentally staged or committed.
 
 ### Implementation
 
-Server-side copy using `std::fs`. The server container has bind-mount access to both the config directory (same access used by `resolve_claude_md()` convention fallback) and pool slot directories (via the workspace bind mount). No builderd involvement needed.
+Builderd-side copy using `std::fs` and `git update-index`. Builderd runs natively on the host with direct access to both the config directory and pool slot directories, making it the right place for filesystem and git operations on pool slots.
 
-Source: `apply_local_files()` in `crates/server/src/pool.rs`
+Source: `apply_local_files()` in `crates/builderd/src/pool_handler.rs`
 
 ## Full Flow (Updated)
 
-The flow diagram in the [Full Flow](#full-flow) section above covers volume-mounted project files. The local project files step occurs in a different code path — inside `RepoPoolManager::acquire_slot()`:
+The flow diagram in the [Full Flow](#full-flow) section above covers volume-mounted project files. The local project files step occurs in a different code path — inside `BuilderPoolHandler` (builderd) via `RecycleSlot`/`PrepareNewSlot` RPCs:
 
 ```
-RepoPoolManager::acquire_slot()                 [server/src/pool.rs]
+BuilderPoolHandler::recycle_slot() / prepare_new_slot()   [builderd/src/pool_handler.rs]
   │
-  ├─ clone_slot() or reset_slot()     ← git ops via builderd
+  ├─ clone_slot() or reset_slot()     ← git ops, native filesystem access
+  │   └─ reset_slot() first clears skip-worktree bits
+  │       (git update-index --no-skip-worktree on all tracked local-overlay paths)
+  │       so reset --hard and clean -fdx restore repo HEAD cleanly
   │
-  ├─ apply_local_files()              ← NEW: convention-based copy
+  ├─ apply_local_files()              ← convention-based copy + skip-worktree
   │   │
-  │   ├─ Reads <host_config_dir>/projects/<key>/local/
+  │   ├─ Reads <config_dir>/projects/<key>/local/
   │   │   └─ If missing or empty → no-op, return Ok
   │   │
   │   ├─ Recursively copies files into slot workspace
   │   │   └─ Overwrites existing files (local file wins)
   │   │
-  │   └─ On failure → Err propagates, slot not acquired
+  │   ├─ For each copied file that is tracked by git:
+  │   │   └─ git update-index --skip-worktree <file>
+  │   │       (override invisible to git status, add, commit, push)
+  │   │
+  │   └─ On copy or git update-index failure → Err propagates, slot not acquired
   │
-  ├─ checkout_branch()                ← worker-specific branch
+  ├─ checkout_branch()                ← worker-specific branch (separate RPC)
   │
   ▼
-Slot returned → container launch with /workspace mount
+Slot returned to server → container launch with /workspace mount
 ```
 
