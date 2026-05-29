@@ -83,6 +83,34 @@ impl BuilderPoolHandler {
         }
     }
 
+    /// Run a git command and return its stdout as a String.
+    /// Returns `Err` with combined stderr output on failure.
+    async fn git_output(&self, args: &[&str], working_dir: &Path) -> Result<String, String> {
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(working_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| format!("failed to spawn git: {e}"))?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            Err(format!(
+                "git {} failed (exit {:?}): {}{}",
+                args.join(" "),
+                output.status.code(),
+                stderr,
+                stdout
+            ))
+        }
+    }
+
     /// Clone a repo into a new slot directory.
     ///
     /// Creates the parent directory, clones the repo as `slot_name` inside it,
@@ -151,8 +179,35 @@ impl BuilderPoolHandler {
 
     /// Reset an existing slot to a clean state: fetch, checkout master,
     /// reset --hard origin/master, clean -fdx, submodule update.
+    ///
+    /// Before fetching, clears any skip-worktree flags so that the subsequent
+    /// `reset --hard` can restore tracked files that were overlaid via `apply_local_files`.
     async fn reset_slot(&self, project_key: &str, slot_name: &str) -> Result<(), String> {
         let slot = self.slot_path(project_key, slot_name);
+
+        // Clear any skip-worktree flags before resetting, so that git reset --hard
+        // can overwrite overlay files that were pinned on top of tracked content.
+        let ls_output = self
+            .git_output(&["ls-files", "-v"], &slot)
+            .await
+            .map_err(|e| format!("git ls-files -v failed in {}: {e}", slot.display()))?;
+        let skipped: Vec<&str> = ls_output
+            .lines()
+            .filter_map(|line| {
+                // Lines with skip-worktree start with 'S' followed by a space and the path.
+                line.strip_prefix("S ").map(|path| path.trim_end())
+            })
+            .collect();
+        if !skipped.is_empty() {
+            let mut args = vec!["update-index", "--no-skip-worktree", "--"];
+            args.extend_from_slice(&skipped);
+            self.git(&args, &slot).await.map_err(|e| {
+                format!(
+                    "git update-index --no-skip-worktree failed in {}: {e}",
+                    slot.display()
+                )
+            })?;
+        }
 
         self.git(&["fetch", "--no-tags", "origin"], &slot)
             .await
@@ -253,9 +308,16 @@ impl BuilderPoolHandler {
         }
     }
 
-    /// Copy local overlay files from `<config_dir>/projects/<project>/local/` into the slot.
+    /// Copy local overlay files from `<config_dir>/projects/<project>/local/` into the slot,
+    /// then set `skip-worktree` on any overlaid paths that are tracked by git.
+    ///
+    /// Tracked files with `skip-worktree` set will appear clean in `git status` even though
+    /// their content differs from HEAD, preventing them from being wiped by `git reset --hard`.
+    /// Untracked overlays (e.g., `.cargo/config.toml`) are left alone — they are removed by
+    /// `git clean -fdx` on reset and re-copied on the next apply.
+    ///
     /// No-op if the source directory does not exist.
-    fn apply_local_files(&self, project_key: &str, slot: &Path) -> Result<(), String> {
+    async fn apply_local_files(&self, project_key: &str, slot: &Path) -> Result<(), String> {
         let source = self
             .config_dir
             .join("projects")
@@ -266,13 +328,48 @@ impl BuilderPoolHandler {
             return Ok(());
         }
 
-        copy_dir_recursive(&source, slot)
+        // Collect all destination paths (relative to slot) during the copy.
+        let mut copied_rel_paths: Vec<String> = Vec::new();
+        copy_dir_recursive_collecting(&source, slot, slot, &mut copied_rel_paths)?;
+
+        // For each copied file, check if it is tracked. If so, set skip-worktree so that
+        // git status reports a clean working tree despite the overlay.
+        for rel_path in &copied_rel_paths {
+            self.pin_if_tracked(rel_path, slot).await?;
+        }
+
+        Ok(())
+    }
+
+    /// If `rel_path` is tracked in the git index of `slot`, set `skip-worktree` on it.
+    /// Untracked files are silently skipped.
+    async fn pin_if_tracked(&self, rel_path: &str, slot: &Path) -> Result<(), String> {
+        let tracked = self
+            .git_output(&["ls-files", "--error-unmatch", "--", rel_path], slot)
+            .await;
+        if tracked.is_ok() {
+            self.git(&["update-index", "--skip-worktree", "--", rel_path], slot)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "git update-index --skip-worktree failed for {rel_path} in {}: {e}",
+                        slot.display()
+                    )
+                })?;
+        }
+        Ok(())
     }
 }
 
-/// Recursively copy all files and directories from `src` into `dst`.
+/// Recursively copy all files and directories from `src` into `dst`,
+/// collecting the relative paths of copied files (relative to `root_dst`) into `collected`.
 /// Creates intermediate directories as needed; overwrites existing files.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+fn copy_dir_recursive_collecting(
+    src: &Path,
+    dst: &Path,
+    root_dst: &Path,
+    collected: &mut Vec<String>,
+) -> Result<(), String> {
     let entries = std::fs::read_dir(src)
         .map_err(|e| format!("failed to read directory {}: {e}", src.display()))?;
 
@@ -284,9 +381,13 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         if src_path.is_dir() {
             std::fs::create_dir_all(&dst_path)
                 .map_err(|e| format!("failed to create directory {}: {e}", dst_path.display()))?;
-            copy_dir_recursive(&src_path, &dst_path)?;
+            copy_dir_recursive_collecting(&src_path, &dst_path, root_dst, collected)?;
         } else {
             copy_file(&src_path, &dst_path)?;
+            // Record the path relative to root_dst for skip-worktree classification.
+            if let Ok(rel) = dst_path.strip_prefix(root_dst) {
+                collected.push(rel.display().to_string());
+            }
         }
     }
 
@@ -348,6 +449,7 @@ impl BuilderPoolService for BuilderPoolHandler {
             &req.project_key,
             &self.slot_path(&req.project_key, &req.slot_name),
         )
+        .await
         .map_err(internal)?;
 
         let host_path = self
@@ -385,6 +487,7 @@ impl BuilderPoolService for BuilderPoolHandler {
             &req.project_key,
             &self.slot_path(&req.project_key, &req.slot_name),
         )
+        .await
         .map_err(internal)?;
 
         let host_path = self
@@ -532,7 +635,7 @@ mod tests {
         let h = make_handler(tmp.path());
         let slot = tmp.path().join("slot");
         std::fs::create_dir_all(&slot).unwrap();
-        assert!(h.apply_local_files("proj", &slot).is_ok());
+        assert!(h.apply_local_files("proj", &slot).await.is_ok());
     }
 
     #[tokio::test]
@@ -548,10 +651,11 @@ mod tests {
         std::fs::create_dir_all(&nested_dir).unwrap();
         std::fs::write(nested_dir.join("nested.txt"), "nested").unwrap();
 
+        // Use a plain directory (not a git repo) — untracked files, no skip-worktree pinning.
         let slot = tmp.path().join("slot");
         std::fs::create_dir_all(&slot).unwrap();
 
-        h.apply_local_files("proj", &slot).unwrap();
+        h.apply_local_files("proj", &slot).await.unwrap();
 
         assert_eq!(
             std::fs::read_to_string(slot.join("hello.txt")).unwrap(),
@@ -797,7 +901,7 @@ mod tests {
         std::fs::create_dir_all(&slot).unwrap();
         std::fs::write(slot.join("config.txt"), "old-value").unwrap();
 
-        h.apply_local_files("proj", &slot).unwrap();
+        h.apply_local_files("proj", &slot).await.unwrap();
         assert_eq!(
             std::fs::read_to_string(slot.join("config.txt")).unwrap(),
             "new-value"
@@ -922,7 +1026,7 @@ mod tests {
         );
     }
 
-    // ── copy_dir_recursive ────────────────────────────────────────────────────
+    // ── copy_dir_recursive_collecting ─────────────────────────────────────────
 
     #[test]
     fn copy_dir_recursive_nested() {
@@ -933,10 +1037,239 @@ mod tests {
         std::fs::write(src.join("a").join("b").join("f.txt"), "deep").unwrap();
         std::fs::create_dir_all(&dst).unwrap();
 
-        copy_dir_recursive(&src, &dst).unwrap();
+        let mut collected = Vec::new();
+        copy_dir_recursive_collecting(&src, &dst, &dst, &mut collected).unwrap();
         assert_eq!(
             std::fs::read_to_string(dst.join("a").join("b").join("f.txt")).unwrap(),
             "deep"
+        );
+        assert_eq!(collected, vec!["a/b/f.txt"]);
+    }
+
+    // ── skip-worktree tests ───────────────────────────────────────────────────
+
+    /// Helper: run a synchronous git command in a working directory.
+    fn git_sync(args: &[&str], cwd: &Path) {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+    }
+
+    /// Check whether a path has skip-worktree set in the git index.
+    fn has_skip_worktree(slot: &Path, rel_path: &str) -> bool {
+        let output = std::process::Command::new("git")
+            .args(["ls-files", "-v", "--", rel_path])
+            .current_dir(slot)
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&output.stdout);
+        out.starts_with('S')
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_sets_skip_worktree_on_tracked_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "0");
+
+        // Overlay README.md — a tracked file in the repo.
+        let src = h.config_dir.join("projects").join("proj").join("local");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("README.md"), "overlay content").unwrap();
+
+        h.apply_local_files("proj", &slot).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(slot.join("README.md")).unwrap(),
+            "overlay content",
+            "overlay content should be present"
+        );
+        assert!(
+            has_skip_worktree(&slot, "README.md"),
+            "tracked overlay file should have skip-worktree set"
+        );
+
+        // git status should report a clean working tree.
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&slot)
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            status.trim().is_empty(),
+            "git status should be clean after skip-worktree pinning, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_no_skip_worktree_on_untracked_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "0");
+
+        // Overlay an untracked file (not in the repo).
+        let src = h.config_dir.join("projects").join("proj").join("local");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("untracked-overlay.txt"), "new file").unwrap();
+
+        h.apply_local_files("proj", &slot).await.unwrap();
+
+        assert!(
+            slot.join("untracked-overlay.txt").exists(),
+            "untracked overlay should be copied"
+        );
+        assert!(
+            !has_skip_worktree(&slot, "untracked-overlay.txt"),
+            "untracked overlay should NOT have skip-worktree set"
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_slot_clears_skip_worktree_then_restores_tracked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "0");
+
+        // Manually set skip-worktree on README.md and overwrite its content.
+        std::fs::write(slot.join("README.md"), "overlay content").unwrap();
+        git_sync(
+            &["update-index", "--skip-worktree", "--", "README.md"],
+            &slot,
+        );
+        assert!(
+            has_skip_worktree(&slot, "README.md"),
+            "skip-worktree should be set before reset"
+        );
+
+        // reset_slot should clear skip-worktree and restore the tracked content.
+        h.reset_slot("proj", "0").await.unwrap();
+
+        assert!(
+            !has_skip_worktree(&slot, "README.md"),
+            "skip-worktree should be cleared after reset_slot"
+        );
+        let content = std::fs::read_to_string(slot.join("README.md")).unwrap();
+        assert_eq!(
+            content, "hello",
+            "tracked file should be restored to HEAD content"
+        );
+    }
+
+    #[tokio::test]
+    async fn recycle_slot_reapplies_overlay_with_skip_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+
+        // Set up local overlay for a tracked file.
+        let src = h.config_dir.join("projects").join("proj").join("local");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("README.md"), "overlay-recycle").unwrap();
+
+        let req = Request::new(RecycleSlotRequest {
+            project_key: "proj".into(),
+            slot_name: "0".into(),
+            repo_url,
+        });
+        h.recycle_slot(req).await.unwrap();
+
+        let slot = h.slot_path("proj", "0");
+
+        // Overlay content present.
+        assert_eq!(
+            std::fs::read_to_string(slot.join("README.md")).unwrap(),
+            "overlay-recycle",
+            "overlay content should be present after recycle"
+        );
+        // skip-worktree set.
+        assert!(
+            has_skip_worktree(&slot, "README.md"),
+            "skip-worktree should be set after recycle"
+        );
+        // git status clean.
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&slot)
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            status.trim().is_empty(),
+            "git status should be clean after recycle, got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recycle_slot_removes_overlay_when_local_file_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "0");
+
+        // First recycle: overlay README.md.
+        let src = h.config_dir.join("projects").join("proj").join("local");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("README.md"), "overlay-first").unwrap();
+
+        let req1 = Request::new(RecycleSlotRequest {
+            project_key: "proj".into(),
+            slot_name: "0".into(),
+            repo_url: repo_url.clone(),
+        });
+        h.recycle_slot(req1).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(slot.join("README.md")).unwrap(),
+            "overlay-first"
+        );
+
+        // Remove the overlay file from local/.
+        std::fs::remove_file(src.join("README.md")).unwrap();
+
+        // Second recycle: no overlay — README.md should be restored to HEAD.
+        let req2 = Request::new(RecycleSlotRequest {
+            project_key: "proj".into(),
+            slot_name: "0".into(),
+            repo_url,
+        });
+        h.recycle_slot(req2).await.unwrap();
+
+        let content = std::fs::read_to_string(slot.join("README.md")).unwrap();
+        assert_eq!(
+            content, "hello",
+            "tracked file should revert to HEAD when overlay is removed"
+        );
+        assert!(
+            !has_skip_worktree(&slot, "README.md"),
+            "skip-worktree should be cleared when overlay is removed"
         );
     }
 }
