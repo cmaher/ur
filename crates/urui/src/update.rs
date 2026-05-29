@@ -453,6 +453,18 @@ fn handle_tick(mut model: Model) -> (Model, Vec<Cmd>) {
 /// Maps entity types to the tabs whose data needs refreshing and accumulates
 /// them in the throttle. If no cooldown is active, flushes immediately.
 fn handle_ui_event(mut model: Model, items: Vec<UiEventItem>) -> (Model, Vec<Cmd>) {
+    // Filter events by project when a project filter is active. Entity IDs
+    // follow the `{project}-{hash}` convention, so we check the prefix.
+    let items: Vec<UiEventItem> = if let Some(ref project) = model.project_filter {
+        let prefix = format!("{project}-");
+        items
+            .into_iter()
+            .filter(|item| item.entity_id.starts_with(&prefix))
+            .collect()
+    } else {
+        items
+    };
+
     let dirty_tabs = items
         .iter()
         .flat_map(|item| match item.entity_type.as_str() {
@@ -2452,5 +2464,80 @@ mod tests {
         // Error result should be silently ignored.
         assert!(new_model.banner.is_none());
         assert!(cmds.is_empty());
+    }
+
+    // --- Project filter tests for handle_ui_event ---
+
+    #[test]
+    fn ui_event_project_filter_drops_non_matching_events() {
+        let mut model = Model::initial();
+        model.project_filter = Some("ur".to_string());
+
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "ticket".to_string(),
+            entity_id: "other-abc".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+
+        // Filtered event should not mark any tabs dirty.
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_project_filter_keeps_matching_events() {
+        let mut model = Model::initial();
+        model.project_filter = Some("ur".to_string());
+
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "ticket".to_string(),
+            entity_id: "ur-abc".to_string(),
+        }]);
+        let (new_model, cmds) = update(model, msg);
+
+        // Matching event should flush (no prior cooldown) and produce fetch cmds.
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_no_project_filter_keeps_all_events() {
+        let model = Model::initial();
+        assert!(model.project_filter.is_none());
+
+        let msg = Msg::UiEvent(vec![
+            UiEventItem {
+                entity_type: "ticket".to_string(),
+                entity_id: "other-abc".to_string(),
+            },
+            UiEventItem {
+                entity_type: "ticket".to_string(),
+                entity_id: "ur-xyz".to_string(),
+            },
+        ]);
+        let (new_model, cmds) = update(model, msg);
+
+        // Both events should pass through; throttle flushed (Tickets tab active).
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
+        assert!(!cmds.is_empty());
+    }
+
+    #[test]
+    fn ui_event_project_filter_drops_workflow_ids_from_filtered_events() {
+        let mut model = Model::initial();
+        model.project_filter = Some("ur".to_string());
+        // Switch to Workers tab so flows are not active — workflow IDs would be
+        // collected for notification fetches if the event were not filtered.
+        model.navigation_model.active_tab = TabId::Workers;
+
+        let msg = Msg::UiEvent(vec![UiEventItem {
+            entity_type: "workflow".to_string(),
+            entity_id: "other-flow".to_string(),
+        }]);
+        let (new_model, _cmds) = update(model, msg);
+
+        // Filtered workflow events should not accumulate workflow IDs.
+        assert!(new_model.ui_event_throttle.pending_workflow_ids.is_empty());
+        assert!(new_model.ui_event_throttle.dirty.is_empty());
     }
 }
