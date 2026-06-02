@@ -34,9 +34,11 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 
 # Best-effort Claude Code update when force-rebuilding.
 # Pass --build-arg CACHEBUST=<timestamp> to bust the cache on this layer.
+# CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
+# cache for layers that actually use the ARG, not merely declare it.
 ARG CACHEBUST=0
 USER worker
-RUN claude update || true
+RUN echo "CACHEBUST=$CACHEBUST" && claude update || true
 WORKDIR /workspace
 
 HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \
