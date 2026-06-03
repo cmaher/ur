@@ -135,6 +135,23 @@ impl From<CoreError> for Status {
     }
 }
 
+/// RAII guard that releases the in-memory slot claim when dropped.
+///
+/// Created in `launch()` right after `resolve_launch_workspace` succeeds. Ensures
+/// the claim is removed on every exit path — whether launch succeeds, fails, or panics.
+/// On success the slot becomes DB-linked via `link_worker_slot`; on failure the slot
+/// is freed for the next `acquire_slot` call.
+struct SlotClaimReleaser {
+    slot_id: String,
+    pool: crate::RepoPoolManager,
+}
+
+impl Drop for SlotClaimReleaser {
+    fn drop(&mut self) {
+        self.pool.release_slot_claim(&self.slot_id);
+    }
+}
+
 /// Shared worker launch and stop logic used by both the host-facing
 /// `CoreServiceHandler` and the worker-facing `WorkerCoreServiceHandler`.
 #[derive(Clone)]
@@ -519,6 +536,13 @@ impl LaunchManager {
             model,
             generated_process_id,
         ) = self.resolve_launch_workspace(&req).await?;
+
+        // Guard releases the slot claim on any exit path (success or error).
+        // On success: DB link via link_worker_slot takes over; on failure: slot is freed.
+        let _claim_guard = slot_id.as_ref().map(|id| SlotClaimReleaser {
+            slot_id: id.clone(),
+            pool: self.repo_pool_manager.clone(),
+        });
 
         // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
         let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());

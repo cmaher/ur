@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     let pool_handler = pool_handler::BuilderPoolHandler {
         workspace: pool_workspace,
         config_dir: config_dir.clone(),
+        slot_locks: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
 
     let handler = handler::BuilderDaemonHandler {

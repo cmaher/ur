@@ -29,6 +29,10 @@ pub struct RepoPoolManager {
     project_registry: ProjectRegistry,
     /// Client for delegating all pool filesystem/git operations to builderd.
     builder_pool_client: BuilderPoolClient,
+    /// In-memory set of slot IDs currently being acquired but not yet DB-linked.
+    /// Prevents two concurrent acquire_slot calls from selecting the same slot.
+    /// Uses std::sync::Mutex (not tokio's) so the lock can be released synchronously in Drop.
+    claiming: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl RepoPoolManager {
@@ -43,7 +47,18 @@ impl RepoPoolManager {
             worker_repo,
             project_registry,
             builder_pool_client,
+            claiming: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
+    }
+
+    /// Release the in-memory claim on a slot ID.
+    ///
+    /// Called by `SlotClaimReleaser` (Drop) after `launch()` returns, once the slot
+    /// is either DB-linked (success) or freed (failure).
+    pub fn release_slot_claim(&self, slot_id: &str) {
+        self.claiming.lock().unwrap().remove(slot_id);
     }
 
     /// Acquire a repo slot for the given project.
@@ -63,17 +78,35 @@ impl RepoPoolManager {
             .ok_or_else(|| format!("unknown project: {project_key}"))?;
 
         // Query DB for an available slot (not linked to an active worker)
-        let available_slot = self
+        let candidate = self
             .worker_repo
             .find_available_slot(project_key)
             .await
             .map_err(|e| format!("db error finding available slot: {e}"))?;
 
+        // Atomically check the in-memory claiming set. If another concurrent acquire_slot
+        // call has already selected this slot but hasn't DB-linked it yet, skip it and
+        // fall through to prepare a new slot instead.
+        let available_slot = candidate.and_then(|slot| {
+            let mut claiming = self.claiming.lock().unwrap();
+            if claiming.contains(&slot.id) {
+                info!(
+                    project_key,
+                    slot_id = %slot.id,
+                    "slot being concurrently acquired, skipping to prepare new"
+                );
+                None
+            } else {
+                claiming.insert(slot.id.clone());
+                Some(slot)
+            }
+        });
+
         if let Some(slot) = available_slot {
             let slot_id = slot.id.clone();
             let slot_name = slot.slot_name.clone();
             info!(project_key, slot_name = %slot_name, path = %slot.host_path, "recycling existing pool slot");
-            let host_path = self
+            let host_path = match self
                 .builder_pool_client
                 .recycle_slot(
                     project_key.to_owned(),
@@ -81,7 +114,13 @@ impl RepoPoolManager {
                     project.repo.clone(),
                 )
                 .await
-                .map_err(|e| format!("recycle_slot failed for slot {slot_name}: {e}"))?;
+            {
+                Ok(path) => path,
+                Err(e) => {
+                    self.claiming.lock().unwrap().remove(&slot_id);
+                    return Err(format!("recycle_slot failed for slot {slot_name}: {e}"));
+                }
+            };
             return Ok((host_path, slot_id));
         }
 

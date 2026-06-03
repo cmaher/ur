@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tonic::{Request, Response, Status};
@@ -22,12 +24,28 @@ pub struct BuilderPoolHandler {
     /// Host-side config directory — local overlay files live at
     /// `<config_dir>/projects/<project>/local/`.
     pub config_dir: PathBuf,
+    /// Per-slot async mutexes that serialize concurrent RPC handlers on the same slot.
+    /// Keyed by `"<project_key>/<slot_name>"`. The outer std::sync::Mutex is held only
+    /// to look up or insert the per-slot Arc; it is never held across await points.
+    pub slot_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl BuilderPoolHandler {
     /// Path to the project pool directory: `<workspace>/pool/<project>/`.
     fn project_pool_dir(&self, project_key: &str) -> PathBuf {
         self.workspace.join("pool").join(project_key)
+    }
+
+    /// Return the per-slot async mutex for the given project/slot pair.
+    ///
+    /// Creates a new mutex if one does not exist yet. The outer std::sync::Mutex
+    /// is held only during the map lookup/insert — never across await points.
+    fn slot_lock(&self, project_key: &str, slot_name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let key = format!("{project_key}/{slot_name}");
+        let mut map = self.slot_locks.lock().unwrap();
+        map.entry(key)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Path to a specific slot: `<workspace>/pool/<project>/<slot_name>/`.
@@ -470,6 +488,9 @@ impl BuilderPoolService for BuilderPoolHandler {
             "RecycleSlot request received"
         );
 
+        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
+        let _slot_guard = slot_mutex.lock().await;
+
         // Attempt reset; on failure reclone from scratch.
         if let Err(reset_err) = self.reset_slot(&req.project_key, &req.slot_name).await {
             warn!(
@@ -544,6 +565,9 @@ impl BuilderPoolService for BuilderPoolHandler {
             "CheckoutBranch request received"
         );
 
+        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
+        let _slot_guard = slot_mutex.lock().await;
+
         let slot = self.slot_path(&req.project_key, &req.slot_name);
         if !slot.is_dir() {
             return Err(Status::not_found(format!(
@@ -575,6 +599,9 @@ impl BuilderPoolService for BuilderPoolHandler {
             "CleanSlot request received"
         );
 
+        let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
+        let _slot_guard = slot_mutex.lock().await;
+
         let slot = self.slot_path(&req.project_key, &req.slot_name);
         if !slot.is_dir() {
             return Err(Status::not_found(format!(
@@ -599,6 +626,7 @@ mod tests {
         BuilderPoolHandler {
             workspace: tmp.join("workspace"),
             config_dir: tmp.join("config"),
+            slot_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
