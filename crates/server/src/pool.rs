@@ -47,9 +47,7 @@ impl RepoPoolManager {
             worker_repo,
             project_registry,
             builder_pool_client,
-            claiming: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashSet::new(),
-            )),
+            claiming: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 
