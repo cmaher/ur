@@ -1274,7 +1274,7 @@ mod tests {
         let script = include_str!("default_scripts/gh.lua");
         let args: Vec<String> = vec![
             "api".into(),
-            "/repos/o/r/pulls/comments/123/replies".into(),
+            "/repos/o/r/pulls/57626/comments/3356879234/replies".into(),
             "-X".into(),
             "POST".into(),
         ];

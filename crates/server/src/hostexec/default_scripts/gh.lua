@@ -26,7 +26,7 @@ local comment_endpoint_patterns = {
     "^/repos/[^/]+/[^/]+/pulls/%d+/reviews$",
     "^/repos/[^/]+/[^/]+/issues/comments/%d+$",
     "^/repos/[^/]+/[^/]+/pulls/comments/%d+$",
-    "^/repos/[^/]+/[^/]+/pulls/comments/%d+/replies$",
+    "^/repos/[^/]+/[^/]+/pulls/%d+/comments/%d+/replies$",
 }
 
 -- Check if an API endpoint matches an allowed comment/review pattern
