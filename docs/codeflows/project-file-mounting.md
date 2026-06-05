@@ -225,6 +225,8 @@ git update-index --skip-worktree <file>
 
 for every file that was placed on top of a tracked path. `--skip-worktree` tells git to ignore the working-tree content of that file: the index records the original repo version while the working tree holds the overridden content.
 
+**Symlink handling:** If the destination path in the slot is a symlink (e.g., `CLAUDE.md → AGENTS.md`), the symlink is removed and replaced with a regular file containing the overlay content. The symlink target path is also pinned with `skip-worktree` so that a subsequent `git checkout` does not restore the target file and break the clean working tree.
+
 **Practical effect inside a worker:**
 
 - `git status` is clean — the override is invisible.
@@ -251,8 +253,9 @@ The copy runs **after** clone/reset and **before** container launch:
 
 1. `acquire_slot()` clones or resets the slot (via builderd)
 2. `apply_local_files()` runs against `<config_dir>/projects/<key>/local/`:
-   a. For each file, copy into the slot workspace (overwrites existing content)
-   b. If the file is tracked by git, run `git update-index --skip-worktree <file>` so the override is invisible to git
+   a. If the destination is a symlink, record the symlink target and remove the symlink
+   b. Copy the overlay file into the slot workspace (overwrites existing content)
+   c. If the file (or former symlink target) is tracked by git, run `git update-index --skip-worktree <file>` so the override is invisible to git
 3. Worker branch checkout (`git checkout -b <worker_id>`)
 4. Container launched with the slot as `/workspace`
 
@@ -288,9 +291,10 @@ BuilderPoolHandler::recycle_slot() / prepare_new_slot()   [builderd/src/pool_han
   │   │   └─ If missing or empty → no-op, return Ok
   │   │
   │   ├─ Recursively copies files into slot workspace
-  │   │   └─ Overwrites existing files (local file wins)
+  │   │   ├─ If destination is a symlink → record target, remove symlink
+  │   │   └─ Copy overlay file (local file wins)
   │   │
-  │   ├─ For each copied file that is tracked by git:
+  │   ├─ For each copied file (and former symlink targets) tracked by git:
   │   │   └─ git update-index --skip-worktree <file>
   │   │       (override invisible to git status, add, commit, push)
   │   │

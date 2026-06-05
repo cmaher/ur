@@ -346,9 +346,23 @@ impl BuilderPoolHandler {
             return Ok(());
         }
 
+        info!(
+            project_key,
+            source = %source.display(),
+            slot = %slot.display(),
+            "applying local overlay files"
+        );
+
         // Collect all destination paths (relative to slot) during the copy.
         let mut copied_rel_paths: Vec<String> = Vec::new();
         copy_dir_recursive_collecting(&source, slot, slot, &mut copied_rel_paths)?;
+
+        info!(
+            project_key,
+            count = copied_rel_paths.len(),
+            files = ?copied_rel_paths,
+            "copied local overlay files"
+        );
 
         // For each copied file, check if it is tracked. If so, set skip-worktree so that
         // git status reports a clean working tree despite the overlay.
@@ -366,6 +380,7 @@ impl BuilderPoolHandler {
             .git_output(&["ls-files", "--error-unmatch", "--", rel_path], slot)
             .await;
         if tracked.is_ok() {
+            info!(rel_path, slot = %slot.display(), "setting skip-worktree on tracked overlay");
             self.git(&["update-index", "--skip-worktree", "--", rel_path], slot)
                 .await
                 .map_err(|e| {
@@ -382,6 +397,10 @@ impl BuilderPoolHandler {
 /// Recursively copy all files and directories from `src` into `dst`,
 /// collecting the relative paths of copied files (relative to `root_dst`) into `collected`.
 /// Creates intermediate directories as needed; overwrites existing files.
+///
+/// When a destination path is a symlink, the symlink is removed first and the overlay
+/// replaces it with a regular file. The symlink target path is also recorded in `collected`
+/// so the caller can pin both paths with skip-worktree.
 fn copy_dir_recursive_collecting(
     src: &Path,
     dst: &Path,
@@ -401,8 +420,8 @@ fn copy_dir_recursive_collecting(
                 .map_err(|e| format!("failed to create directory {}: {e}", dst_path.display()))?;
             copy_dir_recursive_collecting(&src_path, &dst_path, root_dst, collected)?;
         } else {
+            replace_symlink_collecting(&dst_path, dst, root_dst, collected)?;
             copy_file(&src_path, &dst_path)?;
-            // Record the path relative to root_dst for skip-worktree classification.
             if let Ok(rel) = dst_path.strip_prefix(root_dst) {
                 collected.push(rel.display().to_string());
             }
@@ -410,6 +429,31 @@ fn copy_dir_recursive_collecting(
     }
 
     Ok(())
+}
+
+/// If `dst_path` is a symlink, record its target in `collected` (so the caller can
+/// pin it with skip-worktree) and remove the symlink so the subsequent copy creates
+/// a regular file instead of writing through the link.
+fn replace_symlink_collecting(
+    dst_path: &Path,
+    parent_dir: &Path,
+    root_dst: &Path,
+    collected: &mut Vec<String>,
+) -> Result<(), String> {
+    let is_symlink = std::fs::symlink_metadata(dst_path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if !is_symlink {
+        return Ok(());
+    }
+    if let Ok(target) = std::fs::read_link(dst_path) {
+        let target_abs = dst_path.parent().unwrap_or(parent_dir).join(&target);
+        if let Ok(rel) = target_abs.strip_prefix(root_dst) {
+            collected.push(rel.display().to_string());
+        }
+    }
+    std::fs::remove_file(dst_path)
+        .map_err(|e| format!("failed to remove symlink {}: {e}", dst_path.display()))
 }
 
 /// Copy a single file, creating parent directories as needed.
@@ -1248,6 +1292,116 @@ mod tests {
         assert!(
             status.trim().is_empty(),
             "git status should be clean after recycle, got: {status}"
+        );
+    }
+
+    /// Create a bare git repo with AGENTS.md and a CLAUDE.md symlink pointing to it.
+    fn init_bare_repo_with_symlink(bare_path: &Path) {
+        std::process::Command::new("git")
+            .args(["init", "--bare", "--initial-branch=master"])
+            .arg(bare_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        let tmp_work = tempfile::tempdir().unwrap();
+        let work_path = tmp_work.path();
+        std::process::Command::new("git")
+            .args(["clone", &bare_path.display().to_string(), "."])
+            .current_dir(work_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        std::fs::write(work_path.join("AGENTS.md"), "original agents").unwrap();
+        std::os::unix::fs::symlink("AGENTS.md", work_path.join("CLAUDE.md")).unwrap();
+        git_sync(
+            &[
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=Test",
+                "add",
+                "AGENTS.md",
+                "CLAUDE.md",
+            ],
+            work_path,
+        );
+        git_sync(
+            &[
+                "-c",
+                "user.email=test@test",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "init with symlink",
+            ],
+            work_path,
+        );
+        git_sync(&["push", "origin", "master"], work_path);
+    }
+
+    #[tokio::test]
+    async fn apply_local_files_replaces_symlink_and_pins_both() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo_with_symlink(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+        h.clone_slot("proj", "0", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "0");
+
+        // Verify the symlink exists after clone.
+        let meta = std::fs::symlink_metadata(slot.join("CLAUDE.md")).unwrap();
+        assert!(meta.file_type().is_symlink(), "CLAUDE.md should be a symlink after clone");
+
+        // Overlay CLAUDE.md with a regular file.
+        let src = h.config_dir.join("projects").join("proj").join("local");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("CLAUDE.md"), "overlay content").unwrap();
+
+        h.apply_local_files("proj", &slot).await.unwrap();
+
+        // The symlink should be replaced with a regular file.
+        let meta = std::fs::symlink_metadata(slot.join("CLAUDE.md")).unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "CLAUDE.md should be a regular file after overlay, not a symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(slot.join("CLAUDE.md")).unwrap(),
+            "overlay content"
+        );
+
+        // AGENTS.md should be unchanged.
+        assert_eq!(
+            std::fs::read_to_string(slot.join("AGENTS.md")).unwrap(),
+            "original agents"
+        );
+
+        // Both CLAUDE.md and AGENTS.md should have skip-worktree set.
+        assert!(
+            has_skip_worktree(&slot, "CLAUDE.md"),
+            "CLAUDE.md should have skip-worktree"
+        );
+        assert!(
+            has_skip_worktree(&slot, "AGENTS.md"),
+            "AGENTS.md (symlink target) should also have skip-worktree"
+        );
+
+        // git status should be clean.
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&slot)
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            status.trim().is_empty(),
+            "git status should be clean, got: {status}"
         );
     }
 
