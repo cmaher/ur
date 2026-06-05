@@ -1136,22 +1136,23 @@ fn assert_worker_model(runtime: &str, container: &str, expected: &str) {
         "container {container} should have UR_WORKER_MODEL={expected}, got {env_val:?}"
     );
 
-    // Verify the launched claude command includes `--model <expected>`. We
-    // grep tmux's pane history (the visible buffer) for the launch line.
-    let pane_output = exec_in_container(
+    // Verify the running claude process was launched with `--model <expected>`.
+    // Claude Code clears the screen on startup, so the launch command is not
+    // reliably visible in tmux scrollback. Read /proc/*/cmdline instead.
+    let needle = format!("--model {expected}");
+    let grep_output = exec_in_container(
         runtime,
         container,
-        &["tmux", "capture-pane", "-t", "agent", "-p", "-S", "-200"],
+        &["sh", "-c", "cat /proc/*/cmdline 2>/dev/null | tr '\\0' ' '"],
     );
     assert_exec_success(
-        &pane_output,
-        &format!("tmux capture-pane should succeed in container {container}"),
+        &grep_output,
+        &format!("reading /proc cmdlines should succeed in container {container}"),
     );
-    let pane = String::from_utf8_lossy(&pane_output.stdout);
-    let needle = format!("claude --model {expected}");
+    let cmdlines = String::from_utf8_lossy(&grep_output.stdout);
     assert!(
-        pane.contains(&needle),
-        "container {container} tmux pane should show '{needle}', got pane:\n{pane}"
+        cmdlines.contains(&needle),
+        "container {container} should have a process with '{needle}', got:\n{cmdlines}"
     );
 }
 
