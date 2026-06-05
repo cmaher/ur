@@ -1356,7 +1356,10 @@ mod tests {
 
         // Verify the symlink exists after clone.
         let meta = std::fs::symlink_metadata(slot.join("CLAUDE.md")).unwrap();
-        assert!(meta.file_type().is_symlink(), "CLAUDE.md should be a symlink after clone");
+        assert!(
+            meta.file_type().is_symlink(),
+            "CLAUDE.md should be a symlink after clone"
+        );
 
         // Overlay CLAUDE.md with a regular file.
         let src = h.config_dir.join("projects").join("proj").join("local");
