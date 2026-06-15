@@ -15,9 +15,9 @@ Before reviewing the diff, do the following — these reads are required, not op
 
 2. **Read implementations called by the diff.** When the diff calls a function whose behavior matters (not trivial getters), open the callee and read its implementation — including all conditional branches. A diff that calls `facade.DoThing(ctx, x, y)` cannot be reviewed without knowing what `DoThing` does with `x` and `y`, especially under different runtime conditions. Stop at two hops from the diff unless a specific concern pulls you deeper.
 
-3. **Trace nil and zero-value arguments.** When the diff passes `nil` or a zero value to a constructor or function, follow that value through storage and into every method that could dereference it. In Go, nil interface fields compile and pass tests — they only panic at runtime on the code path that uses them. The concern is not "nil was passed" (often intentional) but "does any reachable code path dereference it without a guard?"
+3. **Trace nil and zero-value arguments.** When the diff passes `nil`, `null`, or a zero value to a constructor or function, follow that value through storage and into every method that could dereference it. Null/nil values can pass construction and compile-time checks while only causing failures at runtime on the code path that dereferences them. The concern is not "nil was passed" (often intentional) but "does any reachable code path dereference it without a guard?"
 
-4. **Read construction sites for new struct fields.** When a PR adds a field to a DI struct, search for all `TypeName{...}` literals and verify the field is set. When a construction site intentionally passes nil, trace whether the current PR's code paths can reach a dereference.
+4. **Read construction sites for new struct fields.** When a PR adds a field to a DI struct, search for all construction sites (object literals, constructor calls, factory functions) and verify the field is set. When a construction site intentionally passes nil, trace whether the current PR's code paths can reach a dereference.
 
 5. **Verify branch coverage in tests.** If the diff introduces runtime branches (e.g. two code paths selected by a network type, feature flag, or config value), check that the tests exercise both branches. Note any untested branch that could hide bugs.
 
@@ -36,7 +36,7 @@ Here are the general guidelines for determining whether something is a bug and s
 
 **Nil dereferences reached through constructor wiring are bugs even when the nil was passed intentionally.** "Intentionally nil" at the construction site does not mean "safe to dereference" — it means the author assumed no current code path reaches it. If you can trace a reachable path from the diff's code to a dereference of that nil value, that is a provable bug under criterion 7. Show the call chain.
 
-**Framework semantic mismatches are bugs when they create silent misbehavior.** If code sets a timeout or retry policy on a construct that doesn't honor it (e.g. an activity context passed to a non-activity code path), and this creates an unbounded wait, missing safety net, or silently ignored bound, flag it — the code reads as if the bound applies when it doesn't.
+**Framework semantic mismatches are bugs when they create silent misbehavior.** If code sets a timeout or retry policy on a construct that doesn't honor it (e.g. a cancellable context passed to an API that ignores it, or a deadline set on a transport layer that strips it), and this creates an unbounded wait, missing safety net, or silently ignored bound, flag it — the code reads as if the bound applies when it doesn't.
 
 ## Comment Guidelines
 
