@@ -299,6 +299,7 @@ fn default_proxy_allowlist() -> Vec<String> {
     vec![
         "api.anthropic.com".to_string(),
         "platform.claude.com".to_string(),
+        "downloads.claude.ai".to_string(),
     ]
 }
 
