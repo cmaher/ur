@@ -578,6 +578,54 @@ fn process_attach(worker_id: &str, worker_prefix: &str) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
+/// Attach to the worker for `--rm`, then stop it once the attach ends.
+///
+/// Unlike a plain attach, this acts like a shell `trap`: it installs handlers
+/// for SIGHUP/SIGINT/SIGTERM so that closing the terminal tab running the
+/// command (which delivers SIGHUP) still stops the worker, rather than leaving
+/// an orphaned container running. The interactive attach blocks, so it runs on
+/// a dedicated blocking thread while the async signal handlers race against it
+/// via `select!`. Whichever fires first, we fall through to the same cleanup.
+async fn attach_with_rm_cleanup(
+    process_id: &str,
+    worker_prefix: &str,
+    port: u16,
+    output: &OutputManager,
+) -> Result<i32> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sighup = signal(SignalKind::hangup()).context("install SIGHUP handler")?;
+    let mut sigint = signal(SignalKind::interrupt()).context("install SIGINT handler")?;
+    let mut sigterm = signal(SignalKind::terminate()).context("install SIGTERM handler")?;
+
+    let attach_pid = process_id.to_string();
+    let attach_prefix = worker_prefix.to_string();
+    let attach = tokio::task::spawn_blocking(move || process_attach(&attach_pid, &attach_prefix));
+
+    let exit_code = tokio::select! {
+        res = attach => res.context("attach task panicked")??,
+        _ = sighup.recv() => {
+            eprintln!("\nTerminal closed; stopping worker (--rm)...");
+            // 128 + SIGHUP(1)
+            129
+        }
+        _ = sigint.recv() => {
+            eprintln!("\nInterrupted; stopping worker (--rm)...");
+            // 128 + SIGINT(2)
+            130
+        }
+        _ = sigterm.recv() => {
+            eprintln!("\nTerminated; stopping worker (--rm)...");
+            // 128 + SIGTERM(15)
+            143
+        }
+    };
+
+    let mut client = connect(port).await?;
+    process_stop(&mut client, process_id, output).await?;
+    Ok(exit_code)
+}
+
 #[instrument(skip(client, output))]
 async fn process_list(
     client: &mut CoreServiceClient<Channel>,
@@ -1185,12 +1233,12 @@ async fn handle_worker_launch(
             process::exit(err.code.exit_code());
         }
         wait_for_healthy(&process_id, worker_prefix)?;
-        let exit_code = process_attach(&process_id, worker_prefix)?;
         if rm {
-            println!("Stopping {process_id} (--rm)...");
-            let mut client = connect(port).await?;
-            process_stop(&mut client, &process_id, output).await?;
+            let exit_code =
+                attach_with_rm_cleanup(&process_id, worker_prefix, port, output).await?;
+            process::exit(exit_code);
         }
+        let exit_code = process_attach(&process_id, worker_prefix)?;
         process::exit(exit_code);
     }
     Ok(())
