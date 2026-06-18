@@ -90,29 +90,35 @@ Read every comment. For each one, form an opinion: do you agree or disagree with
 
 Output plain text in the following format. Do not output JSON. Do not wrap in code fences.
 
-For each finding, output a block like:
+For each finding, output a block like (note the blank line between findings):
 
 ```
 P{n} {title}
 {file}:{line_start}-{line_end}
 {one-paragraph explanation of why this is a bug, citing files/lines/functions}
+
+P{n} {title}
+{file}:{line_start}-{line_end}
+{one-paragraph explanation of why this is a bug, citing files/lines/functions}
 ```
 
-Separate findings with a blank line. After all findings, output an overall verdict line:
+Separate every finding from the next with a blank line — never stack findings back-to-back. After all findings, output a blank line, then an overall verdict line:
 
 ```
 Verdict: {correct | incorrect} — {1-3 sentence explanation}
 ```
 
-After the verdict, output a Comments section reviewing existing PR comments:
+After the verdict, output a blank line, then a Comments section reviewing existing PR comments:
 
 ```
 Comments
 
 {author} "{brief summary of their comment}" {comment_id} - {agree | disagree} - {one-sentence reason}
+
+{author} "{brief summary of their comment}" {comment_id} - {agree | disagree} - {one-sentence reason}
 ```
 
-One line per comment. Include bot comments. If there are no existing comments, output:
+One comment per line, with a blank line between every comment — do not run them together as a wall of text. Include bot comments. If there are no existing comments, output:
 
 ```
 Comments
