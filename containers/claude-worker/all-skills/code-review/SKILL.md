@@ -67,48 +67,60 @@ GUIDELINES:
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
 - Do NOT introduce or remove outer indentation levels unless that is the actual fix.
 
-The comments will be presented in the code review as inline comments. You should avoid providing unnecessary location details in the comment body. Always keep the line range as short as possible for interpreting the issue. Avoid ranges longer than 5–10 lines; instead, choose the most suitable subrange that pinpoints the problem.
+Tag each finding with a priority level:
+- P0 – Drop everything. Blocking release, operations, or major usage. Only for universal issues that do not depend on assumptions about inputs.
+- P1 – Urgent. Should be addressed in the next cycle.
+- P2 – Normal. To be fixed eventually.
+- P3 – Low. Nice to have.
 
-At the beginning of the finding title, tag the bug with priority level. For example "[P1] Un-padding slices along wrong tensor dimensions". [P0] – Drop everything to fix.  Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
+## Pre-Review: Read Existing Comments
 
-Additionally, include a numeric priority field in the JSON output for each finding: set "priority" to 0 for P0, 1 for P1, 2 for P2, or 3 for P3. If a priority cannot be determined, omit the field or use null.
+Before producing your review, fetch all existing comments on the PR — including bot comments, review comments, and inline comments. Use `gh` CLI commands to retrieve them:
 
-At the end of your findings, output an "overall correctness" verdict of whether or not the patch should be considered "correct".
-Correct implies that existing code and tests will not break, and the patch is free of bugs and other blocking issues.
-Ignore non-blocking issues such as style, formatting, typos, documentation, and other nits.
-
-FORMATTING GUIDELINES:
-The finding description should be one paragraph.
-
-OUTPUT FORMAT:
-
-## Output schema  — MUST MATCH *exactly*
-
-```json
-{
-  "findings": [
-    {
-      "title": "<≤ 80 chars, imperative>",
-      "body": "<valid Markdown explaining *why* this is a problem; cite files/lines/functions>",
-      "confidence_score": <float 0.0-1.0>,
-      "priority": <int 0-3, optional>,
-      "code_location": {
-        "absolute_file_path": "<file path>",
-        "line_range": {"start": <int>, "end": <int>}
-      }
-    }
-  ],
-  "overall_correctness": "patch is correct" | "patch is incorrect",
-  "overall_explanation": "<1-3 sentence explanation justifying the overall_correctness verdict>",
-  "overall_confidence_score": <float 0.0-1.0>
-}
+```bash
+gh pr view --json number --jq '.number'
+gh api repos/{owner}/{repo}/pulls/{number}/comments
+gh api repos/{owner}/{repo}/issues/{number}/comments
+gh api repos/{owner}/{repo}/pulls/{number}/reviews
 ```
 
-* **Do not** wrap the JSON in markdown fences or extra prose.
-* The code_location field is required and must include absolute_file_path and line_range.
-* Line ranges must be as short as possible for interpreting the issue (avoid ranges over 5–10 lines; pick the most suitable subrange).
-* The code_location should overlap with the diff.
-* Do not generate a PR fix.
+Read every comment. For each one, form an opinion: do you agree or disagree with the point raised? You will report on these in the Comments section of your output.
+
+## Output Format
+
+Output plain text in the following format. Do not output JSON. Do not wrap in code fences.
+
+For each finding, output a block like:
+
+```
+P{n} {title}
+{file}:{line_start}-{line_end}
+{one-paragraph explanation of why this is a bug, citing files/lines/functions}
+```
+
+Separate findings with a blank line. After all findings, output an overall verdict line:
+
+```
+Verdict: {correct | incorrect} — {1-3 sentence explanation}
+```
+
+After the verdict, output a Comments section reviewing existing PR comments:
+
+```
+Comments
+
+{author} "{brief summary of their comment}" {comment_id} - {agree | disagree} - {one-sentence reason}
+```
+
+One line per comment. Include bot comments. If there are no existing comments, output:
+
+```
+Comments
+
+(none)
+```
+
+Do not generate a PR fix.
 
 ## Project Rules
 
