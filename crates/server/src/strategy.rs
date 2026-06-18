@@ -85,15 +85,13 @@ impl WorkerStrategy {
         self.name()
     }
 
-    /// Returns the default Claude Code model alias for this strategy.
+    /// Returns the default Claude Code model name for this strategy.
     ///
-    /// Values are short aliases passed through verbatim to Claude Code, which
-    /// resolves them to a specific model version at runtime. This keeps the
-    /// config stable across model releases.
+    /// Values are passed through verbatim to Claude Code's `--model` flag.
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::Code => "sonnet",
-            Self::Design | Self::Manual => "opus",
+            Self::Design | Self::Manual => "claude-opus-4-8[1M]",
         }
     }
 
@@ -202,8 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn manual_model_is_opus() {
-        assert_eq!(WorkerStrategy::Manual.default_model(), "opus");
+    fn manual_model_default() {
+        assert_eq!(
+            WorkerStrategy::Manual.default_model(),
+            "claude-opus-4-8[1M]"
+        );
     }
 
     #[test]
@@ -233,8 +234,11 @@ mod tests {
     }
 
     #[test]
-    fn default_model_design_is_opus() {
-        assert_eq!(WorkerStrategy::Design.default_model(), "opus");
+    fn default_model_design() {
+        assert_eq!(
+            WorkerStrategy::Design.default_model(),
+            "claude-opus-4-8[1M]"
+        );
     }
 
     #[test]

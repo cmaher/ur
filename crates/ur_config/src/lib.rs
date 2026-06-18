@@ -172,7 +172,7 @@ pub const WORKER_ID_HEADER: &str = "ur-worker-id";
 /// Used alongside `UR_WORKER_ID` to authenticate worker requests to the shared worker server.
 pub const UR_WORKER_SECRET_ENV: &str = "UR_WORKER_SECRET";
 
-/// Environment variable: Claude Code model name (e.g. "opus", "sonnet") for the
+/// Environment variable: Claude Code model name (e.g. "claude-opus-4-8[1M]", "sonnet") for the
 /// worker. Read by workerd at daemon startup and passed to `claude` as
 /// `--model <name>`. Empty/unset means no `--model` flag.
 pub const UR_WORKER_MODEL_ENV: &str = "UR_WORKER_MODEL";

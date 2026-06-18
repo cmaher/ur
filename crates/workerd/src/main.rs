@@ -133,7 +133,7 @@ async fn run_daemon_only() -> Result<()> {
     // unreliable — Claude Code recomposes the file from .claude.json and
     // drops unrecognized keys).
     let claude_cmd = match std::env::var(ur_config::UR_WORKER_MODEL_ENV) {
-        Ok(model) if !model.trim().is_empty() => format!("claude --model {}", model.trim()),
+        Ok(model) if !model.trim().is_empty() => format!("claude --model '{}'", model.trim()),
         _ => "claude".to_owned(),
     };
     session.send_keys(&claude_cmd).await?;

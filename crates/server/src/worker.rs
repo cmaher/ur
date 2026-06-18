@@ -1365,14 +1365,14 @@ mod tests {
     }
 
     #[test]
-    fn build_worker_env_vars_design_mode_sets_opus_model() {
+    fn build_worker_env_vars_design_mode_sets_model() {
         let cfg = WorkerModesConfig::default();
         let (strategy, _skills, model) = cfg.resolve_mode("design").unwrap();
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
-            vars.contains(&("UR_WORKER_MODEL".into(), "opus".into())),
-            "design mode should inject UR_WORKER_MODEL=opus; got {vars:?}"
+            vars.contains(&("UR_WORKER_MODEL".into(), "claude-opus-4-8[1M]".into())),
+            "design mode should inject UR_WORKER_MODEL=claude-opus-4-8[1M]; got {vars:?}"
         );
     }
 
@@ -1467,7 +1467,7 @@ skills = ["a", "b"]
         let (strategy, skills, model) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1481,8 +1481,7 @@ skills = ["tickets", "my-custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-docs").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
-        // Model inherits from base strategy (design -> opus) when not overridden.
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1522,14 +1521,14 @@ skills = ["tickets"]
         assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"design".to_string()));
         assert!(skills.contains(&"green".to_string()));
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
-    fn resolve_mode_manual_default_model_is_opus() {
+    fn resolve_mode_manual_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("manual").unwrap();
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1543,8 +1542,7 @@ skills = ["implement", "design", "custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert_eq!(skills, vec!["implement", "design", "custom-skill"]);
-        // Inherits manual's default model (opus) when not overridden.
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1568,7 +1566,7 @@ model = "haiku"
         let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1594,10 +1592,10 @@ skills = ["only-one"]
     }
 
     #[test]
-    fn resolve_mode_design_default_model_is_opus() {
+    fn resolve_mode_design_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("design").unwrap();
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]
@@ -1624,7 +1622,7 @@ skills = ["tickets"]
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let (strategy, _, model) = cfg.resolve_mode("x").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
-        assert_eq!(model, "opus");
+        assert_eq!(model, "claude-opus-4-8[1M]");
     }
 
     #[test]

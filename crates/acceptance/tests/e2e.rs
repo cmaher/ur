@@ -1382,8 +1382,8 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name_1);
 
-        // ---- Verify design mode resolves UR_WORKER_MODEL=opus and settings.json "model": "opus" ----
-        assert_worker_model(&env.runtime, &container_name_1, "opus");
+        // ---- Verify design mode resolves UR_WORKER_MODEL and settings.json model ----
+        assert_worker_model(&env.runtime, &container_name_1, "claude-opus-4-8[1M]");
 
         // ---- Verify worker has cloned content ----
         let ls_output = Command::new(&env.runtime)

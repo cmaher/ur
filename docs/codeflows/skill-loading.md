@@ -38,7 +38,7 @@ WorkerManager::resolve_mode()                  [crates/server/src/worker.rs]
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
-UR_WORKER_MODEL env var set on container        (Claude Code model alias, e.g. "sonnet", "opus")
+UR_WORKER_MODEL env var set on container        (Claude Code model name, e.g. "sonnet", "claude-opus-4-8[1M]")
 ```
 
 ### Default Modes (hardcoded, overridable via ur.toml)
