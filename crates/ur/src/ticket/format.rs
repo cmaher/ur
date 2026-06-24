@@ -179,6 +179,19 @@ pub fn format_activities(activities: &[ActivityDetail]) -> String {
     out
 }
 
+/// Format dispatchable tickets table.
+pub fn format_dispatchable(tickets: &[DispatchableTicket]) -> String {
+    let mut out = String::new();
+    writeln!(out, "{:<20} {:<4} TITLE", "ID", "PRI").unwrap();
+    let separator: String = std::iter::repeat_n('-', 48).collect();
+    writeln!(out, "{separator}").unwrap();
+    for t in tickets {
+        writeln!(out, "{:<20} {:<4} {}", t.id, t.priority, t.title).unwrap();
+    }
+    write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,17 +267,4 @@ mod tests {
         assert!(!out.contains("Blocked by:"));
         assert!(!out.contains("Related to:"));
     }
-}
-
-/// Format dispatchable tickets table.
-pub fn format_dispatchable(tickets: &[DispatchableTicket]) -> String {
-    let mut out = String::new();
-    writeln!(out, "{:<20} {:<4} TITLE", "ID", "PRI").unwrap();
-    let separator: String = std::iter::repeat_n('-', 48).collect();
-    writeln!(out, "{separator}").unwrap();
-    for t in tickets {
-        writeln!(out, "{:<20} {:<4} {}", t.id, t.priority, t.title).unwrap();
-    }
-    write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
-    out
 }
