@@ -62,6 +62,7 @@ GUIDELINES:
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
 - Flag any TODO, FIXME, XXX, or HACK comments introduced in the diff. For each one, surface it as a finding so the author can decide whether to resolve it before merging, convert it into a tracked ticket, or leave it with justification. Include the full TODO text in the finding body.
+- Flag dead code introduced or left orphaned by the diff. This includes: functions, methods, types, constants, or fields the diff adds but never references; code made unreachable by the change (e.g. statements after an unconditional `return`/`panic`, branches whose condition can never hold); imports, parameters, or variables that become unused after the change; and exported items the diff stops calling whose only callers it also removes. Confirm there are no remaining references before flagging (search the codebase, accounting for re-exports, reflection, proto/codegen, and string-based dispatch). Do not flag intentional public API surface or items annotated to suppress dead-code lints (e.g. `#[allow(dead_code)]`, `pub` items that are part of a crate's interface). Treat dead code as a maintainability finding, typically P2 or P3.
 - Use one comment per distinct issue (or a multi-line range if necessary).
 - Use ```suggestion blocks ONLY for concrete replacement code (minimal lines; no commentary inside the block).
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
