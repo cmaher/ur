@@ -26,7 +26,7 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
 #[test]
 fn format_detail_minimal() {
     let t = sample_ticket("ur-abc12", "Test ticket");
-    let out = format_ticket_detail(&t, &[], &[]);
+    let out = format_ticket_detail(&t, &[], &[], &[]);
     assert!(out.contains("ID:       ur-abc12"));
     assert!(out.contains("Title:    Test ticket"));
     assert!(out.contains("Type:     code"));
@@ -46,7 +46,7 @@ fn format_detail_with_parent() {
         parent_id: "ur-epic1".to_owned(),
         ..sample_ticket("ur-child1", "Child ticket")
     };
-    let out = format_ticket_detail(&t, &[], &[]);
+    let out = format_ticket_detail(&t, &[], &[], &[]);
     assert!(out.contains("Parent:   ur-epic1"));
 }
 
@@ -56,7 +56,7 @@ fn format_detail_with_body() {
         body: "This is the body text.".to_owned(),
         ..sample_ticket("ur-abc12", "With body")
     };
-    let out = format_ticket_detail(&t, &[], &[]);
+    let out = format_ticket_detail(&t, &[], &[], &[]);
     assert!(out.contains("This is the body text."));
 }
 
@@ -73,7 +73,7 @@ fn format_detail_with_metadata() {
             value: "alpha".to_owned(),
         },
     ];
-    let out = format_ticket_detail(&t, &meta, &[]);
+    let out = format_ticket_detail(&t, &meta, &[], &[]);
     assert!(out.contains("Metadata:"));
     assert!(out.contains("  env: prod"));
     assert!(out.contains("  team: alpha"));
@@ -88,7 +88,7 @@ fn format_detail_with_activities() {
         author: "worker".to_owned(),
         message: "did some work".to_owned(),
     }];
-    let out = format_ticket_detail(&t, &[], &activities);
+    let out = format_ticket_detail(&t, &[], &activities, &[]);
     assert!(out.contains("Activity:"));
     assert!(out.contains("[2026-03-15T12:00:00Z] worker: did some work"));
 }
@@ -110,7 +110,7 @@ fn format_detail_full() {
         author: "worker".to_owned(),
         message: "deployed".to_owned(),
     }];
-    let out = format_ticket_detail(&t, &meta, &activities);
+    let out = format_ticket_detail(&t, &meta, &activities, &[]);
     assert!(out.contains("ID:       ur-abc12"));
     assert!(out.contains("Parent:   ur-epic1"));
     assert!(out.contains("Full body here."));
@@ -160,7 +160,7 @@ fn format_detail_ref_present() {
         key: ticket_meta::REF.to_owned(),
         value: "PROJ-123".to_owned(),
     }];
-    let out = format_ticket_detail(&t, &meta, &[]);
+    let out = format_ticket_detail(&t, &meta, &[], &[]);
     assert!(
         out.contains("Ref:      PROJ-123"),
         "Ref line should be present"
@@ -174,7 +174,7 @@ fn format_detail_ref_present() {
 #[test]
 fn format_detail_ref_absent() {
     let t = sample_ticket("ur-abc12", "No ref");
-    let out = format_ticket_detail(&t, &[], &[]);
+    let out = format_ticket_detail(&t, &[], &[], &[]);
     assert!(!out.contains("Ref:"), "No Ref line when ref meta is absent");
 }
 
@@ -185,7 +185,7 @@ fn format_detail_ref_whitespace_only() {
         key: ticket_meta::REF.to_owned(),
         value: "   ".to_owned(),
     }];
-    let out = format_ticket_detail(&t, &meta, &[]);
+    let out = format_ticket_detail(&t, &meta, &[], &[]);
     assert!(
         !out.contains("Ref:"),
         "No Ref line when ref value is whitespace-only"
@@ -195,7 +195,7 @@ fn format_detail_ref_whitespace_only() {
 #[test]
 fn format_detail_no_trailing_newline() {
     let t = sample_ticket("ur-abc12", "Test");
-    let out = format_ticket_detail(&t, &[], &[]);
+    let out = format_ticket_detail(&t, &[], &[], &[]);
     assert!(
         !out.ends_with('\n'),
         "format_ticket_detail output should not end with a newline"

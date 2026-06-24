@@ -19,6 +19,12 @@ use ur_rpc::proto::ticket::{
     ActivityDetail, ActivityEntry, DispatchableTicket, MetadataEntry, Ticket,
 };
 
+#[derive(Debug, Serialize)]
+pub struct EdgeEntry {
+    pub other_id: String,
+    pub relation: String,
+}
+
 use crate::output::OutputManager;
 
 #[derive(Debug, Serialize)]
@@ -37,6 +43,7 @@ pub enum TicketOutput {
         ticket: Box<Ticket>,
         metadata: Vec<MetadataEntry>,
         activities: Vec<ActivityEntry>,
+        edges: Vec<EdgeEntry>,
     },
     MetaSet {
         id: String,
@@ -97,7 +104,8 @@ pub fn format_output(output: &TicketOutput) -> String {
             ticket,
             metadata,
             activities,
-        } => format_ticket_detail(ticket, metadata, activities),
+            edges,
+        } => format_ticket_detail(ticket, metadata, activities, edges),
         TicketOutput::MetaSet { id, key, value } => format!("Set {key}={value} on {id}"),
         TicketOutput::MetaDeleted { id, key } => format!("Deleted {key} from {id}"),
         TicketOutput::ActivityAdded { id, activity_id } => {

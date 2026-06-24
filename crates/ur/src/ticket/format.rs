@@ -5,11 +5,14 @@ use ur_rpc::proto::ticket::{
 };
 use ur_rpc::ticket_meta;
 
+use super::EdgeEntry;
+
 /// Format a single ticket's full detail view (used by `show`).
 pub fn format_ticket_detail(
     ticket: &Ticket,
     metadata: &[MetadataEntry],
     activities: &[ActivityEntry],
+    edges: &[EdgeEntry],
 ) -> String {
     let mut out = String::new();
     writeln!(out, "ID:       {}", ticket.id).unwrap();
@@ -54,11 +57,49 @@ pub fn format_ticket_detail(
             writeln!(out, "  [{}] {}: {}", a.timestamp, a.author, a.message).unwrap();
         }
     }
+    format_edges(&mut out, edges);
     // Remove the trailing newline that writeln always adds
     if out.ends_with('\n') {
         out.pop();
     }
     out
+}
+
+fn format_edges(out: &mut String, edges: &[EdgeEntry]) {
+    let blocks: Vec<_> = edges
+        .iter()
+        .filter(|e| e.relation == ur_rpc::edge_relation::BLOCKS)
+        .collect();
+    let blocked_by: Vec<_> = edges
+        .iter()
+        .filter(|e| e.relation == ur_rpc::edge_relation::BLOCKED_BY)
+        .collect();
+    let relates_to: Vec<_> = edges
+        .iter()
+        .filter(|e| e.relation == ur_rpc::edge_relation::RELATES_TO)
+        .collect();
+
+    if !blocks.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "Blocks:").unwrap();
+        for e in blocks {
+            writeln!(out, "  {}", e.other_id).unwrap();
+        }
+    }
+    if !blocked_by.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "Blocked by:").unwrap();
+        for e in blocked_by {
+            writeln!(out, "  {}", e.other_id).unwrap();
+        }
+    }
+    if !relates_to.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "Related to:").unwrap();
+        for e in relates_to {
+            writeln!(out, "  {}", e.other_id).unwrap();
+        }
+    }
 }
 
 /// Format a table of tickets (used by `list`).
@@ -149,4 +190,81 @@ pub fn format_dispatchable(tickets: &[DispatchableTicket]) -> String {
     }
     write!(out, "\n{} dispatchable ticket(s)", tickets.len()).unwrap();
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ticket::EdgeEntry;
+
+    fn bare_ticket() -> Ticket {
+        Ticket {
+            id: "t-1".into(),
+            ticket_type: "code".into(),
+            status: "open".into(),
+            priority: 0,
+            parent_id: String::new(),
+            title: "Test ticket".into(),
+            body: String::new(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            project: "test".into(),
+            branch: String::new(),
+            depth: 0,
+            children_completed: 0,
+            children_total: 0,
+            dispatch_status: String::new(),
+        }
+    }
+
+    #[test]
+    fn format_edges_all_groups() {
+        let edges = vec![
+            EdgeEntry {
+                other_id: "t-blocked".into(),
+                relation: "blocks".into(),
+            },
+            EdgeEntry {
+                other_id: "t-blocker".into(),
+                relation: "blocked_by".into(),
+            },
+            EdgeEntry {
+                other_id: "t-related".into(),
+                relation: "relates_to".into(),
+            },
+        ];
+        let out = format_ticket_detail(&bare_ticket(), &[], &[], &edges);
+        assert!(
+            out.contains("Blocks:\n  t-blocked"),
+            "missing Blocks section"
+        );
+        assert!(
+            out.contains("Blocked by:\n  t-blocker"),
+            "missing Blocked by section"
+        );
+        assert!(
+            out.contains("Related to:\n  t-related"),
+            "missing Related to section"
+        );
+    }
+
+    #[test]
+    fn format_edges_empty_groups_omitted() {
+        let edges = vec![EdgeEntry {
+            other_id: "t-blocked".into(),
+            relation: "blocks".into(),
+        }];
+        let out = format_ticket_detail(&bare_ticket(), &[], &[], &edges);
+        assert!(out.contains("Blocks:"), "Blocks section missing");
+        assert!(!out.contains("Blocked by:"), "Blocked by should be omitted");
+        assert!(!out.contains("Related to:"), "Related to should be omitted");
+    }
+
+    #[test]
+    fn format_no_edges() {
+        let out = format_ticket_detail(&bare_ticket(), &[], &[], &[]);
+        assert!(!out.contains("Blocks:"));
+        assert!(!out.contains("Blocked by:"));
+        assert!(!out.contains("Related to:"));
+    }
 }

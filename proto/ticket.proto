@@ -144,10 +144,16 @@ message GetTicketRequest {
   optional string activity_author_filter = 2;
 }
 
+message TicketEdge {
+  string other_id = 1;
+  string relation = 2;
+}
+
 message GetTicketResponse {
   Ticket ticket = 1;
   repeated MetadataEntry metadata = 2;
   repeated ActivityEntry activities = 3;
+  repeated TicketEdge edges = 4;
 }
 
 // --- UpdateTicket ---

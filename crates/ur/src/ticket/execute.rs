@@ -222,10 +222,19 @@ where
         .with_status_context("get ticket")?;
     let inner = resp.into_inner();
     let t = inner.ticket.context("server returned empty ticket")?;
+    let edges = inner
+        .edges
+        .into_iter()
+        .map(|e| super::EdgeEntry {
+            other_id: e.other_id,
+            relation: e.relation,
+        })
+        .collect();
     Ok(TicketOutput::Shown {
         ticket: Box::new(t),
         metadata: inner.metadata,
         activities: inner.activities,
+        edges,
     })
 }
 

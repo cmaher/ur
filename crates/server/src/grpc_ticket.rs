@@ -19,9 +19,9 @@ use ur_rpc::proto::ticket::{
     ListActivitiesResponse, ListTicketsRequest, ListTicketsResponse, ListWorkflowsRequest,
     ListWorkflowsResponse, RedriveTicketRequest, RedriveTicketResponse, RemoveBlockRequest,
     RemoveBlockResponse, RemoveLinkRequest, RemoveLinkResponse, SetMetaRequest, SetMetaResponse,
-    StallWorkflowRequest, StallWorkflowResponse, SubscribeUiEventsRequest, TicketExportRecord,
-    TicketExportRequest, TicketImportResponse, UiEventBatch, UpdateTicketRequest,
-    UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
+    StallWorkflowRequest, StallWorkflowResponse, SubscribeUiEventsRequest, TicketEdge,
+    TicketExportRecord, TicketExportRequest, TicketImportResponse, UiEventBatch,
+    UpdateTicketRequest, UpdateTicketResponse, WorkflowHistoryEvent, WorkflowInfo,
 };
 use workflow_db::WorkflowRepo;
 
@@ -748,10 +748,18 @@ impl TicketService for TicketServiceHandler {
             })
             .collect();
 
+        let raw_edges = self
+            .ticket_repo
+            .edges_for(&req.id, None)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+        let edges = classify_edges(&req.id, raw_edges);
+
         Ok(Response::new(GetTicketResponse {
             ticket: Some(ticket),
             metadata,
             activities,
+            edges,
         }))
     }
 
@@ -1334,6 +1342,27 @@ impl TicketService for TicketServiceHandler {
         let records_inserted = crate::ticket_import::run_import(&self.ticket_repo, records).await?;
         Ok(Response::new(TicketImportResponse { records_inserted }))
     }
+}
+
+fn classify_edges(ticket_id: &str, raw: Vec<ticket_db::Edge>) -> Vec<TicketEdge> {
+    raw.into_iter()
+        .map(|e| {
+            let (relation, other_id) = match e.kind {
+                EdgeKind::Blocks if e.source_id == ticket_id => {
+                    (ur_rpc::edge_relation::BLOCKS, e.target_id)
+                }
+                EdgeKind::Blocks => (ur_rpc::edge_relation::BLOCKED_BY, e.source_id),
+                EdgeKind::RelatesTo if e.source_id == ticket_id => {
+                    (ur_rpc::edge_relation::RELATES_TO, e.target_id)
+                }
+                EdgeKind::RelatesTo => (ur_rpc::edge_relation::RELATES_TO, e.source_id),
+            };
+            TicketEdge {
+                other_id,
+                relation: relation.to_owned(),
+            }
+        })
+        .collect()
 }
 
 fn workflow_to_proto(
@@ -1929,5 +1958,78 @@ mod tests {
         .unwrap();
         let ticket = got.into_inner().ticket.unwrap();
         assert_eq!(ticket.branch, "");
+    }
+
+    #[tokio::test]
+    async fn get_ticket_edges_classified() {
+        let (_test_db, handler) = setup_handler().await;
+
+        for id in ["t-main", "t-blocks-me", "t-i-block", "t-related"] {
+            handler
+                .ticket_repo
+                .create_ticket(&NewTicket {
+                    id: Some(id.into()),
+                    type_: "code".into(),
+                    priority: 0,
+                    title: id.into(),
+                    project: "test".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+
+        // t-blocks-me blocks t-main (source=t-blocks-me, target=t-main)
+        handler
+            .ticket_repo
+            .add_edge("t-blocks-me", "t-main", EdgeKind::Blocks)
+            .await
+            .unwrap();
+        // t-main blocks t-i-block (source=t-main, target=t-i-block)
+        handler
+            .ticket_repo
+            .add_edge("t-main", "t-i-block", EdgeKind::Blocks)
+            .await
+            .unwrap();
+        // t-main relates_to t-related
+        handler
+            .ticket_repo
+            .add_edge("t-main", "t-related", EdgeKind::RelatesTo)
+            .await
+            .unwrap();
+
+        let resp = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "t-main".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let edges = resp.into_inner().edges;
+        assert_eq!(edges.len(), 3);
+
+        let blocked_by: Vec<_> = edges
+            .iter()
+            .filter(|e| e.relation == ur_rpc::edge_relation::BLOCKED_BY)
+            .collect();
+        assert_eq!(blocked_by.len(), 1);
+        assert_eq!(blocked_by[0].other_id, "t-blocks-me");
+
+        let blocks: Vec<_> = edges
+            .iter()
+            .filter(|e| e.relation == ur_rpc::edge_relation::BLOCKS)
+            .collect();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].other_id, "t-i-block");
+
+        let relates_to: Vec<_> = edges
+            .iter()
+            .filter(|e| e.relation == ur_rpc::edge_relation::RELATES_TO)
+            .collect();
+        assert_eq!(relates_to.len(), 1);
+        assert_eq!(relates_to[0].other_id, "t-related");
     }
 }

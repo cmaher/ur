@@ -2,6 +2,7 @@
 pub mod error;
 
 pub mod agent_status;
+pub mod edge_relation;
 pub mod feedback_mode;
 pub mod lifecycle;
 pub mod ticket_meta;

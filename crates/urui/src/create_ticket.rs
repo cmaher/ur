@@ -741,6 +741,7 @@ mod tests {
                     }),
                     activities: vec![],
                     metadata: vec![],
+                    edges: vec![],
                 },
                 children: vec![],
                 total_children: 0,
