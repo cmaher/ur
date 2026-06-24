@@ -137,6 +137,7 @@ impl TicketService for MockTicketStore {
             ticket: Some(ticket),
             metadata,
             activities,
+            edges: vec![],
         }))
     }
 
