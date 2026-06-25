@@ -1,4 +1,39 @@
+---
+name: code-review
+description: Review a proposed code change — bug hunt plus design review — and report findings in prose. Pass an optional count N to dispatch N independent reviewer sub-agents over the same diff and combine their results.
+---
+
 # Review guidelines:
+
+## Invocation
+
+Parse `$ARGUMENTS` for an optional parallel-review count `N` (a positive integer; default `1`).
+
+- **`N` absent or `1`** — perform the review yourself, directly, following every guideline below. This is the default.
+- **`N` greater than `1`** — dispatch `N` independent reviewer sub-agents over the *same* diff, then combine their results (see "Combining parallel reviews"). Use this to widen coverage on large or high-stakes changes: independent passes surface findings a single pass misses.
+
+### Dispatching sub-agents
+
+Launch all `N` sub-agents concurrently (in a single batch). Give each sub-agent an identical prompt that:
+
+1. Points it at the same change under review (same diff / branch / PR).
+2. Instructs it to follow this skill's guidelines in full — the Pre-Review Reading, Bug Criteria, Design Review, Test Quality, and Comment Guidelines below — and to return its findings in the prose **Output format** defined at the end of this document.
+3. Tells it to work independently and not coordinate with the others.
+
+Do not vary the instructions between sub-agents; the independence comes from separate reasoning passes over the same input, not from divergent prompts.
+
+### Combining parallel reviews
+
+Once all sub-agents return, merge their reports into one review — do not concatenate them:
+
+- **Deduplicate.** Findings from different sub-agents that refer to the same underlying issue (same root cause at the same location) collapse into one. Keep the clearest summary; union any distinct detail.
+- **Union the rest.** A finding reported by only one sub-agent is still a finding — include it.
+- **Reconcile priority.** When merged findings disagree on priority, take the highest (most severe).
+- **Single verdict.** Produce one overall-correctness verdict for the change. The patch is incorrect if *any* sub-agent surfaced a confirmed blocking bug; reconcile disagreement by re-checking the finding yourself rather than taking a majority vote.
+
+Renumber the combined findings sequentially and present them in the standard prose **Output format** below.
+
+## Review
 
 You are acting as a reviewer for a proposed code change made by another engineer.
 
@@ -51,6 +86,8 @@ Here are the general guidelines for determining whether something is a bug and s
 
 **Framework semantic mismatches are bugs when they create silent misbehavior.** If code sets a timeout or retry policy on a construct that doesn't honor it (e.g. an activity context passed to a non-activity code path), and this creates an unbounded wait, missing safety net, or silently ignored bound, flag it — the code reads as if the bound applies when it doesn't.
 
+**A field documented as required but never validated is a finding.** A field, parameter, or option documented as required / non-empty / non-nil (in a doc comment, its name, or a nearby contract) but never checked before use. Flag it even when the only caller today is controlled and passes a valid value: an unenforced "required" contract lets an invalid value reach downstream state and fail far from the cause, and the guard is cheapest at the boundary that documents it. Validation analogue of Pre-Review item 8; P2/P3.
+
 **A risky pre-existing pattern re-instantiated at a new boundary is in scope.** Criterion 4 excludes bugs that pre-date the diff. But when the diff introduces a *new* boundary, abstraction, or code path that re-creates a risky pattern (an unguarded dereference, a swallowed error, a missing validation), that new occurrence *was* introduced by this commit, even if it mirrors behavior that already exists elsewhere. A fresh, clean boundary is the cheapest place to get it right. Flag it, explicitly state that it mirrors existing behavior and is not a regression, and keep the priority modest (typically P2/P3) so the author can weigh it against consistency with the old code.
 
 ## Design Review
@@ -98,13 +135,21 @@ Below are some more detailed guidelines that you should apply to this specific r
 
 HOW MANY FINDINGS TO RETURN:
 
-Output all findings that the original author would fix — or whose decision they would want to make — if they knew about it. For bugs: if there is no finding that a person would definitely love to see and fix, prefer outputting no findings. For design findings: hold the same anti-bikeshedding bar — raise a concern only when it materially affects the change's fitness for its stated purpose or would be expensive to reverse later. Do not stop at the first qualifying finding. Continue until you've listed every qualifying finding.
+Output all findings the author would fix — or whose decision they'd want to make — if they knew about it. This project prioritizes code quality:
+
+- **Do not suppress a genuine quality or hardening finding** just because it is non-blocking or no current caller can trigger it.
+- **Defense-in-depth is welcome, not noise** — validating inputs, guarding new boundaries, hardening a contract before consumers depend on it. Flag these.
+- **One exception:** skip a purely defensive nil-guard on a constructor-wired value that no reachable path dereferences. The nil-dereference rules above already cover the cases worth raising.
+- **Still hold the anti-bikeshedding bar for design findings** — raise one only when it materially affects the change's fitness for purpose or would be expensive to reverse.
+
+Do not stop at the first qualifying finding. List every one.
 
 GUIDELINES:
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
 - Flag any TODO, FIXME, XXX, or HACK comments introduced in the diff. For each one, surface it as a finding so the author can decide whether to resolve it before merging, convert it into a tracked ticket, or leave it with justification. Include the full TODO text in the finding body.
 - Flag dead code introduced or left orphaned by the diff: functions, types, constants, or fields the diff adds but never references; code made unreachable by the change; imports, parameters, or variables that become unused. Confirm there are no remaining references before flagging (account for re-exports, reflection, codegen, and string-based dispatch). Do not flag intentional public API surface or items annotated to suppress dead-code lints. Treat dead code as a maintainability finding, typically P2 or P3.
+- Flag signatures that return more than the language's idiomatic number of values — Go beyond `(result, err)` (e.g. `(a, b, c, err)`), or any positional tuple where a named struct/record fits. Positional returns are easy to transpose and force callers to remember the order; a named type self-documents. Suggest the named alternative. Style/maintainability, typically P3.
 - Use one comment per distinct issue (or a multi-line range if necessary).
 - Use ```suggestion blocks ONLY for concrete replacement code (minimal lines; no commentary inside the block).
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
