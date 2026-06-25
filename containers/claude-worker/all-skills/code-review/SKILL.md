@@ -110,52 +110,48 @@ GUIDELINES:
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
 - Do NOT introduce or remove outer indentation levels unless that is the actual fix.
 
-The comments will be presented in the code review as inline comments. You should avoid providing unnecessary location details in the comment body. Always keep the line range as short as possible for interpreting the issue. Avoid ranges longer than 5–10 lines; instead, choose the most suitable subrange that pinpoints the problem.
+Cite the location of each finding in its summary as concisely as possible (file plus the most suitable short line range that pinpoints the problem — avoid ranges longer than 5–10 lines). Do not pad the summary with unnecessary location detail.
 
-At the beginning of the finding title, tag the finding with priority level. For example "[P1] Un-padding slices along wrong tensor dimensions". [P0] – Drop everything to fix.  Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
+Tag each finding with its priority level (P0–P3), as used in the output format below. [P0] – Drop everything to fix. Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
 
-Additionally, include a numeric priority field in the JSON output for each finding: set "priority" to 0 for P0, 1 for P1, 2 for P2, or 3 for P3. If a priority cannot be determined, omit the field or use null.
-
-Also include a "category" field for each finding: "bug" for a defect in the diff (wrong behavior, crash, security, performance, dead code, misleading docs, weak tests), or "design" for a forward-looking concern about the change's approach or contracts where the current code is correct. When unsure, default to "bug".
-
-At the end of your findings, output an "overall correctness" verdict of whether or not the patch should be considered "correct".
-Correct implies that existing code and tests will not break, and the patch is free of bugs and other blocking issues.
-Ignore non-blocking issues such as style, formatting, typos, documentation, and other nits.
-Design-category findings do not by themselves make a patch "incorrect": a patch can be correct yet carry design findings worth raising. Only let a design finding flip the verdict to "incorrect" if it blocks the change's stated goal. When the verdict is "correct" but design findings exist, say so in the explanation.
+Also classify each finding's category: a *bug* is a defect in the diff (wrong behavior, crash, security, performance, dead code, misleading docs, weak tests); a *design* finding is a forward-looking concern about the change's approach or contracts where the current code is correct. When unsure, default to bug. State design findings as such in the summary so the reader knows the current code is correct and a decision is being raised.
 
 FORMATTING GUIDELINES:
-The finding description should be one paragraph.
+The finding summary should be one paragraph.
 
 OUTPUT FORMAT:
 
-## Output schema  — MUST MATCH *exactly*
+Do not output JSON. Present the review as prose in two sections: the findings, then the existing PR comments.
 
-```json
-{
-  "findings": [
-    {
-      "title": "<≤ 80 chars, imperative>",
-      "body": "<valid Markdown explaining *why* this is a problem; cite files/lines/functions>",
-      "confidence_score": <float 0.0-1.0>,
-      "priority": <int 0-3, optional>,
-      "category": "bug" | "design",
-      "code_location": {
-        "absolute_file_path": "<file path>",
-        "line_range": {"start": <int>, "end": <int>}
-      }
-    }
-  ],
-  "overall_correctness": "patch is correct" | "patch is incorrect",
-  "overall_explanation": "<1-3 sentence explanation justifying the overall_correctness verdict>",
-  "overall_confidence_score": <float 0.0-1.0>
-}
+### Findings
+
+Introduce each finding as a numbered paragraph. Number findings sequentially. `PN` is the priority tag (P0–P3). Cite the relevant files/lines/functions in the summary, and for design findings state explicitly that the current code is correct and name the decision at stake. The summary is a single paragraph with no internal line breaks except where a code fragment requires it. Separate findings with a single blank line:
+
+```
+#1 P1: <title>
+<summary>
+
+#2 P2: <title>
+<summary>
 ```
 
-* **Do not** wrap the JSON in markdown fences or extra prose.
-* The code_location field is required and must include absolute_file_path and line_range.
-* Line ranges must be as short as possible for interpreting the issue (avoid ranges over 5–10 lines; pick the most suitable subrange).
-* The code_location should overlap with the diff.
-* Do not generate a PR fix.
+After the last finding, give the overall correctness verdict in prose (a separate paragraph): state whether the patch is correct or incorrect and justify it in 1–3 sentences. "Correct" implies existing code and tests will not break and the patch is free of bugs and other blocking issues; ignore non-blocking issues such as style, formatting, typos, documentation, and other nits. Design-category findings do not by themselves make a patch incorrect — only let one flip the verdict if it blocks the change's stated goal, and when the verdict is correct but design findings exist, say so.
+
+### PR comments
+
+After the findings, read the existing comments on the pull request and address each one. Introduce each as a numbered paragraph, numbered sequentially and separated by a single blank line. `<person>` is the comment author, `<comment>` summarizes what they raised, and `<suggested action>` is your recommended response:
+
+```
+#1 <person>
+<comment>
+<suggested action>
+
+#2 <person>
+<comment>
+<suggested action>
+```
+
+Do not generate a PR fix.
 
 ## Project Rules
 
