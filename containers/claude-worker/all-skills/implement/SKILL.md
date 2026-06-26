@@ -15,6 +15,12 @@ Implement one or more tickets. An **epic** is any ticket with open descendants �
 
 Do not guess or make assumptions about unclear requirements. This applies to any agent — parent or subagent.
 
+## Style
+
+All agents must follow this style guide for development — parent and subagent alike.
+
+@/home/worker/.claude/skill-hooks/implement/style-guide.md
+
 ## Detect Mode — Single Ticket vs Epic
 
 After reading the ticket, determine which mode to use:
