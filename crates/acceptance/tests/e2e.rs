@@ -1295,8 +1295,8 @@ fn scenario_pool_launch(env: &TestEnv) {
         // ---- exec ur-ping inside container ----
         assert_ping_pong(&env.runtime, &container_name);
 
-        // ---- Verify code mode resolves UR_WORKER_MODEL=sonnet and settings.json "model": "sonnet" ----
-        assert_worker_model(&env.runtime, &container_name, "sonnet");
+        // ---- Verify code mode resolves UR_WORKER_MODEL=claude-sonnet-5 and settings.json "model": "claude-sonnet-5" ----
+        assert_worker_model(&env.runtime, &container_name, "claude-sonnet-5");
 
         // ---- Test hostexec: git commands and Lua validation ----
         assert_git_hostexec(&env.runtime, &container_name);

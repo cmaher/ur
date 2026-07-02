@@ -90,7 +90,7 @@ impl WorkerStrategy {
     /// Values are passed through verbatim to Claude Code's `--model` flag.
     pub fn default_model(&self) -> &'static str {
         match self {
-            Self::Code => "sonnet",
+            Self::Code => "claude-sonnet-5",
             Self::Design | Self::Manual => "claude-opus-4-8[1M]",
         }
     }
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn default_model_code_is_sonnet() {
-        assert_eq!(WorkerStrategy::Code.default_model(), "sonnet");
+        assert_eq!(WorkerStrategy::Code.default_model(), "claude-sonnet-5");
     }
 
     #[test]

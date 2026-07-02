@@ -1383,8 +1383,8 @@ mod tests {
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
-            vars.contains(&("UR_WORKER_MODEL".into(), "sonnet".into())),
-            "code mode should inject UR_WORKER_MODEL=sonnet; got {vars:?}"
+            vars.contains(&("UR_WORKER_MODEL".into(), "claude-sonnet-5".into())),
+            "code mode should inject UR_WORKER_MODEL=claude-sonnet-5; got {vars:?}"
         );
     }
 
@@ -1458,7 +1458,7 @@ skills = ["a", "b"]
         let (strategy, skills, model) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(model, "sonnet");
+        assert_eq!(model, "claude-sonnet-5");
     }
 
     #[test]
@@ -1580,15 +1580,15 @@ skills = ["only-one"]
         let (strategy, skills, model) = cfg.resolve_mode("code").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
-        // No explicit model override; inherits code's default ("sonnet").
-        assert_eq!(model, "sonnet");
+        // No explicit model override; inherits code's default ("claude-sonnet-5").
+        assert_eq!(model, "claude-sonnet-5");
     }
 
     #[test]
     fn resolve_mode_code_default_model_is_sonnet() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("code").unwrap();
-        assert_eq!(model, "sonnet");
+        assert_eq!(model, "claude-sonnet-5");
     }
 
     #[test]
