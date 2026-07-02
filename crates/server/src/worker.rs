@@ -1371,8 +1371,8 @@ mod tests {
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
-            vars.contains(&("UR_WORKER_MODEL".into(), "claude-opus-4-8[1M]".into())),
-            "design mode should inject UR_WORKER_MODEL=claude-opus-4-8[1M]; got {vars:?}"
+            vars.contains(&("UR_WORKER_MODEL".into(), "claude-fable-5".into())),
+            "design mode should inject UR_WORKER_MODEL=claude-fable-5; got {vars:?}"
         );
     }
 
@@ -1467,7 +1467,7 @@ skills = ["a", "b"]
         let (strategy, skills, model) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1481,7 +1481,7 @@ skills = ["tickets", "my-custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-docs").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1521,14 +1521,14 @@ skills = ["tickets"]
         assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"design".to_string()));
         assert!(skills.contains(&"green".to_string()));
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
     fn resolve_mode_manual_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("manual").unwrap();
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1542,7 +1542,7 @@ skills = ["implement", "design", "custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert_eq!(skills, vec!["implement", "design", "custom-skill"]);
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1566,7 +1566,7 @@ model = "haiku"
         let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1595,7 +1595,7 @@ skills = ["only-one"]
     fn resolve_mode_design_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("design").unwrap();
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]
@@ -1622,7 +1622,7 @@ skills = ["tickets"]
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let (strategy, _, model) = cfg.resolve_mode("x").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
-        assert_eq!(model, "claude-opus-4-8[1M]");
+        assert_eq!(model, "claude-fable-5");
     }
 
     #[test]

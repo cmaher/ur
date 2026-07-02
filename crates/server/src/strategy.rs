@@ -5,7 +5,7 @@ use crate::RepoPoolManager;
 /// Worker strategy enum governing mode-specific behavior: skill selection,
 /// slot acquisition, and slot release. Three variants exist: `Code`
 /// (exclusive numbered pool slots), `Design` (shared named slot), and
-/// `Manual` (exclusive numbered pool slots, no branch checkout, opus model,
+/// `Manual` (exclusive numbered pool slots, no branch checkout, fable model,
 /// all skills).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStrategy {
@@ -91,7 +91,7 @@ impl WorkerStrategy {
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::Code => "claude-sonnet-5",
-            Self::Design | Self::Manual => "claude-opus-4-8[1M]",
+            Self::Design | Self::Manual => "claude-fable-5",
         }
     }
 
@@ -201,10 +201,7 @@ mod tests {
 
     #[test]
     fn manual_model_default() {
-        assert_eq!(
-            WorkerStrategy::Manual.default_model(),
-            "claude-opus-4-8[1M]"
-        );
+        assert_eq!(WorkerStrategy::Manual.default_model(), "claude-fable-5");
     }
 
     #[test]
@@ -235,10 +232,7 @@ mod tests {
 
     #[test]
     fn default_model_design() {
-        assert_eq!(
-            WorkerStrategy::Design.default_model(),
-            "claude-opus-4-8[1M]"
-        );
+        assert_eq!(WorkerStrategy::Design.default_model(), "claude-fable-5");
     }
 
     #[test]
