@@ -34,11 +34,12 @@ WorkerManager::resolve_mode()                  [crates/server/src/worker.rs]
     │     1. Mode name → WorkerModesConfig lookup (default: "code")
     │     2. Strategy from built-in or custom mode's `base` field
     │     3. Skills: explicit `skills` param > mode's skill list > code defaults
-    │     4. Model: mode's `model` field (or base strategy's default_model())
+    │     4. Model: mode's `model` field (or base strategy's effective default —
+│        `[worker_models]` override, else `default_model()`)
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
-UR_WORKER_MODEL env var set on container        (Claude Code model name, e.g. "claude-sonnet-5", "claude-fable-5")
+UR_WORKER_MODEL env var set on container        (Claude Code model name, e.g. "sonnet", "opus")
 ```
 
 ### Default Modes (hardcoded, overridable via ur.toml)
@@ -49,6 +50,7 @@ Default skill lists and models for each mode are defined in `crates/server/src/s
 |------|---------------|
 | code | sonnet |
 | design | opus |
+| manual | opus |
 
 ### ur.toml Override
 
@@ -63,6 +65,25 @@ model = "my-custom-model"    # overrides the base strategy's default
 ```
 
 Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved. Each mode may optionally specify a `model` field to override the base strategy's default model.
+
+### `[worker_models]` Override (strategy-level default)
+
+```toml
+[worker_models]
+code = "opus"
+design = "sonnet"
+manual = "sonnet"
+```
+
+`[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model` — including the built-in `code`/`design` modes themselves. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key. Keys are optional; an omitted key falls back to `WorkerStrategy::default_model()` for that strategy.
+
+Resolution precedence (highest wins):
+
+1. A custom mode's explicit `worker_modes.<name>.model`
+2. The `[worker_models]` override for that mode's base strategy
+3. `WorkerStrategy::default_model()` ("sonnet" for code, "opus" for design/manual)
+
+So a custom mode's explicit `model` always wins over `[worker_models]`, and `[worker_models]` always wins over the hardcoded default.
 
 ## Container Startup (entrypoint.sh → workerd init)
 
@@ -201,7 +222,7 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 | `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
 | `crates/workerd/src/init_skills.rs` | Copies skills, composes strategy CLAUDE.md, writes settings.json with model |
 | `crates/server/src/strategy.rs` | Default skill lists and models per mode (`WorkerStrategy::skills()`, `common_skills()`, `default_model()`) |
-| `crates/server/src/worker.rs` | Mode resolution, injects UR_WORKER_SKILLS, UR_WORKER_CLAUDE, and UR_WORKER_MODEL env vars |
+| `crates/server/src/worker.rs` | Mode resolution, `[worker_models]` parsing (`RawWorkerModels`, `effective_default_model()`), injects UR_WORKER_SKILLS, UR_WORKER_CLAUDE, and UR_WORKER_MODEL env vars |
 
 ## Skill Hook Integration
 

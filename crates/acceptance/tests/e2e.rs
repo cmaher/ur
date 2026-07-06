@@ -229,6 +229,11 @@ fn test_names(label: &str) -> TestNames {
 /// `extra_toml` is appended verbatim to the generated toml content, allowing
 /// callers to inject additional sections (e.g. `[skills.code]`) without
 /// touching the shared base config.
+///
+/// The base config also seeds a `[worker_models]` override (`manual = "sonnet"`)
+/// so `scenario_worker_models_config_override` can assert the override reaches
+/// the container, without disturbing the built-in defaults ("sonnet" for code,
+/// "opus" for design) that other scenarios assert against.
 fn write_test_config(
     config_dir: &Path,
     server_port: u16,
@@ -329,6 +334,9 @@ fn write_test_config(
          base = \"code\"\n\
          skills = [\"implement\"]\n\
          model = \"my-custom-model\"\n\
+         \n\
+         [worker_models]\n\
+         manual = \"sonnet\"\n\
          \n\
          {projects_toml}\n\
          {extra_toml}",
@@ -967,6 +975,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_global_skill_injection(&env);
         scenario_worker_label_pr_status(&env);
         scenario_manual_worker(&env);
+        scenario_worker_models_config_override(&env);
         scenario_host_only_mount(&env);
         scenario_missing_mount_source(&env);
         scenario_memory_pool(&env);
@@ -1295,8 +1304,8 @@ fn scenario_pool_launch(env: &TestEnv) {
         // ---- exec ur-ping inside container ----
         assert_ping_pong(&env.runtime, &container_name);
 
-        // ---- Verify code mode resolves UR_WORKER_MODEL=claude-sonnet-5 and settings.json "model": "claude-sonnet-5" ----
-        assert_worker_model(&env.runtime, &container_name, "claude-sonnet-5");
+        // ---- Verify code mode resolves UR_WORKER_MODEL=sonnet and settings.json "model": "sonnet" ----
+        assert_worker_model(&env.runtime, &container_name, "sonnet");
 
         // ---- Test hostexec: git commands and Lua validation ----
         assert_git_hostexec(&env.runtime, &container_name);
@@ -1383,7 +1392,7 @@ fn scenario_design_mode_pool_launch(env: &TestEnv) {
         wait_for_healthy(&env.runtime, &container_name_1);
 
         // ---- Verify design mode resolves UR_WORKER_MODEL and settings.json model ----
-        assert_worker_model(&env.runtime, &container_name_1, "claude-fable-5");
+        assert_worker_model(&env.runtime, &container_name_1, "opus");
 
         // ---- Verify worker has cloned content ----
         let ls_output = Command::new(&env.runtime)
@@ -2911,6 +2920,35 @@ fn scenario_manual_worker(env: &TestEnv) {
         manual_verify_no_branch_checkout(&env.config_path, env.project_key, &process_id);
         manual_verify_worker_in_list(&env.ur, &env_slice, &process_id);
         manual_verify_git_checkout_allowed(&env.runtime, &container_name);
+        manual_stop_and_verify_gone(&env.ur, &env_slice, &process_id);
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// `[worker_models]` config override: verify a strategy-level model override
+/// (no custom mode, no explicit `model` field) reaches the container. The
+/// shared test config sets `[worker_models] manual = "sonnet"`, overriding
+/// the built-in `manual` default of "opus" (see `write_test_config`). Uses the
+/// built-in "manual" mode (same slot-reuse behavior as `scenario_manual_worker`,
+/// which runs immediately before this and frees slot 0 on stop).
+fn scenario_worker_models_config_override(env: &TestEnv) {
+    let expected_process_id = format!("{}-man-0", env.project_key);
+    let container_name = env.container_name(&expected_process_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let process_id = manual_launch_and_verify_process_id(&env.ur, env.project_key, &env_slice);
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify the [worker_models] override reaches the container ----
+        assert_worker_model(&env.runtime, &container_name, "sonnet");
+
         manual_stop_and_verify_gone(&env.ur, &env_slice, &process_id);
     }));
 
