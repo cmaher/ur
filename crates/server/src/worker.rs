@@ -1371,8 +1371,8 @@ mod tests {
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
-            vars.contains(&("UR_WORKER_MODEL".into(), "claude-fable-5".into())),
-            "design mode should inject UR_WORKER_MODEL=claude-fable-5; got {vars:?}"
+            vars.contains(&("UR_WORKER_MODEL".into(), "opus".into())),
+            "design mode should inject UR_WORKER_MODEL=opus; got {vars:?}"
         );
     }
 
@@ -1383,8 +1383,8 @@ mod tests {
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
-            vars.contains(&("UR_WORKER_MODEL".into(), "claude-sonnet-5".into())),
-            "code mode should inject UR_WORKER_MODEL=claude-sonnet-5; got {vars:?}"
+            vars.contains(&("UR_WORKER_MODEL".into(), "sonnet".into())),
+            "code mode should inject UR_WORKER_MODEL=sonnet; got {vars:?}"
         );
     }
 
@@ -1458,7 +1458,7 @@ skills = ["a", "b"]
         let (strategy, skills, model) = cfg.resolve_mode("").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(model, "claude-sonnet-5");
+        assert_eq!(model, "sonnet");
     }
 
     #[test]
@@ -1467,7 +1467,7 @@ skills = ["a", "b"]
         let (strategy, skills, model) = cfg.resolve_mode("design").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1481,7 +1481,7 @@ skills = ["tickets", "my-custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-docs").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1521,14 +1521,14 @@ skills = ["tickets"]
         assert!(skills.contains(&"implement".to_string()));
         assert!(skills.contains(&"design".to_string()));
         assert!(skills.contains(&"green".to_string()));
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
     fn resolve_mode_manual_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("manual").unwrap();
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1542,7 +1542,7 @@ skills = ["implement", "design", "custom-skill"]
         let (strategy, skills, model) = cfg.resolve_mode("my-manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert_eq!(skills, vec!["implement", "design", "custom-skill"]);
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1566,7 +1566,7 @@ model = "haiku"
         let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert!(skills.contains(&"implement".to_string()));
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1580,22 +1580,22 @@ skills = ["only-one"]
         let (strategy, skills, model) = cfg.resolve_mode("code").unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
-        // No explicit model override; inherits code's default ("claude-sonnet-5").
-        assert_eq!(model, "claude-sonnet-5");
+        // No explicit model override; inherits code's default ("sonnet").
+        assert_eq!(model, "sonnet");
     }
 
     #[test]
     fn resolve_mode_code_default_model_is_sonnet() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("code").unwrap();
-        assert_eq!(model, "claude-sonnet-5");
+        assert_eq!(model, "sonnet");
     }
 
     #[test]
     fn resolve_mode_design_default_model() {
         let cfg = WorkerModesConfig::default();
         let (_, _, model) = cfg.resolve_mode("design").unwrap();
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
@@ -1622,7 +1622,7 @@ skills = ["tickets"]
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let (strategy, _, model) = cfg.resolve_mode("x").unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
-        assert_eq!(model, "claude-fable-5");
+        assert_eq!(model, "opus");
     }
 
     #[test]
