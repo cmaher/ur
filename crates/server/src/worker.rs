@@ -98,9 +98,64 @@ struct RawModeEntry {
     base: String,
     skills: Vec<String>,
     /// Optional Claude Code model alias override. When omitted, the mode
-    /// inherits `default_model()` from its base strategy.
+    /// inherits the effective default (a `[worker_models]` override, if any,
+    /// else `default_model()`) from its base strategy.
     #[serde(default)]
     model: Option<String>,
+}
+
+/// Raw TOML representation for the `[worker_models]` section, letting users
+/// override the built-in default Claude Code model per worker strategy.
+/// `deny_unknown_fields` rejects typos/unknown strategy names with an error
+/// naming the bad key, since only "code", "design", and "manual" are valid.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWorkerModels {
+    code: Option<String>,
+    design: Option<String>,
+    manual: Option<String>,
+}
+
+impl RawWorkerModels {
+    /// Look up the configured model override for a strategy, if any.
+    fn get(&self, strategy: WorkerStrategy) -> Option<&str> {
+        match strategy {
+            WorkerStrategy::Code => self.code.as_deref(),
+            WorkerStrategy::Design => self.design.as_deref(),
+            WorkerStrategy::Manual => self.manual.as_deref(),
+        }
+    }
+}
+
+/// Resolve the effective default model for a strategy: the `[worker_models]`
+/// override if present, else `WorkerStrategy::default_model()`.
+fn effective_default_model(strategy: WorkerStrategy, overrides: &RawWorkerModels) -> String {
+    overrides
+        .get(strategy)
+        .map(str::to_owned)
+        .unwrap_or_else(|| strategy.default_model().to_owned())
+}
+
+/// Seed the built-in strategies/models maps for "code", "design", and "manual",
+/// using `overrides` (parsed from `[worker_models]`) to compute each mode's
+/// effective default model.
+fn seed_strategies_and_models(
+    overrides: &RawWorkerModels,
+) -> (HashMap<String, WorkerStrategy>, HashMap<String, String>) {
+    let mut strategies = HashMap::new();
+    let mut models = HashMap::new();
+    for strategy in [
+        WorkerStrategy::Code,
+        WorkerStrategy::Design,
+        WorkerStrategy::Manual,
+    ] {
+        strategies.insert(strategy.name().to_owned(), strategy);
+        models.insert(
+            strategy.name().to_owned(),
+            effective_default_model(strategy, overrides),
+        );
+    }
+    (strategies, models)
 }
 
 /// Resolved worker modes configuration mapping mode names to skill lists, strategies,
@@ -112,27 +167,15 @@ pub struct WorkerModesConfig {
     /// map to their corresponding variants; custom modes map via their `base` field.
     strategies: HashMap<String, WorkerStrategy>,
     /// Maps mode names to their resolved Claude Code model alias. Defaults come
-    /// from `WorkerStrategy::default_model()`; custom modes may override via
+    /// from `WorkerStrategy::default_model()`, unless overridden per-strategy via
+    /// `[worker_models]`; custom modes may further override via
     /// `worker_modes.<name>.model`.
     models: HashMap<String, String>,
 }
 
 impl Default for WorkerModesConfig {
     fn default() -> Self {
-        let mut strategies = HashMap::new();
-        strategies.insert("code".into(), WorkerStrategy::Code);
-        strategies.insert("design".into(), WorkerStrategy::Design);
-        strategies.insert("manual".into(), WorkerStrategy::Manual);
-        let mut models = HashMap::new();
-        models.insert("code".into(), WorkerStrategy::Code.default_model().into());
-        models.insert(
-            "design".into(),
-            WorkerStrategy::Design.default_model().into(),
-        );
-        models.insert(
-            "manual".into(),
-            WorkerStrategy::Manual.default_model().into(),
-        );
+        let (strategies, models) = seed_strategies_and_models(&RawWorkerModels::default());
         Self {
             modes: default_worker_modes(),
             strategies,
@@ -146,13 +189,32 @@ impl WorkerModesConfig {
     /// If no `[worker_modes]` section exists, hardcoded defaults are used.
     /// Any modes defined in the config replace the defaults entirely.
     /// Custom modes must specify a valid `base` field ("code" or "design").
+    ///
+    /// An optional `[worker_models]` section overrides the built-in default
+    /// model per strategy (code/design/manual). Omitted keys fall back to
+    /// `WorkerStrategy::default_model()`; unknown keys are a config error.
+    /// Resolution precedence: custom mode explicit `model` > `[worker_models]`
+    /// override > `default_model()`.
     pub fn from_toml(toml_content: &str) -> Result<Self, String> {
         // Parse the full TOML to extract just the worker_modes section
         let value: toml::Value =
             toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
 
+        let model_overrides: RawWorkerModels = match value.get("worker_models") {
+            Some(section) => section
+                .clone()
+                .try_into()
+                .map_err(|e| format!("invalid worker_models config: {e}"))?,
+            None => RawWorkerModels::default(),
+        };
+
         let Some(section) = value.get("worker_modes") else {
-            return Ok(Self::default());
+            let (strategies, models) = seed_strategies_and_models(&model_overrides);
+            return Ok(Self {
+                modes: default_worker_modes(),
+                strategies,
+                models,
+            });
         };
 
         let raw: RawWorkerModes = section
@@ -160,20 +222,7 @@ impl WorkerModesConfig {
             .try_into()
             .map_err(|e| format!("invalid worker_modes config: {e}"))?;
         let mut modes = default_worker_modes();
-        let mut strategies = HashMap::new();
-        strategies.insert("code".into(), WorkerStrategy::Code);
-        strategies.insert("design".into(), WorkerStrategy::Design);
-        strategies.insert("manual".into(), WorkerStrategy::Manual);
-        let mut models = HashMap::new();
-        models.insert("code".into(), WorkerStrategy::Code.default_model().into());
-        models.insert(
-            "design".into(),
-            WorkerStrategy::Design.default_model().into(),
-        );
-        models.insert(
-            "manual".into(),
-            WorkerStrategy::Manual.default_model().into(),
-        );
+        let (mut strategies, mut models) = seed_strategies_and_models(&model_overrides);
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -183,7 +232,7 @@ impl WorkerModesConfig {
             })?;
             let model = entry
                 .model
-                .unwrap_or_else(|| strategy.default_model().to_owned());
+                .unwrap_or_else(|| effective_default_model(strategy, &model_overrides));
             strategies.insert(name.clone(), strategy);
             models.insert(name.clone(), model);
             modes.insert(name, entry.skills);
@@ -1636,6 +1685,92 @@ model = "haiku"
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let (_, _, model) = cfg.resolve_mode("x").unwrap();
         assert_eq!(model, "haiku");
+    }
+
+    #[test]
+    fn worker_models_override_applies_to_builtin_modes() {
+        let toml = r#"
+[worker_models]
+code   = "opus"
+design = "haiku"
+manual = "haiku"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
+        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
+        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(code_model, "opus");
+        assert_eq!(design_model, "haiku");
+        assert_eq!(manual_model, "haiku");
+    }
+
+    #[test]
+    fn worker_models_omitted_key_falls_back_to_default_model() {
+        let toml = r#"
+[worker_models]
+code = "opus"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
+        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
+        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(code_model, "opus");
+        assert_eq!(design_model, WorkerStrategy::Design.default_model());
+        assert_eq!(manual_model, WorkerStrategy::Manual.default_model());
+    }
+
+    #[test]
+    fn worker_models_unknown_key_errors_naming_bad_key() {
+        let toml = r#"
+[worker_models]
+codex = "opus"
+"#;
+        let result = WorkerModesConfig::from_toml(toml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("codex"));
+    }
+
+    #[test]
+    fn worker_models_custom_mode_inherits_override() {
+        let toml = r#"
+[worker_models]
+design = "haiku"
+
+[worker_modes.my-docs]
+base = "design"
+skills = ["tickets"]
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (strategy, _, model) = cfg.resolve_mode("my-docs").unwrap();
+        assert_eq!(strategy, WorkerStrategy::Design);
+        assert_eq!(model, "haiku");
+    }
+
+    #[test]
+    fn worker_models_custom_mode_explicit_model_overrides_worker_models() {
+        let toml = r#"
+[worker_models]
+design = "haiku"
+
+[worker_modes.my-docs]
+base = "design"
+skills = ["tickets"]
+model = "opus"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let (_, _, model) = cfg.resolve_mode("my-docs").unwrap();
+        assert_eq!(model, "opus");
+    }
+
+    #[test]
+    fn worker_models_no_section_default_unaffected() {
+        let cfg = WorkerModesConfig::default();
+        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
+        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
+        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
+        assert_eq!(code_model, WorkerStrategy::Code.default_model());
+        assert_eq!(design_model, WorkerStrategy::Design.default_model());
+        assert_eq!(manual_model, WorkerStrategy::Manual.default_model());
     }
 
     #[tokio::test]
