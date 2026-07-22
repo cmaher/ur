@@ -4,6 +4,40 @@
 -- operations. Destructive operations (PR merge, close, delete) are
 -- workflow-only via remote_repo through builderd or dedicated handlers.
 
+-- Help block appended to every rejection so the caller sees exactly what is
+-- allowed and how to pass comment/PR body text (the #1 source of failed
+-- retries). gh runs on the HOST via host-exec, so it cannot read files from
+-- the worker filesystem and stdin is not forwarded.
+local HELP = [[
+
+--- gh via ur host-exec ---
+gh runs on the HOST, not inside your container. Two consequences:
+  * The host gh CANNOT read files from your worker filesystem, so
+    `--body-file <path>` fails with "no such file or directory".
+  * stdin is NOT forwarded, so `--body-file -` fails with "Body cannot be blank".
+Pass body text INLINE — your shell expands it locally and forwards the text:
+    gh pr comment <pr> --body "$(cat body.md)"
+    gh pr create --title "..." --body "$(cat body.md)"
+    gh pr edit <pr> --body "$(cat body.md)"
+
+Allowed (read + collaborative; destructive ops are workflow-only):
+  gh pr view|checks|list|status|diff    read-only PR inspection
+  gh pr comment                         post a PR/issue comment
+  gh pr edit                            edit your own PR
+  gh pr create                          open a PR
+  gh pr review --comment                review comment only
+                                        (--approve/--request-changes blocked)
+  gh run view|list                      CI run status and logs
+  gh api <endpoint>                     GET always; POST/PATCH only to
+                                        comment/review endpoints
+Blocked: gh pr merge|close|delete and any other subcommand.]]
+
+-- Raise a rejection with the standard help block appended. Level 0 keeps the
+-- message clean (no "input:N:" position prefix).
+local function fail(msg)
+    error(msg .. "\n" .. HELP, 0)
+end
+
 -- Allowed subcommand pairs: top-level command -> set of allowed subcommands
 local allowed_subcommands = {
     ["pr"]  = {
@@ -99,14 +133,25 @@ function transform(command, args, working_dir, worker_context)
     end
 
     if #positionals == 0 then
-        error("blocked: gh requires a subcommand")
+        fail("blocked: gh requires a subcommand")
     end
 
     local top = positionals[1]
     local allowed = allowed_subcommands[top]
 
     if allowed == nil then
-        error("blocked: gh " .. top .. " is not allowed")
+        fail("blocked: gh " .. top .. " is not allowed")
+    end
+
+    -- Reject --body-file / -F for pr subcommands: gh runs on the host and
+    -- cannot read worker files, and stdin is not forwarded, so both the path
+    -- and stdin ("-") forms fail with confusing errors. Steer to inline --body.
+    if top == "pr" then
+        for _, a in ipairs(args) do
+            if a == "--body-file" or a == "-F" or a:sub(1, 12) == "--body-file=" then
+                fail("blocked flag: " .. a .. " (gh runs on the host and cannot read worker files; use --body \"$(cat file)\" instead)")
+            end
+        end
     end
 
     -- Special handling for "gh api": validate method + endpoint
@@ -114,27 +159,27 @@ function transform(command, args, working_dir, worker_context)
         local method = extract_method(args)
 
         if method == "DELETE" then
-            error("blocked: gh api with DELETE method is not allowed")
+            fail("blocked: gh api with DELETE method is not allowed")
         end
 
         if method == "POST" or method == "PATCH" or method == "PUT" then
             local endpoint = extract_api_endpoint(args)
             if endpoint == nil then
-                error("blocked: gh api write request requires an endpoint")
+                fail("blocked: gh api write request requires an endpoint")
             end
             if not is_comment_endpoint(endpoint) then
-                error("blocked: gh api " .. method .. " to " .. endpoint .. " is not allowed (only comment/review endpoints permitted)")
+                fail("blocked: gh api " .. method .. " to " .. endpoint .. " is not allowed (only comment/review endpoints permitted)")
             end
         end
         -- GET (default) is allowed, fall through
     elseif type(allowed) == "table" then
         -- Check that the subcommand is in the allowed set
         if #positionals < 2 then
-            error("blocked: gh " .. top .. " requires a subcommand")
+            fail("blocked: gh " .. top .. " requires a subcommand")
         end
         local sub = positionals[2]
         if not allowed[sub] then
-            error("blocked: gh " .. top .. " " .. sub .. " is not allowed (read-only access only)")
+            fail("blocked: gh " .. top .. " " .. sub .. " is not allowed (read-only access only)")
         end
 
         -- Handle flag-gated subcommands
@@ -142,7 +187,7 @@ function transform(command, args, working_dir, worker_context)
             -- Scan args for blocked flags
             for _, a in ipairs(args) do
                 if a == "--approve" or a == "-a" or a == "--request-changes" or a == "-r" then
-                    error("blocked: gh pr review --approve/--request-changes is not allowed")
+                    fail("blocked: gh pr review --approve/--request-changes is not allowed")
                 end
             end
             -- Require --comment or -c
@@ -154,7 +199,7 @@ function transform(command, args, working_dir, worker_context)
                 end
             end
             if not has_comment then
-                error("blocked: gh pr review requires --comment flag")
+                fail("blocked: gh pr review requires --comment flag")
             end
         end
     end
@@ -166,10 +211,10 @@ function transform(command, args, working_dir, worker_context)
 
         if arg == "-C" then
             if worker_context == nil then
-                error("blocked flag: -C")
+                fail("blocked flag: -C")
             end
             if i + 1 > #args then
-                error("blocked flag: -C (missing path argument)")
+                fail("blocked flag: -C (missing path argument)")
             end
             local path_arg = args[i + 1]
             -- Extract final path component (strip trailing slashes, take last segment)
@@ -179,7 +224,7 @@ function transform(command, args, working_dir, worker_context)
                 args[i + 1] = worker_context.slot_path
                 i = i + 2
             else
-                error("blocked flag: -C (path '" .. path_arg .. "' does not match project key or 'workspace')")
+                fail("blocked flag: -C (path '" .. path_arg .. "' does not match project key or 'workspace')")
             end
         else
             i = i + 1

@@ -349,6 +349,21 @@ mod tests {
     }
 
     #[test]
+    fn test_git_block_message_includes_help() {
+        // Every git rejection should append the help block describing restrictions.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/git.lua");
+        let args: Vec<String> = vec!["worktree".into(), "add".into(), "foo".into()];
+        let msg = mgr
+            .run_transform(script, "git", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("blocked git subcommand: worktree"));
+        assert!(msg.contains("runs on the HOST"));
+        assert!(msg.contains("push may only target your own worker branch"));
+    }
+
+    #[test]
     fn test_git_blocks_no_verify_on_push() {
         let mgr = LuaTransformManager::new();
         let script = include_str!("default_scripts/git.lua");
@@ -1037,6 +1052,57 @@ mod tests {
             .run_transform(script, "gh", &args, "/workspace", None)
             .unwrap();
         assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_comment_body_file() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "comment".into(),
+            "123".into(),
+            "--body-file".into(),
+            "/scratch/body.md".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("blocked flag: --body-file"));
+        // The guidance to use inline --body must be present.
+        assert!(msg.contains("--body \"$(cat"));
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_create_body_file_short_flag() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "create".into(),
+            "--title".into(),
+            "foo".into(),
+            "-F".into(),
+            "/scratch/body.md".into(),
+        ];
+        let result = mgr.run_transform(script, "gh", &args, "/workspace", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("blocked flag: -F"));
+    }
+
+    #[test]
+    fn test_gh_block_message_includes_allowed_commands() {
+        // Every rejection should append the help block enumerating what is allowed.
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec!["pr".into(), "merge".into(), "123".into()];
+        let msg = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("runs on the HOST"));
+        assert!(msg.contains("gh pr comment"));
+        assert!(msg.contains("--body-file"));
     }
 
     #[test]

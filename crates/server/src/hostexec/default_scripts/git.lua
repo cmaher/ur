@@ -1,6 +1,27 @@
 -- crates/server/src/hostexec/default_scripts/git.lua
 -- Default git argument transform: blocks sandbox-escape flags, rewrites -C for workers
 
+-- Help block appended to every rejection so the caller sees what is restricted
+-- and what still works, instead of a bare "blocked" with no context. git runs
+-- on the HOST via host-exec against your worker's slot.
+local HELP = [[
+
+--- git via ur host-exec ---
+git runs on the HOST against your worker's slot, so a few things are locked:
+  * Blocked flags: --git-dir, --work-tree, --no-verify (and -c core.worktree=...)
+  * Blocked subcommands: worktree (always); checkout / switch (branch switching
+    is locked — use `git restore <file>` or `git checkout -- <file>` for files)
+  * git push may only target your own worker branch
+  * Commit messages are auto-prefixed with your ticket id
+Everything else works normally: status, add, commit, diff, log, show, restore,
+fetch, pull, rebase, merge, stash, and push to your own branch.]]
+
+-- Raise a rejection with the standard help block appended. Level 0 keeps the
+-- message clean (no "input:N:" position prefix).
+local function fail(msg)
+    error(msg .. "\n" .. HELP, 0)
+end
+
 function transform(command, args, working_dir, worker_context)
     local blocked_exact = {
         ["--git-dir"] = true,
@@ -22,10 +43,10 @@ function transform(command, args, working_dir, worker_context)
         -- Handle -C: rewrite if worker_context allows, block otherwise
         if arg == "-C" then
             if worker_context == nil then
-                error("blocked flag: -C")
+                fail("blocked flag: -C")
             end
             if i + 1 > #args then
-                error("blocked flag: -C (missing path argument)")
+                fail("blocked flag: -C (missing path argument)")
             end
             local path_arg = args[i + 1]
             -- Extract final path component (strip trailing slashes, take last segment)
@@ -35,14 +56,14 @@ function transform(command, args, working_dir, worker_context)
                 args[i + 1] = worker_context.slot_path
                 i = i + 2
             else
-                error("blocked flag: -C (path '" .. path_arg .. "' does not match project key or 'workspace')")
+                fail("blocked flag: -C (path '" .. path_arg .. "' does not match project key or 'workspace')")
             end
         elseif blocked_exact[arg] then
-            error("blocked flag: " .. arg)
+            fail("blocked flag: " .. arg)
         else
             for _, prefix in ipairs(blocked_prefix) do
                 if arg:sub(1, #prefix) == prefix then
-                    error("blocked flag: " .. arg)
+                    fail("blocked flag: " .. arg)
                 end
             end
 
@@ -51,7 +72,7 @@ function transform(command, args, working_dir, worker_context)
                 local config_val = args[i + 1]:lower()
                 for _, key in ipairs(blocked_config_keys) do
                     if config_val:sub(1, #key) == key:lower() then
-                        error("blocked config key: " .. key)
+                        fail("blocked config key: " .. key)
                     end
                 end
             end
@@ -59,7 +80,7 @@ function transform(command, args, working_dir, worker_context)
                 local config_val = arg:sub(3):lower()
                 for _, key in ipairs(blocked_config_keys) do
                     if config_val:sub(1, #key) == key:lower() then
-                        error("blocked config key: " .. key)
+                        fail("blocked config key: " .. key)
                     end
                 end
             end
@@ -92,12 +113,12 @@ function transform(command, args, working_dir, worker_context)
         else
             -- First positional arg is the subcommand
             if always_blocked[a] then
-                error("blocked git subcommand: " .. a)
+                fail("blocked git subcommand: " .. a)
             end
             if branch_locked[a] then
                 -- Block when no context (safety default) or when in pool mode (branch is non-empty)
                 if worker_context == nil or worker_context.branch ~= "" then
-                    error("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
+                    fail("blocked git subcommand: " .. a .. " (use 'git restore' for file operations)")
                 end
             end
             break
@@ -126,12 +147,12 @@ function transform(command, args, working_dir, worker_context)
                 if colon_pos then
                     local dst = refspec:sub(colon_pos + 1)
                     if dst ~= allowed_branch then
-                        error("blocked push: destination branch '" .. dst .. "' does not match worker branch '" .. allowed_branch .. "'")
+                        fail("blocked push: destination branch '" .. dst .. "' does not match worker branch '" .. allowed_branch .. "'")
                     end
                 else
                     -- No colon: the whole refspec is the branch name
                     if refspec ~= allowed_branch then
-                        error("blocked push: branch '" .. refspec .. "' does not match worker branch '" .. allowed_branch .. "'")
+                        fail("blocked push: branch '" .. refspec .. "' does not match worker branch '" .. allowed_branch .. "'")
                     end
                 end
             end
