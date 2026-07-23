@@ -114,6 +114,7 @@ impl WorkerStrategy {
             Self::Manual => {
                 skills.extend([
                     "implement".into(),
+                    "implement-agents".into(),
                     "ship".into(),
                     "bacon".into(),
                     "systematic-debugging".into(),
@@ -190,6 +191,8 @@ mod tests {
         assert!(skills.contains(&"bacon".to_string()));
         assert!(skills.contains(&"systematic-debugging".to_string()));
         assert!(skills.contains(&"test-driven-development".to_string()));
+        // Subagent-dispatch variant is available to manual workers (opt-in)
+        assert!(skills.contains(&"implement-agents".to_string()));
         // Design-specific skills
         assert!(skills.contains(&"design".to_string()));
         assert!(skills.contains(&"dispatch".to_string()));
@@ -197,6 +200,15 @@ mod tests {
         assert!(skills.contains(&"green".to_string()));
         assert!(skills.contains(&"cli-design".to_string()));
         assert!(skills.contains(&"reclaude".to_string()));
+    }
+
+    #[test]
+    fn code_skills_exclude_implement_agents() {
+        // The automated code flow stays agent-free by default; the
+        // subagent-dispatch variant is opt-in (manual workers only).
+        let skills = WorkerStrategy::Code.skills();
+        assert!(skills.contains(&"implement".to_string()));
+        assert!(!skills.contains(&"implement-agents".to_string()));
     }
 
     #[test]
