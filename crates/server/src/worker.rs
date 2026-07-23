@@ -1004,6 +1004,52 @@ fn build_worker_env_vars(
     env_vars
 }
 
+/// Map a host convention path to the path that should be `stat`ed for existence.
+///
+/// Convention resolvers build paths under `host_config_dir` (the *host* path, e.g.
+/// `/Users/me/.ur`) because those paths become Docker volume-mount sources, which the
+/// Docker daemon interprets on the host. But the server itself runs inside a container
+/// where the host path is not visible — only the config bind mount at `UR_CONFIG`
+/// (e.g. `/config`) is. Calling `.exists()` on the host path from inside the container
+/// therefore always returns `false`, silently disabling every convention fallback.
+///
+/// When `UR_HOST_CONFIG` is set (indicating we are inside the server container), remap
+/// the `host_config_dir` prefix onto `UR_CONFIG` so the existence check hits the visible
+/// bind mount. Outside the container (host CLI, tests) the two directories are identical
+/// and the path is returned unchanged. Returned mount sources always use the host path.
+fn convention_check_path(
+    host_path: &std::path::Path,
+    host_config_dir: &std::path::Path,
+) -> PathBuf {
+    // Only remap when running inside the server container: `UR_HOST_CONFIG` set (host path
+    // differs from the bind mount) AND `UR_CONFIG` giving the container-visible mount point.
+    let container_config = match (
+        std::env::var(ur_config::UR_HOST_CONFIG_ENV),
+        std::env::var(ur_config::UR_CONFIG_ENV),
+    ) {
+        (Ok(_), Ok(container_config)) => Some(PathBuf::from(container_config)),
+        _ => None,
+    };
+    remap_to_container_config(host_path, host_config_dir, container_config.as_deref())
+}
+
+/// Pure core of [`convention_check_path`]. When `container_config` is `Some`, rebase any
+/// `host_config_dir`-relative `host_path` onto it; otherwise (or when `host_path` is not
+/// under `host_config_dir`) return `host_path` unchanged.
+fn remap_to_container_config(
+    host_path: &std::path::Path,
+    host_config_dir: &std::path::Path,
+    container_config: Option<&std::path::Path>,
+) -> PathBuf {
+    let Some(container_config) = container_config else {
+        return host_path.to_path_buf();
+    };
+    match host_path.strip_prefix(host_config_dir) {
+        Ok(rel) => container_config.join(rel),
+        Err(_) => host_path.to_path_buf(),
+    }
+}
+
 /// Resolve the project CLAUDE.md template string, falling back to the convention path.
 ///
 /// When `claude_md` is already set (from project config), returns it as-is.
@@ -1025,7 +1071,7 @@ fn resolve_claude_md(
         .join("projects")
         .join(project_key)
         .join("CLAUDE.md");
-    if convention_path.exists() {
+    if convention_check_path(&convention_path, host_config_dir).exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
         None
@@ -1053,7 +1099,7 @@ fn resolve_memory_dir(
         .join("projects")
         .join(project_key)
         .join("memory");
-    if convention_path.exists() {
+    if convention_check_path(&convention_path, host_config_dir).exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
         None
@@ -1081,7 +1127,7 @@ fn resolve_brain_dir(
         .join("projects")
         .join(project_key)
         .join("brain");
-    if convention_path.exists() {
+    if convention_check_path(&convention_path, host_config_dir).exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
         None
@@ -2037,6 +2083,38 @@ model = "opus"
         let tmp = tempfile::tempdir().unwrap();
         let result = resolve_brain_dir(&None, "myproj", tmp.path());
         assert_eq!(result, None);
+    }
+
+    /// Outside the server container (`container_config` is `None`), the check path is the
+    /// host path unchanged — convention fallbacks stat the real host directory.
+    #[test]
+    fn remap_to_container_config_no_container_returns_host_path() {
+        let host = std::path::Path::new("/Users/me/.ur/projects/pax/brain");
+        let host_config = std::path::Path::new("/Users/me/.ur");
+        let result = remap_to_container_config(host, host_config, None);
+        assert_eq!(result, host);
+    }
+
+    /// Inside the server container, a host-config-relative path is rebased onto the
+    /// container-visible bind mount so `.exists()` hits `/config`, not the invisible host path.
+    #[test]
+    fn remap_to_container_config_rebases_onto_bind_mount() {
+        let host = std::path::Path::new("/Users/me/.ur/projects/pax/brain");
+        let host_config = std::path::Path::new("/Users/me/.ur");
+        let container = std::path::Path::new("/config");
+        let result = remap_to_container_config(host, host_config, Some(container));
+        assert_eq!(result, std::path::Path::new("/config/projects/pax/brain"));
+    }
+
+    /// A path outside `host_config_dir` (e.g. an explicit memory_dir under `~/.claude`) is
+    /// left unchanged even inside the container — it is not a convention path under config.
+    #[test]
+    fn remap_to_container_config_unrelated_path_unchanged() {
+        let host = std::path::Path::new("/Users/me/.claude/projects/foo/memory");
+        let host_config = std::path::Path::new("/Users/me/.ur");
+        let container = std::path::Path::new("/config");
+        let result = remap_to_container_config(host, host_config, Some(container));
+        assert_eq!(result, host);
     }
 
     #[tokio::test]
