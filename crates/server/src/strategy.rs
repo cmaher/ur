@@ -138,6 +138,8 @@ fn common_skills() -> Vec<String> {
         "rag-docs".into(),
         "address-feedback".into(),
         "code-review".into(),
+        "brain".into(),
+        "brain:init".into(),
     ]
 }
 
@@ -179,6 +181,8 @@ mod tests {
             assert!(skills.contains(&"rag-docs".to_string()));
             assert!(skills.contains(&"address-feedback".to_string()));
             assert!(skills.contains(&"code-review".to_string()));
+            assert!(skills.contains(&"brain".to_string()));
+            assert!(skills.contains(&"brain:init".to_string()));
         }
     }
 
@@ -200,6 +204,8 @@ mod tests {
         assert!(skills.contains(&"green".to_string()));
         assert!(skills.contains(&"cli-design".to_string()));
         assert!(skills.contains(&"reclaude".to_string()));
+        assert!(skills.contains(&"brain".to_string()));
+        assert!(skills.contains(&"brain:init".to_string()));
     }
 
     #[test]

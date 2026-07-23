@@ -91,6 +91,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `pool_limit` | u32 | 10 | no | Max cached repo clones |
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
+| `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
 
 ### Mount Format
 
@@ -139,6 +140,7 @@ WorkerConfig
 | ProjectConfig field | Passed to WorkerConfig | Consumed by RunOptsBuilder | Notes |
 |--------------------|-----------------------|---------------------------|-------|
 | `mounts` | yes | `add_mounts()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
+| `brain_dir` | yes | `add_brain_dir()` | Full pipeline: config → gRPC → WorkerConfig → `resolve_brain_dir()` → RunOptsBuilder; read-write mount at `/brain`, convention fallback + no-project rule |
 | `hostexec` | no (handled separately) | — | Used by HostExecServiceHandler for allowlist |
 | (hook overlay) | via project_key + host_config_dir | `add_host_hooks_overlay()` | Convention paths; no config fields |
 

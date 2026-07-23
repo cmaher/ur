@@ -434,6 +434,7 @@ impl LaunchManager {
         String,
         Vec<String>,
         Option<String>,
+        Option<String>,
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
@@ -443,6 +444,7 @@ impl LaunchManager {
                 proj.container.image.clone(),
                 proj.hostexec_scripts.clone(),
                 proj.memory_dir.clone(),
+                proj.brain_dir.clone(),
             ),
             _ => (
                 None,
@@ -450,6 +452,7 @@ impl LaunchManager {
                 Vec::new(),
                 String::new(),
                 Vec::new(),
+                None,
                 None,
             ),
         }
@@ -480,7 +483,7 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) = self
             .worker_manager
             .merge_global_skills(strategy, mode_skills);
-        let (claude_md, mounts, ports, resolved_image, hostexec_scripts, memory_dir) =
+        let (claude_md, mounts, ports, resolved_image, hostexec_scripts, memory_dir, brain_dir) =
             self.extract_project_launch_fields(&project_key);
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
@@ -521,6 +524,7 @@ impl LaunchManager {
             hostexec_scripts,
             extra_skill_mounts,
             memory_dir,
+            brain_dir,
         }
     }
 

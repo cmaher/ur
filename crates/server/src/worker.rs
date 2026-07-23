@@ -359,6 +359,9 @@ pub struct WorkerConfig {
     /// Optional memory directory template string from project config.
     /// Mounted at `/home/worker/.claude/projects/-workspace/memory` inside the container.
     pub memory_dir: Option<String>,
+    /// Optional brain directory template string from project config.
+    /// Mounted read-write at `/brain` inside the container.
+    pub brain_dir: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -655,6 +658,13 @@ impl WorkerManager {
             &self.host_config_dir,
         );
 
+        // Resolve project brain dir: use explicit config or convention path
+        let brain_dir = resolve_brain_dir(
+            &config.brain_dir,
+            &config.project_key,
+            &self.host_config_dir,
+        );
+
         // Derive the shim host path from the config dir. The shim is materialized
         // at server startup; we only need the path here for volume mounting.
         let shim_host_path = self
@@ -697,6 +707,7 @@ impl WorkerManager {
         .add_extra_skills(&config.extra_skill_mounts)
         .add_project_claude_md(&claude_md, &self.host_config_dir)?
         .add_memory_dir(&memory_dir, &self.host_config_dir)?
+        .add_brain_dir(&brain_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
             &context_mount_configs(&config.context_mounts),
@@ -1042,6 +1053,34 @@ fn resolve_memory_dir(
         .join("projects")
         .join(project_key)
         .join("memory");
+    if convention_path.exists() {
+        Some(convention_path.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+/// Resolve the project brain directory path, falling back to the convention path.
+///
+/// When `brain_dir` is already set (from project config), returns it as-is.
+/// When `brain_dir` is None and a non-empty `project_key` is provided, checks
+/// `<host_config_dir>/projects/<project_key>/brain/` — if it exists, returns
+/// the absolute path as a host path string.
+fn resolve_brain_dir(
+    brain_dir: &Option<String>,
+    project_key: &str,
+    host_config_dir: &std::path::Path,
+) -> Option<String> {
+    if brain_dir.is_some() {
+        return brain_dir.clone();
+    }
+    if project_key.is_empty() {
+        return None;
+    }
+    let convention_path = host_config_dir
+        .join("projects")
+        .join(project_key)
+        .join("brain");
     if convention_path.exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
@@ -1401,6 +1440,7 @@ mod tests {
             hostexec_scripts: Vec::new(),
             extra_skill_mounts: Vec::new(),
             memory_dir: None,
+            brain_dir: None,
         }
     }
 
@@ -1964,6 +2004,38 @@ model = "opus"
     fn resolve_memory_dir_convention_fallback_no_dir_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         let result = resolve_memory_dir(&None, "myproj", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_brain_dir_returns_explicit_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(&Some("/custom/brain".into()), "myproj", tmp.path());
+        assert_eq!(result.as_deref(), Some("/custom/brain"));
+    }
+
+    #[test]
+    fn resolve_brain_dir_none_empty_project_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(&None, "", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn resolve_brain_dir_convention_fallback_when_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let brain_dir = tmp.path().join("projects").join("myproj").join("brain");
+        std::fs::create_dir_all(&brain_dir).unwrap();
+
+        let result = resolve_brain_dir(&None, "myproj", tmp.path());
+        let expected = brain_dir.to_string_lossy().into_owned();
+        assert_eq!(result.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn resolve_brain_dir_convention_fallback_no_dir_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(&None, "myproj", tmp.path());
         assert_eq!(result, None);
     }
 

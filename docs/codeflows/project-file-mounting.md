@@ -33,13 +33,14 @@ Configured in `ur.toml` under `[projects.<key>]`:
 repo = "https://github.com/cmaher/ur.git"
 claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
 memory_dir = "%URCONFIG%/projects/ur/memory"
+brain_dir = "%URCONFIG%/projects/ur/brain"
 
 [projects.ur.container]
 image = "ur-worker:latest"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
-Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claude_md`, `memory_dir`) and `ContainerConfig` (field: `mounts`).
+Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claude_md`, `memory_dir`, `brain_dir`) and `ContainerConfig` (field: `mounts`).
 
 ## Mount Destinations
 
@@ -47,6 +48,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claud
 |---|---|---|---|
 | `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` | yes (`:ro`) |
 | `memory_dir` | `/home/worker/.claude/projects/-workspace/memory` | (none) | no |
+| `brain_dir` | `/brain` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
 | host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) | yes (`:ro`) |
 | host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) | yes (`:ro`) |
@@ -125,6 +127,27 @@ This means creating `~/.ur/projects/ur/memory/` on the host is enough — no con
 
 Source: `resolve_memory_dir()` in `crates/server/src/worker.rs`, `add_memory_dir()` in `crates/server/src/run_opts_builder.rs`
 
+## brain_dir Convention Fallback
+
+`brain_dir` is a per-project, user-managed context directory mounted **read-write** at `/brain`. It follows the same convention pattern as `memory_dir`. When not set in `ur.toml`, the server checks for a directory at the convention path:
+
+```
+1. If brain_dir is set in ur.toml → use it as-is (template resolution)
+2. If brain_dir is None → check <config_dir>/projects/<key>/brain/ on disk
+3. If that directory exists → use its absolute path (treated as HostPath)
+4. If not → no brain_dir mounted
+```
+
+This means creating `~/.ur/projects/ur/brain/` on the host is enough — no config change needed. Unlike `memory_dir`, the mount is **read-write** because the `/brain:init` skill writes the scaffold and `/brain/working/` is worker scratch. No env var is set; skills reference the fixed `/brain` path directly.
+
+**Template restriction**: like `memory_dir`, `%PROJECT%` is rejected for `brain_dir` at config validation time — the brain must be project-stable, not workspace-relative. Only `%URCONFIG%/...` and absolute paths are valid.
+
+**No-project rule**: `brain_dir` is only mounted when a project key is associated with the worker. Workers launched without a project (`-w` workspace mode with no project config) never get a `brain_dir` mount.
+
+**Auto-create and chown**: When `brain_dir` resolves to a host path, `add_brain_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount, so the non-root worker user can write to the directory on first use.
+
+Source: `resolve_brain_dir()` in `crates/server/src/worker.rs`, `add_brain_dir()` in `crates/server/src/run_opts_builder.rs`
+
 ## Container Mounts
 
 `container.mounts` uses `"source:destination"` format with a restriction: `%PROJECT%` is **not allowed** as a mount source. Project-relative paths are already accessible through the workspace mount, so an explicit mount would be redundant. Only `%URCONFIG%/...` and absolute paths are valid sources.
@@ -166,6 +189,7 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   │                                  (each mount added only if the host dir exists)
   │   ├─ .add_project_claude_md()      → resolve_template_path → mount or env var
   │   ├─ .add_memory_dir()             → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
+  │   ├─ .add_brain_dir()              → create_dir_all + chown → /brain (read-write)
   │   ├─ .add_mounts()                 → resolve_template_path → mount for each entry
   │   ├─ .add_context_repos()          → /context/<key>:ro mounts
   │   └─ .build() → RunOpts

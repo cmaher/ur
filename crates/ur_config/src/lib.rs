@@ -501,6 +501,10 @@ struct RawProjectConfig {
     /// Supports `%URCONFIG%/...` template variables or absolute paths.
     /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
     memory_dir: Option<String>,
+    /// Optional template path to the per-project brain directory for this project.
+    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
+    brain_dir: Option<String>,
 }
 
 /// Raw TOML representation for the `[proxy]` section.
@@ -1182,6 +1186,11 @@ pub struct ProjectConfig {
     /// `%PROJECT%/...` is rejected — memory must be project-stable, not workspace-relative.
     /// When `None`, the server-side convention fallback applies (separate ticket).
     pub memory_dir: Option<String>,
+    /// Optional template path to the per-project brain directory for this project.
+    /// Supports `%URCONFIG%/...` template variables or absolute paths.
+    /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
+    /// When `None`, the server-side convention fallback applies (separate ticket).
+    pub brain_dir: Option<String>,
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1530,6 +1539,7 @@ fn resolve_project_config(
             .push_again_exit_code
             .unwrap_or(DEFAULT_PUSH_AGAIN_EXIT_CODE),
         memory_dir: raw_proj.memory_dir,
+        brain_dir: raw_proj.brain_dir,
     };
     Ok((key, resolved))
 }
@@ -1817,6 +1827,16 @@ fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow:
         if tpl.starts_with("%PROJECT%") {
             anyhow::bail!(
                 "project '{}': memory_dir: %PROJECT% is not allowed — memory must be project-stable, not workspace-relative",
+                key
+            );
+        }
+    }
+    if let Some(ref tpl) = raw_proj.brain_dir {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("project '{}': brain_dir: {}", key, e))?;
+        if tpl.starts_with("%PROJECT%") {
+            anyhow::bail!(
+                "project '{}': brain_dir: %PROJECT% is not allowed — brain must be project-stable, not workspace-relative",
                 key
             );
         }
@@ -2591,6 +2611,89 @@ image = "ur-worker"
         let err = Config::load_from(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("memory_dir"), "{msg}");
+        assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn brain_dir_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects["ur"].brain_dir, None);
+    }
+
+    #[test]
+    fn brain_dir_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+brain_dir = "%URCONFIG%/projects/ur/brain"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].brain_dir.as_deref(),
+            Some("%URCONFIG%/projects/ur/brain")
+        );
+    }
+
+    #[test]
+    fn brain_dir_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+brain_dir = "/some/abs/path"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].brain_dir.as_deref(),
+            Some("/some/abs/path")
+        );
+    }
+
+    #[test]
+    fn brain_dir_rejects_project_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+brain_dir = "%PROJECT%/brain"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("brain_dir"), "{msg}");
         assert!(msg.contains("%PROJECT%"), "{msg}");
     }
 
@@ -3913,6 +4016,7 @@ quit = ["q"]
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
+                    brain_dir: None,
                 },
             );
             m.insert(
@@ -3937,6 +4041,7 @@ quit = ["q"]
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
+                    brain_dir: None,
                 },
             );
             m
@@ -4055,6 +4160,7 @@ quit = ["q"]
                     hostexec_scripts: vec![],
                     push_again_exit_code: DEFAULT_PUSH_AGAIN_EXIT_CODE,
                     memory_dir: None,
+                    brain_dir: None,
                 },
             );
             // If cwd dirname were "ur", it should match the "ur" key, not

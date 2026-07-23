@@ -192,6 +192,8 @@ struct ProjectEntry {
     mounts: Vec<String>,
     /// Optional `memory_dir` path to include in the project config.
     memory_dir: Option<String>,
+    /// Optional `brain_dir` path to include in the project config.
+    brain_dir: Option<String>,
 }
 
 /// Configuration names for a test stack, preventing container/network collisions
@@ -234,6 +236,61 @@ fn test_names(label: &str) -> TestNames {
 /// so `scenario_worker_models_config_override` can assert the override reaches
 /// the container, without disturbing the built-in defaults ("sonnet" for code,
 /// "opus" for design) that other scenarios assert against.
+/// Render the `[projects.<key>]` TOML blocks for all project entries.
+///
+/// Resolves each image alias against the configured tag and emits the optional
+/// `hostexec_scripts`, `mounts`, `memory_dir`, and `brain_dir` fields only when set.
+fn render_projects_toml(projects: &[ProjectEntry]) -> String {
+    let tag = &*IMAGE_TAG;
+    let mut projects_toml = String::new();
+    for proj in projects {
+        // Resolve image alias to a full reference with the configured tag.
+        // If the image already contains ':' or '/', it is a full reference and used as-is.
+        let image_ref = if proj.image.contains(':') || proj.image.contains('/') {
+            proj.image.clone()
+        } else {
+            format!("{}:{}", proj.image, tag)
+        };
+        let scripts_line = if proj.hostexec_scripts.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj
+                .hostexec_scripts
+                .iter()
+                .map(|s| format!("\"{}\"", s))
+                .collect();
+            format!("hostexec_scripts = [{}]\n", quoted.join(", "))
+        };
+        let mounts_line = if proj.mounts.is_empty() {
+            String::new()
+        } else {
+            let quoted: Vec<String> = proj.mounts.iter().map(|s| format!("\"{}\"", s)).collect();
+            format!("mounts = [{}]\n", quoted.join(", "))
+        };
+        let memory_dir_line = if let Some(ref md) = proj.memory_dir {
+            format!("memory_dir = \"{md}\"\n")
+        } else {
+            String::new()
+        };
+        let brain_dir_line = if let Some(ref bd) = proj.brain_dir {
+            format!("brain_dir = \"{bd}\"\n")
+        } else {
+            String::new()
+        };
+        projects_toml.push_str(&format!(
+            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
+            key = proj.key,
+            repo = proj.repo,
+            scripts = scripts_line,
+            memory_dir = memory_dir_line,
+            brain_dir = brain_dir_line,
+            image = image_ref,
+            mounts = mounts_line,
+        ));
+    }
+    projects_toml
+}
+
 fn write_test_config(
     config_dir: &Path,
     server_port: u16,
@@ -268,47 +325,7 @@ fn write_test_config(
 
     let compose_file = config_dir.join("docker-compose.yml");
 
-    let tag = &*IMAGE_TAG;
-    let mut projects_toml = String::new();
-    for proj in projects {
-        // Resolve image alias to a full reference with the configured tag.
-        // If the image already contains ':' or '/', it is a full reference and used as-is.
-        let image_ref = if proj.image.contains(':') || proj.image.contains('/') {
-            proj.image.clone()
-        } else {
-            format!("{}:{}", proj.image, tag)
-        };
-        let scripts_line = if proj.hostexec_scripts.is_empty() {
-            String::new()
-        } else {
-            let quoted: Vec<String> = proj
-                .hostexec_scripts
-                .iter()
-                .map(|s| format!("\"{}\"", s))
-                .collect();
-            format!("hostexec_scripts = [{}]\n", quoted.join(", "))
-        };
-        let mounts_line = if proj.mounts.is_empty() {
-            String::new()
-        } else {
-            let quoted: Vec<String> = proj.mounts.iter().map(|s| format!("\"{}\"", s)).collect();
-            format!("mounts = [{}]\n", quoted.join(", "))
-        };
-        let memory_dir_line = if let Some(ref md) = proj.memory_dir {
-            format!("memory_dir = \"{md}\"\n")
-        } else {
-            String::new()
-        };
-        projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}{memory_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
-            key = proj.key,
-            repo = proj.repo,
-            scripts = scripts_line,
-            memory_dir = memory_dir_line,
-            image = image_ref,
-            mounts = mounts_line,
-        ));
-    }
+    let projects_toml = render_projects_toml(projects);
 
     let toml_content = format!(
         "server_port = {server_port}\n\
@@ -478,6 +495,11 @@ struct TestEnv {
     memory_dir: PathBuf,
     /// TempDir parent keeping `memory_dir` alive on disk.
     _memory_dir_parent: tempfile::TempDir,
+    /// Host directory used as brain dir for `brainproj` brain mount tests.
+    /// Kept alive so it exists for the duration of the test run.
+    brain_dir: PathBuf,
+    /// TempDir parent keeping `brain_dir` alive on disk.
+    _brain_dir_parent: tempfile::TempDir,
 }
 
 impl TestEnv {
@@ -559,6 +581,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
             memory_dir: None,
+            brain_dir: None,
         },
         ProjectEntry {
             key: "badmountproj".into(),
@@ -567,6 +590,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
             memory_dir: None,
+            brain_dir: None,
         },
     ];
     (host_mount_dir, projects)
@@ -615,11 +639,67 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
         hostexec_scripts: vec![],
         mounts: vec![],
         memory_dir: Some(memory_path.to_string_lossy().into_owned()),
+        brain_dir: None,
     }];
 
     (
         MemoryDirInfo {
             path: memory_path,
+            parent,
+        },
+        projects,
+    )
+}
+
+/// Holds the brain dir path and its parent TempDir for brain mount tests.
+struct BrainDirInfo {
+    /// The actual brain directory path (pre-created by the test).
+    path: PathBuf,
+    /// The TempDir parent keeping `path` alive on disk.
+    parent: tempfile::TempDir,
+}
+
+/// Set up the project entry and host brain dir for per-project brain bind mount tests.
+///
+/// Creates a `brainproj` project entry with `brain_dir` pointing to a pre-created host
+/// directory under a system temp dir. Seeds the directory with a `seed.md` file so
+/// container-side reads can verify the host → container direction.
+///
+/// Returns:
+/// - `BrainDirInfo`: the brain dir path + its TempDir parent (must stay alive)
+/// - `Vec<ProjectEntry>`: the `brainproj` project entry to include in `write_test_config`
+fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>) {
+    // Create the brain dir under a system temp dir (outside config_path so it is
+    // NOT automatically mounted inside the ur-server container). The test pre-creates
+    // it with UID 1000 (the test runner's UID), so the worker user (also UID 1000)
+    // can write to it when Docker bind-mounts it.
+    let parent = tempfile::tempdir().expect("failed to create brain dir parent");
+    let brain_path = parent.path().join("brain");
+    std::fs::create_dir_all(&brain_path).expect("failed to create brain dir");
+
+    // Seed a file so the container can verify host → container direction.
+    std::fs::write(brain_path.join("seed.md"), "hello-from-host-brain\n")
+        .expect("failed to write seed.md");
+
+    // Create a bare repo for the brain project.
+    let brain_repos_dir = config_path.join("brain-repos");
+    std::fs::create_dir_all(&brain_repos_dir).expect("failed to create brain-repos dir");
+    let bare_repo = create_bare_repo(&brain_repos_dir);
+    let repo = bare_repo.to_string_lossy().into_owned();
+
+    let projects = vec![ProjectEntry {
+        key: "brainproj".into(),
+        repo,
+        image: "ur-worker".into(),
+        hostexec_scripts: vec![],
+        mounts: vec![],
+        memory_dir: None,
+        brain_dir: Some(brain_path.to_string_lossy().into_owned()),
+    }];
+
+    (
+        BrainDirInfo {
+            path: brain_path,
             parent,
         },
         projects,
@@ -635,6 +715,7 @@ struct ProjectFixtures {
     skills_extra_toml: String,
     host_mount_dir: tempfile::TempDir,
     memory_dir: MemoryDirInfo,
+    brain_dir: BrainDirInfo,
 }
 
 /// Create a bare repo whose HEAD commit includes `ur-hooks/git/pre-commit`
@@ -776,6 +857,7 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
         hostexec_scripts: vec![],
         mounts: vec![],
         memory_dir: None,
+        brain_dir: None,
     }]
 }
 
@@ -809,6 +891,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
 
     let (host_mount_dir, mount_projects) = setup_mount_projects(config_path);
     let (memory_dir, memory_projects) = setup_memory_projects(config_path);
+    let (brain_dir, brain_projects) = setup_brain_projects(config_path);
     let hook_projects = setup_hook_overlay_projects(config_path);
 
     let mut projects = vec![
@@ -819,6 +902,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             hostexec_scripts: vec![],
             mounts: vec![],
             memory_dir: None,
+            brain_dir: None,
         },
         ProjectEntry {
             key: "rustproj".into(),
@@ -827,6 +911,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             hostexec_scripts: vec![],
             mounts: vec![],
             memory_dir: None,
+            brain_dir: None,
         },
         ProjectEntry {
             key: "scriptproj".into(),
@@ -835,10 +920,12 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             hostexec_scripts: vec!["host-only.sh".into()],
             mounts: vec![],
             memory_dir: None,
+            brain_dir: None,
         },
     ];
     projects.extend(mount_projects);
     projects.extend(memory_projects);
+    projects.extend(brain_projects);
     projects.extend(hook_projects);
 
     ProjectFixtures {
@@ -846,6 +933,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         skills_extra_toml,
         host_mount_dir,
         memory_dir,
+        brain_dir,
     }
 }
 
@@ -898,6 +986,8 @@ fn e2e_all() {
         _host_mount_dir: fixtures.host_mount_dir,
         memory_dir: fixtures.memory_dir.path,
         _memory_dir_parent: fixtures.memory_dir.parent,
+        brain_dir: fixtures.brain_dir.path,
+        _brain_dir_parent: fixtures.brain_dir.parent,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
@@ -981,6 +1071,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_memory_pool(&env);
         scenario_memory_workspace_with_project(&env, &config_path);
         scenario_memory_workspace_no_project(&env, &config_path);
+        scenario_brain_pool(&env);
+        scenario_brain_workspace_no_project(&env, &config_path);
         scenario_hook_overlay_precedence(&env);
     }));
 
@@ -998,6 +1090,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "memory-pool-test",
         "memproj-ws-test",
         "nomem-ws-test",
+        "brain-pool-test",
+        "nobrain-ws-test",
         "hook-overlay-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
@@ -3440,6 +3534,179 @@ fn scenario_memory_workspace_no_project(env: &TestEnv, config_path: &std::path::
             ls_output.status.code(),
             Some(0),
             "memory dir {memory_container_path} must NOT exist in a no-project workspace launch — \
+             a mount was unexpectedly established.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ls_output.stdout),
+            String::from_utf8_lossy(&ls_output.stderr),
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Brain bind mount — pool launch axis.
+///
+/// Verifies the host → container and container → host directions for the per-project
+/// brain directory feature when launched as a pool slot (`-p brainproj`).
+///
+/// Flow:
+/// 1. Host pre-seeds `seed.md` in the brain dir (done by `setup_brain_projects`).
+/// 2. Pool worker is launched for `brainproj`.
+/// 3. Inside the container, `seed.md` is readable at `/brain`.
+/// 4. Inside the container, a new `from-container.md` file is written under `/brain`.
+/// 5. Worker is stopped.
+/// 6. On the host, `from-container.md` is readable with the expected content.
+fn scenario_brain_pool(env: &TestEnv) {
+    let ticket_id = "brain-pool-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch pool worker for brainproj ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", "brainproj", ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p brainproj failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Axis 1: host → container: seed.md seeded by test must be readable ----
+        let brain_container_path = "/brain";
+        let seed_path = format!("{brain_container_path}/seed.md");
+        let cat_output = exec_in_container(&env.runtime, &container_name, &["cat", &seed_path]);
+        assert_exec_success(
+            &cat_output,
+            &format!(
+                "seed.md must be readable inside the container at {seed_path} — \
+                 brain dir bind mount was not established"
+            ),
+        );
+        let seed_content = String::from_utf8_lossy(&cat_output.stdout);
+        assert_eq!(
+            seed_content.trim(),
+            "hello-from-host-brain",
+            "seed.md content mismatch — expected 'hello-from-host-brain', got: {seed_content:?}"
+        );
+
+        // ---- Axis 2: container → host: write a file inside the container ----
+        let from_container_path = format!("{brain_container_path}/from-container.md");
+        let write_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &[
+                "sh",
+                "-c",
+                &format!("echo 'hello-from-container-brain' > {from_container_path}"),
+            ],
+        );
+        assert_exec_success(
+            &write_output,
+            "writing from-container.md inside the container should succeed (brain is read-write)",
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- Verify container-written file is visible on the host ----
+        let host_from_container = env.brain_dir.join("from-container.md");
+        assert!(
+            host_from_container.exists(),
+            "from-container.md must exist on the host at {} after worker stop — \
+             container → host direction of brain bind mount did not work",
+            host_from_container.display()
+        );
+        let host_content = std::fs::read_to_string(&host_from_container)
+            .expect("failed to read from-container.md");
+        assert_eq!(
+            host_content.trim(),
+            "hello-from-container-brain",
+            "from-container.md host content mismatch: {host_content:?}"
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Brain bind mount — workspace-only (no project) axis.
+///
+/// Verifies that when a workspace-mount worker is launched with a ticket ID whose
+/// prefix does NOT match any configured project key, NO brain bind mount is created.
+/// The container's `/brain` directory should not exist (the brain is project-scoped;
+/// without a project there is no mount).
+fn scenario_brain_workspace_no_project(env: &TestEnv, config_path: &std::path::Path) {
+    // "nobrain-ws-test" prefix "nobrain" does not match any configured project key.
+    let ticket_id = "nobrain-ws-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Prepare a workspace directory ----
+        let ws_dir = config_path.join("nobrain-workspace");
+        std::fs::create_dir_all(&ws_dir).expect("failed to create nobrain workspace dir");
+        let _ = Command::new("git")
+            .args(["init", ws_dir.to_str().unwrap()])
+            .output();
+
+        // ---- Launch with -w only; no project key derived ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &[
+                "worker",
+                "launch",
+                "-w",
+                ws_dir.to_str().unwrap(),
+                ticket_id,
+            ],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -w for {ticket_id} (no project) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Verify that the brain directory does NOT exist inside the container ----
+        // When no project is associated with the launch, `brain_dir` is never resolved,
+        // so the bind mount is absent. The container path should not exist.
+        let brain_container_path = "/brain";
+        let ls_output =
+            exec_in_container(&env.runtime, &container_name, &["ls", brain_container_path]);
+        assert_ne!(
+            ls_output.status.code(),
+            Some(0),
+            "brain dir {brain_container_path} must NOT exist in a no-project workspace launch — \
              a mount was unexpectedly established.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&ls_output.stdout),
             String::from_utf8_lossy(&ls_output.stderr),
