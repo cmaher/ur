@@ -208,11 +208,16 @@ fn resolve_args_project(
             tree,
             ticket_type,
             status,
+            meta,
         } => {
             let resolved = if all {
                 None
             } else if project.is_none() && tree.is_some() {
                 tree.as_deref().and_then(project_from_ticket_id)
+            } else if project.is_none() && meta.is_some() {
+                // A metadata lookup is a search, not a browse: scoping it to the ambient
+                // project would hide matches in other projects for no stated reason.
+                None
             } else {
                 Some(resolve_project(project, projects)?)
             };
@@ -222,6 +227,7 @@ fn resolve_args_project(
                 tree,
                 ticket_type,
                 status,
+                meta,
             })
         }
         TicketArgs::Dispatchable { epic_id, project } => {
@@ -420,12 +426,14 @@ mod tests {
                 tree,
                 ticket_type,
                 status,
+                meta,
             } => {
                 assert!(project.is_none());
                 assert!(!all);
                 assert!(tree.is_none());
                 assert!(ticket_type.is_none());
                 assert!(status.is_none());
+                assert!(meta.is_none());
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -444,12 +452,25 @@ mod tests {
                 tree,
                 ticket_type,
                 status,
+                meta,
             } => {
                 assert_eq!(project.as_deref(), Some("myproj"));
                 assert!(!all);
                 assert_eq!(tree.as_deref(), Some("ur-e1"));
                 assert_eq!(ticket_type.as_deref(), Some("task"));
                 assert_eq!(status.as_deref(), Some("open"));
+                assert!(meta.is_none());
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_with_meta_filter() {
+        let cmd = parse(&["ticket", "list", "--meta", "ref=PROJ-3218"]);
+        match cmd.command {
+            super::TicketArgs::List { meta, .. } => {
+                assert_eq!(meta.as_deref(), Some("ref=PROJ-3218"));
             }
             other => panic!("expected List, got {other:?}"),
         }

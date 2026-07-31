@@ -1059,6 +1059,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_project_add_then_launch(&env);
         scenario_dispatch_creates_workflow(&env);
         scenario_ticket_close_preserves_workflow(&env);
+        scenario_ticket_lookup_by_ref(&env);
         scenario_flow_list_and_cancel(&env);
         scenario_hostexec_script_pool(&env);
         scenario_hostexec_script_workspace(&env, &config_path);
@@ -1990,6 +1991,113 @@ fn create_test_ticket(env: &TestEnv, title: &str) -> String {
         String::from_utf8_lossy(&create_output.stderr),
     );
     parse_ticket_id_from_create(&create_output.stdout)
+}
+
+/// Verify metadata lookup: `ur ticket list --meta` and the `ur ticket show` ref fallback.
+///
+/// Covers the `--meta` flag and the ref-resolution path in `get_ticket`:
+/// 1. Create two tickets, give each a distinct `ref`.
+/// 2. `ur ticket list --meta ref=<value>` returns only the matching ticket, with real
+///    columns populated (the metadata query selects identify-only columns, so a
+///    non-hydrated response would leave `project` blank).
+/// 3. `ur ticket show <ref>` resolves to the ticket ID.
+/// 4. Point both tickets at the same ref — `show` must now fail rather than pick one.
+///
+/// No worker is launched: this is a pure CLI/server path.
+fn scenario_ticket_lookup_by_ref(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let first = create_test_ticket(env, "Ref lookup first");
+    let second = create_test_ticket(env, "Ref lookup second");
+
+    let set_ref = |ticket_id: &str, value: &str| {
+        let out = run_cmd(
+            &env.ur,
+            &[
+                "--output", "json", "ticket", "set-meta", ticket_id, "ref", value,
+            ],
+            &env_slice,
+        );
+        assert!(
+            out.status.success(),
+            "ur ticket set-meta ref failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    };
+    set_ref(&first, "ACC-1001");
+    set_ref(&second, "ACC-1002");
+
+    // ---- list --meta key=value returns only the match, fully hydrated ----
+    let list_out = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "list",
+            "--meta",
+            "ref=ACC-1001",
+        ],
+        &env_slice,
+    );
+    assert!(
+        list_out.status.success(),
+        "ur ticket list --meta failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list_out.stdout),
+        String::from_utf8_lossy(&list_out.stderr),
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&list_out.stdout).expect("list --meta output should be JSON");
+    let rows = json["data"]["tickets"]
+        .as_array()
+        .expect("list output should have data.tickets");
+    assert_eq!(
+        rows.len(),
+        1,
+        "--meta ref=ACC-1001 should match exactly one ticket, got: {json}"
+    );
+    assert_eq!(rows[0]["id"].as_str(), Some(first.as_str()));
+    assert_eq!(
+        rows[0]["project"].as_str(),
+        Some(env.project_key),
+        "metadata matches must be hydrated with real columns, not identify-only stubs"
+    );
+
+    // ---- show <ref> resolves to the ticket ----
+    let show_out = run_cmd(
+        &env.ur,
+        &["--output", "json", "ticket", "show", "ACC-1002"],
+        &env_slice,
+    );
+    assert!(
+        show_out.status.success(),
+        "ur ticket show <ref> should resolve.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&show_out.stdout),
+        String::from_utf8_lossy(&show_out.stderr),
+    );
+    let show_json: serde_json::Value =
+        serde_json::from_slice(&show_out.stdout).expect("show output should be JSON");
+    assert_eq!(
+        show_json["data"]["ticket"]["id"].as_str(),
+        Some(second.as_str()),
+        "show by ref should return the ticket carrying that ref"
+    );
+
+    // ---- an ambiguous ref must refuse rather than pick one ----
+    set_ref(&second, "ACC-1001");
+    let ambiguous = run_cmd(&env.ur, &["ticket", "show", "ACC-1001"], &env_slice);
+    assert!(
+        !ambiguous.status.success(),
+        "show should fail when a ref matches multiple tickets.\nstdout: {}",
+        String::from_utf8_lossy(&ambiguous.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&ambiguous.stderr);
+    assert!(
+        stderr.contains(&first) && stderr.contains(&second),
+        "ambiguous ref error should list both candidates, got: {stderr}"
+    );
 }
 
 /// Helper: launch a worker with dispatch (-d) and wait for it to become healthy.

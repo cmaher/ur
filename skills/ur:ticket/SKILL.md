@@ -55,10 +55,43 @@ ur ticket list --type epic                               # filter by type
 ur ticket list -p ur                                     # filter by project key
 ur ticket list --all                                     # all projects
 ur ticket list -t ur-abc1                                # tree view of ticket + descendants
+ur ticket list --meta ref=PROJ-321                       # by metadata value
+ur ticket list --meta pr_number                          # any ticket carrying the key
 ur ticket show ur-abc1                                   # full detail on one ticket
 ur ticket show ur-abc1 --activity-author workflow        # filter activities by author
 ur ticket dispatchable ur-abc1                           # open children with no open blockers
 ```
+
+### Finding a ticket by external ref
+
+When a ticket is synced to an external issue tracker, the tracker's key is stored in the `ref`
+metadata key. `ur ticket show` accepts that value wherever it accepts an ID:
+
+```bash
+ur ticket show PROJ-321                                  # ticket carrying ref=PROJ-321
+```
+
+An exact ticket ID always wins — only a miss falls through to a ref lookup, so this can never
+change the meaning of a valid ID.
+
+**Refs are not unique.** Several ur tickets can carry the same tracker key. When more than one
+matches, `show` refuses and lists the candidates instead of guessing:
+
+```
+$ ur ticket show PROJ-322
+error: ref 'PROJ-322' matches 3 tickets:
+  myproj-a1b2  open         Add retry backoff
+  myproj-c3d4  closed       Add retry backoff (dupe)
+  myproj-e5f6  in_progress  Backoff config schema
+re-run with a ticket ID, or: ur ticket list --meta ref=PROJ-322
+```
+
+Re-run with one of the listed IDs. Do not work around this by taking the first candidate —
+which one is correct is a judgement call.
+
+`--meta` searches across all projects by default (a metadata lookup is a search, not a browse),
+so it needs no `--all`. Combine with `-p`, `--status`, or `--type` to narrow it. Beyond `ref`,
+common keys include `pr_number`, `pr_url`, and `gh_repo`.
 
 ### Updating Tickets
 

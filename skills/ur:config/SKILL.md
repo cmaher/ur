@@ -123,6 +123,8 @@ retain_count = 5
 
 Inject host-side skills into worker containers at runtime. Skills are bind-mounted read-only into `/home/worker/.claude/potential-skills/<name>/` alongside skills baked into the container image.
 
+Scoping is by worker **strategy**, not by project. There is no `[projects.<key>].skills` field. To vary skills per project, define a mode in [`[worker_modes]`](#worker_modes-section) and launch that project's workers with `-m <mode>`.
+
 Three sub-tables by strategy:
 
 | Sub-table | Workers Affected |
@@ -131,26 +133,89 @@ Three sub-tables by strategy:
 | `[skills.code]` | `code`-strategy workers (in addition to common) |
 | `[skills.design]` | `design`-strategy workers (in addition to common) |
 
-Each key is the skill name; the value is a path to the skill directory on the host.
+`manual`-strategy workers get `common` plus **both** `code` and `design` globals (`GlobalSkillsConfig::for_strategy`). There is no `[skills.manual]`.
+
+Each key is the skill name; the value is a path to the skill directory on the host (a directory containing `SKILL.md`).
 
 ```toml
 [skills.common]
-my-skill = "%URCONFIG%/skills/my-skill"
+my-skill = "/Users/me/.ur/skills/my-skill"
 
 [skills.code]
-research-helper = "%URCONFIG%/skills/research-helper"
+research-helper = "/Users/me/.ur/skills/research-helper"
 
 [skills.design]
 internal-tool = "/opt/skills/internal-tool"
 ```
 
-**Path rules:**
-- `%URCONFIG%/...` — resolves to `<config_dir>/...`. **Preferred** — the config dir is already mounted into the server container.
-- Absolute paths — must be visible to the **server process** (not just the host shell). Paths outside the server container's mount namespace produce empty mounts silently.
+**Use absolute host paths. `%URCONFIG%` is a trap here** — unlike every other template field:
 
-**Override semantics:** A host skill with the same name as a baked-in skill shadows the baked version. This lets you patch or replace a shipped skill without rebuilding the image.
+`[skills]` values become Docker volume **sources** verbatim (`RunOptsBuilder::add_extra_skills`), and there is no host↔container remapping the way `claude_md`/`memory_dir`/`brain_dir` get via `convention_check_path`. `Config::load` runs inside the server container where `UR_CONFIG=/config`, so `%URCONFIG%/skills/foo` resolves to `/config/skills/foo` — a path the host Docker daemon cannot see. Docker then binds an auto-created empty directory and the skill silently comes up blank. Existence checks are also skipped in-container (`resolve_skill_section` short-circuits when `UR_HOST_CONFIG` is set), so nothing warns you.
 
-**Merge order:** Mode-specific keys shadow same-named `common` keys.
+Write `/Users/me/.ur/skills/foo`, not `%URCONFIG%/skills/foo`. The host CLI validates absolute paths at `ur start`, which is where a typo will surface.
+
+**Other path rules:**
+- `%PROJECT%/...` is rejected — skills must be project-stable, not workspace-relative.
+- A path that does not exist, or is not a directory, is a hard config-load error on the host.
+
+**Override semantics:** A host skill with the same name as a baked-in skill shadows the baked version, so you can patch a shipped skill without rebuilding the image.
+
+**Duplicate names:** the same name in `[skills.common]` and `[skills.code]` (or `design`) is a config error — common is always included, so remove one. The same name in both `code` and `design` is allowed (paths may differ).
+
+**Globals beat `--skills`:** `merge_global_skills` appends globals even when a launch passes an explicit `-s/--skills`. `[skills]` means "everywhere".
+
+---
+
+## `[worker_modes]` Section
+
+Named skill bundles selected with `ur worker launch -m <mode>`. This is how you scope skills to a kind of work — and, in practice, to a project.
+
+Built-in modes come from `WorkerStrategy::skills()` (`crates/server/src/strategy.rs`):
+
+| Mode | Skills |
+|------|--------|
+| common (all) | `green`, `cli-design`, `reclaude`, `writing-skills`, `rag-docs`, `address-feedback`, `code-review`, `brain`, `brain:init` |
+| `code` | common + `implement`, `ship`, `bacon`, `systematic-debugging`, `test-driven-development` |
+| `design` | common + `design`, `dispatch` |
+| `manual` | common + `implement`, `implement-agents`, `ship`, `bacon`, `systematic-debugging`, `test-driven-development`, `design`, `dispatch` |
+
+### `[worker_modes.<name>]`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `base` | string | **yes** | `"code"`, `"design"`, or `"manual"`. Sets pool-slot semantics (exclusive vs shared) and the default model |
+| `skills` | string[] | **yes** | Full skill list — **replaces** the base strategy's list, does not extend it |
+| `model` | string | no | Claude Code model alias override |
+
+Custom modes are added alongside the built-in three; defining `[worker_modes.code]` replaces the built-in `code`.
+
+```toml
+[worker_modes.ur-review]
+base = "code"
+skills = ["code-review", "green", "bacon"]
+model = "claude-opus-5[1m]"
+```
+
+### `[worker_models]` Section
+
+Default model per **strategy** (not per mode). `deny_unknown_fields` — only `code`, `design`, `manual` are valid; a typo fails at server startup.
+
+| Key | Built-in Default |
+|-----|------------------|
+| `code` | `sonnet` |
+| `design` | `opus` |
+| `manual` | `opus` |
+
+```toml
+[worker_models]
+manual = "claude-opus-5[1m]"
+```
+
+**Model precedence:** `worker_modes.<mode>.model` → `[worker_models].<base>` → `WorkerStrategy::default_model()`.
+
+**Skill precedence** (`resolve_skills`): explicit `-s/--skills` → `worker_modes.<mode>.skills` → `worker_modes.code`. `[skills]` globals are appended in every case.
+
+**Parsing note:** neither section is part of `RawConfig`. The server re-parses `ur.toml` for them via `WorkerModesConfig::from_toml`, so errors surface at server startup rather than at `Config::load()`.
 
 ---
 
@@ -207,9 +272,15 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `hostexec` | string[] | `[]` | no | Additional host-exec commands workers may call for this project |
 | `hostexec_scripts` | string[] | `[]` | no | Relative paths to host-exec scripts workers may invoke |
 | `claude_md` | template path | — | no | Project-level CLAUDE.md. Falls back to `<config_dir>/projects/<key>/CLAUDE.md` |
+| `memory_dir` | template path | — | no | Claude auto-memory dir, mounted read-write. `%PROJECT%` rejected. Falls back to `<config_dir>/projects/<key>/memory/` |
+| `brain_dir` | template path | — | no | Per-project brain dir, mounted read-write at `/brain`. `%PROJECT%` rejected. Falls back to `<config_dir>/projects/<key>/brain/` |
 | `max_fix_attempts` | u32 | `10` | no | Fix loop iterations before stalling the agent |
+| `max_implement_cycles` | u32 | — | no | Overrides `[server].max_implement_cycles` for this project |
+| `push_again_exit_code` | i32 | — | no | Exit code the verify hook returns to mean "push again" without charging an implement cycle |
 | `protected_branches` | string[] | `["main", "master"]` | no | Branch patterns that cannot be force-pushed (supports globs) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to skip when evaluating workflow status |
+
+Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the worker UID before mounting, and are only mounted when the worker has a project key — never in bare `-w` workspace mode. Parallel workers on one project share a single `memory_dir`, so simultaneous `MEMORY.md` writes can race; there is no mitigation.
 
 ### `[projects.<key>.container]`
 

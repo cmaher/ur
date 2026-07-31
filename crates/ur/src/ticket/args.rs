@@ -59,6 +59,11 @@ pub enum TicketArgs {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
+
+        /// Filter by metadata: `key=value`, or bare `key` to match any ticket carrying it
+        /// (e.g. `--meta ref=PROJ-3218`, `--meta pr_number=42`)
+        #[arg(long)]
+        meta: Option<String>,
     },
 
     /// Show a ticket's full detail

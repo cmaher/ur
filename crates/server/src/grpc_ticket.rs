@@ -6,8 +6,8 @@ use tracing::info;
 
 use ticket_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
 use ur_rpc::error::{
-    self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_HAS_ACTIVE_WORKFLOW,
-    TICKET_HAS_OPEN_CHILDREN,
+    self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_AMBIGUOUS_REF,
+    TICKET_HAS_ACTIVE_WORKFLOW, TICKET_HAS_OPEN_CHILDREN,
 };
 use ur_rpc::proto::ticket::ticket_service_server::TicketService;
 use ur_rpc::proto::ticket::{
@@ -29,6 +29,28 @@ use crate::UiEventPoller;
 use crate::WorkerManager;
 use crate::worker::WorkerId;
 
+/// Metadata key holding a ticket's key in an external issue tracker, written by whatever syncs
+/// tickets outward. Used as the fallback lookup for `ur ticket show`.
+const REF_META_KEY: &str = "ref";
+
+/// The non-metadata filters from a `ListTicketsRequest`, applied to metadata matches after
+/// they are re-fetched. Extracted before the branch because the request is partially moved
+/// while pulling the metadata fields out of it.
+#[derive(Debug, Default)]
+struct MetaListFilter {
+    project: Option<String>,
+    type_: Option<String>,
+    status: Option<String>,
+}
+
+/// One ticket sharing a `ref` value, reported when a ref lookup is ambiguous.
+#[derive(Debug, Clone)]
+pub struct RefCandidate {
+    pub id: String,
+    pub status: String,
+    pub title: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TicketError {
     #[error("ticket not found: {id}")]
@@ -39,6 +61,22 @@ pub enum TicketError {
 
     #[error("ticket {id} already has an active workflow")]
     ActiveWorkflow { id: String },
+
+    /// A ref lookup fell through to more than one ticket. Callers must disambiguate by ID
+    /// rather than have one silently picked for them.
+    #[error(
+        "ref '{ref_value}' matches {} tickets:\n{}\nre-run with a ticket ID, or: ur ticket list --meta ref={ref_value}",
+        candidates.len(),
+        candidates
+            .iter()
+            .map(|c| format!("  {}  {}  {}", c.id, c.status, c.title))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )]
+    AmbiguousRef {
+        ref_value: String,
+        candidates: Vec<RefCandidate>,
+    },
 
     #[error("validation error: {0}")]
     Validation(String),
@@ -84,6 +122,28 @@ impl From<TicketError> for Status {
                     err.to_string(),
                     DOMAIN_TICKET,
                     TICKET_HAS_ACTIVE_WORKFLOW,
+                    meta,
+                )
+            }
+            TicketError::AmbiguousRef {
+                ref ref_value,
+                ref candidates,
+            } => {
+                let mut meta = HashMap::new();
+                meta.insert("ref".into(), ref_value.clone());
+                meta.insert(
+                    "candidates".into(),
+                    candidates
+                        .iter()
+                        .map(|c| c.id.clone())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_TICKET,
+                    TICKET_AMBIGUOUS_REF,
                     meta,
                 )
             }
@@ -348,30 +408,127 @@ impl TicketServiceHandler {
         }
     }
 
-    /// Convert metadata query results to minimal proto tickets.
-    fn meta_tickets_to_proto(
+    /// Resolve a `show`-style argument to a real ticket ID.
+    ///
+    /// An exact ticket ID always wins. Only when no ticket carries that ID does this fall back
+    /// to treating the argument as a `ref` metadata value — an external issue tracker's key —
+    /// so adding this can never change the meaning of a valid ID.
+    ///
+    /// Refs are not unique: several ur tickets can carry the same tracker key. A single match
+    /// resolves; more than one is an [`TicketError::AmbiguousRef`] listing the candidates
+    /// rather than an arbitrary pick.
+    async fn resolve_ticket_ref(&self, arg: &str) -> Result<String, TicketError> {
+        let exists = self
+            .ticket_repo
+            .get_ticket_by_id(arg)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?
+            .is_some();
+        if exists {
+            return Ok(arg.to_owned());
+        }
+
+        let matches = self
+            .ticket_repo
+            .tickets_by_metadata(REF_META_KEY, arg)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        match matches.len() {
+            // Report the original argument so the error still names what the caller typed.
+            0 => Err(TicketError::NotFound { id: arg.to_owned() }),
+            1 => {
+                let id = matches
+                    .into_iter()
+                    .next()
+                    .expect("length checked to be 1")
+                    .id;
+                info!(arg, resolved_id = %id, "resolved ticket by ref");
+                Ok(id)
+            }
+            _ => Err(TicketError::AmbiguousRef {
+                ref_value: arg.to_owned(),
+                candidates: matches
+                    .into_iter()
+                    .map(|m| RefCandidate {
+                        id: m.id,
+                        status: m.status,
+                        title: m.title,
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    /// List tickets by metadata, hydrated and filtered.
+    ///
+    /// `value` of `Some` matches an exact key/value pair; `None` matches any ticket carrying
+    /// `key` at all.
+    async fn list_by_meta(
+        &self,
+        key: &str,
+        value: Option<&str>,
+        filter: &MetaListFilter,
+    ) -> Result<Vec<ur_rpc::proto::ticket::Ticket>, TicketError> {
+        let matches = match value {
+            Some(value) => self.ticket_repo.tickets_by_metadata(key, value).await,
+            None => self.ticket_repo.tickets_with_metadata_key(key).await,
+        }
+        .map_err(|e| TicketError::Db(e.to_string()))?;
+        self.hydrate_meta_matches(matches, filter).await
+    }
+
+    /// Turn metadata matches into fully-populated proto tickets, honouring the request's
+    /// other filters.
+    ///
+    /// [`TicketRepo::tickets_by_metadata`] selects only the columns needed to identify a
+    /// match, so converting it directly leaves `project`, `priority`, `created_at` and
+    /// friends blank. Re-fetch the matched IDs to get whole rows, then apply
+    /// `project`/`status`/`ticket_type` — the metadata branch bypasses the normal
+    /// [`TicketFilter`] path, so without this those flags would be silently ignored.
+    async fn hydrate_meta_matches(
+        &self,
         matches: Vec<ticket_db::MetadataMatchTicket>,
-    ) -> Vec<ur_rpc::proto::ticket::Ticket> {
-        matches
+        filter: &MetaListFilter,
+    ) -> Result<Vec<ur_rpc::proto::ticket::Ticket>, TicketError> {
+        let ids: Vec<String> = matches.into_iter().map(|m| m.id).collect();
+        let full = self
+            .ticket_repo
+            .get_tickets_by_ids(&ids)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+
+        let project = filter.project.as_deref();
+        let type_ = filter.type_.as_deref();
+        let statuses: Vec<&str> = filter
+            .status
+            .as_deref()
+            .map(|s| s.split(',').map(str::trim).collect())
+            .unwrap_or_default();
+
+        Ok(full
             .into_iter()
+            .filter(|t| project.is_none_or(|p| t.project == p))
+            .filter(|t| type_.is_none_or(|ty| t.type_ == ty))
+            .filter(|t| statuses.is_empty() || statuses.contains(&t.status.as_str()))
             .map(|t| ur_rpc::proto::ticket::Ticket {
                 id: t.id,
                 ticket_type: t.type_,
                 status: t.status,
-                priority: 0,
-                parent_id: String::new(),
+                priority: i64::from(t.priority),
+                parent_id: t.parent_id.unwrap_or_default(),
                 title: t.title,
-                body: String::new(),
-                created_at: String::new(),
-                updated_at: String::new(),
-                project: String::new(),
-                branch: String::new(),
+                body: t.body,
+                created_at: t.created_at,
+                updated_at: t.updated_at,
+                project: t.project,
+                branch: t.branch.unwrap_or_default(),
                 depth: 0,
-                children_completed: 0,
-                children_total: 0,
+                children_completed: t.children_completed,
+                children_total: t.children_total,
                 dispatch_status: String::new(),
             })
-            .collect()
+            .collect())
     }
 
     /// Enrich a list of proto tickets with dispatch_status from active workflows.
@@ -581,24 +738,17 @@ impl TicketService for TicketServiceHandler {
         let meta_key = req.meta_key.filter(|s| !s.is_empty());
         let meta_value = req.meta_value.filter(|s| !s.is_empty());
         let tree_root_id = req.tree_root_id.filter(|s| !s.is_empty());
+        let meta_filter = MetaListFilter {
+            project: req.project.clone().filter(|s| !s.is_empty()),
+            type_: req.ticket_type.clone().filter(|s| !s.is_empty()),
+            status: req.status.clone().filter(|s| !s.is_empty()),
+        };
 
         // If metadata filters are provided, use the metadata-based queries
         let tickets = match (&meta_key, &meta_value) {
-            (Some(key), Some(value)) => {
-                let matches = self
-                    .ticket_repo
-                    .tickets_by_metadata(key, value)
-                    .await
-                    .map_err(|e| TicketError::Db(e.to_string()))?;
-                Self::meta_tickets_to_proto(matches)
-            }
-            (Some(key), None) => {
-                let matches = self
-                    .ticket_repo
-                    .tickets_with_metadata_key(key)
-                    .await
-                    .map_err(|e| TicketError::Db(e.to_string()))?;
-                Self::meta_tickets_to_proto(matches)
+            (Some(key), value) => {
+                self.list_by_meta(key, value.as_deref(), &meta_filter)
+                    .await?
             }
             _ if tree_root_id.is_some() => {
                 let root_id = tree_root_id.unwrap();
@@ -690,27 +840,31 @@ impl TicketService for TicketServiceHandler {
         let req = req.into_inner();
         info!(id = %req.id, "get_ticket request");
 
+        // Resolve the argument to a real ticket ID first: an exact ID always wins, and only
+        // a miss falls through to a `ref` metadata lookup.
+        let id = self.resolve_ticket_ref(&req.id).await?;
+
         let t = self
             .ticket_repo
-            .get_ticket_by_id(&req.id)
+            .get_ticket_by_id(&id)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?
-            .ok_or_else(|| TicketError::NotFound { id: req.id.clone() })?;
+            .ok_or_else(|| TicketError::NotFound { id: id.clone() })?;
 
         let meta = self
             .ticket_repo
-            .get_meta(&req.id, "ticket")
+            .get_meta(&id, "ticket")
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
 
         let activities_list = if let Some(author) = &req.activity_author_filter {
             self.ticket_repo
-                .get_activities_by_author(&req.id, author)
+                .get_activities_by_author(&id, author)
                 .await
                 .map_err(|e| TicketError::Db(e.to_string()))?
         } else {
             self.ticket_repo
-                .get_activities(&req.id)
+                .get_activities(&id)
                 .await
                 .map_err(|e| TicketError::Db(e.to_string()))?
         };
@@ -750,10 +904,10 @@ impl TicketService for TicketServiceHandler {
 
         let raw_edges = self
             .ticket_repo
-            .edges_for(&req.id, None)
+            .edges_for(&id, None)
             .await
             .map_err(|e| TicketError::Db(e.to_string()))?;
-        let edges = classify_edges(&req.id, raw_edges);
+        let edges = classify_edges(&id, raw_edges);
 
         Ok(Response::new(GetTicketResponse {
             ticket: Some(ticket),
@@ -1534,6 +1688,180 @@ mod tests {
 
         let err = result.unwrap_err();
         assert_eq!(err.code(), Code::NotFound);
+    }
+
+    /// Create a ticket carrying `ref = ref_value`, for the ref-fallback tests.
+    async fn seed_ticket_with_ref(handler: &TicketServiceHandler, id: &str, ref_value: &str) {
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some(id.into()),
+                type_: "code".into(),
+                priority: 1,
+                title: format!("Ticket {id}"),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        handler
+            .ticket_repo
+            .set_meta(id, "ticket", "ref", ref_value)
+            .await
+            .unwrap();
+    }
+
+    /// An unknown ID that matches exactly one ticket's `ref` resolves to that ticket.
+    #[tokio::test]
+    async fn get_ticket_falls_back_to_unique_ref() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket_with_ref(&handler, "t-ref1", "PROJ-3218").await;
+
+        let resp = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "PROJ-3218".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let ticket = resp.into_inner().ticket.unwrap();
+        assert_eq!(ticket.id, "t-ref1");
+    }
+
+    /// A ref shared by several tickets must not silently pick one — it reports the candidates.
+    #[tokio::test]
+    async fn get_ticket_ambiguous_ref_is_rejected() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket_with_ref(&handler, "t-dup-a", "PROJ-3159").await;
+        seed_ticket_with_ref(&handler, "t-dup-b", "PROJ-3159").await;
+
+        let err = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "PROJ-3159".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.code(), Code::FailedPrecondition);
+        let msg = err.message();
+        assert!(
+            msg.contains("PROJ-3159"),
+            "message should name the ref: {msg}"
+        );
+        assert!(
+            msg.contains("t-dup-a"),
+            "message should list candidates: {msg}"
+        );
+        assert!(
+            msg.contains("t-dup-b"),
+            "message should list candidates: {msg}"
+        );
+    }
+
+    /// A real ticket ID always wins, even when some other ticket carries it as a `ref`.
+    #[tokio::test]
+    async fn get_ticket_id_wins_over_ref() {
+        let (_test_db, handler) = setup_handler().await;
+        // t-shadow's ref is literally another ticket's ID.
+        seed_ticket_with_ref(&handler, "t-shadow", "t-real").await;
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-real".into()),
+                type_: "code".into(),
+                priority: 1,
+                title: "The real one".into(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let resp = TicketService::get_ticket(
+            &handler,
+            Request::new(GetTicketRequest {
+                id: "t-real".into(),
+                activity_author_filter: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resp.into_inner().ticket.unwrap().id, "t-real");
+    }
+
+    /// The metadata list path returns whole rows, not the identify-only stub columns.
+    #[tokio::test]
+    async fn list_tickets_by_meta_returns_hydrated_rows() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket_with_ref(&handler, "t-meta1", "PROJ-4000").await;
+        seed_ticket_with_ref(&handler, "t-meta2", "PROJ-4001").await;
+
+        let resp = TicketService::list_tickets(
+            &handler,
+            Request::new(ListTicketsRequest {
+                meta_key: Some("ref".into()),
+                meta_value: Some("PROJ-4000".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let tickets = resp.into_inner().tickets;
+        assert_eq!(tickets.len(), 1);
+        assert_eq!(tickets[0].id, "t-meta1");
+        // These are blank when the stub columns are returned directly.
+        assert_eq!(tickets[0].project, "test");
+        assert!(
+            !tickets[0].created_at.is_empty(),
+            "created_at should be populated"
+        );
+    }
+
+    /// `--meta` must not silently discard the other filters.
+    #[tokio::test]
+    async fn list_tickets_by_meta_key_honours_project_filter() {
+        let (_test_db, handler) = setup_handler().await;
+        seed_ticket_with_ref(&handler, "t-mp1", "PROJ-5000").await;
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-mp2".into()),
+                type_: "code".into(),
+                priority: 1,
+                title: "Other project".into(),
+                project: "other".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        handler
+            .ticket_repo
+            .set_meta("t-mp2", "ticket", "ref", "PROJ-5001")
+            .await
+            .unwrap();
+
+        let resp = TicketService::list_tickets(
+            &handler,
+            Request::new(ListTicketsRequest {
+                meta_key: Some("ref".into()),
+                project: Some("other".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        let tickets = resp.into_inner().tickets;
+        assert_eq!(tickets.len(), 1, "project filter should have applied");
+        assert_eq!(tickets[0].id, "t-mp2");
     }
 
     #[tokio::test]

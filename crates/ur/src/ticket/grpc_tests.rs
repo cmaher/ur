@@ -480,6 +480,7 @@ async fn execute_create_and_show() {
             tree: None,
             ticket_type: None,
             status: None,
+            meta: None,
         },
         &mut client,
     )
@@ -600,6 +601,7 @@ async fn execute_create_and_list_filtered() {
             tree: None,
             ticket_type: None,
             status: Some("open".into()),
+            meta: None,
         },
         &mut client,
     )
@@ -1118,6 +1120,7 @@ async fn execute_list_empty() {
             tree: None,
             ticket_type: None,
             status: None,
+            meta: None,
         },
         &mut client,
     )

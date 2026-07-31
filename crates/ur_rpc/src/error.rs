@@ -18,6 +18,8 @@ pub const UNAVAILABLE: &str = "UNAVAILABLE";
 // ---------------------------------------------------------------------------
 pub const TICKET_HAS_OPEN_CHILDREN: &str = "TICKET_HAS_OPEN_CHILDREN";
 pub const TICKET_HAS_ACTIVE_WORKFLOW: &str = "TICKET_HAS_ACTIVE_WORKFLOW";
+/// A `ref` metadata value matched more than one ticket, so it cannot stand in for an ID.
+pub const TICKET_AMBIGUOUS_REF: &str = "TICKET_AMBIGUOUS_REF";
 
 // ---------------------------------------------------------------------------
 // HostExec reason codes

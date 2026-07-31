@@ -37,7 +37,21 @@ where
             tree,
             ticket_type,
             status,
-        } => execute_list(client, project, all, tree, ticket_type, status).await,
+            meta,
+        } => {
+            execute_list(
+                client,
+                ListFilters {
+                    project,
+                    all,
+                    tree,
+                    ticket_type,
+                    status,
+                    meta,
+                },
+            )
+            .await
+        }
         TicketArgs::Show {
             id,
             activity_author,
@@ -166,13 +180,34 @@ where
     .await
 }
 
+/// Filters accepted by `ur ticket list`, passed as one value so the arg list stays readable.
+pub struct ListFilters {
+    pub project: Option<String>,
+    pub all: bool,
+    pub tree: Option<String>,
+    pub ticket_type: Option<String>,
+    pub status: Option<String>,
+    pub meta: Option<String>,
+}
+
+/// Split a `--meta` argument into key and optional value.
+///
+/// `key=value` filters on both; a bare `key` matches any ticket carrying that key. Only the
+/// first `=` splits, so values containing `=` survive intact.
+fn parse_meta_filter(meta: &str) -> Result<(String, Option<String>)> {
+    let (key, value) = match meta.split_once('=') {
+        Some((key, value)) => (key.trim(), Some(value.to_owned())),
+        None => (meta.trim(), None),
+    };
+    if key.is_empty() {
+        anyhow::bail!("--meta needs a key: expected `key=value` or `key`, got `{meta}`");
+    }
+    Ok((key.to_owned(), value))
+}
+
 async fn execute_list<T>(
     client: &mut TicketServiceClient<T>,
-    project: Option<String>,
-    all: bool,
-    tree: Option<String>,
-    ticket_type: Option<String>,
-    status: Option<String>,
+    filters: ListFilters,
 ) -> Result<TicketOutput>
 where
     T: tonic::client::GrpcService<tonic::body::Body> + Send,
@@ -181,15 +216,22 @@ where
     <T::ResponseBody as http_body::Body>::Error:
         Into<Box<dyn std::error::Error + Send + Sync>> + Send,
 {
-    let project_filter = if all { None } else { project };
+    let project_filter = if filters.all { None } else { filters.project };
+    let (meta_key, meta_value) = match filters.meta.as_deref() {
+        Some(meta) => {
+            let (key, value) = parse_meta_filter(meta)?;
+            (Some(key), value)
+        }
+        None => (None, None),
+    };
     let resp = client
         .list_tickets(ListTicketsRequest {
             project: project_filter,
-            ticket_type: ticket_type.map(|t| TicketType::normalize(&t)),
-            status,
-            meta_key: None,
-            meta_value: None,
-            tree_root_id: tree,
+            ticket_type: filters.ticket_type.map(|t| TicketType::normalize(&t)),
+            status: filters.status,
+            meta_key,
+            meta_value,
+            tree_root_id: filters.tree,
             page_size: None,
             offset: None,
             include_children: None,
@@ -646,4 +688,46 @@ where
         .await
         .with_status_context("open ticket")?;
     Ok(TicketOutput::Updated { id })
+}
+
+#[cfg(test)]
+mod meta_filter_tests {
+    use super::parse_meta_filter;
+
+    #[test]
+    fn key_value_splits_into_both() {
+        let (key, value) = parse_meta_filter("ref=PROJ-3218").unwrap();
+        assert_eq!(key, "ref");
+        assert_eq!(value.as_deref(), Some("PROJ-3218"));
+    }
+
+    /// A bare key means "carries this key at all", so the value stays absent.
+    #[test]
+    fn bare_key_has_no_value() {
+        let (key, value) = parse_meta_filter("ref").unwrap();
+        assert_eq!(key, "ref");
+        assert_eq!(value, None);
+    }
+
+    /// Only the first `=` splits — URLs and other `=`-bearing values must survive.
+    #[test]
+    fn value_may_contain_equals() {
+        let (key, value) = parse_meta_filter("pr_url=https://x/y?a=b").unwrap();
+        assert_eq!(key, "pr_url");
+        assert_eq!(value.as_deref(), Some("https://x/y?a=b"));
+    }
+
+    /// An empty value is still a filter — it matches tickets whose value is empty.
+    #[test]
+    fn empty_value_is_preserved() {
+        let (key, value) = parse_meta_filter("ref=").unwrap();
+        assert_eq!(key, "ref");
+        assert_eq!(value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn missing_key_is_rejected() {
+        assert!(parse_meta_filter("=PROJ-1").is_err());
+        assert!(parse_meta_filter("").is_err());
+    }
 }
