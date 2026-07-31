@@ -1,6 +1,6 @@
 ---
 name: ur:config
-description: Reference for all ur.toml configuration options — top-level fields, [projects], [skills], [hostexec], [tui], [server], [db], networking, proxy, template paths, and convention-based file layout. Use when adding or modifying ur configuration, debugging config errors, or explaining what a field does.
+description: Reference for all ur.toml configuration options — top-level fields, [projects], [skills], [worker_modes], [worker_models], [hostexec], [tui], [server], [db], networking, proxy, template paths, and convention-based file layout. Use when adding or modifying ur configuration, debugging config errors, or explaining what a field does.
 ---
 
 # ur Configuration Reference
@@ -281,6 +281,15 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to skip when evaluating workflow status |
 
 Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the worker UID before mounting, and are only mounted when the worker has a project key — never in bare `-w` workspace mode. Parallel workers on one project share a single `memory_dir`, so simultaneous `MEMORY.md` writes can race; there is no mitigation.
+
+**Removed fields — setting one is a hard config-load error, not a warning:**
+
+| Removed Field | Replacement |
+|---|---|
+| `git_hooks_dir` | `<config_dir>/projects/<key>/hooks/git/` or in-repo `ur-hooks/git/` |
+| `skill_hooks_dir` | `<config_dir>/projects/<key>/hooks/skills/` or in-repo `ur-hooks/skills/` |
+| `workflow_hooks_dir` | `<config_dir>/projects/<key>/hooks/workflow/` or in-repo `ur-hooks/workflow/` |
+| `mounts` at project root | move inside `[projects.<key>.container]` |
 
 ### `[projects.<key>.container]`
 
