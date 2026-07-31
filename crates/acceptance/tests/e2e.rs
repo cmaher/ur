@@ -1309,6 +1309,81 @@ fn assert_git_hostexec(runtime: &str, container: &str) {
     );
 }
 
+/// Verify the gh shim is generated in bidi mode and that `gh api` endpoint
+/// validation accepts the forms `gh` itself accepts.
+///
+/// None of these assertions need GitHub credentials: the Lua transform runs on
+/// the server and rejects before `gh` is ever spawned on the host, so a blocked
+/// call is observable as a "blocked:" message and an allowed call is observable
+/// by the *absence* of one.
+fn assert_gh_hostexec(runtime: &str, container: &str) {
+    // The shim must carry --bidi, otherwise workertools never forwards stdin
+    // and `gh api --input -` silently receives nothing.
+    let shim = exec_in_container(runtime, container, &["cat", "/home/worker/.local/bin/gh"]);
+    assert_exec_success(&shim, "reading the gh shim should work");
+    let shim_content = String::from_utf8_lossy(&shim.stdout);
+    assert!(
+        shim_content.contains("--bidi"),
+        "gh shim must be generated with --bidi so stdin is forwarded.\nGot: {shim_content}"
+    );
+
+    // An --input path can never work (host cannot read worker files) and must
+    // be rejected with a message steering to the stdin form.
+    let input_path = exec_in_container(
+        runtime,
+        container,
+        &[
+            "gh",
+            "api",
+            "/repos/owner/repo/pulls/7/reviews",
+            "-X",
+            "POST",
+            "--input",
+            "/tmp/review.json",
+        ],
+    );
+    let input_path_err = String::from_utf8_lossy(&input_path.stderr);
+    assert!(
+        input_path_err.contains("--input - <"),
+        "--input <path> should steer to the stdin form.\nstderr: {input_path_err}"
+    );
+
+    // `gh api` accepts endpoints without a leading slash; the allowlist must
+    // too. This call fails later (no credentials / no such PR), but it must not
+    // be rejected by the transform.
+    let unslashed = exec_in_container(
+        runtime,
+        container,
+        &[
+            "gh",
+            "api",
+            "repos/owner/repo/pulls/7/reviews",
+            "-X",
+            "POST",
+            "--input",
+            "-",
+        ],
+    );
+    let unslashed_err = String::from_utf8_lossy(&unslashed.stderr);
+    assert!(
+        !unslashed_err.contains("is not allowed"),
+        "unslashed reviews endpoint must not be blocked by the transform.\n\
+         stderr: {unslashed_err}"
+    );
+
+    // A genuinely disallowed endpoint must still be blocked, slash or not.
+    let merge = exec_in_container(
+        runtime,
+        container,
+        &["gh", "api", "repos/owner/repo/pulls/7/merge", "-X", "POST"],
+    );
+    let merge_err = String::from_utf8_lossy(&merge.stderr);
+    assert!(
+        merge_err.contains("is not allowed"),
+        "unslashed merge endpoint must still be blocked.\nstderr: {merge_err}"
+    );
+}
+
 /// Verify squid proxy blocks disallowed domains and allows configured ones.
 fn assert_squid_proxy_filtering(runtime: &str, container: &str) {
     let curl_args = |url: &str| -> Vec<String> {
@@ -1404,6 +1479,9 @@ fn scenario_pool_launch(env: &TestEnv) {
 
         // ---- Test hostexec: git commands and Lua validation ----
         assert_git_hostexec(&env.runtime, &container_name);
+
+        // ---- Test hostexec: gh bidi shim and api endpoint validation ----
+        assert_gh_hostexec(&env.runtime, &container_name);
 
         // ---- Squid proxy filtering ----
         assert_squid_proxy_filtering(&env.runtime, &container_name);

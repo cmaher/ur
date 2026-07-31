@@ -111,7 +111,11 @@ impl HostExecConfigManager {
             CommandConfig {
                 lua_source: Some(include_str!("default_scripts/gh.lua").into()),
                 long_lived: false,
-                bidi: false,
+                // Bidi so `gh api --input -` and `gh pr comment --body-file -`
+                // can read forwarded stdin. gh runs on the host and cannot see
+                // the worker filesystem, so stdin is the only way to hand it a
+                // nested JSON body (e.g. a review's comments[] array).
+                bidi: true,
             },
         );
         commands.insert(
@@ -494,6 +498,17 @@ mod tests {
         let git_cfg = mgr.get("git").unwrap();
         assert!(!git_cfg.long_lived);
         assert!(!git_cfg.bidi);
+    }
+
+    /// gh must stay bidi: workerd only adds `--bidi` to the generated shim when
+    /// this flag is set, and without it `gh api --input -` gets no stdin.
+    #[test]
+    fn test_gh_default_is_bidi() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = HostExecConfigManager::load(tmp.path(), &empty_config()).unwrap();
+        let gh_cfg = mgr.get("gh").unwrap();
+        assert!(gh_cfg.bidi, "gh must be bidi so --input - receives stdin");
+        assert!(!gh_cfg.long_lived);
     }
 
     #[test]

@@ -1216,6 +1216,179 @@ mod tests {
         assert_eq!(result.args, args);
     }
 
+    /// `gh api` accepts endpoints without a leading slash. The allowlist
+    /// patterns are anchored to `^/repos/`, so an unslashed endpoint used to be
+    /// rejected against an allowlist that actually permits it.
+    #[test]
+    fn test_gh_allows_api_post_pr_reviews_without_leading_slash() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "repos/owner/repo/pulls/7/reviews".into(),
+            "--method".into(),
+            "POST".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_pr_comments_without_leading_slash() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "repos/owner/repo/pulls/7/comments".into(),
+            "-X".into(),
+            "POST".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_full_url_endpoint() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "https://api.github.com/repos/owner/repo/pulls/7/reviews".into(),
+            "-X".into(),
+            "POST".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    /// Normalization must not widen the allowlist to non-comment endpoints.
+    #[test]
+    fn test_gh_blocks_api_post_unslashed_non_comment_endpoint() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "repos/owner/repo/pulls/7/merge".into(),
+            "-X".into(),
+            "POST".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("is not allowed"), "unexpected error: {err}");
+    }
+
+    /// A value-taking flag before the endpoint must not be mistaken for it,
+    /// otherwise the real endpoint is never validated.
+    #[test]
+    fn test_gh_blocks_api_post_with_field_before_disallowed_endpoint() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "-X".into(),
+            "POST".into(),
+            "-f".into(),
+            "name=value".into(),
+            "/repos/owner/repo/pulls/7/merge".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("/repos/owner/repo/pulls/7/merge"),
+            "endpoint should be extracted past -f, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_api_post_reviews_with_stdin_input() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "/repos/owner/repo/pulls/7/reviews".into(),
+            "-X".into(),
+            "POST".into(),
+            "--input".into(),
+            "-".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    /// gh runs on the host and cannot read the worker filesystem, so a path
+    /// argument to --input can never work.
+    #[test]
+    fn test_gh_blocks_api_input_with_worker_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "api".into(),
+            "/repos/owner/repo/pulls/7/reviews".into(),
+            "-X".into(),
+            "POST".into(),
+            "--input".into(),
+            "tmp/review.json".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--input tmp/review.json") && err.contains("--input - <"),
+            "error should steer to the stdin form, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_gh_allows_pr_comment_body_file_stdin() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "comment".into(),
+            "123".into(),
+            "--body-file".into(),
+            "-".into(),
+        ];
+        let result = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap();
+        assert_eq!(result.args, args);
+    }
+
+    #[test]
+    fn test_gh_blocks_pr_comment_body_file_path() {
+        let mgr = LuaTransformManager::new();
+        let script = include_str!("default_scripts/gh.lua");
+        let args: Vec<String> = vec![
+            "pr".into(),
+            "comment".into(),
+            "123".into(),
+            "--body-file".into(),
+            "body.md".into(),
+        ];
+        let err = mgr
+            .run_transform(script, "gh", &args, "/workspace", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("blocked flag: --body-file body.md"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[test]
     fn test_gh_allows_run_list() {
         let mgr = LuaTransformManager::new();

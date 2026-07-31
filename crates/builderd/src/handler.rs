@@ -46,12 +46,18 @@ impl BuilderDaemonHandler {
         (req.command.clone(), resolved_dir)
     }
 
-    /// Spawn a short-lived command and return the output stream.
+    /// Spawn a short-lived command and return the output stream plus a sender
+    /// for its stdin.
+    ///
+    /// stdin is piped rather than null so bidi commands (e.g. `gh api --input -`)
+    /// can be fed from the caller's forwarded stdin. When the caller's stream
+    /// ends, the sender is dropped, which closes the child's stdin and yields
+    /// EOF — the same thing a non-bidi caller previously got from `Stdio::null`.
     #[allow(clippy::result_large_err)]
     fn spawn_command(
         &self,
         req: &BuilderExecRequest,
-    ) -> Result<Response<CommandOutputStream>, Status> {
+    ) -> Result<(Response<CommandOutputStream>, mpsc::Sender<Vec<u8>>), Status> {
         let resolved_dir = self.resolve_working_dir(&req.working_dir);
         let resolved_command = self.resolve_working_dir(&req.command);
         let arg_count = req.args.len();
@@ -70,13 +76,13 @@ impl BuilderDaemonHandler {
         let mut cmd = tokio::process::Command::new(&resolved_command);
         cmd.args(&req.args)
             .current_dir(&resolved_dir)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             error!(
                 command = %resolved_command,
                 working_dir = %resolved_dir,
@@ -86,11 +92,45 @@ impl BuilderDaemonHandler {
             Status::internal(format!("failed to spawn {resolved_command}: {e}"))
         })?;
 
+        let child_stdin = child.stdin.take().expect("stdin piped for short-lived");
+        let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>(32);
+        tokio::spawn(Self::forward_stdin(child_stdin, stdin_rx));
+
         let (tx, rx) = mpsc::channel(32);
         ur_rpc::stream::spawn_child_output_stream(child, tx);
 
         let stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(stream) as CommandOutputStream))
+        Ok((
+            Response::new(Box::pin(stream) as CommandOutputStream),
+            stdin_tx,
+        ))
+    }
+
+    /// Forward stdin frames from an inbound exec stream to a child's stdin.
+    ///
+    /// Returns when the inbound stream ends, dropping `stdin_tx` and thereby
+    /// closing the child's stdin.
+    fn spawn_stdin_forwarder(
+        in_stream: tonic::Streaming<BuilderExecMessage>,
+        stdin_tx: mpsc::Sender<Vec<u8>>,
+    ) {
+        tokio::spawn(Self::pump_stdin(in_stream, stdin_tx));
+    }
+
+    /// Drain stdin frames from `in_stream` into `stdin_tx` until the stream
+    /// ends or the receiver goes away.
+    async fn pump_stdin(
+        mut in_stream: tonic::Streaming<BuilderExecMessage>,
+        stdin_tx: mpsc::Sender<Vec<u8>>,
+    ) {
+        while let Some(Ok(msg)) = in_stream.next().await {
+            let Some(ExecPayload::Stdin(data)) = msg.payload else {
+                continue;
+            };
+            if stdin_tx.send(data).await.is_err() {
+                break;
+            }
+        }
     }
 
     /// Handle a long-lived process request: check registry for deduplication,
@@ -284,24 +324,17 @@ impl BuilderDaemonService for BuilderDaemonHandler {
             }
         };
 
-        if req.long_lived {
-            let (resp, stdin_tx) = self.spawn_long_lived(&req)?;
-
-            // Forward subsequent stdin messages from the bidi stream to the process
-            tokio::spawn(async move {
-                while let Some(Ok(msg)) = in_stream.next().await {
-                    if let Some(ExecPayload::Stdin(data)) = msg.payload
-                        && stdin_tx.send(data).await.is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-
-            Ok(resp)
+        // Both paths forward subsequent stdin frames from the bidi stream to
+        // the child process.
+        let (resp, stdin_tx) = if req.long_lived {
+            self.spawn_long_lived(&req)?
         } else {
-            self.spawn_command(&req)
-        }
+            self.spawn_command(&req)?
+        };
+
+        Self::spawn_stdin_forwarder(in_stream, stdin_tx);
+
+        Ok(resp)
     }
 }
 
@@ -400,10 +433,54 @@ mod tests {
             long_lived: false,
         };
 
-        let resp = handler.spawn_command(&req).unwrap();
+        let (resp, _stdin_tx) = handler.spawn_command(&req).unwrap();
         let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
 
         assert_eq!(String::from_utf8_lossy(&stdout_data).trim(), "hello");
+        assert_eq!(exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_exec_short_lived_reads_forwarded_stdin() {
+        let handler = handler_with_workspace(None);
+        let req = BuilderExecRequest {
+            command: "cat".into(),
+            args: vec![],
+            working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
+            long_lived: false,
+        };
+
+        let (resp, stdin_tx) = handler.spawn_command(&req).unwrap();
+        stdin_tx.send(b"piped payload".to_vec()).await.unwrap();
+        // Dropping the sender closes the child's stdin so `cat` sees EOF.
+        drop(stdin_tx);
+
+        let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
+
+        assert_eq!(String::from_utf8_lossy(&stdout_data), "piped payload");
+        assert_eq!(exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_exec_short_lived_stdin_closes_without_input() {
+        let handler = handler_with_workspace(None);
+        let req = BuilderExecRequest {
+            command: "cat".into(),
+            args: vec![],
+            working_dir: "/tmp".into(),
+            env: std::collections::HashMap::new(),
+            long_lived: false,
+        };
+
+        // A non-bidi caller sends no stdin frames at all; the child must still
+        // see EOF rather than hanging on an open pipe.
+        let (resp, stdin_tx) = handler.spawn_command(&req).unwrap();
+        drop(stdin_tx);
+
+        let (stdout_data, exit_code) = collect_stream(resp.into_inner()).await;
+
+        assert!(stdout_data.is_empty());
         assert_eq!(exit_code, Some(0));
     }
 

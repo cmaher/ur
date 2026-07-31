@@ -7,18 +7,28 @@
 -- Help block appended to every rejection so the caller sees exactly what is
 -- allowed and how to pass comment/PR body text (the #1 source of failed
 -- retries). gh runs on the HOST via host-exec, so it cannot read files from
--- the worker filesystem and stdin is not forwarded.
+-- the worker filesystem — but stdin IS forwarded (gh is a bidi command).
 local HELP = [[
 
 --- gh via ur host-exec ---
-gh runs on the HOST, not inside your container. Two consequences:
+gh runs on the HOST, not inside your container. Consequence:
   * The host gh CANNOT read files from your worker filesystem, so
-    `--body-file <path>` fails with "no such file or directory".
-  * stdin is NOT forwarded, so `--body-file -` fails with "Body cannot be blank".
-Pass body text INLINE — your shell expands it locally and forwards the text:
+    `--body-file <path>` / `--input <path>` fail with "no such file or
+    directory". Use the "-" (stdin) form instead — stdin IS forwarded.
+Pass body text INLINE, or via stdin:
     gh pr comment <pr> --body "$(cat body.md)"
     gh pr create --title "..." --body "$(cat body.md)"
     gh pr edit <pr> --body "$(cat body.md)"
+    gh pr comment <pr> --body-file - < body.md
+
+Inline PR review comments (nested comments[] needs --input, not -f/-F):
+    gh api /repos/<o>/<r>/pulls/<n>/reviews -X POST --input - <<'JSON'
+    {"commit_id":"<sha>","event":"COMMENT","body":"...",
+     "comments":[{"path":"a.go","line":42,"side":"RIGHT","body":"..."}]}
+    JSON
+A single inline comment can also use flat fields on
+/repos/<o>/<r>/pulls/<n>/comments (-f path=... -F line=... -f side=RIGHT).
+Endpoints may be written with or without the leading slash.
 
 Allowed (read + collaborative; destructive ops are workflow-only):
   gh pr view|checks|list|status|diff    read-only PR inspection
@@ -63,10 +73,26 @@ local comment_endpoint_patterns = {
     "^/repos/[^/]+/[^/]+/pulls/%d+/comments/%d+/replies$",
 }
 
+-- Normalize an endpoint to the "/repos/..." form the patterns above expect.
+-- `gh api` accepts a bare path ("repos/o/r/..."), a rooted path
+-- ("/repos/o/r/..."), and a full URL ("https://api.github.com/repos/o/r/...").
+-- Without this, a caller omitting the leading slash is rejected against an
+-- allowlist that actually permits the endpoint.
+local function normalize_endpoint(endpoint)
+    -- Strip scheme + host from full URLs.
+    endpoint = endpoint:gsub("^%a[%w+.-]*://[^/]*", "")
+    -- Drop query string and fragment so anchored patterns still match.
+    endpoint = endpoint:gsub("[?#].*$", "")
+    -- Collapse a leading run of slashes to exactly one.
+    endpoint = endpoint:gsub("^/+", "")
+    return "/" .. endpoint
+end
+
 -- Check if an API endpoint matches an allowed comment/review pattern
 local function is_comment_endpoint(endpoint)
+    local normalized = normalize_endpoint(endpoint)
     for _, pattern in ipairs(comment_endpoint_patterns) do
-        if endpoint:match(pattern) then
+        if normalized:match(pattern) then
             return true
         end
     end
@@ -89,6 +115,26 @@ local function extract_method(args)
     return "GET"
 end
 
+-- Flags accepted by `gh api` that consume a following value. Any of these must
+-- have its value skipped when hunting for the endpoint, otherwise a call like
+-- `gh api -f a=b /repos/...` mistakes "a=b" for the endpoint and the real
+-- endpoint is never validated. (The `--flag=value` spelling is a single arg
+-- starting with "-", so it is skipped naturally.)
+local api_value_flags = {
+    ["-X"] = true, ["--method"] = true,
+    ["-R"] = true, ["--repo"] = true,
+    ["-C"] = true,
+    ["-f"] = true, ["--field"] = true,
+    ["-F"] = true, ["--raw-field"] = true,
+    ["-H"] = true, ["--header"] = true,
+    ["-q"] = true, ["--jq"] = true,
+    ["-t"] = true, ["--template"] = true,
+    ["-p"] = true, ["--preview"] = true,
+    ["--input"] = true,
+    ["--hostname"] = true,
+    ["--cache"] = true,
+}
+
 -- Extract the API endpoint (first positional arg after "api")
 local function extract_api_endpoint(args)
     local found_api = false
@@ -100,12 +146,29 @@ local function extract_api_endpoint(args)
             local a = args[i]
             if a == "api" then
                 found_api = true
-            elseif found_api and (a == "-X" or a == "--method" or a == "-R" or a == "--repo" or a == "-C") then
+            elseif found_api and api_value_flags[a] then
                 -- skip flag and its value
                 skip_next = true
             elseif found_api and a:sub(1, 1) ~= "-" then
                 return a
             end
+        end
+    end
+    return nil
+end
+
+-- Extract the value of --input, if present. Returns nil when absent.
+local function extract_input_value(args)
+    for i = 1, #args do
+        local a = args[i]
+        if a == "--input" then
+            if i + 1 <= #args then
+                return args[i + 1]
+            end
+            return nil
+        end
+        if a:sub(1, 8) == "--input=" then
+            return a:sub(9)
         end
     end
     return nil
@@ -143,13 +206,21 @@ function transform(command, args, working_dir, worker_context)
         fail("blocked: gh " .. top .. " is not allowed")
     end
 
-    -- Reject --body-file / -F for pr subcommands: gh runs on the host and
-    -- cannot read worker files, and stdin is not forwarded, so both the path
-    -- and stdin ("-") forms fail with confusing errors. Steer to inline --body.
+    -- Reject --body-file / -F <path> for pr subcommands: gh runs on the host
+    -- and cannot read worker files, so a worker path fails with a confusing
+    -- "no such file or directory". The stdin form ("-") is fine because gh is
+    -- a bidi host-exec command and stdin is forwarded.
     if top == "pr" then
-        for _, a in ipairs(args) do
-            if a == "--body-file" or a == "-F" or a:sub(1, 12) == "--body-file=" then
-                fail("blocked flag: " .. a .. " (gh runs on the host and cannot read worker files; use --body \"$(cat file)\" instead)")
+        for i = 1, #args do
+            local a = args[i]
+            local value = nil
+            if a == "--body-file" or a == "-F" then
+                value = args[i + 1]
+            elseif a:sub(1, 12) == "--body-file=" then
+                value = a:sub(13)
+            end
+            if value ~= nil and value ~= "-" then
+                fail("blocked flag: " .. a .. " " .. value .. " (gh runs on the host and cannot read worker files; use --body \"$(cat file)\" or pipe it: " .. a .. " - < file)")
             end
         end
     end
@@ -160,6 +231,15 @@ function transform(command, args, working_dir, worker_context)
 
         if method == "DELETE" then
             fail("blocked: gh api with DELETE method is not allowed")
+        end
+
+        -- --input <path> cannot work: gh runs on the host and cannot read the
+        -- worker filesystem. --input - reads forwarded stdin and is the
+        -- supported way to send a nested JSON body (e.g. a review's
+        -- comments[] array, which flat -f/-F fields cannot express).
+        local input_value = extract_input_value(args)
+        if input_value ~= nil and input_value ~= "-" then
+            fail("blocked flag: --input " .. input_value .. " (gh runs on the host and cannot read worker files; pipe it instead: --input - < " .. input_value .. ")")
         end
 
         if method == "POST" or method == "PATCH" or method == "PUT" then
