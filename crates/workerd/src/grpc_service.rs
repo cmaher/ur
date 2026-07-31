@@ -45,7 +45,42 @@ pub struct WorkerDaemonServiceImpl {
     pub dispatch_ticket_id: Arc<Mutex<Option<String>>>,
 }
 
+/// How long to wait before typing into the agent session from a hook-driven RPC.
+///
+/// Long enough for Claude Code to finish running the hook and return to its
+/// prompt, short enough to stay imperceptible. See [`spawn_deferred_send`].
+///
+/// [`spawn_deferred_send`]: WorkerDaemonServiceImpl::spawn_deferred_send
+const HOOK_RETURN_GRACE: Duration = Duration::from_millis(750);
+
 impl WorkerDaemonServiceImpl {
+    /// Fire-and-forget: type text into the agent session once the hook that
+    /// triggered this RPC has returned.
+    ///
+    /// `NotifyIdle` is driven by Claude Code's `Stop` hook, which Claude Code
+    /// runs synchronously and *waits for* — so despite the name, the agent is
+    /// not yet idle while this RPC is being served. Text typed at that point
+    /// arrives before Claude Code is back at its prompt and lands in its
+    /// queued-message buffer instead of being executed, which means dispatched
+    /// slash commands like `/clear` never run.
+    ///
+    /// Deferring the send fixes that: the RPC returns immediately, the hook
+    /// completes, Claude Code returns to its prompt, and only then is the text
+    /// typed in.
+    fn spawn_deferred_send(&self, text: String, kind: &'static str) {
+        tokio::spawn(async move {
+            tokio::time::sleep(HOOK_RETURN_GRACE).await;
+
+            let session = tmux::Session::agent();
+            match session.send_keys(&text).await {
+                Ok(()) => info!(kind, text = text.as_str(), "sent text to agent session"),
+                Err(e) => {
+                    error!(error = %e, kind, text = text.as_str(), "failed to send text to agent session");
+                }
+            }
+        });
+    }
+
     /// Fire-and-forget: forward idle status to the ur-server.
     fn forward_idle_to_server(&self) {
         let addr = format!("http://{}", self.server_addr);
@@ -233,7 +268,8 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
     ) -> Result<Response<SendMessageResponse>, Status> {
         let req = request.into_inner();
         let message = &req.message;
-        let submit = req.submit;
+        // Unset means submit — see the field comment in workerd.proto.
+        let submit = req.submit.unwrap_or(true);
         info!(message, submit, "SendMessage received");
 
         let session = tmux::Session::agent();
@@ -278,10 +314,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
             );
             drop(buf);
 
-            let session = tmux::Session::agent();
-            if let Err(e) = session.send_keys(&command).await {
-                error!(error = %e, "tmux send-keys failed for buffered command");
-            }
+            self.spawn_deferred_send(command, "buffered command");
             return Ok(Response::new(NotifyIdleResponse {}));
         }
 
@@ -329,10 +362,7 @@ impl WorkerDaemonService for WorkerDaemonServiceImpl {
                  - Run `workertools status pause-nudge` if you are waiting on a background job or agent\n\
                  - Run `workertools status request-human \"<reason>\"` if you need help"
             );
-            let session = tmux::Session::agent();
-            if let Err(e) = session.send_keys(&nudge_message).await {
-                error!(error = %e, "tmux send-keys failed for nudge message");
-            }
+            self.spawn_deferred_send(nudge_message, "nudge message");
             return Ok(Response::new(NotifyIdleResponse {}));
         }
 

@@ -16,9 +16,12 @@ service WorkerDaemonService {
 
 message SendMessageRequest {
   string message = 1;
-  // When true (or unset), workerd appends an Enter keypress after the literal
+  // When true or unset, workerd appends an Enter keypress after the literal
   // text via tmux send-keys. Set to false to send text without submitting.
-  bool submit = 3;
+  // Declared `optional` so an unset field is distinguishable from an explicit
+  // false — a plain proto3 bool would default to false and silently mean
+  // "do not submit".
+  optional bool submit = 3;
 }
 
 message SendMessageResponse {

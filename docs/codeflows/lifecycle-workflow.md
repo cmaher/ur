@@ -176,12 +176,17 @@ Served by the `workerd` daemon inside each worker container on port 9120.
 - Sets `lifecycle_step = "implementing"`
 - Pops and sends `/clear` to tmux immediately
 
-**`NotifyIdle()`** -- Called by Claude Code hooks when agent goes idle.
+**`NotifyIdle()`** -- Called by Claude Code's `Stop` hook as the agent's turn ends.
 - 4-state machine:
   1. Buffer has commands → pop and send to tmux
   2. Buffer empty + step_complete → send `WorkflowStepComplete` RPC to server
   3. Buffer empty + !step_complete + lifecycle_step set → nudge agent
   4. No active dispatch → forward idle to server (`UpdateAgentStatus`)
+- Cases 1 and 3 type into the agent session via `spawn_deferred_send`, **not** inline.
+  Claude Code runs the `Stop` hook synchronously and waits for it, so the agent is not yet
+  back at its prompt while this RPC is being served; text sent inline lands in Claude Code's
+  queued-message buffer and a queued slash command never executes. Deferring the send lets
+  the RPC return, the hook finish, and the prompt come back first.
 
 **`StepComplete()`** -- Called by `workertools status step-complete` when agent finishes work.
 - Sets `step_complete = true` on the `DispatchBuffer`

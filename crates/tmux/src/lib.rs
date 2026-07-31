@@ -1,7 +1,29 @@
-use std::process::ExitStatus;
+use std::{process::ExitStatus, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+/// How long to wait after typing literal text before pressing Enter.
+///
+/// Claude Code does not reliably submit when the text and the Enter arrive
+/// back-to-back: the Enter can be absorbed by the still-rendering input box,
+/// leaving the typed command sitting unsubmitted. Letting the app render the
+/// typed text first makes submission deterministic.
+const SUBMIT_SETTLE: Duration = Duration::from_millis(400);
+
+/// How long to give the input box to drain after an Enter before reading it back
+/// to decide whether the submission took.
+const SUBMIT_CONFIRM_DELAY: Duration = Duration::from_millis(500);
+
+/// How many extra Enter presses to attempt when the input box has not drained.
+const SUBMIT_RETRIES: usize = 2;
+
+/// Prefix Claude Code renders at the start of its input box line.
+const PROMPT_CARET: char = '❯';
+
+/// Number of leading characters of the sent text used to recognise it in the
+/// input box. Long text wraps across pane lines, so only the head is checked.
+const SUBMIT_PROBE_LEN: usize = 40;
 
 /// A handle to a tmux session, providing typed operations over the tmux CLI.
 #[derive(Debug, Clone)]
@@ -97,16 +119,136 @@ impl Session {
             })
     }
 
-    /// Send literal text to the session via `send-keys -l` (literal mode).
-    /// The `-l` flag tells tmux to treat the argument as literal text, not key names.
-    /// A separate `Enter` key is sent afterwards to submit the input.
+    /// Type literal text into the session and submit it.
+    ///
+    /// The text goes in via `send-keys -l` (literal mode, so the argument is
+    /// treated as text rather than key names), then a separate `Enter` key
+    /// submits it. Three details make this reliable against Claude Code:
+    ///
+    /// 1. A stale non-empty input box is cleared first, so the text is never
+    ///    appended to whatever was already sitting there.
+    /// 2. [`SUBMIT_SETTLE`] elapses between the text and the Enter — an Enter
+    ///    that arrives while the input box is still rendering gets absorbed.
+    /// 3. The submission is confirmed by checking the input box drained, and
+    ///    Enter is re-sent if it did not.
+    ///
+    /// Panes that are not running Claude Code have no recognisable input box;
+    /// there the pre-clear and confirmation steps are skipped and this degrades
+    /// to a plain type-then-Enter.
     pub async fn send_keys(&self, text: &str) -> Result<()> {
-        run_tmux(&["send-keys", "-t", &self.name, "-l", text])
-            .await
-            .with_context(|| format!("failed to send keys to tmux session '{}'", self.name))?;
+        self.clear_input().await?;
+        self.send_keys_no_enter(text).await?;
+        tokio::time::sleep(SUBMIT_SETTLE).await;
+        self.send_enter().await?;
+        self.confirm_submitted(text).await
+    }
+
+    /// Send a single `Enter` keypress.
+    pub async fn send_enter(&self) -> Result<()> {
         run_tmux(&["send-keys", "-t", &self.name, "Enter"])
             .await
             .with_context(|| format!("failed to send Enter to tmux session '{}'", self.name))
+    }
+
+    /// Verify the input box drained after an Enter, re-pressing Enter if it did
+    /// not. Returns an error if the text is still sitting in the box after
+    /// [`SUBMIT_RETRIES`] extra presses.
+    ///
+    /// The caller has already pressed Enter once, so each pass here waits for
+    /// the pane to catch up before reading it — checking without settling first
+    /// races the redraw and produces pointless extra presses.
+    async fn confirm_submitted(&self, text: &str) -> Result<()> {
+        let probe = submit_probe(text);
+        if probe.is_empty() {
+            // Nothing recognisable to look for — every line "contains" it.
+            return Ok(());
+        }
+
+        for extra_presses in 0..=SUBMIT_RETRIES {
+            tokio::time::sleep(SUBMIT_CONFIRM_DELAY).await;
+
+            if !self.input_holds(&probe).await? {
+                log_submitted(&self.name, extra_presses);
+                return Ok(());
+            }
+
+            if extra_presses < SUBMIT_RETRIES {
+                self.send_enter().await?;
+            }
+        }
+
+        bail!(
+            "text still unsubmitted in session '{}' after {} Enter presses (input box holds '{}')",
+            self.name,
+            SUBMIT_RETRIES + 1,
+            probe
+        )
+    }
+
+    /// Whether the input box still holds `probe`.
+    ///
+    /// A pane with no recognisable input box counts as not holding it: there is
+    /// nothing to confirm against, so the send is taken at face value.
+    async fn input_holds(&self, probe: &str) -> Result<bool> {
+        let Some(line) = self.input_line().await? else {
+            return Ok(false);
+        };
+
+        let holds = line.contains(probe);
+        if holds {
+            debug!(
+                session = self.name,
+                input = line.as_str(),
+                "text still in input box after Enter"
+            );
+        }
+        Ok(holds)
+    }
+
+    /// Clear the input box if it holds text, so a subsequent send starts clean.
+    ///
+    /// `C-c` is Claude Code's clear-input binding. It is sent at most once, and
+    /// only when the box is non-empty, because a second `C-c` on an already
+    /// empty box starts Claude Code's exit confirmation.
+    async fn clear_input(&self) -> Result<()> {
+        let Some(stale) = self.input_line().await?.filter(|line| !line.is_empty()) else {
+            return Ok(());
+        };
+
+        warn!(
+            session = self.name,
+            input = stale.as_str(),
+            "input box not empty before send, clearing it"
+        );
+        run_tmux(&["send-keys", "-t", &self.name, "C-c"])
+            .await
+            .with_context(|| format!("failed to clear input in tmux session '{}'", self.name))?;
+        tokio::time::sleep(SUBMIT_SETTLE).await;
+
+        if let Some(remaining) = self.input_line().await?.filter(|line| !line.is_empty()) {
+            warn!(
+                session = self.name,
+                input = remaining.as_str(),
+                "input box still not empty after clear, sending anyway"
+            );
+        }
+        Ok(())
+    }
+
+    /// Return the contents of Claude Code's input box, trimmed.
+    ///
+    /// `None` means no input box was found in the pane — either Claude Code is
+    /// not running, or it is rendering something else (a dialog, a menu).
+    /// `Some("")` means the box is present and empty.
+    async fn input_line(&self) -> Result<Option<String>> {
+        Ok(parse_input_line(&self.capture_pane().await?))
+    }
+
+    /// Capture the visible contents of the session's pane as text.
+    pub async fn capture_pane(&self) -> Result<String> {
+        run_tmux_stdout(&["capture-pane", "-p", "-t", &self.name])
+            .await
+            .with_context(|| format!("failed to capture pane for tmux session '{}'", self.name))
     }
 
     /// Send literal text to the session via `send-keys -l` (literal mode) without
@@ -187,6 +329,44 @@ impl Session {
             self.name.clone(),
         ]
     }
+}
+
+/// Record a confirmed submission, promoting to `info` when the first Enter was
+/// not enough — that is the signal that submission timing is drifting again.
+fn log_submitted(session: &str, extra_presses: usize) {
+    if extra_presses > 0 {
+        info!(
+            session,
+            extra_presses, "submission needed extra Enter presses"
+        );
+    } else {
+        debug!(session, "submission confirmed");
+    }
+}
+
+/// Extract the contents of Claude Code's input box from captured pane text.
+///
+/// The box is the *last* caret line in the pane: earlier caret lines are
+/// transcript echoes of messages that were already submitted. Returns `None`
+/// when the pane has no caret line at all.
+fn parse_input_line(pane: &str) -> Option<String> {
+    pane.lines()
+        .filter_map(|line| line.strip_prefix(PROMPT_CARET))
+        .next_back()
+        .map(|content| content.trim().to_string())
+}
+
+/// Build the snippet used to recognise sent text still sitting in the input box.
+///
+/// Only the first line is usable: a multi-line send renders across several pane
+/// lines and only the first carries the prompt caret. The snippet is capped at
+/// [`SUBMIT_PROBE_LEN`] characters so wrapping cannot truncate it away.
+fn submit_probe(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("").trim();
+    first_line
+        .chars()
+        .take(SUBMIT_PROBE_LEN)
+        .collect::<String>()
 }
 
 /// Run a tmux command and check for success.
@@ -293,6 +473,68 @@ mod tests {
             err_msg.contains("test-session") || err_msg.contains("tmux"),
             "unexpected error: {err_msg}"
         );
+    }
+
+    /// An idle Claude Code prompt renders the caret followed by a non-breaking
+    /// space, which must read as an empty box (not as stale input).
+    #[test]
+    fn test_parse_input_line_idle_box_is_empty() {
+        let pane = "✻ Baked for 3s\n\
+                    ─────────\n\
+                    ❯\u{a0}\n\
+                    ─────────\n\
+                      -- INSERT -- ⏵⏵ bypass permissions on";
+        assert_eq!(parse_input_line(pane).as_deref(), Some(""));
+    }
+
+    /// Submitted messages stay on screen as caret-prefixed transcript echoes, so
+    /// the box must be read from the *last* caret line, not the first.
+    #[test]
+    fn test_parse_input_line_ignores_transcript_echoes() {
+        let pane = "❯ /clear\n\
+                    ❯ an earlier message\n\
+                    ─────────\n\
+                    ❯ /implement ur-abcde\n\
+                    ─────────\n\
+                      -- INSERT --";
+        assert_eq!(
+            parse_input_line(pane).as_deref(),
+            Some("/implement ur-abcde")
+        );
+    }
+
+    /// A pane that is not running Claude Code (e.g. a bare shell) has no input
+    /// box, which must be distinguishable from an empty one.
+    #[test]
+    fn test_parse_input_line_absent_when_no_prompt() {
+        assert_eq!(parse_input_line("worker@host:/workspace$ \n"), None);
+    }
+
+    #[test]
+    fn test_submit_probe_uses_first_line_only() {
+        let probe = submit_probe("first line\nsecond line");
+        assert_eq!(probe, "first line");
+    }
+
+    #[test]
+    fn test_submit_probe_caps_length() {
+        let probe = submit_probe(&"x".repeat(SUBMIT_PROBE_LEN * 2));
+        assert_eq!(probe.chars().count(), SUBMIT_PROBE_LEN);
+    }
+
+    /// A probe built from blank text would match every line, so it must come
+    /// back empty and let the caller skip confirmation entirely.
+    #[test]
+    fn test_submit_probe_blank_text_is_empty() {
+        assert!(submit_probe("   \n  ").is_empty());
+        assert!(submit_probe("").is_empty());
+    }
+
+    /// Multi-byte characters must not be split mid-character when capping.
+    #[test]
+    fn test_submit_probe_handles_multibyte() {
+        let probe = submit_probe(&"é".repeat(SUBMIT_PROBE_LEN + 10));
+        assert_eq!(probe.chars().count(), SUBMIT_PROBE_LEN);
     }
 
     #[tokio::test]

@@ -818,7 +818,8 @@ impl CoreService for CoreServiceHandler {
             worker.worker_id.clone(),
         );
         workerd_client
-            .send_message(&req.message, req.submit)
+            // Unset means submit — see the field comment in core.proto.
+            .send_message(&req.message, req.submit.unwrap_or(true))
             .await
             .map_err(|e| CoreError::SendMessageFailed { reason: e })?;
 

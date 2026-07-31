@@ -80,7 +80,7 @@ impl WorkerdClient {
 
         let req = SendMessageRequest {
             message: message.to_string(),
-            submit,
+            submit: Some(submit),
         };
 
         let response = client

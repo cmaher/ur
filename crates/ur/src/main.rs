@@ -250,7 +250,13 @@ enum WorkerCommands {
     /// Show detailed worker information
     Describe { worker_id: Option<String> },
     /// Send a message to a running worker's agent
-    Send { worker_id: String, message: String },
+    Send {
+        worker_id: String,
+        message: String,
+        /// Type the message into the agent's prompt without submitting it
+        #[arg(long = "no-submit")]
+        no_submit: bool,
+    },
     /// Stop a running worker process
     Stop { worker_id: String },
     /// Open the host directory for a running process in VS Code
@@ -993,9 +999,11 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             worker_describe(&mut client, worker_id.as_deref(), output).await
         }
-        WorkerCommands::Send { worker_id, message } => {
-            handle_worker_send(port, output, worker_id, message).await
-        }
+        WorkerCommands::Send {
+            worker_id,
+            message,
+            no_submit,
+        } => handle_worker_send(port, output, worker_id, message, !no_submit).await,
         WorkerCommands::Stop { worker_id } => {
             input::validate_id(&worker_id, "worker_id")?;
             let mut client = connect(port).await?;
@@ -1083,15 +1091,16 @@ async fn handle_worker_send(
     output: &OutputManager,
     worker_id: String,
     message: String,
+    submit: bool,
 ) -> Result<()> {
     input::validate_id(&worker_id, "worker_id")?;
     let mut client = connect(port).await?;
-    info!(worker_id = %worker_id, "sending message to worker");
+    info!(worker_id = %worker_id, submit, "sending message to worker");
     client
         .send_worker_message(SendWorkerMessageRequest {
             worker_id: worker_id.clone(),
             message,
-            ..Default::default()
+            submit: Some(submit),
         })
         .await?;
     if output.is_json() {

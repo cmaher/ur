@@ -18,6 +18,23 @@ Image-specific background processes (e.g., bacon, cargo sweep for rust variant) 
 by the image's entrypoint.sh between `workerd init` and `exec workerd daemon` — NOT by workerd
 itself. This keeps workerd image-agnostic.
 
+## Sending commands to the agent (`NotifyIdle`)
+
+`NotifyIdle` is driven by Claude Code's `Stop` hook (`workertools notify-idle`), which Claude
+Code runs **synchronously and waits for**. So despite the name, the agent is *not yet idle*
+while this RPC is being served, and text typed at that point lands in Claude Code's
+queued-message buffer instead of executing — a queued `/clear` or `/implement` never runs as
+a command. This is the failure mode where dispatched commands appear to be typed but never
+submit.
+
+`spawn_deferred_send` is therefore how anything hook-driven reaches the agent: the RPC returns
+immediately, the hook completes, Claude Code returns to its prompt, and only then
+(`HOOK_RETURN_GRACE`, 750ms later) is the text typed in. Never call `send_keys` inline from
+`NotifyIdle`.
+
+`Implement` / `Design` / `AddressFeedbackTickets` send inline instead — they arrive from the
+server rather than from a hook, so their errors can propagate back to the caller.
+
 Init phase:
 - Copies skills from potential-skills based on `$UR_WORKER_SKILLS` env var
 - Copies strategy-specific CLAUDE.md from potential-claudes based on `$UR_WORKER_CLAUDE` env var
