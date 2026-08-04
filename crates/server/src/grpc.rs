@@ -21,6 +21,7 @@ use workflow_db::model::AgentStatus;
 
 use workflow_db::WorkerRepo;
 
+use crate::pool::SlotClaim;
 use crate::{ProjectRegistry, RepoPoolManager, WorkerId, WorkerManager};
 
 #[derive(Debug, thiserror::Error)]
@@ -135,21 +136,19 @@ impl From<CoreError> for Status {
     }
 }
 
-/// RAII guard that releases the in-memory slot claim when dropped.
+/// Everything `resolve_launch_workspace` settles before a container can be created.
 ///
-/// Created in `launch()` right after `resolve_launch_workspace` succeeds. Ensures
-/// the claim is removed on every exit path — whether launch succeeds, fails, or panics.
-/// On success the slot becomes DB-linked via `link_worker_slot`; on failure the slot
-/// is freed for the next `acquire_slot` call.
-struct SlotClaimReleaser {
-    slot_id: String,
-    pool: crate::RepoPoolManager,
-}
-
-impl Drop for SlotClaimReleaser {
-    fn drop(&mut self) {
-        self.pool.release_slot_claim(&self.slot_id);
-    }
+/// `slot_claim` is owned by this struct so that dropping it — on an error path, or when a
+/// launch is cancelled mid-flight — releases the pool slot for the next acquisition.
+struct ResolvedLaunch {
+    workspace_dir: Option<PathBuf>,
+    project_key: String,
+    slot_claim: Option<SlotClaim>,
+    worker_id: crate::WorkerId,
+    resolved_skills: Vec<String>,
+    strategy: crate::WorkerStrategy,
+    model: String,
+    generated_process_id: Option<String>,
 }
 
 /// Shared worker launch and stop logic used by both the host-facing
@@ -315,25 +314,15 @@ impl LaunchManager {
     ///
     /// Extracted from `launch` to keep method body within the line limit.
     ///
-    /// Returns `(workspace_dir, project_key, slot_id, worker_id, resolved_skills, strategy, model,
-    /// generated_process_id)`. `generated_process_id` is `Some` for Manual mode (auto-generated
-    /// from the slot name) and `None` for all other modes (caller uses `req.worker_id`).
+    /// `slot_claim` carries ownership of the in-flight pool claim: returning it (rather than
+    /// a bare slot ID) means any `?` in this method — or a cancelled launch — drops the claim
+    /// and returns the slot to the pool. `generated_process_id` is `Some` for Manual mode
+    /// (auto-generated from the slot name) and `None` for all other modes (caller uses
+    /// `req.worker_id`).
     async fn resolve_launch_workspace(
         &self,
         req: &WorkerLaunchRequest,
-    ) -> Result<
-        (
-            Option<PathBuf>,
-            String,
-            Option<String>,
-            crate::WorkerId,
-            Vec<String>,
-            crate::WorkerStrategy,
-            String,
-            Option<String>,
-        ),
-        Status,
-    > {
+    ) -> Result<ResolvedLaunch, Status> {
         let (strategy, resolved_skills, model) = self
             .worker_manager
             .resolve_mode(&req.mode)
@@ -341,7 +330,7 @@ impl LaunchManager {
 
         let effective_project_key = self.resolve_effective_project_key(req);
 
-        let (workspace_dir, project_key, slot_id) =
+        let (workspace_dir, project_key, slot_claim) =
             if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
                 info!(
                     worker_id = req.worker_id,
@@ -355,7 +344,7 @@ impl LaunchManager {
                     None,
                 )
             } else if !effective_project_key.is_empty() {
-                let (slot_path, slot_id) = strategy
+                let (slot_path, slot_claim) = strategy
                     .acquire_slot(&self.repo_pool_manager, &effective_project_key)
                     .await
                     .map_err(|e| CoreError::PoolSlotFailed {
@@ -365,11 +354,11 @@ impl LaunchManager {
                     worker_id = req.worker_id,
                     project_key = %effective_project_key,
                     slot_path = %slot_path.display(),
-                    slot_id = ?slot_id,
+                    slot_id = ?slot_claim.as_ref().map(SlotClaim::slot_id),
                     strategy = strategy.name(),
                     "acquired pool slot"
                 );
-                (Some(slot_path), effective_project_key, slot_id)
+                (Some(slot_path), effective_project_key, slot_claim)
             } else if !req.workspace_dir.is_empty() {
                 (Some(PathBuf::from(&req.workspace_dir)), String::new(), None)
             } else {
@@ -398,7 +387,7 @@ impl LaunchManager {
         // Branch checkout is skipped for Manual — it manages its own workspace
         // and does not own a ticket branch.
         if strategy != crate::WorkerStrategy::Manual
-            && let (Some(slot_path), true) = (&workspace_dir, slot_id.is_some())
+            && let (Some(slot_path), true) = (&workspace_dir, slot_claim.is_some())
         {
             self.repo_pool_manager
                 .checkout_branch(slot_path, &worker_id.to_string())
@@ -413,16 +402,16 @@ impl LaunchManager {
             );
         }
 
-        Ok((
+        Ok(ResolvedLaunch {
             workspace_dir,
             project_key,
-            slot_id,
+            slot_claim,
             worker_id,
             resolved_skills,
             strategy,
             model,
             generated_process_id,
-        ))
+        })
     }
 
     /// Extracted from `launch` to keep method body within the line limit.
@@ -534,23 +523,20 @@ impl LaunchManager {
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
     pub async fn launch(&self, req: WorkerLaunchRequest) -> Result<(String, String), Status> {
-        let (
+        // `slot_claim` is held for the rest of this method: it keeps the slot reserved until
+        // `post_launch_setup` links it to the worker, and releases it on every exit path —
+        // success, error, or cancellation.
+        let ResolvedLaunch {
             workspace_dir,
             project_key,
-            slot_id,
+            slot_claim,
             worker_id,
             resolved_skills,
             strategy,
             model,
             generated_process_id,
-        ) = self.resolve_launch_workspace(&req).await?;
-
-        // Guard releases the slot claim on any exit path (success or error).
-        // On success: DB link via link_worker_slot takes over; on failure: slot is freed.
-        let _claim_guard = slot_id.as_ref().map(|id| SlotClaimReleaser {
-            slot_id: id.clone(),
-            pool: self.repo_pool_manager.clone(),
-        });
+        } = self.resolve_launch_workspace(&req).await?;
+        let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
 
         // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
         let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());

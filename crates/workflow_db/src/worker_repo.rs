@@ -287,33 +287,35 @@ impl WorkerRepo {
         Ok(rows.into_iter().map(slot_from_row).collect())
     }
 
-    /// Find the first available exclusive slot for a project (not linked to an active worker).
+    /// List every available exclusive slot for a project (not linked to an active worker),
+    /// oldest first.
     ///
     /// Only returns slots with numeric names (exclusive pool slots like "0", "1", "2").
     /// Shared slots (name = "shared") are excluded — they are managed separately by
-    /// `acquire_shared_slot` and should never be assigned to code workers.
-    pub async fn find_available_slot(
-        &self,
-        project_key: &str,
-    ) -> Result<Option<Slot>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String)>(
+    /// `acquire_shared_slot` and should never be assigned to code workers. Non-numeric
+    /// names are excluded too: dotfile directories such as `.claude` live alongside the
+    /// slot directories in the pool root and must never be handed to a worker.
+    ///
+    /// All candidates are returned rather than just the first so callers can skip slots
+    /// that are mid-acquisition instead of giving up on the pool entirely.
+    pub async fn find_available_slots(&self, project_key: &str) -> Result<Vec<Slot>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
             "SELECT s.id, s.project_key, s.slot_name, s.host_path, s.created_at, s.updated_at
              FROM slot s
              WHERE s.project_key = $1
-               AND s.slot_name != 'shared'
+               AND s.slot_name ~ '^[0-9]+$'
                AND s.id NOT IN (
                  SELECT ws.slot_id FROM worker_slot ws
                  INNER JOIN worker w ON w.worker_id = ws.worker_id
                  WHERE w.container_status IN ('provisioning', 'running', 'stopping')
                )
-             ORDER BY s.created_at ASC
-             LIMIT 1",
+             ORDER BY s.created_at ASC",
         )
         .bind(project_key)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(row.map(slot_from_row))
+        Ok(rows.into_iter().map(slot_from_row).collect())
     }
 
     /// Count slots that have an active worker linked via worker_slot.
