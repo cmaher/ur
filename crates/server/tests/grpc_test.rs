@@ -100,6 +100,7 @@ fn make_test_config(dir: &Path, workspace: &Path) -> (ur_config::Config, ur_conf
         projects: std::collections::HashMap::new(),
         tui: ur_config::TuiConfig::default(),
         global_skills: ur_config::GlobalSkillsConfig::default(),
+        workspace_brain_dir: None,
     };
     (config, network_config)
 }
@@ -160,6 +161,7 @@ async fn make_grpc_handler(
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config: network_config.clone(),
+        workspace_brain_dir: None,
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -285,6 +287,7 @@ async fn make_worker_handler() -> (
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config,
+        workspace_brain_dir: None,
     };
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {

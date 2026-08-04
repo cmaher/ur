@@ -16,6 +16,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 | `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
+| `workspace_brain_dir` | template path | — | Brain directory mounted read-write at `/brain` for workers launched **without a project** (`-w` workspace mode). `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected. No convention fallback — unset means no `/brain` for project-less workers. See [project-file-mounting.md](project-file-mounting.md) |
 
 ## `[skills]` Section
 
@@ -140,7 +141,7 @@ WorkerConfig
 | ProjectConfig field | Passed to WorkerConfig | Consumed by RunOptsBuilder | Notes |
 |--------------------|-----------------------|---------------------------|-------|
 | `mounts` | yes | `add_mounts()` | Full pipeline: config → gRPC → WorkerConfig → RunOptsBuilder |
-| `brain_dir` | yes | `add_brain_dir()` | Full pipeline: config → gRPC → WorkerConfig → `resolve_brain_dir()` → RunOptsBuilder; read-write mount at `/brain`, convention fallback + no-project rule |
+| `brain_dir` | yes | `add_brain_dir()` | Full pipeline: config → gRPC → WorkerConfig → `resolve_brain_dir()` → RunOptsBuilder; read-write mount at `/brain`, convention fallback. Project-less workers fall back to the top-level `workspace_brain_dir` (carried on `WorkerConfig.workspace_brain_dir`, set by `LaunchManager`) |
 | `hostexec` | no (handled separately) | — | Used by HostExecServiceHandler for allowlist |
 | (hook overlay) | via project_key + host_config_dir | `add_host_hooks_overlay()` | Convention paths; no config fields |
 

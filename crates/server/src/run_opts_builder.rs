@@ -5,7 +5,7 @@ use ur_rpc::proto::builder_container::{
     EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap, Volume as ProtoVolume,
 };
 
-use crate::worker::ensure_file_exists;
+use crate::worker::{convention_check_path, ensure_file_exists};
 
 /// Builder that accumulates volumes, env vars, and config to produce a [`LaunchWorkerRequest`].
 ///
@@ -184,10 +184,14 @@ impl RunOptsBuilder {
     /// - Otherwise, template-resolves via [`resolve_template_path`]. The result must be a
     ///   [`ResolvedTemplatePath::HostPath`]; a `ProjectRelative` result returns `Err` because
     ///   `%PROJECT%` is rejected for `brain_dir` at config validation time.
-    /// - Pre-creates the host directory and chowns it to [`ur_config::WORKER_UID`] so the
+    /// - Pre-creates the directory and chowns it to [`ur_config::WORKER_UID`] so the
     ///   non-root worker user can write to it (Docker would otherwise create the dir as root).
     ///   Errors from create/chown propagate as `Err(...)` — a missing or unwritable brain dir
-    ///   would cause the mount to silently fail, so we surface the error early.
+    ///   would cause the mount to silently fail, so we surface the error early. The create and
+    ///   chown target the *container-visible* path ([`convention_check_path`]): when the server
+    ///   runs inside a container, the host path is not reachable from here, and creating it
+    ///   would only make a stray directory in the server's own filesystem while leaving the
+    ///   real host dir to be auto-created by Docker as root.
     /// - Pushes a single read-write volume mount: host path → `/brain`. Read-write because
     ///   `/brain:init` writes the scaffold and `working/` is worker scratch.
     /// - No env var is added; skills reference the fixed `/brain` path directly.
@@ -212,14 +216,19 @@ impl RunOptsBuilder {
             }
         };
 
-        std::fs::create_dir_all(&host_path)
-            .map_err(|e| format!("failed to create brain_dir '{}': {e}", host_path.display()))?;
+        let create_path = convention_check_path(&host_path, host_config_dir);
+        std::fs::create_dir_all(&create_path).map_err(|e| {
+            format!(
+                "failed to create brain_dir '{}': {e}",
+                create_path.display()
+            )
+        })?;
         std::os::unix::fs::chown(
-            &host_path,
+            &create_path,
             Some(ur_config::WORKER_UID),
             Some(ur_config::WORKER_UID),
         )
-        .map_err(|e| format!("failed to chown brain_dir '{}': {e}", host_path.display()))?;
+        .map_err(|e| format!("failed to chown brain_dir '{}': {e}", create_path.display()))?;
 
         let container_path = PathBuf::from("/brain");
         self.volumes.push((host_path, container_path));
@@ -1261,6 +1270,29 @@ mod tests {
         );
         assert_eq!(req.volumes[0].container_path, "/brain");
         assert!(req.env_vars.is_empty(), "no env vars should be added");
+    }
+
+    /// A `%URCONFIG%`-based brain dir (the shape a `workspace_brain_dir` usually takes)
+    /// is created under the config dir and mounted from that same path.
+    ///
+    /// Linux-only for the same `chown` reason as the test above.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn add_brain_dir_urconfig_template_creates_dir_under_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host_config_dir = tmp.path();
+        let brain_dir = Some("%URCONFIG%/brain".to_string());
+
+        let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
+            .add_brain_dir(&brain_dir, host_config_dir)
+            .unwrap()
+            .build();
+
+        let expected = host_config_dir.join("brain");
+        assert!(expected.exists(), "brain dir should be created");
+        assert_eq!(req.volumes.len(), 1, "expected one volume mount");
+        assert_eq!(req.volumes[0].host_path, expected.display().to_string());
+        assert_eq!(req.volumes[0].container_path, "/brain");
     }
 
     #[test]

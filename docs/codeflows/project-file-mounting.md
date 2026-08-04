@@ -49,6 +49,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claud
 | `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` | yes (`:ro`) |
 | `memory_dir` | `/home/worker/.claude/projects/-workspace/memory` | (none) | no |
 | `brain_dir` | `/brain` | (none) | no |
+| `workspace_brain_dir` (top-level) | `/brain` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
 | host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) | yes (`:ro`) |
 | host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) | yes (`:ro`) |
@@ -142,11 +143,41 @@ This means creating `~/.ur/projects/ur/brain/` on the host is enough — no conf
 
 **Template restriction**: like `memory_dir`, `%PROJECT%` is rejected for `brain_dir` at config validation time — the brain must be project-stable, not workspace-relative. Only `%URCONFIG%/...` and absolute paths are valid.
 
-**No-project rule**: `brain_dir` is only mounted when a project key is associated with the worker. Workers launched without a project (`-w` workspace mode with no project config) never get a `brain_dir` mount.
+**No-project rule**: the per-project `brain_dir` and its convention fallback only apply when a project key is associated with the worker. Workers launched without a project fall back to the top-level `workspace_brain_dir` instead (see below).
 
-**Auto-create and chown**: When `brain_dir` resolves to a host path, `add_brain_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount, so the non-root worker user can write to the directory on first use.
+**Auto-create and chown**: When `brain_dir` resolves to a host path, `add_brain_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount, so the non-root worker user can write to the directory on first use. The create/chown target the *container-visible* path (`convention_check_path`) while the mount source stays the host path — inside the server container the host path is not reachable, so creating it there would leave a stray directory in the server's filesystem and let Docker auto-create the real host dir as root.
 
 Source: `resolve_brain_dir()` in `crates/server/src/worker.rs`, `add_brain_dir()` in `crates/server/src/run_opts_builder.rs`
+
+## workspace_brain_dir (Project-Less Workers)
+
+`workspace_brain_dir` is a **top-level** `ur.toml` key (not per-project) holding the brain for workers that have no project — i.e. `ur worker launch -w <path>` where no project key is derived. It mounts read-write at the same `/brain` path, so the `brain` and `brain:init` skills (which are in `common_skills()` for every strategy) work identically in workspace mode.
+
+```toml
+workspace_brain_dir = "%URCONFIG%/brain"
+```
+
+Full resolution order in `resolve_brain_dir()`:
+
+```
+1. projects.<key>.brain_dir set          → use it
+2. project_key empty (-w, no project)    → workspace_brain_dir, or None when unset
+3. <config_dir>/projects/<key>/brain/    → use it if it exists on disk
+4. None                                  → no /brain mount
+```
+
+Consequences of that ordering:
+
+- A project's own brain always wins; the workspace brain never overrides it.
+- A project worker whose brain is unconfigured gets **no** brain — it does not fall through to the workspace brain. The workspace default is for project-less workers only.
+- `-w <path> -p <project>` is a project worker (`project_key` is non-empty), so it uses the project rules.
+- There is **no convention fallback** for `workspace_brain_dir`: it must be set explicitly, so upgrading never starts mounting a brain nobody configured. The configured directory itself is auto-created (and chowned) on first launch.
+
+**Template restriction**: `%PROJECT%` is rejected at config load time — a workspace-mode worker has no project to resolve against. Only `%URCONFIG%/...` and absolute paths are valid.
+
+**Plumbing**: `LaunchManager.workspace_brain_dir` (from `Config::workspace_brain_dir`) is copied onto `WorkerConfig.workspace_brain_dir` in `build_worker_config()`, and consumed by `resolve_brain_dir()` — the single place the decision is made.
+
+Source: `Config::workspace_brain_dir` in `crates/ur_config/src/lib.rs`, `LaunchManager` in `crates/server/src/grpc.rs`, `resolve_brain_dir()` in `crates/server/src/worker.rs`
 
 ## Container Mounts
 
@@ -175,6 +206,7 @@ ur-server: CoreServiceHandler::worker_launch()   [server/src/grpc.rs]
   │   └─ Extracts: claude_md, mounts, ports
   │
   ├─ Builds WorkerConfig                         [server/src/worker.rs]
+  │   └─ Copies LaunchManager.workspace_brain_dir onto WorkerConfig
   │
   ▼
 WorkerManager::run_and_record()                  [server/src/worker.rs]
@@ -190,6 +222,8 @@ WorkerManager::run_and_record()                  [server/src/worker.rs]
   │   ├─ .add_project_claude_md()      → resolve_template_path → mount or env var
   │   ├─ .add_memory_dir()             → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
   │   ├─ .add_brain_dir()              → create_dir_all + chown → /brain (read-write)
+  │   │                                  (project brain, or workspace_brain_dir when
+  │   │                                   the worker has no project)
   │   ├─ .add_mounts()                 → resolve_template_path → mount for each entry
   │   ├─ .add_context_repos()          → /context/<key>:ro mounts
   │   └─ .build() → RunOpts

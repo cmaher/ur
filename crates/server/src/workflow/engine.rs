@@ -326,6 +326,7 @@ mod tests {
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
             global_skills: ur_config::GlobalSkillsConfig::default(),
+            workspace_brain_dir: None,
         })
     }
 

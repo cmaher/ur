@@ -10,6 +10,7 @@ Debian bookworm-slim container image for agent workers. Must work with Docker an
 - `workerd` handles initialization (skills, git hooks, hostexec shims), creates the tmux session, launches Claude Code, and serves gRPC
 - `workertools` provides the `host-exec` subcommand used by shims to forward commands to the server via gRPC
 - Workers reach the Squid forward proxy at `ur-squid:3128` via Docker DNS; `HTTP_PROXY`/`HTTPS_PROXY` env vars are set by the server at launch
+- `yq` is Debian's package (the Python jq wrapper, which also provides `xq`/`tomlq`) — **not** mikefarah's Go binary. Queries use jq syntax over YAML (`yq '.a.b' f.yaml`); the Go-only forms (`yq -i '.a = "b"' f.yaml`, `yq e`, `yq eval`) are not available. For YAML output pass `-y`
 
 ## Running `gh` and `git` (host-exec)
 

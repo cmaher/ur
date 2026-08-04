@@ -350,6 +350,7 @@ fn config_with_projects(
         projects,
         tui: ur_config::TuiConfig::default(),
         global_skills: ur_config::GlobalSkillsConfig::default(),
+        workspace_brain_dir: None,
     })
 }
 
@@ -401,6 +402,7 @@ fn dummy_launch_manager(
         ticket_repo,
         workflow_repo,
         network_config: config.network.clone(),
+        workspace_brain_dir: None,
     }
 }
 

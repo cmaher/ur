@@ -280,6 +280,7 @@ async fn init_and_serve(
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config: cfg.network.clone(),
+        workspace_brain_dir: cfg.workspace_brain_dir.clone(),
     };
 
     let grpc_handler = ur_server::grpc::CoreServiceHandler {

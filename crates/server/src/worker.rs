@@ -362,6 +362,10 @@ pub struct WorkerConfig {
     /// Optional brain directory template string from project config.
     /// Mounted read-write at `/brain` inside the container.
     pub brain_dir: Option<String>,
+    /// Optional brain directory template string from the top-level `workspace_brain_dir`
+    /// config key. Only consulted when the worker has no project (`-w` workspace mode);
+    /// see [`resolve_brain_dir`].
+    pub workspace_brain_dir: Option<String>,
 }
 
 /// Orchestrates the full lifecycle of worker processes:
@@ -658,9 +662,10 @@ impl WorkerManager {
             &self.host_config_dir,
         );
 
-        // Resolve project brain dir: use explicit config or convention path
+        // Resolve brain dir: explicit project config, workspace default, or convention path
         let brain_dir = resolve_brain_dir(
             &config.brain_dir,
+            &config.workspace_brain_dir,
             &config.project_key,
             &self.host_config_dir,
         );
@@ -1004,7 +1009,10 @@ fn build_worker_env_vars(
     env_vars
 }
 
-/// Map a host convention path to the path that should be `stat`ed for existence.
+/// Map a host convention path to the path the server can actually touch.
+///
+/// Used both for existence checks and for creating directories the server must
+/// materialize before Docker mounts them (see `RunOptsBuilder::add_brain_dir`).
 ///
 /// Convention resolvers build paths under `host_config_dir` (the *host* path, e.g.
 /// `/Users/me/.ur`) because those paths become Docker volume-mount sources, which the
@@ -1017,7 +1025,7 @@ fn build_worker_env_vars(
 /// the `host_config_dir` prefix onto `UR_CONFIG` so the existence check hits the visible
 /// bind mount. Outside the container (host CLI, tests) the two directories are identical
 /// and the path is returned unchanged. Returned mount sources always use the host path.
-fn convention_check_path(
+pub(crate) fn convention_check_path(
     host_path: &std::path::Path,
     host_config_dir: &std::path::Path,
 ) -> PathBuf {
@@ -1106,14 +1114,19 @@ fn resolve_memory_dir(
     }
 }
 
-/// Resolve the project brain directory path, falling back to the convention path.
+/// Resolve the brain directory path to mount at `/brain`.
 ///
-/// When `brain_dir` is already set (from project config), returns it as-is.
-/// When `brain_dir` is None and a non-empty `project_key` is provided, checks
-/// `<host_config_dir>/projects/<project_key>/brain/` — if it exists, returns
-/// the absolute path as a host path string.
+/// Resolution order:
+/// 1. `brain_dir` set (from project config) → use it as-is.
+/// 2. `project_key` empty (a `-w` workspace-mode launch with no project) →
+///    `workspace_brain_dir` from the top-level config, or None when unset. There is
+///    deliberately no convention fallback here: the workspace brain must be configured
+///    explicitly so an upgrade never starts mounting a brain nobody asked for.
+/// 3. `<host_config_dir>/projects/<project_key>/brain/` if it exists on disk.
+/// 4. None — no brain mount.
 fn resolve_brain_dir(
     brain_dir: &Option<String>,
+    workspace_brain_dir: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
 ) -> Option<String> {
@@ -1121,7 +1134,7 @@ fn resolve_brain_dir(
         return brain_dir.clone();
     }
     if project_key.is_empty() {
-        return None;
+        return workspace_brain_dir.clone();
     }
     let convention_path = host_config_dir
         .join("projects")
@@ -1256,6 +1269,7 @@ mod tests {
             projects: std::collections::HashMap::new(),
             tui: ur_config::TuiConfig::default(),
             global_skills: GlobalSkillsConfig::default(),
+            workspace_brain_dir: None,
         }
     }
 
@@ -1487,6 +1501,7 @@ mod tests {
             extra_skill_mounts: Vec::new(),
             memory_dir: None,
             brain_dir: None,
+            workspace_brain_dir: None,
         }
     }
 
@@ -2056,14 +2071,14 @@ model = "opus"
     #[test]
     fn resolve_brain_dir_returns_explicit_value() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_brain_dir(&Some("/custom/brain".into()), "myproj", tmp.path());
+        let result = resolve_brain_dir(&Some("/custom/brain".into()), &None, "myproj", tmp.path());
         assert_eq!(result.as_deref(), Some("/custom/brain"));
     }
 
     #[test]
     fn resolve_brain_dir_none_empty_project_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_brain_dir(&None, "", tmp.path());
+        let result = resolve_brain_dir(&None, &None, "", tmp.path());
         assert_eq!(result, None);
     }
 
@@ -2073,7 +2088,7 @@ model = "opus"
         let brain_dir = tmp.path().join("projects").join("myproj").join("brain");
         std::fs::create_dir_all(&brain_dir).unwrap();
 
-        let result = resolve_brain_dir(&None, "myproj", tmp.path());
+        let result = resolve_brain_dir(&None, &None, "myproj", tmp.path());
         let expected = brain_dir.to_string_lossy().into_owned();
         assert_eq!(result.as_deref(), Some(expected.as_str()));
     }
@@ -2081,7 +2096,42 @@ model = "opus"
     #[test]
     fn resolve_brain_dir_convention_fallback_no_dir_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_brain_dir(&None, "myproj", tmp.path());
+        let result = resolve_brain_dir(&None, &None, "myproj", tmp.path());
+        assert_eq!(result, None);
+    }
+
+    /// A `-w` launch with no project falls back to the configured workspace brain.
+    #[test]
+    fn resolve_brain_dir_empty_project_uses_workspace_brain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(&None, &Some("%URCONFIG%/brain".into()), "", tmp.path());
+        assert_eq!(result.as_deref(), Some("%URCONFIG%/brain"));
+    }
+
+    /// The workspace brain never overrides a project's own `brain_dir`.
+    #[test]
+    fn resolve_brain_dir_project_brain_wins_over_workspace_brain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(
+            &Some("/custom/brain".into()),
+            &Some("/workspace/brain".into()),
+            "myproj",
+            tmp.path(),
+        );
+        assert_eq!(result.as_deref(), Some("/custom/brain"));
+    }
+
+    /// A project worker with no brain of its own does not pick up the workspace brain —
+    /// the workspace default applies to project-less launches only.
+    #[test]
+    fn resolve_brain_dir_workspace_brain_ignored_for_project_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = resolve_brain_dir(
+            &None,
+            &Some("/workspace/brain".into()),
+            "myproj",
+            tmp.path(),
+        );
         assert_eq!(result, None);
     }
 

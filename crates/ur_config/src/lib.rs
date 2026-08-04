@@ -331,6 +331,8 @@ struct RawConfig {
     server: Option<RawServerConfig>,
     logs_dir: Option<PathBuf>,
     tui: Option<RawTuiConfig>,
+    /// Brain directory mounted for workers launched without a project (`-w` workspace mode).
+    workspace_brain_dir: Option<String>,
     #[serde(default)]
     projects: HashMap<String, RawProjectConfig>,
     /// Global skill injection configuration from the `[skills]` section.
@@ -1235,6 +1237,14 @@ pub struct Config {
     ///
     /// Missing `[skills]` section → all sub-vecs are empty.
     pub global_skills: GlobalSkillsConfig,
+    /// Optional template path to the brain directory used by workers that have no
+    /// project — i.e. `-w` workspace-mode launches. Mounted read-write at `/brain`,
+    /// exactly like a project `brain_dir`.
+    ///
+    /// `%PROJECT%/...` is rejected: a workspace-mode worker has no project to resolve
+    /// against. Unset means workspace-mode workers get no `/brain` mount, and there is
+    /// no convention fallback — the path must be configured explicitly.
+    pub workspace_brain_dir: Option<String>,
 }
 
 impl Config {
@@ -1331,6 +1341,8 @@ impl Config {
 
         let global_skills = resolve_global_skills(raw.skills, config_dir)?;
 
+        let workspace_brain_dir = validate_workspace_brain_dir(raw.workspace_brain_dir)?;
+
         Ok(Config {
             config_dir: config_dir.to_path_buf(),
             workspace,
@@ -1350,8 +1362,27 @@ impl Config {
             git_branch_prefix,
             projects,
             global_skills,
+            workspace_brain_dir,
         })
     }
+}
+
+/// Validate the top-level `workspace_brain_dir` template path.
+///
+/// Mirrors the per-project `brain_dir` rules: the template must be a recognized
+/// pattern, and `%PROJECT%` is rejected — a workspace-mode worker has no project
+/// to resolve the path against.
+fn validate_workspace_brain_dir(raw: Option<String>) -> anyhow::Result<Option<String>> {
+    if let Some(ref tpl) = raw {
+        template_path::validate_template_str(tpl)
+            .map_err(|e| anyhow::anyhow!("workspace_brain_dir: {}", e))?;
+        if tpl.starts_with("%PROJECT%") {
+            anyhow::bail!(
+                "workspace_brain_dir: %PROJECT% is not allowed — workspace-mode workers have no project to resolve it against"
+            );
+        }
+    }
+    Ok(raw)
 }
 
 /// Persist the selected theme name to `ur.toml` in the given config directory.
@@ -2695,6 +2726,77 @@ image = "ur-worker"
         let msg = err.to_string();
         assert!(msg.contains("brain_dir"), "{msg}");
         assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn workspace_brain_dir_none_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.workspace_brain_dir, None);
+    }
+
+    #[test]
+    fn workspace_brain_dir_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+workspace_brain_dir = "%URCONFIG%/brain"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.workspace_brain_dir.as_deref(), Some("%URCONFIG%/brain"));
+    }
+
+    #[test]
+    fn workspace_brain_dir_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+workspace_brain_dir = "/some/abs/brain"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.workspace_brain_dir.as_deref(), Some("/some/abs/brain"));
+    }
+
+    #[test]
+    fn workspace_brain_dir_rejects_project_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+workspace_brain_dir = "%PROJECT%/brain"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("workspace_brain_dir"), "{msg}");
+        assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn workspace_brain_dir_rejects_unknown_template_var() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+workspace_brain_dir = "%BOGUS%/brain"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("workspace_brain_dir"), "{msg}");
     }
 
     #[test]

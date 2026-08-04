@@ -376,6 +376,7 @@ mod tests {
             git_branch_prefix: String::new(),
             projects: std::collections::HashMap::new(),
             global_skills: ur_config::GlobalSkillsConfig::default(),
+            workspace_brain_dir: None,
         }
     }
 

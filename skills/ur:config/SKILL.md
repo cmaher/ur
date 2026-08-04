@@ -22,6 +22,7 @@ Config is loaded by `Config::load()` in `crates/ur_config/src/lib.rs`. Missing f
 | `compose_file` | path | `<config_dir>/docker-compose.yml` | Docker Compose file path |
 | `git_branch_prefix` | string | `""` | Prefix prepended to worker branch names (e.g. `"feature/"` → `feature/myproc-a1b2`) |
 | `logs_dir` | path | `<config_dir>/logs` | Directory for all log files |
+| `workspace_brain_dir` | template path | — | Brain mounted read-write at `/brain` for workers with **no project** (bare `-w`). `%URCONFIG%/...` or absolute; `%PROJECT%` rejected. No convention fallback — unset means those workers get no `/brain`. A project's own `brain_dir` always wins; a project worker without one does **not** fall through to this |
 
 ---
 
@@ -280,7 +281,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `protected_branches` | string[] | `["main", "master"]` | no | Branch patterns that cannot be force-pushed (supports globs) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to skip when evaluating workflow status |
 
-Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the worker UID before mounting, and are only mounted when the worker has a project key — never in bare `-w` workspace mode. Parallel workers on one project share a single `memory_dir`, so simultaneous `MEMORY.md` writes can race; there is no mitigation.
+Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the worker UID before mounting, and these per-project fields only apply when the worker has a project key. `memory_dir` is never mounted in bare `-w` workspace mode; a bare `-w` worker gets `/brain` only from the top-level `workspace_brain_dir`. Parallel workers on one project share a single `memory_dir`, so simultaneous `MEMORY.md` writes can race; there is no mitigation.
 
 **Removed fields — setting one is a hard config-load error, not a warning:**
 
@@ -476,6 +477,7 @@ workspace = "/Users/me/.ur/workspace"
 server_port = 12321
 git_branch_prefix = "agent/"
 logs_dir = "/Users/me/.ur/logs"
+workspace_brain_dir = "%URCONFIG%/brain"
 
 [proxy]
 allowlist = ["api.anthropic.com", "platform.claude.com", "crates.io"]

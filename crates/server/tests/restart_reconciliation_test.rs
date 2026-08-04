@@ -79,6 +79,7 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
         projects: HashMap::new(),
         tui: ur_config::TuiConfig::default(),
         global_skills: ur_config::GlobalSkillsConfig::default(),
+        workspace_brain_dir: None,
     }
 }
 
@@ -153,6 +154,7 @@ async fn make_components_with_db(
         ticket_repo: ticket_repo.clone(),
         workflow_repo: workflow_repo.clone(),
         network_config: network_config.clone(),
+        workspace_brain_dir: None,
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,

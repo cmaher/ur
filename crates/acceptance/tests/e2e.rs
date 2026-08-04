@@ -296,6 +296,7 @@ fn write_test_config(
     server_port: u16,
     names: &TestNames,
     projects: &[ProjectEntry],
+    workspace_brain_dir: &Path,
     extra_toml: &str,
 ) {
     let workspace_dir = config_dir.join("workspace");
@@ -327,10 +328,12 @@ fn write_test_config(
 
     let projects_toml = render_projects_toml(projects);
 
+    // `workspace_brain_dir` is a top-level key, so it must precede every table header.
     let toml_content = format!(
         "server_port = {server_port}\n\
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
+         workspace_brain_dir = \"{workspace_brain}\"\n\
          \n\
          [proxy]\n\
          hostname = \"{squid}\"\n\
@@ -359,6 +362,7 @@ fn write_test_config(
          {extra_toml}",
         workspace = workspace_dir.display(),
         compose = compose_file.display(),
+        workspace_brain = workspace_brain_dir.display(),
         squid = names.squid_hostname,
         network = names.network,
         worker_network = names.worker_network,
@@ -500,6 +504,11 @@ struct TestEnv {
     brain_dir: PathBuf,
     /// TempDir parent keeping `brain_dir` alive on disk.
     _brain_dir_parent: tempfile::TempDir,
+    /// Host directory configured as the top-level `workspace_brain_dir`, mounted at
+    /// `/brain` for `-w` workers that have no project.
+    workspace_brain_dir: PathBuf,
+    /// TempDir parent keeping `workspace_brain_dir` alive on disk.
+    _workspace_brain_dir_parent: tempfile::TempDir,
 }
 
 impl TestEnv {
@@ -706,6 +715,29 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
     )
 }
 
+/// Set up the host directory used as the top-level `workspace_brain_dir`.
+///
+/// This is the brain mounted for workers launched with `-w` and no project. Like
+/// `setup_brain_projects`, the directory lives under a system temp dir (outside
+/// `config_path`, so it is not visible inside the ur-server container) and is
+/// pre-created by the test runner (UID 1000, same as the worker user). It is seeded
+/// with `ws-seed.md` so the container can verify the host → container direction.
+fn setup_workspace_brain() -> BrainDirInfo {
+    let parent = tempfile::tempdir().expect("failed to create workspace brain parent");
+    let brain_path = parent.path().join("workspace-brain");
+    std::fs::create_dir_all(&brain_path).expect("failed to create workspace brain dir");
+    std::fs::write(
+        brain_path.join("ws-seed.md"),
+        "hello-from-workspace-brain\n",
+    )
+    .expect("failed to write ws-seed.md");
+
+    BrainDirInfo {
+        path: brain_path,
+        parent,
+    }
+}
+
 /// Timeout for the entire acceptance test run (10 minutes).
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -716,6 +748,8 @@ struct ProjectFixtures {
     host_mount_dir: tempfile::TempDir,
     memory_dir: MemoryDirInfo,
     brain_dir: BrainDirInfo,
+    /// Host dir wired up as the top-level `workspace_brain_dir`.
+    workspace_brain_dir: BrainDirInfo,
 }
 
 /// Create a bare repo whose HEAD commit includes `ur-hooks/git/pre-commit`
@@ -934,6 +968,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         host_mount_dir,
         memory_dir,
         brain_dir,
+        workspace_brain_dir: setup_workspace_brain(),
     }
 }
 
@@ -970,6 +1005,7 @@ fn e2e_all() {
         server_port,
         &names,
         &fixtures.projects,
+        &fixtures.workspace_brain_dir.path,
         &fixtures.skills_extra_toml,
     );
 
@@ -988,6 +1024,8 @@ fn e2e_all() {
         _memory_dir_parent: fixtures.memory_dir.parent,
         brain_dir: fixtures.brain_dir.path,
         _brain_dir_parent: fixtures.brain_dir.parent,
+        workspace_brain_dir: fixtures.workspace_brain_dir.path,
+        _workspace_brain_dir_parent: fixtures.workspace_brain_dir.parent,
     };
 
     // ---- (2) ur start, run scenarios, always tear down (with timeout) ----
@@ -3753,6 +3791,9 @@ fn scenario_memory_workspace_no_project(env: &TestEnv, config_path: &std::path::
 /// 4. Inside the container, a new `from-container.md` file is written under `/brain`.
 /// 5. Worker is stopped.
 /// 6. On the host, `from-container.md` is readable with the expected content.
+///
+/// The test config also sets a top-level `workspace_brain_dir`, so this doubles as a
+/// precedence check: a project's own `brain_dir` wins over the workspace default.
 fn scenario_brain_pool(env: &TestEnv) {
     let ticket_id = "brain-pool-test";
     let container_name = env.container_name(ticket_id);
@@ -3843,10 +3884,13 @@ fn scenario_brain_pool(env: &TestEnv) {
 
 /// Brain bind mount — workspace-only (no project) axis.
 ///
-/// Verifies that when a workspace-mount worker is launched with a ticket ID whose
-/// prefix does NOT match any configured project key, NO brain bind mount is created.
-/// The container's `/brain` directory should not exist (the brain is project-scoped;
-/// without a project there is no mount).
+/// Verifies that a `-w` worker with no project gets the top-level `workspace_brain_dir`
+/// mounted at `/brain`:
+/// 1. Host pre-seeds `ws-seed.md` in the workspace brain dir (done by `setup_workspace_brain`).
+/// 2. Worker is launched with `-w` and a ticket ID whose prefix matches no project key.
+/// 3. Inside the container, `ws-seed.md` is readable at `/brain`.
+/// 4. Inside the container, a new `from-ws-container.md` is written under `/brain`.
+/// 5. Back on the host, that file is visible in the workspace brain dir.
 fn scenario_brain_workspace_no_project(env: &TestEnv, config_path: &std::path::Path) {
     // "nobrain-ws-test" prefix "nobrain" does not match any configured project key.
     let ticket_id = "nobrain-ws-test";
@@ -3883,19 +3927,50 @@ fn scenario_brain_workspace_no_project(env: &TestEnv, config_path: &std::path::P
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Verify that the brain directory does NOT exist inside the container ----
-        // When no project is associated with the launch, `brain_dir` is never resolved,
-        // so the bind mount is absent. The container path should not exist.
-        let brain_container_path = "/brain";
-        let ls_output =
-            exec_in_container(&env.runtime, &container_name, &["ls", brain_container_path]);
-        assert_ne!(
-            ls_output.status.code(),
-            Some(0),
-            "brain dir {brain_container_path} must NOT exist in a no-project workspace launch — \
-             a mount was unexpectedly established.\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&ls_output.stdout),
-            String::from_utf8_lossy(&ls_output.stderr),
+        // ---- Verify host → container: the seeded file is readable at /brain ----
+        let seed_path = "/brain/ws-seed.md";
+        let cat_output = exec_in_container(&env.runtime, &container_name, &["cat", seed_path]);
+        assert!(
+            cat_output.status.success(),
+            "failed to read {seed_path} inside container — the workspace brain bind mount \
+             was not established.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&cat_output.stdout),
+            String::from_utf8_lossy(&cat_output.stderr),
+        );
+        let seed_contents = String::from_utf8_lossy(&cat_output.stdout);
+        assert!(
+            seed_contents.contains("hello-from-workspace-brain"),
+            "unexpected {seed_path} contents: {seed_contents}"
+        );
+
+        // ---- Verify container → host: a container-written file lands on the host ----
+        let write_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &[
+                "sh",
+                "-c",
+                "echo written-by-ws-worker > /brain/from-ws-container.md",
+            ],
+        );
+        assert!(
+            write_output.status.success(),
+            "failed to write to /brain inside container — the workspace brain mount must be \
+             read-write.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&write_output.stdout),
+            String::from_utf8_lossy(&write_output.stderr),
+        );
+
+        let host_written = env.workspace_brain_dir.join("from-ws-container.md");
+        let host_contents = std::fs::read_to_string(&host_written).unwrap_or_else(|e| {
+            panic!(
+                "container-written file not visible on host at {}: {e}",
+                host_written.display()
+            )
+        });
+        assert!(
+            host_contents.contains("written-by-ws-worker"),
+            "unexpected host-side contents: {host_contents}"
         );
 
         // ---- Stop worker ----

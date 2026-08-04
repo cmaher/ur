@@ -164,6 +164,9 @@ pub struct LaunchManager {
     pub ticket_repo: TicketRepo,
     pub workflow_repo: WorkflowRepo,
     pub network_config: ur_config::NetworkConfig,
+    /// Top-level `workspace_brain_dir` from `ur.toml`, mounted at `/brain` for workers
+    /// launched without a project. Resolution happens in `resolve_brain_dir`.
+    pub workspace_brain_dir: Option<String>,
 }
 
 impl LaunchManager {
@@ -525,6 +528,7 @@ impl LaunchManager {
             extra_skill_mounts,
             memory_dir,
             brain_dir,
+            workspace_brain_dir: self.workspace_brain_dir.clone(),
         }
     }
 
