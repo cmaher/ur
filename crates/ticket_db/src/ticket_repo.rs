@@ -1058,29 +1058,6 @@ impl TicketRepo {
             .collect())
     }
 
-    /// Returns true if the ticket has any transitive blocker that is not closed.
-    async fn has_open_blockers(&self, ticket_id: &str) -> Result<bool, sqlx::Error> {
-        let blockers = self.graph_manager.transitive_blockers(ticket_id).await?;
-        if blockers.is_empty() {
-            return Ok(false);
-        }
-        let placeholders: String = blockers
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("${}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let query = format!(
-            "SELECT COUNT(*)::INT4 FROM ticket WHERE id IN ({placeholders}) AND status != 'closed'"
-        );
-        let mut q = sqlx::query_scalar::<_, i32>(sqlx::AssertSqlSafe(query));
-        for blocker_id in &blockers {
-            q = q.bind(blocker_id);
-        }
-        let count = q.fetch_one(&self.pool).await?;
-        Ok(count > 0)
-    }
-
     /// Returns open children of the given epic that have no open blockers.
     /// Uses GraphManager to compute transitive blockers, then filters out
     /// any ticket that has at least one open blocker.
@@ -1126,19 +1103,19 @@ impl TicketRepo {
         }
         let children = q.fetch_all(&self.pool).await?;
 
-        let mut result = Vec::new();
+        let child_ids: Vec<String> = children.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let blocked = self.graph_manager.blocked_among(&child_ids).await?;
 
-        for (id, title, priority, type_) in children {
-            let has_open_blocker = self.has_open_blockers(&id).await?;
-            if !has_open_blocker {
-                result.push(DispatchableTicket {
-                    id,
-                    title,
-                    priority,
-                    type_,
-                });
-            }
-        }
+        let result = children
+            .into_iter()
+            .filter(|(id, _, _, _)| !blocked.contains(id))
+            .map(|(id, title, priority, type_)| DispatchableTicket {
+                id,
+                title,
+                priority,
+                type_,
+            })
+            .collect();
 
         Ok(result)
     }
