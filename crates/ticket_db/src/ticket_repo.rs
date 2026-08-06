@@ -1,6 +1,6 @@
 // TicketRepo: CRUD operations for tickets, activities, and metadata.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use rand::Rng;
@@ -1056,6 +1056,12 @@ impl TicketRepo {
                 },
             )
             .collect())
+    }
+
+    /// Returns the subset of `ids` that have at least one transitive blocker which is not
+    /// closed. Delegates to `GraphManager::blocked_among` — one graph build, one status query.
+    pub async fn blocked_among(&self, ids: &[String]) -> Result<HashSet<String>, sqlx::Error> {
+        self.graph_manager.blocked_among(ids).await
     }
 
     /// Returns open children of the given epic that have no open blockers.
