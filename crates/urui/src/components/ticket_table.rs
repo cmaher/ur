@@ -20,6 +20,8 @@ const HEADERS: [&str; 7] = ["ID", "P", "Type", "Status", "Progress", "", "Title"
 const SYM_OPEN: &str = "○";
 const SYM_CLOSED: &str = "●";
 const SYM_DISPATCH: &str = "▶";
+const SYM_DISPATCHABLE: &str = "■"; // U+25A0 Black Square — open leaf, no open blockers
+const SYM_BLOCKED: &str = "□"; // U+25A2 White Square — open leaf, has open blockers
 
 /// Column index of the progress count label.
 const PROGRESS_COUNT_COL: usize = 4;
@@ -27,13 +29,16 @@ const PROGRESS_COUNT_COL: usize = 4;
 const PROGRESS_BAR_COL: usize = 5;
 
 /// Build the column width constraints for the ticket table.
-/// ID(12), P(3), Type(7), Status(8), Progress(8), Bar(10), Title(fill).
+/// ID(12), P(3), Type(7), Status(10), Progress(8), Bar(10), Title(fill).
+///
+/// Status is 10 to maintain a 2-cell gap before Progress after the square prefix
+/// widened the cell content from 6 to 8 display cells (`ThemedTable` uses column_spacing(0)).
 fn table_widths() -> Vec<Constraint> {
     vec![
         Constraint::Length(12),
         Constraint::Length(3),
         Constraint::Length(7),
-        Constraint::Length(8),
+        Constraint::Length(10),
         Constraint::Length(8),
         Constraint::Length(10),
         Constraint::Fill(1),
@@ -42,15 +47,30 @@ fn table_widths() -> Vec<Constraint> {
 
 /// Derive the display label for the Status column.
 ///
-/// Dispatched tickets show "▶ Disp", closed show "● Clsd", everything else shows "○ Open".
+/// The cell is `{square} {circle/triangle} {word}` — always 8 display cells wide.
+/// The square prefix appears only for open leaf tickets (no dispatch, not closed,
+/// no children): `■` (dispatchable) or `□` (blocked). All other rows use a space.
 fn dispatch_label(ticket: &Ticket) -> String {
-    if !ticket.dispatch_status.is_empty() {
+    let square = if ticket.dispatch_status.is_empty()
+        && ticket.status != "closed"
+        && ticket.children_total == 0
+    {
+        if ticket.blocked {
+            SYM_BLOCKED
+        } else {
+            SYM_DISPATCHABLE
+        }
+    } else {
+        " "
+    };
+    let rest = if !ticket.dispatch_status.is_empty() {
         format!("{SYM_DISPATCH} Disp")
     } else if ticket.status == "closed" {
         format!("{SYM_CLOSED} Clsd")
     } else {
         format!("{SYM_OPEN} Open")
-    }
+    };
+    format!("{square} {rest}")
 }
 
 /// Compute progress values for a ticket.
@@ -313,6 +333,7 @@ mod tests {
             children_total: 0,
             children_completed: 0,
             dispatch_status: String::new(),
+            blocked: false,
         }
     }
 
@@ -624,22 +645,37 @@ mod tests {
 
     #[test]
     fn dispatch_label_open() {
+        // Open leaf with no blockers → dispatchable square
         let t = make_ticket("ur-001", "test");
-        assert_eq!(dispatch_label(&t), "○ Open");
+        assert_eq!(dispatch_label(&t), "■ ○ Open");
     }
 
     #[test]
     fn dispatch_label_closed() {
         let mut t = make_ticket("ur-001", "test");
         t.status = "closed".to_string();
-        assert_eq!(dispatch_label(&t), "● Clsd");
+        assert_eq!(dispatch_label(&t), "  ● Clsd");
     }
 
     #[test]
     fn dispatch_label_dispatched() {
         let mut t = make_ticket("ur-001", "test");
         t.dispatch_status = "implementing".to_string();
-        assert_eq!(dispatch_label(&t), "▶ Disp");
+        assert_eq!(dispatch_label(&t), "  ▶ Disp");
+    }
+
+    #[test]
+    fn dispatch_label_blocked() {
+        let mut t = make_ticket("ur-001", "test");
+        t.blocked = true;
+        assert_eq!(dispatch_label(&t), "□ ○ Open");
+    }
+
+    #[test]
+    fn dispatch_label_epic() {
+        let mut t = make_ticket("ur-001", "test");
+        t.children_total = 3;
+        assert_eq!(dispatch_label(&t), "  ○ Open");
     }
 
     // ── ticket_progress tests ─────────────────────────────────────────
@@ -698,7 +734,7 @@ mod tests {
         assert_eq!(rows[0][0], "ur-001");
         assert_eq!(rows[0][1], "2");
         assert_eq!(rows[0][2], "◆ Code");
-        assert_eq!(rows[0][3], "○ Open");
+        assert_eq!(rows[0][3], "■ ○ Open");
         assert!(rows[0][4].is_empty()); // progress count placeholder
         assert!(rows[0][5].is_empty()); // progress bar placeholder
         assert_eq!(rows[0][6], "First ticket");

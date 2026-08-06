@@ -738,6 +738,7 @@ mod tests {
                         depth: 0,
                         branch: String::new(),
                         dispatch_status: String::new(),
+                        blocked: false,
                     }),
                     activities: vec![],
                     metadata: vec![],

@@ -527,6 +527,7 @@ impl TicketServiceHandler {
                 children_completed: t.children_completed,
                 children_total: t.children_total,
                 dispatch_status: String::new(),
+                blocked: false,
             })
             .collect())
     }
@@ -569,6 +570,27 @@ impl TicketServiceHandler {
         Ok(())
     }
 
+    /// Enrich a list of proto tickets with `blocked` — true when the ticket has at
+    /// least one transitive blocker that is not closed.
+    async fn enrich_blocked(
+        &self,
+        tickets: &mut [ur_rpc::proto::ticket::Ticket],
+    ) -> Result<(), Status> {
+        if tickets.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = tickets.iter().map(|t| t.id.clone()).collect();
+        let blocked = self
+            .ticket_repo
+            .blocked_among(&ids)
+            .await
+            .map_err(|e| TicketError::Db(e.to_string()))?;
+        for ticket in tickets.iter_mut() {
+            ticket.blocked = blocked.contains(&ticket.id);
+        }
+        Ok(())
+    }
+
     /// List a ticket tree: root + all descendants with depth, using a recursive CTE.
     async fn list_ticket_tree(
         &self,
@@ -599,6 +621,7 @@ impl TicketServiceHandler {
                 children_completed: t.children_completed,
                 children_total: t.children_total,
                 dispatch_status: String::new(),
+                blocked: false,
             })
             .collect())
     }
@@ -809,12 +832,14 @@ impl TicketService for TicketServiceHandler {
                         children_completed: t.children_completed,
                         children_total: t.children_total,
                         dispatch_status: String::new(),
+                        blocked: false,
                     })
                     .collect();
 
                 return {
                     let mut tickets = tickets;
                     self.enrich_dispatch_status(&mut tickets).await?;
+                    self.enrich_blocked(&mut tickets).await?;
                     Ok(Response::new(ListTicketsResponse {
                         tickets,
                         total_count,
@@ -825,6 +850,7 @@ impl TicketService for TicketServiceHandler {
 
         let mut tickets = tickets;
         self.enrich_dispatch_status(&mut tickets).await?;
+        self.enrich_blocked(&mut tickets).await?;
 
         let total_count = tickets.len() as i32;
         Ok(Response::new(ListTicketsResponse {
@@ -885,6 +911,7 @@ impl TicketService for TicketServiceHandler {
             children_completed: t.children_completed,
             children_total: t.children_total,
             dispatch_status: String::new(),
+            blocked: false,
         };
 
         let metadata: Vec<_> = meta
