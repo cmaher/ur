@@ -313,6 +313,7 @@ mod tests {
             children_total: 0,
             children_completed: 0,
             dispatch_status: String::new(),
+            blocked: false,
         }
     }
 

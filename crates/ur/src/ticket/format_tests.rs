@@ -20,6 +20,7 @@ fn sample_ticket(id: &str, title: &str) -> Ticket {
         children_completed: 0,
         children_total: 0,
         dispatch_status: String::new(),
+        blocked: false,
     }
 }
 

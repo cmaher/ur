@@ -56,6 +56,8 @@ message Ticket {
   int32 children_total = 16;
   // Dispatch status: workflow lifecycle status if this ticket (or its parent) has an active workflow.
   string dispatch_status = 17;
+  // True when the ticket has at least one transitive blocker that is not closed.
+  bool blocked = 18;
 }
 
 message MetadataEntry {

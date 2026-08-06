@@ -527,6 +527,7 @@ impl TicketServiceHandler {
                 children_completed: t.children_completed,
                 children_total: t.children_total,
                 dispatch_status: String::new(),
+                blocked: false,
             })
             .collect())
     }
@@ -599,6 +600,7 @@ impl TicketServiceHandler {
                 children_completed: t.children_completed,
                 children_total: t.children_total,
                 dispatch_status: String::new(),
+                blocked: false,
             })
             .collect())
     }
@@ -809,6 +811,7 @@ impl TicketService for TicketServiceHandler {
                         children_completed: t.children_completed,
                         children_total: t.children_total,
                         dispatch_status: String::new(),
+                        blocked: false,
                     })
                     .collect();
 
@@ -885,6 +888,7 @@ impl TicketService for TicketServiceHandler {
             children_completed: t.children_completed,
             children_total: t.children_total,
             dispatch_status: String::new(),
+            blocked: false,
         };
 
         let metadata: Vec<_> = meta
