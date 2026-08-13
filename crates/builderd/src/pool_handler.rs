@@ -168,6 +168,9 @@ impl BuilderPoolHandler {
 
     /// Remove a slot and re-clone it from scratch.
     ///
+    /// Removal is idempotent: a slot that is already gone from disk (DB row without a
+    /// directory) is treated as removed so the re-clone still recovers the slot.
+    ///
     /// Retries `rm -rf` up to 3 times with a 1s delay to handle macOS Spotlight
     /// holding file locks that cause transient "directory not empty" errors.
     async fn reclone_slot(
@@ -182,9 +185,11 @@ impl BuilderPoolHandler {
         ur_utils::retry(3, Duration::from_secs(1), "rm -rf slot", || {
             let slot = slot.clone();
             async move {
-                tokio::fs::remove_dir_all(&slot)
-                    .await
-                    .map_err(|e| format!("rm -rf {} failed: {e}", slot.display()))
+                match tokio::fs::remove_dir_all(&slot).await {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(format!("rm -rf {} failed: {e}", slot.display())),
+                }
             }
         })
         .await
@@ -535,8 +540,21 @@ impl BuilderPoolService for BuilderPoolHandler {
         let slot_mutex = self.slot_lock(&req.project_key, &req.slot_name);
         let _slot_guard = slot_mutex.lock().await;
 
-        // Attempt reset; on failure reclone from scratch.
-        if let Err(reset_err) = self.reset_slot(&req.project_key, &req.slot_name).await {
+        // A slot row can outlive its directory (manual deletion, interrupted cleanup).
+        // Skip the pointless reset in that case and clone straight into place.
+        let slot = self.slot_path(&req.project_key, &req.slot_name);
+        if !tokio::fs::try_exists(&slot).await.unwrap_or(false) {
+            warn!(
+                project_key = %req.project_key,
+                slot_name = %req.slot_name,
+                path = %slot.display(),
+                "slot directory missing on disk, re-cloning"
+            );
+            self.reclone_slot(&req.project_key, &req.slot_name, &req.repo_url)
+                .await
+                .map_err(internal)?;
+        } else if let Err(reset_err) = self.reset_slot(&req.project_key, &req.slot_name).await {
+            // Attempt reset; on failure reclone from scratch.
             warn!(
                 project_key = %req.project_key,
                 slot_name = %req.slot_name,
@@ -1043,6 +1061,35 @@ mod tests {
             std::fs::read_to_string(slot.join("local.txt")).unwrap(),
             "local-content",
             "local overlay applied after recycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn recycle_slot_reclones_when_directory_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        init_bare_repo(&bare);
+
+        let h = make_handler(tmp.path());
+        let repo_url = bare.display().to_string();
+
+        // A slot row that exists in the DB but whose directory is gone from disk:
+        // the pool dir exists with a sibling slot, slot "2" does not.
+        h.clone_slot("proj", "1", &repo_url).await.unwrap();
+        let slot = h.slot_path("proj", "2");
+        assert!(!slot.exists());
+
+        let req = Request::new(RecycleSlotRequest {
+            project_key: "proj".into(),
+            slot_name: "2".into(),
+            repo_url,
+        });
+        let host_path = h.recycle_slot(req).await.unwrap().into_inner().host_path;
+
+        assert_eq!(host_path, slot.display().to_string());
+        assert!(
+            slot.join("README.md").exists(),
+            "missing slot should be re-cloned rather than failing on rm -rf"
         );
     }
 
