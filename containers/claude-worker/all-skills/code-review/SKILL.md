@@ -157,45 +157,62 @@ GUIDELINES:
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
 - Do NOT introduce or remove outer indentation levels unless that is the actual fix.
 
-Cite the location of each finding in its summary as concisely as possible (file plus the most suitable short line range that pinpoints the problem — avoid ranges longer than 5–10 lines). Do not pad the summary with unnecessary location detail.
+Cite the location of each finding in its header as concisely as possible (file plus the most suitable short line range that pinpoints the problem — avoid ranges longer than 5–10 lines). Do not repeat the location in the body.
 
 Tag each finding with its priority level (P0–P3), as used in the output format below. [P0] – Drop everything to fix. Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
 
-Also classify each finding's category: a *bug* is a defect in the diff (wrong behavior, crash, security, performance, dead code, misleading docs, weak tests); a *design* finding is a forward-looking concern about the change's approach or contracts where the current code is correct. When unsure, default to bug. State design findings as such in the summary so the reader knows the current code is correct and a decision is being raised.
+Also classify each finding's category: a *bug* is a defect in the diff (wrong behavior, crash, security, performance, dead code, misleading docs, weak tests); a *design* finding is a forward-looking concern about the change's approach or contracts where the current code is correct. When unsure, default to bug. The header carries the category; for a design finding the impact line must also say that the current code is correct and name the decision being raised.
 
 FORMATTING GUIDELINES:
-The finding summary should be one paragraph.
+
+Each finding is a four-part block — header, headline, impact, details — in that order. The parts do different jobs and must not be merged into one paragraph:
+
+- **Header** — a single line carrying the number, priority, category, and location. Nothing else.
+- **Headline** — one bold sentence naming the defect or the decision. It has to stand alone: a reader who stops here should know what is wrong without reading further.
+- **Impact** — a blockquote, one to three sentences: what breaks, for whom, under what preconditions, and whether any path reaches it today. Severity is justified here, so state the conditions the finding depends on in this line rather than burying them in the details.
+- **Details** — one or two paragraphs of evidence: the call chain, the definitions that establish the claim, and the direction of a fix. Code fragments stay inline or in a fenced block of at most three lines.
+
+Separate findings with a horizontal rule. Do not use internal line breaks within the headline or the impact line.
 
 OUTPUT FORMAT:
 
-Do not output JSON. Present the review as prose in two sections: the findings, then the existing PR comments.
+Do not output JSON. Present the review as prose in three parts: the findings, the verdict, then the existing PR comments.
 
 ### Findings
 
-Introduce each finding as a numbered paragraph. Number findings sequentially. `PN` is the priority tag (P0–P3). Cite the relevant files/lines/functions in the summary, and for design findings state explicitly that the current code is correct and name the decision at stake. The summary is a single paragraph with no internal line breaks except where a code fragment requires it. Separate findings with a single blank line:
+Number findings sequentially and order them most-severe first. In the header, `PN` is the priority tag (P0–P3), `category` is `bug` or `design`, and `location` is the file plus a short line range in backticks:
 
 ```
-#1 P1: <title>
-<summary>
+### #1 · P1 · bug · `path/to/file.go:154-160`
 
-#2 P2: <title>
-<summary>
+**One bold sentence naming the defect.**
+
+> **Impact** — what breaks, for whom, under what preconditions, and whether any path reaches it today.
+
+The evidence: the call chain, the definitions that establish the claim, and the direction of a fix.
+
+---
+
+### #2 · P3 · design · `path/to/other.go:47-62`
+
+**One bold sentence naming the decision at stake.**
+
+> **Impact** — none today; the current code is correct. Name the decision and why it is cheap to make now.
+
+The evidence, and the specific consumer or scenario the current shape cannot serve.
 ```
 
-After the last finding, give the overall correctness verdict in prose (a separate paragraph): state whether the patch is correct or incorrect and justify it in 1–3 sentences. "Correct" implies existing code and tests will not break and the patch is free of bugs and other blocking issues; ignore non-blocking issues such as style, formatting, typos, documentation, and other nits. Design-category findings do not by themselves make a patch incorrect — only let one flip the verdict if it blocks the change's stated goal, and when the verdict is correct but design findings exist, say so.
+After the last finding, give the overall correctness verdict as its own section — `## Verdict: correct` or `## Verdict: incorrect` — followed by 1–3 sentences of justification. "Correct" implies existing code and tests will not break and the patch is free of bugs and other blocking issues; ignore non-blocking issues such as style, formatting, typos, documentation, and other nits. Design-category findings do not by themselves make a patch incorrect — only let one flip the verdict if it blocks the change's stated goal, and when the verdict is correct but design findings exist, say so.
 
 ### PR comments
 
-After the findings, read the existing comments on the pull request and address each one. Introduce each as a numbered paragraph, numbered sequentially and separated by a single blank line. `<person>` is the comment author, `<comment>` summarizes what they raised, and `<suggested action>` is your recommended response:
+After the verdict, read the existing comments on the pull request and address each one, in the same block shape. `<person>` is the comment author, the header summarizes what they raised, and the two labelled lines carry where it stands and what you recommend:
 
 ```
-#1 <person>
-<comment>
-<suggested action>
+### #1 <person> — <what they raised, in a few words>
 
-#2 <person>
-<comment>
-<suggested action>
+**Status:** what has happened to it — fixed in `<commit>`, still open, or superseded. Say plainly whether the fix is complete.
+**Action:** your recommended response, including anything an applied fix left behind.
 ```
 
 Do not generate a PR fix.
