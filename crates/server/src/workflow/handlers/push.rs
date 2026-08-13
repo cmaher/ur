@@ -694,10 +694,15 @@ async fn resolve_gh_repo(
         )
     })?;
 
-    let derived = gh_repo_from_url(&project_config.repo).ok_or_else(|| {
+    // A local project has no remote to open a PR against. Unreachable in practice —
+    // local projects cannot be dispatched, so they never reach the push handler —
+    // but naming the cause here beats a confusing empty-URL parse failure.
+    let repo = project_config.require_repo()?;
+
+    let derived = gh_repo_from_url(repo).ok_or_else(|| {
         anyhow::anyhow!(
             "cannot derive GitHub owner/repo from project repo URL '{}' for project '{}'",
-            project_config.repo,
+            repo,
             ticket.project
         )
     })?;

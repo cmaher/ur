@@ -267,9 +267,10 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `repo` | string | — | **yes** | Git remote URL |
+| `repo` | string | — | **yes**, unless `local = true` | Git remote URL |
+| `local` | bool | `false` | no | Declares a repo-less **local project**: no git remote, no pool, no dispatch. Mutually exclusive with `repo` |
 | `name` | string | `<key>` | no | Display label |
-| `pool_limit` | u32 | `10` | no | Max cached repo clones in the pool |
+| `pool_limit` | u32 | `10` | no | Max cached repo clones in the pool. **Not valid with `local = true`** |
 | `hostexec` | string[] | `[]` | no | Additional host-exec commands workers may call for this project |
 | `hostexec_scripts` | string[] | `[]` | no | Relative paths to host-exec scripts workers may invoke |
 | `claude_md` | template path | — | no | Project-level CLAUDE.md. Falls back to `<config_dir>/projects/<key>/CLAUDE.md` |
@@ -324,6 +325,55 @@ ports = ["8080:8080"]
 [projects.ur.tui]
 theme = "dark"
 ```
+
+### Local projects (`local = true`)
+
+A **local project** is a directory on the host with no git remote to clone from — an
+arbitrary project you want to work on with `ur` rather than a repo the workflow
+manages. Set `local = true` and omit `repo`:
+
+```toml
+[projects.myapp]
+local = true
+name = "My App"
+hostexec = ["make", "npm"]
+hostexec_scripts = ["scripts/deploy.sh"]
+brain_dir = "%URCONFIG%/projects/myapp/brain"
+
+[projects.myapp.container]
+image = "ur-worker"
+mounts = ["%URCONFIG%/shared-data:/var/data:ro"]
+```
+
+Everything except the repo works exactly as it does for a pool-backed project:
+image selection, mounts, ports, `hostexec` / `hostexec_scripts`, `claude_md`,
+`brain_dir`, `memory_dir`, and the per-project TUI theme.
+
+**What works:**
+
+- Tickets can be created against the project (`ur ticket create --project myapp`).
+- Manual workers with a workspace mount:
+  `ur worker launch -m manual -w . -p myapp`. If the directory's basename matches
+  the project key, `-p` is derived from the cwd, so `umanw` alone is enough.
+- `ur project add --local <dir>` writes the entry (key derived from the directory
+  name; the directory need not be a git repo). `ur project remove` needs no
+  `--force`, since there is no pool to destroy.
+
+**What is refused, and why:**
+
+| Action | Result |
+|---|---|
+| `--dispatch` | Rejected — no repo to clone, branch to push, or PR to open |
+| `-m code` / `-m design` | Rejected — both own a ticket branch in a pool slot |
+| Launch without `-w` | Rejected — there is no repo pool to fall back on |
+| `--context-repos myapp` | Rejected — context repos mount a shared pool clone |
+| Dispatch from the TUI | Refused client-side with a banner; such tickets render as blocked (`□`) |
+
+Config errors: `repo` together with `local = true`, and `pool_limit` with
+`local = true`. Workflow-only fields (`protected_branches`,
+`max_implement_cycles`, `max_fix_attempts`, `push_again_exit_code`,
+`ignored_workflow_checks`) are accepted and ignored, so a project can be flipped
+between local and repo-backed by editing one line.
 
 ---
 

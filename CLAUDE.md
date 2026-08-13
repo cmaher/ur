@@ -42,6 +42,7 @@ Cargo workspace:
 ## Conventions
 
 - **Single config file**: All user configuration lives in `ur.toml` (`$UR_CONFIG/ur.toml`, default `~/.ur/ur.toml`). Do NOT create separate config files for new features — extend `ur.toml` instead. Lua scripts for hostexec commands live in `~/.ur/hostexec/` and are referenced by filename from the `[hostexec.commands]` section of `ur.toml`.
+- **Local projects**: A project may declare `local = true` instead of `repo` — an arbitrary host directory with no git remote (`ProjectConfig.repo` is `None`, which is the locality signal; use `is_local()` / `require_repo()`). Local projects have no pool and cannot be dispatched; only `-m manual` with `-w <dir>` works. Any new code path that needs a git remote MUST call `require_repo()` rather than assuming one exists, and any new pool-touching path MUST refuse local projects before doing filesystem or git work. See `docs/codeflows/config.md#local-projects`.
 - **Plans** (`docs/plans/`): Filenames and content MUST include the relevant ticket number (e.g., `ur-a1b2c`).
 - **PR descriptions**: MUST reference the ticket number being addressed.
 - **CLAUDE.md per crate and container**: Each crate (`crates/*/`) and container definition must have its own `CLAUDE.md` with crate/container-specific guidance.

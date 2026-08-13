@@ -87,12 +87,53 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `repo` | string | — | yes | Git remote URL |
+| `repo` | string | — | yes, unless `local = true` | Git remote URL |
+| `local` | bool | `false` | no | Repo-less local project: no remote, no pool, no dispatch. Mutually exclusive with `repo`. See [Local Projects](#local-projects) |
 | `name` | string | `<key>` | no | Display-friendly label |
-| `pool_limit` | u32 | 10 | no | Max cached repo clones |
+| `pool_limit` | u32 | 10 | no | Max cached repo clones. Rejected when `local = true` |
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands for hostexec |
 | `mounts` | string[] | `[]` | no | Volume mounts in `"source:destination"` format |
 | `brain_dir` | template path | — | no | Per-project brain directory, mounted read-write at `/brain`. `%URCONFIG%/...` or absolute path; `%PROJECT%` rejected (brain must be project-stable). Convention fallback: `<config_dir>/projects/<key>/brain/` when unset. See [project-file-mounting.md](project-file-mounting.md) |
+
+### Local Projects
+
+`local = true` declares a project with **no git remote** — an arbitrary host
+directory rather than a repo the workflow clones and pushes. `ProjectConfig.repo`
+is `Option<String>`, and `None` *is* the locality signal: `ProjectConfig::is_local()`
+reads it, and `require_repo()` produces the error for code paths that genuinely need
+a remote. Making the field optional rather than adding a parallel boolean is
+deliberate — the compiler forces every consumer of `repo` to state what it does when
+there is none.
+
+Validation lives in `resolve_project_repo` (`crates/ur_config/src/lib.rs`):
+
+| Config | Outcome |
+|---|---|
+| `repo = "..."` | Normal pool-backed project |
+| `local = true`, no `repo` | Local project, `repo: None` |
+| Both | **Error** — mutually exclusive |
+| Neither | **Error** — names both `repo` and `local = true` |
+| `local = true` + `pool_limit` | **Error** — `pool_limit` implies a pool |
+
+Workflow-only fields (`protected_branches`, `max_implement_cycles`,
+`max_fix_attempts`, `push_again_exit_code`, `ignored_workflow_checks`) are accepted
+and ignored for local projects, so a project can be flipped between local and
+repo-backed by editing one line.
+
+Locality is enforced at four independent layers, so no path can reach a pool
+operation with a repo-less project:
+
+| Layer | Guard |
+|---|---|
+| `ur` CLI | `reject_unsupported_local_launch` (`crates/ur/src/main.rs`) — pre-flight on `--dispatch`, non-manual modes, and missing `-w` |
+| Server launch | `LaunchManager::reject_unsupported_local_launch` → `CoreError::LocalProjectUnsupportedLaunch` (`FailedPrecondition`). Backstop for the TUI and workerd |
+| Pool | `RepoPoolManager::resolve_pool_project` — refuses before any DB query or builderd RPC, so no half-prepared slot dir is left behind |
+| TUI | `Model::dispatch_is_blocked_by_locality` → banner instead of a `Cmd`; `dispatch_label` renders such tickets blocked (`□`) |
+
+Only `-m manual` **with** `-w <dir>` is supported. Everything else about the project
+— image, mounts, ports, `hostexec`, `hostexec_scripts`, `claude_md`, `brain_dir`,
+`memory_dir`, TUI theme — resolves identically to a pool-backed project, because
+`-p <key> -w <dir>` already bypasses the pool while still applying project config.
 
 ### Mount Format
 

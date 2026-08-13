@@ -90,6 +90,24 @@ max_implement_cycles = 3   # this project gets fewer cycles
 
 An unset `[projects.<key>].max_implement_cycles` inherits the `[server].max_implement_cycles` value. Setting `max_implement_cycles` in neither section means no cycle limit is enforced.
 
+## Local Projects (`local = true`)
+
+`ProjectConfig.repo` is `Option<String>`. `None` means the project is **local**: an
+arbitrary host directory with no git remote, no repo pool, and no dispatch.
+
+- `ProjectConfig::is_local()` — locality predicate (`repo.is_none()`).
+- `ProjectConfig::require_repo()` — the remote, or an error naming the project. Call
+  this from anything that fundamentally needs a remote (pool clone, PR creation)
+  instead of unwrapping, so failures name the cause.
+- `resolve_project_repo()` enforces the contract: exactly one of `repo` /
+  `local = true`; both is an error; neither is an error naming both; `pool_limit`
+  with `local = true` is an error. Other workflow-only fields are accepted and
+  ignored so a project can be flipped local ↔ repo-backed by editing one line.
+
+Do not add a parallel `local: bool` to `ProjectConfig` — the `Option` is what forces
+every consumer of `repo` to handle absence at compile time. See
+`docs/codeflows/config.md#local-projects`.
+
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field

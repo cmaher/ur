@@ -68,14 +68,19 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     let items: Vec<ProjectInfo> = projects
         .iter()
         .map(|proj| {
-            let pool_dir = pool_base.join(&proj.key);
-            let slots_in_use = count_pool_slots(&pool_dir);
+            // A local project has no pool directory, so don't stat for one.
+            let slots_in_use = if proj.is_local() {
+                None
+            } else {
+                Some(count_pool_slots(&pool_base.join(&proj.key)))
+            };
             ProjectInfo {
                 key: proj.key.clone(),
                 repo: proj.repo.clone(),
                 name: proj.name.clone(),
-                pool_limit: proj.pool_limit,
+                pool_limit: (!proj.is_local()).then_some(proj.pool_limit),
                 slots_in_use,
+                local: proj.is_local(),
             }
         })
         .collect();
@@ -83,14 +88,20 @@ pub fn list(config: &ur_config::Config, output: &OutputManager) -> Result<()> {
     output.print_items(&items, |items| {
         let mut out = String::new();
         for proj in items {
-            out.push_str(&format!(
-                "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}\n",
-                key = proj.key,
-                repo = proj.repo,
-                name = proj.name,
-                limit = proj.pool_limit,
-                slots = proj.slots_in_use,
-            ));
+            // Local projects have no repo and no pool — print what applies to them
+            // rather than padding the row with empty or zero columns.
+            match (&proj.repo, proj.pool_limit, proj.slots_in_use) {
+                (Some(repo), Some(limit), Some(slots)) => out.push_str(&format!(
+                    "{key}  repo={repo}  name={name}  pool_limit={limit}  slots={slots}\n",
+                    key = proj.key,
+                    name = proj.name,
+                )),
+                _ => out.push_str(&format!(
+                    "{key}  local  name={name}\n",
+                    key = proj.key,
+                    name = proj.name,
+                )),
+            }
         }
         if out.ends_with('\n') {
             out.pop();
@@ -112,24 +123,72 @@ fn count_pool_slots(pool_dir: &Path) -> usize {
     }
 }
 
-/// Add a new project to `ur.toml` by resolving the git remote origin from a directory.
-pub fn add(
-    config: &ur_config::Config,
-    path: &Path,
-    image: &str,
-    key: Option<&str>,
-    name: Option<&str>,
-    pool_limit: Option<u32>,
-    output: &OutputManager,
-) -> Result<()> {
-    let path = std::fs::canonicalize(path)
-        .with_context(|| format!("failed to resolve path: {}", path.display()))?;
-    let repo = git_remote_origin(&path)?;
-    let key = match key {
-        Some(k) => k.to_string(),
-        None => derive_key_from_repo(&repo)?,
+/// Derive a project key from a directory path, using its basename.
+///
+/// Used for local projects, which have no repo URL to derive a key from.
+pub(crate) fn derive_key_from_path(path: &Path) -> Result<String> {
+    let key = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| anyhow::anyhow!("cannot derive key from path: {}", path.display()))?;
+    if key.is_empty() {
+        bail!("cannot derive key from path: {}", path.display());
+    }
+    Ok(key.to_string())
+}
+
+/// Arguments for [`add`], mirroring the `ur project add` flags.
+pub struct AddRequest<'a> {
+    /// Directory to add. Must be a git repo unless `local` is set.
+    pub path: &'a Path,
+    /// Container image alias or full reference.
+    pub image: &'a str,
+    /// Explicit project key. Derived from the repo URL (or the directory name for
+    /// a local project) when `None`.
+    pub key: Option<&'a str>,
+    /// Display-friendly name. Defaults to the key.
+    pub name: Option<&'a str>,
+    /// Repo pool size. Not valid with `local`.
+    pub pool_limit: Option<u32>,
+    /// Add a repo-less local project: `local = true`, no `repo`.
+    pub local: bool,
+}
+
+/// Add a new project to `ur.toml`.
+///
+/// With `local: false`, resolves the git remote origin from the path and writes a
+/// normal pool-backed project. With `local: true`, writes `local = true` and no
+/// `repo`: the directory needs no git remote (or may have one we never clone
+/// from), the project gets no pool, and its tickets cannot be dispatched. Local
+/// projects are used in workspace mode (`ur worker launch -m manual -w <dir>`).
+pub fn add(config: &ur_config::Config, req: &AddRequest<'_>, output: &OutputManager) -> Result<()> {
+    let AddRequest {
+        image,
+        name,
+        pool_limit,
+        local,
+        ..
+    } = *req;
+    let path = std::fs::canonicalize(req.path)
+        .with_context(|| format!("failed to resolve path: {}", req.path.display()))?;
+
+    if local && pool_limit.is_some() {
+        bail!("--pool-limit is not valid with --local (local projects have no repo pool)");
+    }
+
+    // For a local project the directory need not be a git repo at all, so the key
+    // comes from the directory basename rather than a remote URL.
+    let repo = if local {
+        None
+    } else {
+        Some(git_remote_origin(&path)?)
     };
-    info!(key = %key, repo = %repo, path = %path.display(), "adding project");
+    let key = match (req.key, &repo) {
+        (Some(k), _) => k.to_string(),
+        (None, Some(repo)) => derive_key_from_repo(repo)?,
+        (None, None) => derive_key_from_path(&path)?,
+    };
+    info!(key = %key, repo = ?repo, local, path = %path.display(), "adding project");
 
     if config.projects.contains_key(&key) {
         bail!("project '{key}' already exists — remove it first or choose a different key");
@@ -153,7 +212,10 @@ pub fn add(
         .ok_or_else(|| anyhow::anyhow!("'projects' in ur.toml is not a table"))?;
 
     let mut proj_table = toml_edit::Table::new();
-    proj_table.insert("repo", toml_edit::value(&repo));
+    match &repo {
+        Some(repo) => proj_table.insert("repo", toml_edit::value(repo)),
+        None => proj_table.insert("local", toml_edit::value(true)),
+    };
     if let Some(n) = name {
         proj_table.insert("name", toml_edit::value(n));
     }
@@ -174,10 +236,14 @@ pub fn add(
     if output.is_json() {
         output.print_success(&ProjectAdded {
             key: key.clone(),
-            repo,
+            repo: repo.clone(),
+            local,
         });
     } else {
-        println!("Added project '{key}' (repo: {repo})");
+        match &repo {
+            Some(repo) => println!("Added project '{key}' (repo: {repo})"),
+            None => println!("Added local project '{key}' (no repo — workspace mode only)"),
+        }
     }
     Ok(())
 }
@@ -189,15 +255,19 @@ pub fn remove(
     force: bool,
     output: &OutputManager,
 ) -> Result<()> {
-    if !force {
+    let project = config
+        .projects
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("project '{key}' not found in config"))?;
+
+    // `--force` guards against destroying pool clones. A local project has no pool,
+    // so removal only edits `ur.toml` and needs no confirmation.
+    let is_local = project.is_local();
+    if !force && !is_local {
         bail!("--force is required to remove a project (this deletes all pool clones)");
     }
 
-    info!(key = %key, "removing project");
-
-    if !config.projects.contains_key(key) {
-        bail!("project '{key}' not found in config");
-    }
+    info!(key = %key, is_local, "removing project");
 
     // Remove from ur.toml
     let toml_path = config.config_dir.join("ur.toml");
@@ -217,9 +287,12 @@ pub fn remove(
 
     info!(key = %key, "project removed from config");
 
-    // Delete pool directory
+    // Delete pool directory. A local project never had one — skip the stat entirely
+    // rather than relying on it happening not to exist.
     let pool_dir = config.workspace.join("pool").join(key);
-    if pool_dir.exists() {
+    if is_local {
+        debug!(key, "local project has no pool directory to delete");
+    } else if pool_dir.exists() {
         info!(path = %pool_dir.display(), "deleting pool directory");
         std::fs::remove_dir_all(&pool_dir)
             .with_context(|| format!("failed to delete pool directory {}", pool_dir.display()))?;
@@ -382,18 +455,24 @@ mod tests {
         let repo = make_git_repo("git@github.com:cmaher/ur.git");
         add(
             &config,
-            repo.path(),
-            "ur-worker",
-            None,
-            None,
-            None,
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: false,
+            },
             &text_output(),
         )
         .unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         assert!(updated.projects.contains_key("ur"));
-        assert_eq!(updated.projects["ur"].repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(
+            updated.projects["ur"].repo.as_deref(),
+            Some("git@github.com:cmaher/ur.git")
+        );
         assert_eq!(updated.projects["ur"].container.image, "ur-worker:latest");
     }
 
@@ -404,18 +483,21 @@ mod tests {
         let repo = make_git_repo("git@github.com:cmaher/ur.git");
         add(
             &config,
-            repo.path(),
-            "ur-worker-rust",
-            Some("mykey"),
-            Some("My Project"),
-            Some(5),
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker-rust",
+                key: Some("mykey"),
+                name: Some("My Project"),
+                pool_limit: Some(5),
+                local: false,
+            },
             &text_output(),
         )
         .unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
         let proj = &updated.projects["mykey"];
-        assert_eq!(proj.repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "My Project");
         assert_eq!(proj.pool_limit, 5);
         assert_eq!(proj.container.image, "ur-worker-rust:latest");
@@ -437,11 +519,14 @@ image = "ur-worker"
         let repo = make_git_repo("git@github.com:other/ur.git");
         let err = add(
             &config,
-            repo.path(),
-            "ur-worker",
-            None,
-            None,
-            None,
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: false,
+            },
             &text_output(),
         )
         .unwrap_err();
@@ -455,11 +540,14 @@ image = "ur-worker"
         let repo = make_git_repo("git@github.com:cmaher/myproj.git");
         add(
             &config,
-            repo.path(),
-            "ur-worker",
-            None,
-            None,
-            None,
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: false,
+            },
             &text_output(),
         )
         .unwrap();
@@ -476,11 +564,14 @@ image = "ur-worker"
         let repo = make_git_repo("git@github.com:cmaher/myproj.git");
         add(
             &config,
-            repo.path(),
-            "ur-worker-rust",
-            None,
-            None,
-            None,
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker-rust",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: false,
+            },
             &text_output(),
         )
         .unwrap();
@@ -558,6 +649,189 @@ image = "ur-worker"
         let config = write_config(&tmp, "");
         let err = remove(&config, "nope", true, &text_output()).unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    // ── local projects (--local) ───────────────────────────────────────
+
+    /// A plain directory with no git repo at all — the case `--local` exists for.
+    fn make_plain_dir(name: &str) -> TempDir {
+        let parent = TempDir::new().unwrap();
+        std::fs::create_dir(parent.path().join(name)).unwrap();
+        parent
+    }
+
+    #[test]
+    fn add_local_project_writes_local_flag_and_no_repo() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let parent = make_plain_dir("myapp");
+        add(
+            &config,
+            &AddRequest {
+                path: &parent.path().join("myapp"),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: true,
+            },
+            &text_output(),
+        )
+        .unwrap();
+
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        let proj = &updated.projects["myapp"];
+        assert!(proj.is_local());
+        assert_eq!(proj.repo, None);
+        assert_eq!(proj.container.image, "ur-worker:latest");
+
+        // The written TOML must carry `local = true`, not an empty `repo`.
+        let raw = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
+        assert!(raw.contains("local = true"), "unexpected toml: {raw}");
+        assert!(!raw.contains("repo ="), "unexpected toml: {raw}");
+    }
+
+    #[test]
+    fn add_local_project_derives_key_from_directory_name() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let parent = make_plain_dir("some-tool");
+        add(
+            &config,
+            &AddRequest {
+                path: &parent.path().join("some-tool"),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: None,
+                local: true,
+            },
+            &text_output(),
+        )
+        .unwrap();
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        assert!(updated.projects.contains_key("some-tool"));
+    }
+
+    #[test]
+    fn add_local_project_honors_explicit_key_and_name() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let parent = make_plain_dir("myapp");
+        add(
+            &config,
+            &AddRequest {
+                path: &parent.path().join("myapp"),
+                image: "ur-worker",
+                key: Some("mykey"),
+                name: Some("My App"),
+                pool_limit: None,
+                local: true,
+            },
+            &text_output(),
+        )
+        .unwrap();
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        let proj = &updated.projects["mykey"];
+        assert!(proj.is_local());
+        assert_eq!(proj.name, "My App");
+    }
+
+    #[test]
+    fn add_local_project_rejects_pool_limit() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let parent = make_plain_dir("myapp");
+        let err = add(
+            &config,
+            &AddRequest {
+                path: &parent.path().join("myapp"),
+                image: "ur-worker",
+                key: None,
+                name: None,
+                pool_limit: Some(5),
+                local: true,
+            },
+            &text_output(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--pool-limit"));
+    }
+
+    #[test]
+    fn add_local_project_ignores_git_remote_when_directory_is_a_repo() {
+        // `--local` is an explicit choice: a directory that happens to be a git
+        // repo still becomes a local project, with no `repo` recorded.
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(&tmp, "");
+        let repo = make_git_repo("git@github.com:cmaher/ur.git");
+        add(
+            &config,
+            &AddRequest {
+                path: repo.path(),
+                image: "ur-worker",
+                key: Some("mykey"),
+                name: None,
+                pool_limit: None,
+                local: true,
+            },
+            &text_output(),
+        )
+        .unwrap();
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        assert!(updated.projects["mykey"].is_local());
+        assert_eq!(updated.projects["mykey"].repo, None);
+    }
+
+    #[test]
+    fn remove_local_project_needs_no_force_and_touches_no_pool() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(
+            &tmp,
+            r#"
+[projects.myapp]
+local = true
+
+[projects.myapp.container]
+image = "ur-worker"
+"#,
+        );
+
+        // A stray directory at the pool path must survive: a local project has no
+        // pool, so removal has no business deleting anything there.
+        let pool_dir = config.workspace.join("pool").join("myapp");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+
+        remove(&config, "myapp", false, &text_output()).unwrap();
+
+        let updated = ur_config::Config::load_from(tmp.path()).unwrap();
+        assert!(!updated.projects.contains_key("myapp"));
+        assert!(pool_dir.exists());
+    }
+
+    #[test]
+    fn list_renders_local_project_without_repo_or_pool_columns() {
+        let tmp = TempDir::new().unwrap();
+        let config = write_config(
+            &tmp,
+            r#"
+[projects.myapp]
+local = true
+
+[projects.myapp.container]
+image = "ur-worker"
+"#,
+        );
+        // Should not error and should not claim a repo or pool.
+        list(&config, &text_output()).unwrap();
+    }
+
+    #[test]
+    fn derive_key_from_path_uses_basename() {
+        assert_eq!(
+            derive_key_from_path(Path::new("/Users/me/projects/myapp")).unwrap(),
+            "myapp"
+        );
     }
 
     #[test]

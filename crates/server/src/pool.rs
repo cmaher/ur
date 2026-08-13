@@ -83,6 +83,29 @@ impl RepoPoolManager {
         }
     }
 
+    /// Look up a project and its git remote, refusing local projects up front.
+    ///
+    /// Called at the top of every pool entry point so a local project (`local = true`,
+    /// no `repo`) fails before any DB query, builderd RPC, or git work is issued —
+    /// there is nothing to clone, and a half-prepared slot directory would linger.
+    fn resolve_pool_project(
+        &self,
+        project_key: &str,
+    ) -> Result<(ur_config::ProjectConfig, String), String> {
+        let project = self
+            .project_registry
+            .get(project_key)
+            .ok_or_else(|| format!("unknown project: {project_key}"))?;
+        let repo = project.repo.clone().ok_or_else(|| {
+            format!(
+                "project '{project_key}' is local (local = true, no repo) — pool slots \
+                 require a git remote. Use workspace mode instead: \
+                 ur worker launch -m manual -w <dir> -p {project_key}"
+            )
+        })?;
+        Ok((project, repo))
+    }
+
     /// Register an in-memory claim on `slot_id`, returning a guard that releases it on drop.
     ///
     /// Returns `None` if the slot is already claimed by a concurrent acquisition.
@@ -110,10 +133,7 @@ impl RepoPoolManager {
     /// caller must hold the guard until the slot is linked to a worker via `worker_slot`,
     /// and must drop it on any failure so the slot returns to the pool.
     pub async fn acquire_slot(&self, project_key: &str) -> Result<(PathBuf, SlotClaim), String> {
-        let project = self
-            .project_registry
-            .get(project_key)
-            .ok_or_else(|| format!("unknown project: {project_key}"))?;
+        let (project, repo) = self.resolve_pool_project(project_key)?;
 
         // Query DB for available slots (not linked to an active worker), oldest first.
         let candidates = self
@@ -144,11 +164,7 @@ impl RepoPoolManager {
             info!(project_key, slot_name = %slot_name, path = %slot.host_path, "recycling existing pool slot");
             let host_path = self
                 .builder_pool_client
-                .recycle_slot(
-                    project_key.to_owned(),
-                    slot_name.clone(),
-                    project.repo.clone(),
-                )
+                .recycle_slot(project_key.to_owned(), slot_name.clone(), repo.clone())
                 .await
                 .map_err(|e| format!("recycle_slot failed for slot {slot_name}: {e}"))?;
             return Ok((host_path, claim));
@@ -177,17 +193,13 @@ impl RepoPoolManager {
         info!(
             project_key,
             slot_index = next_index,
-            repo = %project.repo,
+            repo = %repo,
             "preparing new pool slot via builderd"
         );
 
         let host_path = self
             .builder_pool_client
-            .prepare_new_slot(
-                project_key.to_owned(),
-                slot_name.clone(),
-                project.repo.clone(),
-            )
+            .prepare_new_slot(project_key.to_owned(), slot_name.clone(), repo.clone())
             .await
             .map_err(|e| format!("prepare_new_slot failed for {project_key}/{slot_name}: {e}"))?;
 
@@ -268,14 +280,11 @@ impl RepoPoolManager {
     ///
     /// Returns the host-side path to the shared slot directory.
     pub async fn acquire_shared_slot(&self, project_key: &str) -> Result<PathBuf, String> {
-        let project = self
-            .project_registry
-            .get(project_key)
-            .ok_or_else(|| format!("unknown project: {project_key}"))?;
+        let (_project, repo) = self.resolve_pool_project(project_key)?;
 
-        info!(project_key, repo = %project.repo, "preparing shared slot via builderd");
+        info!(project_key, repo = %repo, "preparing shared slot via builderd");
         self.builder_pool_client
-            .prepare_shared_slot(project_key.to_owned(), project.repo.clone())
+            .prepare_shared_slot(project_key.to_owned(), repo)
             .await
             .map_err(|e| format!("prepare_shared_slot failed for {project_key}: {e}"))
     }
@@ -429,12 +438,22 @@ mod tests {
         tmp: &std::path::Path,
         pool_limit: u32,
     ) -> (RepoPoolManager, ur_db_test::TestDb) {
+        test_pool_with_repo(tmp, pool_limit, Some("git@github.com:test/testproj.git")).await
+    }
+
+    /// Like [`test_pool`], but lets the test choose whether `testproj` has a repo.
+    /// `None` makes it a local project (`local = true` in `ur.toml`).
+    async fn test_pool_with_repo(
+        tmp: &std::path::Path,
+        pool_limit: u32,
+        repo: Option<&str>,
+    ) -> (RepoPoolManager, ur_db_test::TestDb) {
         let mut projects = HashMap::new();
         projects.insert(
             "testproj".into(),
             ProjectConfig {
                 key: "testproj".into(),
-                repo: String::new(),
+                repo: repo.map(str::to_owned),
                 name: "Test Project".into(),
                 pool_limit,
                 hostexec: Vec::new(),
@@ -602,6 +621,65 @@ mod tests {
             !result.unwrap_err().contains("unknown project"),
             "should not get unknown project error"
         );
+    }
+
+    #[tokio::test]
+    async fn acquire_slot_local_project_errors_before_any_builderd_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
+
+        let err = mgr.acquire_slot("testproj").await.unwrap_err();
+        assert!(err.contains("is local"), "unexpected error: {err}");
+        assert!(err.contains("testproj"), "unexpected error: {err}");
+        // The builderd channel in tests points at a dead port, so any RPC would
+        // surface as a transport error instead. Getting the locality message proves
+        // the guard fired first — no half-prepared slot directory left behind.
+        assert!(
+            !err.contains("transport error") && !err.contains("Connection refused"),
+            "guard should precede all builderd RPCs: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_slot_local_project_inserts_no_slot_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
+
+        assert!(mgr.acquire_slot("testproj").await.is_err());
+
+        // No DB state may be created for a project that can never have a slot.
+        let slots = mgr
+            .worker_repo
+            .find_available_slots("testproj")
+            .await
+            .unwrap();
+        assert!(
+            slots.is_empty(),
+            "expected no slot rows, got {}",
+            slots.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_local_project_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
+
+        let err = mgr.acquire_shared_slot("testproj").await.unwrap_err();
+        assert!(err.contains("is local"), "unexpected error: {err}");
+        assert!(
+            !err.contains("transport error") && !err.contains("Connection refused"),
+            "guard should precede all builderd RPCs: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_shared_slot_unknown_project_still_reports_unknown() {
+        // Locality must not swallow the distinct "unknown project" failure.
+        let tmp = tempfile::tempdir().unwrap();
+        let (mgr, _test_db) = test_pool_with_repo(tmp.path(), 10, None).await;
+        let err = mgr.acquire_shared_slot("nonexistent").await.unwrap_err();
+        assert!(err.contains("unknown project"), "unexpected error: {err}");
     }
 
     #[tokio::test]

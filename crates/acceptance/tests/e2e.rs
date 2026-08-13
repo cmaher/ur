@@ -183,7 +183,10 @@ fn wait_for_healthy(runtime: &str, container: &str) {
 /// Extra project entries to append to ur.toml.
 struct ProjectEntry {
     key: String,
+    /// Git remote URL. Ignored when `local` is true.
     repo: String,
+    /// Emit `local = true` and no `repo` — a repo-less local project.
+    local: bool,
     /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
     image: String,
     /// Paths to hostexec scripts declared for this project (e.g. `["host-only.sh"]`).
@@ -277,10 +280,16 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
         } else {
             String::new()
         };
+        // A local project declares `local = true` in place of `repo`.
+        let identity_line = if proj.local {
+            "local = true\n".to_owned()
+        } else {
+            format!("repo = \"{}\"\n", proj.repo)
+        };
         projects_toml.push_str(&format!(
-            "\n[projects.{key}]\nrepo = \"{repo}\"\n{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
+            "\n[projects.{key}]\n{identity}{scripts}{memory_dir}{brain_dir}\n[projects.{key}.container]\nimage = \"{image}\"\n{mounts}",
             key = proj.key,
-            repo = proj.repo,
+            identity = identity_line,
             scripts = scripts_line,
             memory_dir = memory_dir_line,
             brain_dir = brain_dir_line,
@@ -586,6 +595,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
         ProjectEntry {
             key: "mountproj".into(),
             repo: repo.clone(),
+            local: false,
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
@@ -595,6 +605,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
         ProjectEntry {
             key: "badmountproj".into(),
             repo,
+            local: false,
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
@@ -644,6 +655,7 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
     let projects = vec![ProjectEntry {
         key: "memproj".into(),
         repo,
+        local: false,
         image: "ur-worker".into(),
         hostexec_scripts: vec![],
         mounts: vec![],
@@ -699,6 +711,7 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
     let projects = vec![ProjectEntry {
         key: "brainproj".into(),
         repo,
+        local: false,
         image: "ur-worker".into(),
         hostexec_scripts: vec![],
         mounts: vec![],
@@ -740,6 +753,11 @@ fn setup_workspace_brain() -> BrainDirInfo {
 
 /// Timeout for the entire acceptance test run (10 minutes).
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Key of the repo-less local project (`local = true`) used by
+/// `scenario_local_project`. Its directory basename must match so that
+/// `ur worker launch -m manual -w .` derives the project from the cwd.
+const LOCAL_PROJECT_KEY: &str = "localproj";
 
 /// Bare repositories and project entries for the test environment.
 struct ProjectFixtures {
@@ -887,6 +905,7 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
     vec![ProjectEntry {
         key: "hookproj".into(),
         repo,
+        local: false,
         image: "ur-worker".into(),
         hostexec_scripts: vec![],
         mounts: vec![],
@@ -932,6 +951,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         ProjectEntry {
             key: project_key.into(),
             repo: bare_repo.to_string_lossy().into_owned(),
+            local: false,
             image: "ur-worker".into(),
             hostexec_scripts: vec![],
             mounts: vec![],
@@ -941,6 +961,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         ProjectEntry {
             key: "rustproj".into(),
             repo: bare_repo_rust.to_string_lossy().into_owned(),
+            local: false,
             image: "ur-worker-rust".into(),
             hostexec_scripts: vec![],
             mounts: vec![],
@@ -950,6 +971,20 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
         ProjectEntry {
             key: "scriptproj".into(),
             repo: bare_repo_script.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker".into(),
+            hostexec_scripts: vec!["host-only.sh".into()],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+        },
+        // A repo-less local project (`local = true`), declared with the same
+        // per-project affordances a pool-backed project gets: image, hostexec
+        // scripts, mounts. Used by `scenario_local_project`.
+        ProjectEntry {
+            key: LOCAL_PROJECT_KEY.into(),
+            repo: String::new(),
+            local: true,
             image: "ur-worker".into(),
             hostexec_scripts: vec!["host-only.sh".into()],
             mounts: vec![],
@@ -1093,6 +1128,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_custom_mode_model_override(&env);
         scenario_launch_without_project(&env);
         scenario_project_image_rust(&env);
+        scenario_local_project(&env);
+        scenario_project_add_local(&env);
         scenario_project_add_image_flag(&env);
         scenario_project_add_then_launch(&env);
         scenario_dispatch_creates_workflow(&env);
@@ -1144,6 +1181,16 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     force_remove_container(
         &env.runtime,
         &env.container_name(&format!("{}-man-0", env.project_key)),
+    );
+    // Local-project manual workers: config-declared and `project add --local`.
+    // Both launch with -p and -w, so the slot half of the ID is the dir basename.
+    force_remove_container(
+        &env.runtime,
+        &env.container_name(&local_manual_process_id(LOCAL_PROJECT_KEY)),
+    );
+    force_remove_container(
+        &env.runtime,
+        &env.container_name(&local_manual_process_id("addedlocal")),
     );
     stop_server(&env.ur, &env.config_path);
 
@@ -1761,6 +1808,363 @@ fn scenario_launch_without_project(env: &TestEnv) {
         stderr.contains("-p") || stderr.contains("project"),
         "error message should mention -p or project.\nstderr: {stderr}"
     );
+}
+
+/// Manual process_id for a local project launched as `-p <key> -w <dir>` where the
+/// directory basename is the key.
+///
+/// `generate_manual_process_id` builds `{project_key}-man-{slot_name}`, and for a
+/// launch that supplies both `-p` and `-w` the slot name is the workspace basename
+/// — so this is `{key}-man-{key}`, not `{key}-man-0`.
+fn local_manual_process_id(key: &str) -> String {
+    format!("{key}-man-{key}")
+}
+
+/// Create the local project's host directory: a plain directory that is
+/// deliberately *not* a git repo, holding the hostexec fixture script.
+///
+/// The basename matches the project key so `-w .` can derive the project from cwd.
+fn setup_local_project_dir(env: &TestEnv, key: &str) -> PathBuf {
+    let project_dir = env.config_path.join(key);
+    std::fs::create_dir_all(&project_dir).expect("failed to create local project dir");
+    let fixture_script = workspace_root().join("crates/acceptance/tests/fixtures/host-only.sh");
+    let script_content = std::fs::read_to_string(&fixture_script)
+        .unwrap_or_else(|e| panic!("failed to read fixture: {e}"));
+    let script_dest = project_dir.join("host-only.sh");
+    std::fs::write(&script_dest, &script_content).expect("failed to write host-only.sh");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script_dest, std::fs::Permissions::from_mode(0o755))
+        .expect("failed to set script permissions");
+    assert!(
+        !project_dir.join(".git").exists(),
+        "local project dir must not be a git repo — that is the case under test"
+    );
+    project_dir
+}
+
+/// Assert `ur project list` shows `key` as local, with no repo or pool columns.
+fn assert_local_project_listed(env: &TestEnv, key: &str, env_slice: &[(&str, &str)]) {
+    let list_output = run_cmd(&env.ur, &["project", "list"], env_slice);
+    assert!(
+        list_output.status.success(),
+        "ur project list failed.\nstderr: {}",
+        String::from_utf8_lossy(&list_output.stderr),
+    );
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    let local_line = list_stdout
+        .lines()
+        .find(|l| l.starts_with(key))
+        .unwrap_or_else(|| panic!("project list missing '{key}'.\nGot: {list_stdout}"));
+    assert!(
+        local_line.contains("local"),
+        "local project row should be marked local.\nGot: {local_line}"
+    );
+    assert!(
+        !local_line.contains("repo="),
+        "local project row must not claim a repo.\nGot: {local_line}"
+    );
+}
+
+/// Assert every launch shape that would need a repo pool is refused for a local
+/// project, and that the error explains locality rather than surfacing as a
+/// clone or pool failure.
+fn assert_local_project_launches_rejected(
+    env: &TestEnv,
+    key: &str,
+    ticket_id: &str,
+    project_dir: &Path,
+    env_slice: &[(&str, &str)],
+) {
+    let ws = project_dir.to_str().unwrap();
+    // (args, label, must_mention_local)
+    let cases: [(Vec<&str>, &str, bool); 3] = [
+        (
+            vec!["worker", "launch", "--dispatch", "-p", key, ticket_id],
+            "--dispatch (nothing to clone, push, or open a PR against)",
+            true,
+        ),
+        (
+            vec!["worker", "launch", "-m", "manual", "-p", key],
+            "no -w (there is no pool to fall back on)",
+            true,
+        ),
+        (
+            vec!["worker", "launch", "-p", key, "-w", ws, ticket_id],
+            "code mode (owns a ticket branch in a pool slot)",
+            false,
+        ),
+    ];
+
+    for (args, label, must_mention_local) in cases {
+        let output = run_cmd(&env.ur, &args, env_slice);
+        assert!(
+            !output.status.success(),
+            "launch should have been rejected — {label}.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        if must_mention_local {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("local"),
+                "error should explain the project is local — {label}.\nstderr: {stderr}"
+            );
+        }
+    }
+}
+
+/// Launch the one supported worker shape for a local project — `-m manual` with
+/// `-w <dir>` — and verify it comes up on the project's configured image with the
+/// project's hostexec scripts allowed, exactly as a pool-backed project would.
+fn launch_and_verify_local_worker(
+    env: &TestEnv,
+    key: &str,
+    project_dir: &Path,
+    container_name: &str,
+    env_slice: &[(&str, &str)],
+) {
+    let launch_output = run_cmd(
+        &env.ur,
+        &[
+            "worker",
+            "launch",
+            "-m",
+            "manual",
+            "-p",
+            key,
+            "-w",
+            project_dir.to_str().unwrap(),
+        ],
+        env_slice,
+    );
+    assert!(
+        launch_output.status.success(),
+        "manual launch with -w against a local project should succeed.\n\
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+    let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
+    assert!(
+        launch_stdout.contains(container_name),
+        "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+    );
+
+    wait_for_healthy(&env.runtime, container_name);
+    assert_ping_pong(&env.runtime, container_name);
+
+    // The project's configured image must apply, exactly as for a pool project.
+    let inspect_output = Command::new(&env.runtime)
+        .args(["inspect", "--format", "{{.Config.Image}}", container_name])
+        .output()
+        .expect("failed to inspect container image");
+    let image = String::from_utf8_lossy(&inspect_output.stdout)
+        .trim()
+        .to_string();
+    assert_eq!(
+        image,
+        format!("ur-worker:{}", &*IMAGE_TAG),
+        "local project worker should use the project's configured image"
+    );
+
+    // The project's declared hostexec scripts must be allowed.
+    let marker_dir = tempfile::tempdir().expect("failed to create marker temp dir");
+    let marker_path = marker_dir.path().join("marker.txt");
+    assert_hostexec_script_works(
+        &env.runtime,
+        container_name,
+        "local-project-tag-13579",
+        &marker_path,
+    );
+}
+
+/// Repo-less local projects (`local = true`).
+///
+/// Covers the whole supported surface for a project with no git remote:
+/// - it is visible in `ur project list`, marked local, with no repo;
+/// - tickets can be created against it;
+/// - `-m manual -w <dir> -p <key>` launches a healthy worker on the configured
+///   image, with the project's hostexec scripts allowed;
+/// - `-w .` alone derives the project from the cwd directory name;
+/// - every launch that would need a repo pool fails with a locality error;
+/// - `--dispatch` fails;
+/// - no `pool/<key>` directory is ever created.
+fn scenario_local_project(env: &TestEnv) {
+    let key = LOCAL_PROJECT_KEY;
+    // With both -p and -w, the manual process_id is `{project_key}-man-{workspace
+    // basename}` (see generate_manual_process_id) — not `-man-0`. The project dir
+    // basename is the key here, so both halves are the key.
+    let process_id = local_manual_process_id(key);
+    let container_name = env.container_name(&process_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let pool_dir = env.config_path.join("workspace").join("pool").join(key);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let project_dir = setup_local_project_dir(env, key);
+        assert_local_project_listed(env, key, &env_slice);
+
+        // ---- Tickets can be created against a local project ----
+        // `--output json` is required: parse_ticket_id_from_create reads data.id.
+        let ticket_output = run_cmd(
+            &env.ur,
+            &[
+                "--output",
+                "json",
+                "ticket",
+                "create",
+                "Local project ticket",
+                "--project",
+                key,
+            ],
+            &env_slice,
+        );
+        assert!(
+            ticket_output.status.success(),
+            "ticket create for local project failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ticket_output.stdout),
+            String::from_utf8_lossy(&ticket_output.stderr),
+        );
+        let ticket_id = parse_ticket_id_from_create(&ticket_output.stdout);
+
+        assert_local_project_launches_rejected(env, key, &ticket_id, &project_dir, &env_slice);
+
+        // No rejected launch may have created a pool directory.
+        assert!(
+            !pool_dir.exists(),
+            "rejected launches must not create a pool dir at {}",
+            pool_dir.display()
+        );
+
+        // ---- Supported: manual mode with a workspace mount ----
+        launch_and_verify_local_worker(env, key, &project_dir, &container_name, &env_slice);
+
+        // ---- A local project still gets no pool directory after a real launch ----
+        assert!(
+            !pool_dir.exists(),
+            "a local project must never get a pool dir; found {}",
+            pool_dir.display()
+        );
+
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &process_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Add a repo-less local project through the CLI (`ur project add --local`) and
+/// verify the server hot-reloads it and a manual worker can launch against it.
+///
+/// Complements `scenario_local_project`, which uses a config-file-declared project:
+/// this one exercises the `--local` flag and the ReloadProjects path.
+fn scenario_project_add_local(env: &TestEnv) {
+    let key = "addedlocal";
+    let process_id = local_manual_process_id(key);
+    let container_name = env.container_name(&process_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+    let pool_dir = env.config_path.join("workspace").join("pool").join(key);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // A plain directory, not a git repo — nothing for `--local` to derive a
+        // remote from, which is the point.
+        let project_dir = env.config_path.join(key);
+        std::fs::create_dir_all(&project_dir).expect("failed to create local project dir");
+
+        let image_ref = format!("ur-worker:{}", &*IMAGE_TAG);
+        let add_output = run_cmd(
+            &env.ur,
+            &[
+                "project",
+                "add",
+                "--local",
+                project_dir.to_str().unwrap(),
+                "--image",
+                &image_ref,
+            ],
+            &env_slice,
+        );
+        assert!(
+            add_output.status.success(),
+            "ur project add --local failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&add_output.stdout),
+            String::from_utf8_lossy(&add_output.stderr),
+        );
+        let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+        assert!(
+            add_stdout.contains("Server reloaded"),
+            "project add --local should confirm server reload.\nGot: {add_stdout}"
+        );
+
+        // The key must come from the directory basename, since there is no repo URL.
+        let raw_toml = std::fs::read_to_string(env.config_path.join("ur.toml"))
+            .expect("failed to read ur.toml");
+        assert!(
+            raw_toml.contains(&format!("[projects.{key}]")),
+            "ur.toml should contain the added local project keyed by directory name"
+        );
+
+        // ---- Launch a manual worker with -w against the newly added project ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &[
+                "worker",
+                "launch",
+                "-m",
+                "manual",
+                "-p",
+                key,
+                "-w",
+                project_dir.to_str().unwrap(),
+            ],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "manual launch against the added local project failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+        assert_ping_pong(&env.runtime, &container_name);
+        assert!(
+            !pool_dir.exists(),
+            "a local project must never get a pool dir; found {}",
+            pool_dir.display()
+        );
+
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &process_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+
+        // ---- Removing a local project needs no --force (there is no pool to destroy) ----
+        let remove_output = run_cmd(&env.ur, &["project", "remove", key], &env_slice);
+        assert!(
+            remove_output.status.success(),
+            "ur project remove of a local project should not require --force.\n\
+             stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&remove_output.stdout),
+            String::from_utf8_lossy(&remove_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
 }
 
 /// Launch with `image = "ur-worker-rust"` project config and verify the container uses the `ur-worker-rust` image.

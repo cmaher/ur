@@ -55,7 +55,7 @@ mod tests {
     fn make_project(key: &str, scripts: Vec<&str>) -> ProjectConfig {
         ProjectConfig {
             key: key.to_string(),
-            repo: format!("git@github.com:test/{key}.git"),
+            repo: Some(format!("git@github.com:test/{key}.git")),
             name: key.to_string(),
             pool_limit: 10,
             hostexec: vec![],

@@ -35,6 +35,16 @@ pub enum CoreError {
     #[error("invalid context repo: {reason}")]
     InvalidContextRepo { reason: String },
 
+    /// A local project (`local = true`, no `repo`) was launched in a way that needs
+    /// a repo pool. Server-side backstop for the equivalent CLI pre-flight checks —
+    /// it also covers non-CLI callers such as the TUI and workerd.
+    #[error(
+        "project '{project_key}' is local (local = true, no repo) — {reason}. \
+         Local projects support only manual mode with a workspace mount: \
+         ur worker launch -m manual -w <dir> -p {project_key}"
+    )]
+    LocalProjectUnsupportedLaunch { project_key: String, reason: String },
+
     #[error("prepare failed: {reason}")]
     PrepareFailed { reason: String },
 
@@ -81,6 +91,17 @@ impl From<CoreError> for Status {
                 INVALID_ARGUMENT,
                 HashMap::new(),
             ),
+            CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => {
+                let mut meta = HashMap::new();
+                meta.insert("project_key".into(), project_key.clone());
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_CORE,
+                    INVALID_ARGUMENT,
+                    meta,
+                )
+            }
             CoreError::PrepareFailed { .. } => error::status_with_info(
                 Code::Internal,
                 err.to_string(),
@@ -168,6 +189,34 @@ pub struct LaunchManager {
     pub workspace_brain_dir: Option<String>,
 }
 
+/// Why a launch against a local project cannot proceed, or `None` if it can.
+///
+/// A local project (`local = true`, no `repo`) has nothing to clone, which rules out:
+///
+/// - any strategy other than Manual — Code and Design each own a ticket branch in a
+///   pool slot;
+/// - a launch with no `workspace_dir` — it would fall through to `acquire_slot`, and
+///   there is no pool to fall back on.
+///
+/// Manual with a workspace mount is the one supported combination.
+fn local_launch_rejection_reason(
+    strategy: crate::WorkerStrategy,
+    mode: &str,
+    workspace_dir: &str,
+) -> Option<String> {
+    if strategy != crate::WorkerStrategy::Manual {
+        return Some(format!(
+            "mode '{mode}' needs a repo pool and a ticket branch"
+        ));
+    }
+    if workspace_dir.is_empty() {
+        return Some(
+            "a workspace mount is required, as there is no repo pool to fall back on".to_owned(),
+        );
+    }
+    None
+}
+
 impl LaunchManager {
     /// Validate context repo keys and acquire shared slots in parallel.
     ///
@@ -182,6 +231,18 @@ impl LaunchManager {
             if self.project_registry.get(key).is_none() {
                 return Err(CoreError::InvalidContextRepo {
                     reason: format!("unknown project key: {key}"),
+                }
+                .into());
+            }
+            // Context repos are mounted from the project's shared pool slot, which a
+            // local project does not have. Reject here rather than letting the shared
+            // slot acquisition below fail with a pool error.
+            if self.project_registry.is_local(key) {
+                return Err(CoreError::InvalidContextRepo {
+                    reason: format!(
+                        "project '{key}' is local (local = true, no repo) — context repos \
+                         are mounted from a shared pool clone, which requires a git remote"
+                    ),
                 }
                 .into());
             }
@@ -310,6 +371,34 @@ impl LaunchManager {
         pid
     }
 
+    /// Reject launch requests against a local project that would need a repo pool.
+    ///
+    /// A local project (`local = true`, no `repo`) has nothing to clone, so only
+    /// Manual strategy with a workspace mount is viable. Code and Design both own a
+    /// ticket branch in a pool slot, and any strategy without `workspace_dir` would
+    /// fall through to `acquire_slot`.
+    ///
+    /// The `ur` CLI performs the same checks before sending the request; this is the
+    /// server-side backstop covering the TUI and workerd, and it keeps the failure
+    /// ahead of any pool or container work.
+    fn reject_unsupported_local_launch(
+        &self,
+        project_key: &str,
+        req: &WorkerLaunchRequest,
+        strategy: crate::WorkerStrategy,
+    ) -> Result<(), CoreError> {
+        if project_key.is_empty() || !self.project_registry.is_local(project_key) {
+            return Ok(());
+        }
+        match local_launch_rejection_reason(strategy, &req.mode, &req.workspace_dir) {
+            Some(reason) => Err(CoreError::LocalProjectUnsupportedLaunch {
+                project_key: project_key.to_owned(),
+                reason,
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Resolve workspace, slot, worker ID, skills, and strategy for a launch request.
     ///
     /// Extracted from `launch` to keep method body within the line limit.
@@ -329,6 +418,8 @@ impl LaunchManager {
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
         let effective_project_key = self.resolve_effective_project_key(req);
+
+        self.reject_unsupported_local_launch(&effective_project_key, req, strategy)?;
 
         let (workspace_dir, project_key, slot_claim) =
             if !effective_project_key.is_empty() && !req.workspace_dir.is_empty() {
@@ -1571,4 +1662,73 @@ async fn resolve_gh_repo_for_worker(
             HashMap::new(),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::WorkerStrategy;
+
+    // ── local_launch_rejection_reason ──────────────────────────────────
+
+    #[test]
+    fn manual_with_workspace_is_the_supported_local_combination() {
+        assert!(
+            local_launch_rejection_reason(WorkerStrategy::Manual, "manual", "/Users/me/myapp")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn manual_without_workspace_is_rejected_for_local_project() {
+        let reason = local_launch_rejection_reason(WorkerStrategy::Manual, "manual", "")
+            .expect("should be rejected");
+        assert!(reason.contains("workspace mount"), "unexpected: {reason}");
+    }
+
+    #[test]
+    fn code_and_design_are_rejected_for_local_project_even_with_workspace() {
+        for (strategy, mode) in [
+            (WorkerStrategy::Code, "code"),
+            (WorkerStrategy::Design, "design"),
+        ] {
+            let reason = local_launch_rejection_reason(strategy, mode, "/Users/me/myapp")
+                .expect("should be rejected");
+            assert!(reason.contains(mode), "unexpected for {mode}: {reason}");
+            assert!(
+                reason.contains("repo pool"),
+                "unexpected for {mode}: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn code_and_design_are_rejected_for_local_project_without_workspace() {
+        for (strategy, mode) in [
+            (WorkerStrategy::Code, "code"),
+            (WorkerStrategy::Design, "design"),
+        ] {
+            assert!(local_launch_rejection_reason(strategy, mode, "").is_some());
+        }
+    }
+
+    // ── CoreError mapping ──────────────────────────────────────────────
+
+    #[test]
+    fn local_project_launch_error_maps_to_failed_precondition_with_key_metadata() {
+        let status: Status = CoreError::LocalProjectUnsupportedLaunch {
+            project_key: "myapp".to_owned(),
+            reason: "a workspace mount is required".to_owned(),
+        }
+        .into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        // The message must name the project and show the working command, since this
+        // is what a TUI user sees.
+        assert!(status.message().contains("myapp"), "{}", status.message());
+        assert!(
+            status.message().contains("-m manual -w"),
+            "{}",
+            status.message()
+        );
+    }
 }

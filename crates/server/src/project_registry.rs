@@ -56,6 +56,15 @@ impl ProjectRegistry {
         inner.hostexec_config.clone()
     }
 
+    /// True when `key` names a configured local project (`local = true`, no `repo`).
+    ///
+    /// Returns false for unknown keys: absence is a different failure, reported by
+    /// the caller's own lookup with a better message than "not local".
+    pub fn is_local(&self, key: &str) -> bool {
+        let inner = self.inner.read().expect("ProjectRegistry lock poisoned");
+        inner.projects.get(key).is_some_and(ProjectConfig::is_local)
+    }
+
     /// Return the set of valid project keys.
     pub fn valid_project_keys(&self) -> HashSet<String> {
         let inner = self.inner.read().expect("ProjectRegistry lock poisoned");
@@ -122,6 +131,59 @@ repo = "git@github.com:test/{key}.git"
 image = "ur-worker"
 "#
         )
+    }
+
+    fn toml_with_local_project(key: &str) -> String {
+        format!(
+            r#"
+[projects.{key}]
+local = true
+[projects.{key}.container]
+image = "ur-worker"
+"#
+        )
+    }
+
+    fn registry_from_toml(dir: &Path, content: &str) -> ProjectRegistry {
+        write_toml(dir, content);
+        let config = ur_config::Config::load_from(dir).unwrap();
+        let hostexec = HostExecConfigManager::load(dir, &config.hostexec).unwrap();
+        ProjectRegistry::new(config.projects, hostexec)
+    }
+
+    #[test]
+    fn is_local_distinguishes_local_repo_backed_and_unknown() {
+        let tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}{}",
+            toml_with_project("alpha"),
+            toml_with_local_project("myapp")
+        );
+        let registry = registry_from_toml(tmp.path(), &content);
+
+        assert!(registry.is_local("myapp"));
+        assert!(!registry.is_local("alpha"));
+        // An unknown key is not "local" — absence is a different failure, owned by
+        // the caller's own lookup.
+        assert!(!registry.is_local("nope"));
+        assert!(!registry.is_local(""));
+    }
+
+    #[test]
+    fn reload_flips_project_between_local_and_repo_backed() {
+        let tmp = TempDir::new().unwrap();
+        let registry = registry_from_toml(tmp.path(), &toml_with_local_project("myapp"));
+        assert!(registry.is_local("myapp"));
+
+        // Give the project a repo: it must stop reading as local.
+        write_toml(tmp.path(), &toml_with_project("myapp"));
+        registry.reload(tmp.path()).unwrap();
+        assert!(!registry.is_local("myapp"));
+
+        // And back again.
+        write_toml(tmp.path(), &toml_with_local_project("myapp"));
+        registry.reload(tmp.path()).unwrap();
+        assert!(registry.is_local("myapp"));
     }
 
     #[test]

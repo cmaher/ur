@@ -195,24 +195,31 @@ fn handle_open(model: Model) -> (Model, Vec<Cmd>) {
 /// Dispatch the selected ticket, branching on ticket type:
 /// design tickets launch a design worker, all others dispatch a code worker.
 fn handle_dispatch(model: Model) -> (Model, Vec<Cmd>) {
-    if let Some(ticket) = model.ticket_list.table.selected_ticket() {
-        let msg = if ticket.ticket_type == "design" {
-            Msg::TicketOp(TicketOpMsg::LaunchDesign {
-                ticket_id: ticket.id.clone(),
-                project_key: ticket.project.clone(),
-                image_id: String::new(),
-            })
-        } else {
-            Msg::TicketOp(TicketOpMsg::Dispatch {
-                ticket_id: ticket.id.clone(),
-                project_key: ticket.project.clone(),
-                image_id: String::new(),
-            })
-        };
-        crate::update::update(model, msg)
-    } else {
-        (model, vec![])
+    let Some(ticket) = model.ticket_list.table.selected_ticket() else {
+        return (model, vec![]);
+    };
+    let (ticket_id, project_key, is_design) = (
+        ticket.id.clone(),
+        ticket.project.clone(),
+        ticket.ticket_type == "design",
+    );
+    if model.dispatch_is_blocked_by_locality(&project_key) {
+        return crate::update::local_project_dispatch_banner(model, &project_key);
     }
+    let msg = if is_design {
+        Msg::TicketOp(TicketOpMsg::LaunchDesign {
+            ticket_id,
+            project_key,
+            image_id: String::new(),
+        })
+    } else {
+        Msg::TicketOp(TicketOpMsg::Dispatch {
+            ticket_id,
+            project_key,
+            image_id: String::new(),
+        })
+    };
+    crate::update::update(model, msg)
 }
 
 /// Edit the selected ticket in $EDITOR.

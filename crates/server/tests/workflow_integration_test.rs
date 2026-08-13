@@ -822,7 +822,7 @@ fn project_cycle_limit_map(
         project_key.to_string(),
         ur_config::ProjectConfig {
             key: project_key.to_string(),
-            repo: String::new(),
+            repo: Some(String::new()),
             name: project_key.to_string(),
             pool_limit: 1,
             hostexec: vec![],

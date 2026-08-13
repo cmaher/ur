@@ -599,6 +599,13 @@ pub struct Model {
     /// Project filter scope, if any (e.g. `-p myproject`). Used by `update` to
     /// filter UI events by project.
     pub project_filter: Option<String>,
+    /// Keys of configured local projects (`local = true` in `ur.toml`).
+    ///
+    /// Their tickets can never be dispatched — there is no repo to clone, branch
+    /// to push, or PR to open. `update` is a pure function with no access to
+    /// `TuiContext`, so the set lives here to let the dispatch actions fail with a
+    /// banner instead of spending an RPC round-trip on a certain rejection.
+    pub local_projects: HashSet<String>,
 }
 
 impl Model {
@@ -644,7 +651,23 @@ impl Model {
             pending_theme_swap: None,
             custom_theme_names: vec![],
             project_filter: None,
+            local_projects: HashSet::new(),
         }
+    }
+
+    /// True when `project_key` names a configured local project (`local = true`).
+    ///
+    /// Local projects have no git remote, so their tickets are never dispatchable.
+    pub fn project_is_local(&self, project_key: &str) -> bool {
+        self.local_projects.contains(project_key)
+    }
+
+    /// True when a dispatch against `project_key` must be refused client-side.
+    ///
+    /// An empty key proceeds: locality is unknown there, and the server owns that
+    /// validation.
+    pub fn dispatch_is_blocked_by_locality(&self, project_key: &str) -> bool {
+        !project_key.is_empty() && self.project_is_local(project_key)
     }
 
     /// Open an overlay by atomically setting `active_overlay` and pushing the

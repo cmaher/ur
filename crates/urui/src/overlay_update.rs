@@ -904,11 +904,19 @@ fn handle_create_action(
             // from the pending's project field. The cmd_runner resolves the actual
             // image from server config; we pass what we have.
             let project_key = pending.project.clone();
-            TicketOpMsg::CreateAndDispatch {
-                pending,
-                project_key,
-                image_id: String::new(),
+            // Refuse before creating the ticket: a local project cannot be
+            // dispatched, and creating-then-failing would leave a stray ticket.
+            if model.dispatch_is_blocked_by_locality(&project_key) {
+                return crate::update::local_project_dispatch_banner(model, &project_key);
             }
+            return crate::update::update(
+                model,
+                super::msg::Msg::TicketOp(TicketOpMsg::CreateAndDispatch {
+                    pending,
+                    project_key,
+                    image_id: String::new(),
+                }),
+            );
         }
         CreateAction::Edit => {
             let content = crate::create_ticket::serialize_to_template(

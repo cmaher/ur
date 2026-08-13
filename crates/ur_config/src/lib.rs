@@ -465,7 +465,12 @@ struct RawProjectTuiConfig {
 /// Raw TOML representation for a `[projects.<key>]` entry.
 #[derive(Debug, Deserialize)]
 struct RawProjectConfig {
-    repo: String,
+    /// Git remote URL. Required unless `local = true`.
+    repo: Option<String>,
+    /// Declares a repo-less local project: no git remote, no pool, no dispatch.
+    /// Mutually exclusive with `repo`.
+    #[serde(default)]
+    local: bool,
     name: Option<String>,
     pool_limit: Option<u32>,
     #[serde(default)]
@@ -1148,11 +1153,13 @@ pub struct ProjectTuiConfig {
 pub struct ProjectConfig {
     /// Structural identifier (the TOML table key, e.g. "ur").
     pub key: String,
-    /// Git remote URL (required).
-    pub repo: String,
+    /// Git remote URL. `None` for a local project (`local = true`) — there is no
+    /// remote to clone, so the project has no pool and cannot be dispatched.
+    pub repo: Option<String>,
     /// Display-friendly label (defaults to the key).
     pub name: String,
     /// Maximum number of cached repo clones in the pool (default: 10).
+    /// Meaningless for local projects, which have no pool.
     pub pool_limit: u32,
     /// Additional passthrough hostexec commands for this project.
     /// These are added to the global allowlist when agents run against this project.
@@ -1193,6 +1200,30 @@ pub struct ProjectConfig {
     /// `%PROJECT%/...` is rejected — the brain must be project-stable, not workspace-relative.
     /// When `None`, the server-side convention fallback applies (separate ticket).
     pub brain_dir: Option<String>,
+}
+
+impl ProjectConfig {
+    /// True when this project has no git remote (`local = true` in `ur.toml`).
+    ///
+    /// A local project has no pool, cannot be dispatched, and is only usable in
+    /// workspace mode (`ur worker launch -m manual -w <dir>`).
+    pub fn is_local(&self) -> bool {
+        self.repo.is_none()
+    }
+
+    /// The git remote URL, or an error naming the project and why there is none.
+    ///
+    /// Call this from any code path that fundamentally needs a remote (pool
+    /// clone, PR creation) so the failure names the cause instead of surfacing
+    /// as an empty-string git error.
+    pub fn require_repo(&self) -> anyhow::Result<&str> {
+        self.repo.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "project '{}' is local (local = true, no repo) — this operation requires a git remote",
+                self.key
+            )
+        })
+    }
 }
 
 /// Resolved, ready-to-use daemon configuration.
@@ -1470,6 +1501,42 @@ pub fn save_project_theme_name(
 /// Filename for the server pid file, stored in the config directory.
 pub const SERVER_PID_FILE: &str = "server.pid";
 
+/// Resolve a project's git remote, enforcing the `repo` / `local` contract.
+///
+/// Exactly one of the two must be supplied: `repo = "<url>"` for a normal
+/// pool-backed project, or `local = true` for a repo-less local project. Both
+/// together is a config error — that combination is almost always a mistake, and
+/// making it loud keeps a stray `local = true` from silently disabling dispatch
+/// on a real project.
+///
+/// `pool_limit` is rejected for local projects because it directly implies a
+/// pool. Other workflow-only fields (`protected_branches`,
+/// `max_implement_cycles`, `max_fix_attempts`, `push_again_exit_code`,
+/// `ignored_workflow_checks`) are accepted and ignored, so a project can be
+/// flipped between local and repo-backed by editing a single line.
+fn resolve_project_repo(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<Option<String>> {
+    match (&raw_proj.repo, raw_proj.local) {
+        (Some(_), true) => anyhow::bail!(
+            "project '{key}': `repo` and `local = true` are mutually exclusive — \
+             a local project has no git remote. Drop one of them."
+        ),
+        (None, false) => anyhow::bail!(
+            "project '{key}': missing field `repo` — set `repo = \"<git url>\"`, \
+             or `local = true` for a repo-less local project (no pool, no dispatch)."
+        ),
+        (None, true) => {
+            if raw_proj.pool_limit.is_some() {
+                anyhow::bail!(
+                    "project '{key}': `pool_limit` is not valid for a local project \
+                     (`local = true`) — local projects have no repo pool."
+                );
+            }
+            Ok(None)
+        }
+        (Some(repo), false) => Ok(Some(repo.clone())),
+    }
+}
+
 fn resolve_project_config(
     key: String,
     raw_proj: RawProjectConfig,
@@ -1505,6 +1572,8 @@ fn resolve_project_config(
              See docs/codeflows/project-file-mounting.md."
         );
     }
+
+    let repo = resolve_project_repo(&key, &raw_proj)?;
 
     validate_project_templates(&key, &raw_proj)?;
 
@@ -1547,7 +1616,7 @@ fn resolve_project_config(
 
     let resolved = ProjectConfig {
         name: raw_proj.name.unwrap_or_else(|| key.clone()),
-        repo: raw_proj.repo,
+        repo,
         pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
         key: key.clone(),
         hostexec: raw_proj.hostexec,
@@ -2284,7 +2353,7 @@ image = "ur-worker"
         assert_eq!(cfg.projects.len(), 1);
         let proj = &cfg.projects["ur"];
         assert_eq!(proj.key, "ur");
-        assert_eq!(proj.repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "ur");
         assert_eq!(proj.pool_limit, DEFAULT_POOL_LIMIT);
         assert_eq!(proj.container.image, "ur-worker:latest");
@@ -2309,7 +2378,7 @@ image = "ur-worker"
         let cfg = Config::load_from(tmp.path()).unwrap();
         let proj = &cfg.projects["swa"];
         assert_eq!(proj.key, "swa");
-        assert_eq!(proj.repo, "git@github.com:cmaher/swa.git");
+        assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/swa.git"));
         assert_eq!(proj.name, "Swa App");
         assert_eq!(proj.pool_limit, 5);
     }
@@ -2392,7 +2461,225 @@ name = "Missing Repo"
 "#,
         )
         .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err().to_string();
+        // The error must point at both ways out, so a user adding a repo-less
+        // project discovers `local = true` from the failure itself.
+        assert!(err.contains("repo"), "unexpected error: {err}");
+        assert!(err.contains("local = true"), "unexpected error: {err}");
+    }
+
+    // ── local projects (`local = true`) ────────────────────────────────
+
+    #[test]
+    fn parses_local_project_without_repo() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+name = "My App"
+[projects.myapp.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["myapp"];
+        assert_eq!(proj.key, "myapp");
+        assert_eq!(proj.repo, None);
+        assert!(proj.is_local());
+        assert_eq!(proj.name, "My App");
+        assert_eq!(proj.container.image, "ur-worker:latest");
+    }
+
+    #[test]
+    fn local_project_with_repo_is_error() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("mutually exclusive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn local_project_with_pool_limit_is_error() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+pool_limit = 5
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err().to_string();
+        assert!(err.contains("pool_limit"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn local_false_still_requires_repo() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = false
+"#,
+        )
+        .unwrap();
         assert!(Config::load_from(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn local_and_repo_backed_projects_coexist() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+[projects.myapp]
+local = true
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.projects.len(), 2);
+        assert!(!cfg.projects["ur"].is_local());
+        assert!(cfg.projects["myapp"].is_local());
+        // A local project keeps the default pool_limit in the struct; it is simply
+        // never consulted, since no pool exists.
+        assert_eq!(cfg.projects["myapp"].pool_limit, DEFAULT_POOL_LIMIT);
+    }
+
+    #[test]
+    fn local_project_resolves_full_container_and_hostexec_config() {
+        // The whole point of a local project: everything except the repo works
+        // exactly as it does for a pool-backed project.
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("hostexec")).unwrap();
+        std::fs::write(tmp.path().join("hostexec/deploy.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+hostexec = ["make", "npm"]
+hostexec_scripts = ["deploy.sh"]
+claude_md = "%PROJECT%/CLAUDE.md"
+brain_dir = "%URCONFIG%/brains/myapp"
+memory_dir = "%URCONFIG%/memory/myapp"
+ignored_workflow_checks = ["flaky"]
+[projects.myapp.tui]
+theme = "nord"
+[projects.myapp.container]
+image = "ur-worker-rust"
+mounts = ["/host/data:/data:ro"]
+ports = ["8080:8080"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["myapp"];
+        assert!(proj.is_local());
+        assert_eq!(proj.container.image, "ur-worker-rust:latest");
+        assert_eq!(proj.container.mounts.len(), 1);
+        assert_eq!(proj.container.ports.len(), 1);
+        assert_eq!(proj.hostexec, vec!["make", "npm"]);
+        assert_eq!(proj.hostexec_scripts, vec!["deploy.sh"]);
+        assert_eq!(proj.claude_md.as_deref(), Some("%PROJECT%/CLAUDE.md"));
+        assert_eq!(proj.brain_dir.as_deref(), Some("%URCONFIG%/brains/myapp"));
+        assert_eq!(proj.memory_dir.as_deref(), Some("%URCONFIG%/memory/myapp"));
+        assert_eq!(proj.ignored_workflow_checks, vec!["flaky"]);
+        assert_eq!(
+            proj.tui.as_ref().and_then(|t| t.theme_name.as_deref()),
+            Some("nord")
+        );
+    }
+
+    #[test]
+    fn local_project_accepts_and_ignores_workflow_only_fields() {
+        // Workflow-only settings are accepted (not errors) so a project can be
+        // flipped between local and repo-backed by editing a single line.
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+protected_branches = ["main"]
+max_implement_cycles = 3
+max_fix_attempts = 2
+push_again_exit_code = 201
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let proj = &cfg.projects["myapp"];
+        assert!(proj.is_local());
+        assert_eq!(proj.max_implement_cycles, Some(3));
+        assert_eq!(proj.max_fix_attempts, 2);
+        assert_eq!(proj.push_again_exit_code, 201);
+    }
+
+    #[test]
+    fn require_repo_errors_for_local_project_naming_the_key() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.myapp]
+local = true
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        let err = cfg.projects["myapp"]
+            .require_repo()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("myapp"), "unexpected error: {err}");
+        assert!(err.contains("local"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn require_repo_returns_url_for_repo_backed_project() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].require_repo().unwrap(),
+            "git@github.com:cmaher/ur.git"
+        );
+        assert!(!cfg.projects["ur"].is_local());
     }
 
     #[test]
@@ -4100,7 +4387,7 @@ quit = ["q"]
                 "ur".to_owned(),
                 ProjectConfig {
                     key: "ur".to_owned(),
-                    repo: String::new(),
+                    repo: None,
                     name: "ur".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
@@ -4125,7 +4412,7 @@ quit = ["q"]
                 "sa".to_owned(),
                 ProjectConfig {
                     key: "sa".to_owned(),
-                    repo: String::new(),
+                    repo: None,
                     name: "sample".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
@@ -4244,7 +4531,7 @@ quit = ["q"]
                 "clash".to_owned(),
                 ProjectConfig {
                     key: "clash".to_owned(),
-                    repo: String::new(),
+                    repo: None,
                     name: "ur".to_owned(), // name matches the "ur" key
                     pool_limit: 10,
                     hostexec: vec![],
@@ -4402,7 +4689,10 @@ image = "ur-worker"
         let tui = cfg.projects["ur"].tui.as_ref().expect("tui should be Some");
         assert_eq!(tui.theme_name.as_deref(), Some("nord"));
         // Original fields should be preserved
-        assert_eq!(cfg.projects["ur"].repo, "git@github.com:cmaher/ur.git");
+        assert_eq!(
+            cfg.projects["ur"].repo.as_deref(),
+            Some("git@github.com:cmaher/ur.git")
+        );
     }
 
     #[test]

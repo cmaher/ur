@@ -177,6 +177,12 @@ async fn tea_loop(
     model.custom_theme_names = ctx.tui_config.custom_themes.keys().cloned().collect();
     model.custom_theme_names.sort();
     model.project_filter = project_filter.clone();
+    model.local_projects = config
+        .projects
+        .values()
+        .filter(|p| p.is_local())
+        .map(|p| p.key.clone())
+        .collect();
 
     // Subscribe to the server's UI event stream for live updates.
     cmd_runner.execute(cmd::Cmd::SubscribeUiEvents);

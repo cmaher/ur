@@ -125,23 +125,28 @@ enum ProxyCommands {
 
 #[derive(Subcommand)]
 enum ProjectCommands {
-    /// Add a new project from a local git directory
+    /// Add a new project from a local git directory (or `--local` for a repo-less directory)
     Add {
-        /// Path to a git repository directory (e.g. "." for current directory)
+        /// Path to a git repository directory (e.g. "." for current directory).
+        /// With --local, any directory — it need not be a git repo.
         path: PathBuf,
         /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full image reference
         /// [default: ur-worker]
         #[arg(long)]
         image: Option<String>,
-        /// Project key (derived from repo name if omitted)
+        /// Project key (derived from repo name, or from the directory name with --local)
         #[arg(long)]
         key: Option<String>,
         /// Display-friendly project name
         #[arg(long)]
         name: Option<String>,
-        /// Maximum number of cached repo clones (default: 10)
+        /// Maximum number of cached repo clones (default: 10). Not valid with --local.
         #[arg(long)]
         pool_limit: Option<u32>,
+        /// Add a repo-less local project: no git remote, no repo pool, no dispatch.
+        /// Usable only in workspace mode (`ur worker launch -m manual -w <dir>`).
+        #[arg(long)]
+        local: bool,
     },
     /// List all configured projects with pool usage
     List,
@@ -149,7 +154,7 @@ enum ProjectCommands {
     Remove {
         /// Project key to remove
         key: String,
-        /// Required to confirm deletion of pool clones
+        /// Required to confirm deletion of pool clones (not needed for local projects)
         #[arg(long)]
         force: bool,
     },
@@ -1206,6 +1211,8 @@ async fn handle_worker_launch(
         is_manual,
     )?;
 
+    reject_unsupported_local_launch(projects.get(&resolved_project), &workspace, &mode, dispatch)?;
+
     let mut client = connect(port).await?;
     if force {
         debug!(ticket_id = %ticket_id_str, "force-stopping existing process before launch");
@@ -1249,6 +1256,53 @@ async fn handle_worker_launch(
         }
         let exit_code = process_attach(&process_id, worker_prefix)?;
         process::exit(exit_code);
+    }
+    Ok(())
+}
+
+/// Reject launch combinations that cannot work for a local (repo-less) project.
+///
+/// A local project has no git remote, so there is no pool to clone into and no
+/// branch to push. That rules out three things, each caught here before the
+/// launch RPC so the user gets the reason rather than a pool failure:
+///
+/// - `--dispatch`: dispatch drives the implement → push → PR workflow.
+/// - Any mode other than `manual`: code and design modes own a ticket branch.
+/// - Omitting `-w`: without a workspace mount there is nothing to put in the
+///   container, and the usual pool fallback does not exist.
+///
+/// `None` for `project` means the key is unconfigured (workspace-only launch),
+/// which is unrelated to locality and always allowed.
+fn reject_unsupported_local_launch(
+    project: Option<&ur_config::ProjectConfig>,
+    workspace: &Option<PathBuf>,
+    mode: &str,
+    dispatch: bool,
+) -> Result<()> {
+    let Some(project) = project.filter(|p| p.is_local()) else {
+        return Ok(());
+    };
+    let key = &project.key;
+    if dispatch {
+        bail!(
+            "project '{key}' is local (local = true, no repo) — its tickets cannot be \
+             dispatched: there is no repo to clone, branch to push, or PR to open. \
+             Launch a manual worker instead: ur worker launch -m manual -w . -p {key}"
+        );
+    }
+    if mode != "manual" {
+        bail!(
+            "project '{key}' is local (local = true, no repo) — mode '{mode}' needs a repo \
+             pool and a ticket branch. Only manual mode is supported: \
+             ur worker launch -m manual -w . -p {key}"
+        );
+    }
+    if workspace.is_none() {
+        bail!(
+            "project '{key}' is local (local = true, no repo) — it has no repo pool to fall \
+             back on, so a workspace mount is required: \
+             ur worker launch -m manual -w . -p {key}"
+        );
     }
     Ok(())
 }
@@ -1374,6 +1428,7 @@ async fn handle_project(
             key,
             name,
             pool_limit,
+            local,
         } => {
             if let Some(ref k) = key {
                 input::validate_id(k, "key")?;
@@ -1385,14 +1440,17 @@ async fn handle_project(
             let image_resolved: String =
                 image.unwrap_or_else(|| ur_config::default_image_alias().to_string());
             ur_config::validate_image_alias(&image_resolved)?;
-            let resolved_key = resolve_add_project_key(&path, key.as_deref())?;
+            let resolved_key = resolve_add_project_key(&path, key.as_deref(), local)?;
             project::add(
                 config,
-                &path,
-                &image_resolved,
-                key.as_deref(),
-                name.as_deref(),
-                pool_limit,
+                &project::AddRequest {
+                    path: &path,
+                    image: &image_resolved,
+                    key: key.as_deref(),
+                    name: name.as_deref(),
+                    pool_limit,
+                    local,
+                },
                 output,
             )?;
             project::try_reload_server(
@@ -1415,12 +1473,19 @@ async fn handle_project(
 }
 
 /// Resolve the project key that `project::add` will use, without side effects.
-fn resolve_add_project_key(path: &Path, explicit_key: Option<&str>) -> Result<String> {
+/// Used for the post-add server reload.
+///
+/// A local project has no remote to derive from, so its key comes from the
+/// directory basename — matching `project::add`.
+fn resolve_add_project_key(path: &Path, explicit_key: Option<&str>, local: bool) -> Result<String> {
     match explicit_key {
         Some(k) => Ok(k.to_string()),
         None => {
             let canonical =
                 std::fs::canonicalize(path).context("failed to resolve path for key derivation")?;
+            if local {
+                return project::derive_key_from_path(&canonical);
+            }
             let repo = project::git_remote_origin(&canonical)?;
             project::derive_key_from_repo(&repo)
         }
@@ -1542,6 +1607,103 @@ mod tests {
 
     fn project_keys() -> Vec<String> {
         vec!["ur".to_owned(), "myproj".to_owned()]
+    }
+
+    /// A project config with `repo` set or cleared, for the locality guards.
+    fn make_project(key: &str, repo: Option<&str>) -> ur_config::ProjectConfig {
+        ur_config::ProjectConfig {
+            key: key.to_owned(),
+            repo: repo.map(str::to_owned),
+            name: key.to_owned(),
+            pool_limit: 10,
+            hostexec: vec![],
+            claude_md: None,
+            container: ur_config::ContainerConfig {
+                image: "ur-worker".to_owned(),
+                mounts: vec![],
+                ports: vec![],
+            },
+            max_fix_attempts: 5,
+            max_implement_cycles: None,
+            protected_branches: vec![],
+            tui: None,
+            ignored_workflow_checks: vec![],
+            hostexec_scripts: vec![],
+            push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
+            memory_dir: None,
+            brain_dir: None,
+        }
+    }
+
+    // ── reject_unsupported_local_launch ────────────────────────────────
+
+    #[test]
+    fn local_launch_manual_with_workspace_is_allowed() {
+        let proj = make_project("myapp", None);
+        reject_unsupported_local_launch(
+            Some(&proj),
+            &Some(PathBuf::from("/Users/me/myapp")),
+            "manual",
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn local_launch_with_dispatch_is_rejected() {
+        let proj = make_project("myapp", None);
+        let err = reject_unsupported_local_launch(
+            Some(&proj),
+            &Some(PathBuf::from("/Users/me/myapp")),
+            "manual",
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("cannot be dispatched"), "unexpected: {err}");
+        assert!(err.contains("myapp"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn local_launch_non_manual_mode_is_rejected() {
+        let proj = make_project("myapp", None);
+        for mode in ["code", "design"] {
+            let err = reject_unsupported_local_launch(
+                Some(&proj),
+                &Some(PathBuf::from("/Users/me/myapp")),
+                mode,
+                false,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(mode), "unexpected for {mode}: {err}");
+        }
+    }
+
+    #[test]
+    fn local_launch_without_workspace_is_rejected() {
+        let proj = make_project("myapp", None);
+        let err = reject_unsupported_local_launch(Some(&proj), &None, "manual", false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("workspace mount"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn repo_backed_project_is_unaffected_by_local_guards() {
+        let proj = make_project("ur", Some("git@github.com:cmaher/ur.git"));
+        // Every combination the guard would reject for a local project is fine here.
+        reject_unsupported_local_launch(Some(&proj), &None, "code", true).unwrap();
+        reject_unsupported_local_launch(Some(&proj), &None, "design", false).unwrap();
+        reject_unsupported_local_launch(Some(&proj), &None, "manual", false).unwrap();
+    }
+
+    #[test]
+    fn unconfigured_project_is_unaffected_by_local_guards() {
+        // A workspace-only launch (`-w` with no configured project) is not local.
+        reject_unsupported_local_launch(None, &Some(PathBuf::from("/tmp/x")), "manual", false)
+            .unwrap();
+        reject_unsupported_local_launch(None, &None, "code", true).unwrap();
     }
 
     #[test]

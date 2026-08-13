@@ -8,13 +8,22 @@ and linking workers to slots. All filesystem and git operations are delegated to
 builderd via `BuilderPoolClient`, which calls coarse-grained RPCs on the
 `BuilderPoolService`. Builderd runs on the host with full credential and filesystem access.
 
+**Local projects never reach the pool.** A project declared `local = true` in
+`ur.toml` has no `repo` to clone, so `RepoPoolManager::resolve_pool_project()`
+refuses it at the top of `acquire_slot`, `acquire_shared_slot`, and
+`prepare_shared_slot` — before any DB query or builderd RPC, so no half-prepared
+slot directory is left behind. `ur worker launch` and the server's
+`LaunchManager` reject such launches even earlier. See
+[config.md](config.md#local-projects).
+
 ## Flow
 
 ### Acquire Slot (new clone)
 
 1. CLI sends `ProcessLaunch` with `-p <project-key>`
 2. `RepoPoolManager::acquire_slot()`:
-   a. Looks up project config (repo URL, pool limit) via `ProjectRegistry`
+   a. `resolve_pool_project()` looks up project config via `ProjectRegistry` and
+      resolves the repo URL, erroring for unknown keys and for local projects
    b. Queries DB for an available slot (`find_available_slot` — no linked active worker)
    c. No available slot found — calls `BuilderPoolClient::scan_slots(project_key)`
       to get existing numeric slot indices on disk

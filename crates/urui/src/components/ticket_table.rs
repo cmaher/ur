@@ -29,16 +29,16 @@ const PROGRESS_COUNT_COL: usize = 4;
 const PROGRESS_BAR_COL: usize = 5;
 
 /// Build the column width constraints for the ticket table.
-/// ID(12), P(3), Type(7), Status(10), Progress(8), Bar(10), Title(fill).
+/// ID(12), P(3), Type(7), Status(6), Progress(8), Bar(10), Title(fill).
 ///
-/// Status is 10 to maintain a 2-cell gap before Progress after the square prefix
-/// widened the cell content from 6 to 8 display cells (`ThemedTable` uses column_spacing(0)).
+/// Status is 6, just wide enough for the "Status" header — the cell content
+/// is now only a couple of symbols.
 fn table_widths() -> Vec<Constraint> {
     vec![
         Constraint::Length(12),
         Constraint::Length(3),
         Constraint::Length(7),
-        Constraint::Length(10),
+        Constraint::Length(6),
         Constraint::Length(8),
         Constraint::Length(10),
         Constraint::Fill(1),
@@ -47,15 +47,17 @@ fn table_widths() -> Vec<Constraint> {
 
 /// Derive the display label for the Status column.
 ///
-/// The cell is `{square} {circle/triangle} {word}` — always 8 display cells wide.
-/// The square prefix appears only for open leaf tickets (no dispatch, not closed,
-/// no children): `■` (dispatchable) or `□` (blocked). All other rows use a space.
-fn dispatch_label(ticket: &Ticket) -> String {
-    let square = if ticket.dispatch_status.is_empty()
-        && ticket.status != "closed"
-        && ticket.children_total == 0
-    {
-        if ticket.blocked {
+/// The cell is `{square} {circle/triangle}` — no text. The square prefix
+/// appears for every open, undispatched ticket regardless of whether it has
+/// children: `■` (dispatchable) or `□` (blocked). Closed and dispatched rows
+/// use a space.
+///
+/// `project_is_local` marks the ticket as never-dispatchable: a local project
+/// (`local = true`) has no repo to clone, so such a ticket shows `□` regardless
+/// of whether it has open blockers.
+fn dispatch_label(ticket: &Ticket, project_is_local: bool) -> String {
+    let square = if ticket.dispatch_status.is_empty() && ticket.status != "closed" {
+        if ticket.blocked || project_is_local {
             SYM_BLOCKED
         } else {
             SYM_DISPATCHABLE
@@ -63,14 +65,14 @@ fn dispatch_label(ticket: &Ticket) -> String {
     } else {
         " "
     };
-    let rest = if !ticket.dispatch_status.is_empty() {
-        format!("{SYM_DISPATCH} Disp")
+    let symbol = if !ticket.dispatch_status.is_empty() {
+        SYM_DISPATCH
     } else if ticket.status == "closed" {
-        format!("{SYM_CLOSED} Clsd")
+        SYM_CLOSED
     } else {
-        format!("{SYM_OPEN} Open")
+        SYM_OPEN
     };
-    format!("{square} {rest}")
+    format!("{square} {symbol}")
 }
 
 /// Compute progress values for a ticket.
@@ -101,7 +103,7 @@ fn type_label(ticket: &Ticket) -> &'static str {
 /// Build table row strings from tickets. Progress columns are left empty
 /// because progress bars are rendered directly to the buffer with themed
 /// colors in [`render_progress_bars`].
-fn build_rows(tickets: &[Ticket]) -> Vec<Vec<String>> {
+fn build_rows(tickets: &[Ticket], ctx: &TuiContext) -> Vec<Vec<String>> {
     tickets
         .iter()
         .map(|t| {
@@ -109,7 +111,7 @@ fn build_rows(tickets: &[Ticket]) -> Vec<Vec<String>> {
                 t.id.clone(),
                 t.priority.to_string(),
                 type_label(t).to_string(),
-                dispatch_label(t),
+                dispatch_label(t, ctx.project_is_local(&t.project)),
                 String::new(), // progress count placeholder
                 String::new(), // progress bar placeholder
                 t.title.clone(),
@@ -134,7 +136,7 @@ pub fn render_ticket_table(
     }
 
     let widths = table_widths();
-    let rows = build_rows(&table_model.tickets);
+    let rows = build_rows(&table_model.tickets, ctx);
 
     let themed_table = ThemedTable {
         headers: HEADERS.to_vec(),
@@ -335,6 +337,53 @@ mod tests {
             dispatch_status: String::new(),
             blocked: false,
         }
+    }
+
+    /// A `TuiContext` with no configured projects, so every project reads as
+    /// non-local. Pass a key to [`make_ctx_with_local`] to exercise locality.
+    fn make_ctx() -> TuiContext {
+        let tui_config = ur_config::TuiConfig::default();
+        let theme = crate::theme::Theme::resolve(&tui_config);
+        TuiContext {
+            theme,
+            keymap: crate::keymap::Keymap::default(),
+            projects: vec![],
+            project_configs: std::collections::HashMap::new(),
+            tui_config,
+            config_dir: std::path::PathBuf::from("/tmp/test"),
+            project_filter: None,
+        }
+    }
+
+    /// A `TuiContext` in which `key` is a configured local project (no `repo`).
+    fn make_ctx_with_local(key: &str) -> TuiContext {
+        let mut ctx = make_ctx();
+        ctx.project_configs.insert(
+            key.to_string(),
+            ur_config::ProjectConfig {
+                key: key.to_string(),
+                repo: None,
+                name: key.to_string(),
+                pool_limit: 10,
+                hostexec: vec![],
+                claude_md: None,
+                container: ur_config::ContainerConfig {
+                    image: "ur-worker".to_string(),
+                    mounts: vec![],
+                    ports: vec![],
+                },
+                max_fix_attempts: 5,
+                max_implement_cycles: None,
+                protected_branches: vec![],
+                tui: None,
+                ignored_workflow_checks: vec![],
+                hostexec_scripts: vec![],
+                push_again_exit_code: ur_config::DEFAULT_PUSH_AGAIN_EXIT_CODE,
+                memory_dir: None,
+                brain_dir: None,
+            },
+        );
+        ctx
     }
 
     fn make_model_with_tickets(n: usize) -> TicketTableModel {
@@ -647,35 +696,75 @@ mod tests {
     fn dispatch_label_open() {
         // Open leaf with no blockers → dispatchable square
         let t = make_ticket("ur-001", "test");
-        assert_eq!(dispatch_label(&t), "■ ○ Open");
+        assert_eq!(dispatch_label(&t, false), "■ ○");
     }
 
     #[test]
     fn dispatch_label_closed() {
         let mut t = make_ticket("ur-001", "test");
         t.status = "closed".to_string();
-        assert_eq!(dispatch_label(&t), "  ● Clsd");
+        assert_eq!(dispatch_label(&t, false), "  ●");
     }
 
     #[test]
     fn dispatch_label_dispatched() {
         let mut t = make_ticket("ur-001", "test");
         t.dispatch_status = "implementing".to_string();
-        assert_eq!(dispatch_label(&t), "  ▶ Disp");
+        assert_eq!(dispatch_label(&t, false), "  ▶");
     }
 
     #[test]
     fn dispatch_label_blocked() {
         let mut t = make_ticket("ur-001", "test");
         t.blocked = true;
-        assert_eq!(dispatch_label(&t), "□ ○ Open");
+        assert_eq!(dispatch_label(&t, false), "□ ○");
     }
 
     #[test]
-    fn dispatch_label_epic() {
+    fn dispatch_label_parent_open() {
+        // Having children does not suppress the square — same rules as a leaf.
         let mut t = make_ticket("ur-001", "test");
         t.children_total = 3;
-        assert_eq!(dispatch_label(&t), "  ○ Open");
+        assert_eq!(dispatch_label(&t, false), "■ ○");
+    }
+
+    #[test]
+    fn dispatch_label_parent_blocked() {
+        let mut t = make_ticket("ur-001", "test");
+        t.children_total = 3;
+        t.blocked = true;
+        assert_eq!(dispatch_label(&t, false), "□ ○");
+    }
+
+    #[test]
+    fn dispatch_label_local_project_open_is_blocked() {
+        // A local project has no repo to clone, so an otherwise-dispatchable
+        // ticket still renders as blocked.
+        let t = make_ticket("ur-001", "test");
+        assert_eq!(dispatch_label(&t, true), "□ ○");
+    }
+
+    #[test]
+    fn dispatch_label_local_project_parent_is_blocked() {
+        let mut t = make_ticket("ur-001", "test");
+        t.children_total = 3;
+        assert_eq!(dispatch_label(&t, true), "□ ○");
+    }
+
+    #[test]
+    fn dispatch_label_local_project_closed_keeps_closed_symbol() {
+        // Locality only governs the square prefix; closed and dispatched rows
+        // still report their own state.
+        let mut t = make_ticket("ur-001", "test");
+        t.status = "closed".to_string();
+        assert_eq!(dispatch_label(&t, true), "  ●");
+    }
+
+    #[test]
+    fn dispatch_label_local_project_dispatched_keeps_dispatch_symbol() {
+        let mut t = make_ticket("ur-001", "test");
+        t.dispatch_status = "implementing".to_string();
+        assert_eq!(dispatch_label(&t, true), "  ▶");
     }
 
     // ── ticket_progress tests ─────────────────────────────────────────
@@ -728,15 +817,31 @@ mod tests {
     #[test]
     fn build_rows_produces_correct_columns() {
         let tickets = vec![make_ticket("ur-001", "First ticket")];
-        let rows = build_rows(&tickets);
+        let rows = build_rows(&tickets, &make_ctx());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 7);
         assert_eq!(rows[0][0], "ur-001");
         assert_eq!(rows[0][1], "2");
         assert_eq!(rows[0][2], "◆ Code");
-        assert_eq!(rows[0][3], "■ ○ Open");
+        assert_eq!(rows[0][3], "■ ○");
         assert!(rows[0][4].is_empty()); // progress count placeholder
         assert!(rows[0][5].is_empty()); // progress bar placeholder
         assert_eq!(rows[0][6], "First ticket");
+    }
+
+    #[test]
+    fn build_rows_marks_local_project_ticket_blocked() {
+        // make_ticket assigns project "test"; register it as local.
+        let tickets = vec![make_ticket("ur-001", "First ticket")];
+        let rows = build_rows(&tickets, &make_ctx_with_local("test"));
+        assert_eq!(rows[0][3], "□ ○");
+    }
+
+    #[test]
+    fn build_rows_leaves_other_projects_dispatchable() {
+        // A local project elsewhere in the config must not affect this ticket.
+        let tickets = vec![make_ticket("ur-001", "First ticket")];
+        let rows = build_rows(&tickets, &make_ctx_with_local("someother"));
+        assert_eq!(rows[0][3], "■ ○");
     }
 }

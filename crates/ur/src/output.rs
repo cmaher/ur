@@ -213,7 +213,9 @@ pub struct CredentialsSaved {
 #[derive(Serialize)]
 pub struct ProjectAdded {
     pub key: String,
-    pub repo: String,
+    /// `None` for a local project (`local = true`), which has no git remote.
+    pub repo: Option<String>,
+    pub local: bool,
 }
 
 #[derive(Serialize)]
@@ -224,10 +226,14 @@ pub struct ProjectRemoved {
 #[derive(Serialize)]
 pub struct ProjectInfo {
     pub key: String,
-    pub repo: String,
+    /// `None` for a local project (`local = true`), which has no git remote.
+    pub repo: Option<String>,
     pub name: String,
-    pub pool_limit: u32,
-    pub slots_in_use: usize,
+    /// `None` for a local project — pool limits are meaningless without a pool.
+    pub pool_limit: Option<u32>,
+    /// `None` for a local project, which has no pool directory.
+    pub slots_in_use: Option<usize>,
+    pub local: bool,
 }
 
 #[derive(Serialize)]

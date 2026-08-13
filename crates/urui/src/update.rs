@@ -562,6 +562,26 @@ fn invalidate_tab(tab: TabId, model: &mut Model) {
 }
 
 /// Show a banner: set the model's banner state.
+/// Show the error banner explaining that a local project cannot be dispatched.
+///
+/// Callers gate on [`Model::dispatch_is_blocked_by_locality`] and return this
+/// instead of the dispatch `Cmd`. A local project has nothing to clone, so the
+/// server would reject the launch anyway — refusing here makes the reason
+/// immediate rather than arriving as an RPC error after a round-trip.
+pub(crate) fn local_project_dispatch_banner(model: Model, project_key: &str) -> (Model, Vec<Cmd>) {
+    let message = format!(
+        "Project '{project_key}' is local (no repo) — tickets cannot be dispatched. \
+         Use: ur worker launch -m manual -w . -p {project_key}"
+    );
+    update(
+        model,
+        Msg::BannerShow {
+            message,
+            variant: super::components::banner::BannerVariant::Error,
+        },
+    )
+}
+
 fn handle_banner_show(
     mut model: Model,
     message: String,
@@ -1657,6 +1677,84 @@ mod tests {
         assert!(new_model.status.is_some());
         assert!(new_model.status.as_ref().unwrap().text.contains("ur-abc"));
         assert!(cmds.iter().any(|c| matches!(c, Cmd::TicketOp(_))));
+    }
+
+    // ── local project dispatch guard ────────────────────────────────
+
+    /// A model in which `myapp` is a configured local project.
+    fn model_with_local_project() -> Model {
+        let mut model = Model::initial();
+        model.local_projects.insert("myapp".to_string());
+        model
+    }
+
+    #[test]
+    fn local_project_dispatch_banner_produces_error_banner_and_no_cmd() {
+        let (model, cmds) = local_project_dispatch_banner(model_with_local_project(), "myapp");
+        // No Cmd may be produced — the dispatch must not reach the server.
+        assert!(cmds.is_empty(), "expected no cmds, got {}", cmds.len());
+        let banner = model.banner.expect("banner should be set");
+        assert!(matches!(
+            banner.variant,
+            crate::components::banner::BannerVariant::Error
+        ));
+        assert!(banner.message.contains("myapp"), "{}", banner.message);
+        assert!(banner.message.contains("local"), "{}", banner.message);
+        // The banner should show the command that does work.
+        assert!(
+            banner.message.contains("-m manual -w"),
+            "{}",
+            banner.message
+        );
+    }
+
+    #[test]
+    fn dispatch_is_blocked_by_locality_only_for_local_projects() {
+        let model = model_with_local_project();
+        assert!(model.dispatch_is_blocked_by_locality("myapp"));
+        // A repo-backed project is never blocked by locality.
+        assert!(!model.dispatch_is_blocked_by_locality("ur"));
+        // Locality is unknown for an empty key; the server owns that validation.
+        assert!(!model.dispatch_is_blocked_by_locality(""));
+    }
+
+    #[test]
+    fn model_project_is_local_reflects_configured_local_projects() {
+        let model = model_with_local_project();
+        assert!(model.project_is_local("myapp"));
+        assert!(!model.project_is_local("ur"));
+        assert!(!model.project_is_local(""));
+    }
+
+    #[test]
+    fn dispatching_a_local_project_ticket_from_the_list_shows_banner_not_cmd() {
+        // End-to-end through the page handler: selecting a local-project ticket and
+        // pressing dispatch must produce a banner and no Cmd.
+        let mut model = model_with_local_project();
+        model.ticket_list.table.tickets = vec![ur_rpc::proto::ticket::Ticket {
+            id: "myapp-001".into(),
+            ticket_type: "task".into(),
+            status: "open".into(),
+            priority: 2,
+            parent_id: String::new(),
+            title: "A local ticket".into(),
+            body: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            project: "myapp".into(),
+            branch: String::new(),
+            depth: 0,
+            children_total: 0,
+            children_completed: 0,
+            dispatch_status: String::new(),
+            blocked: false,
+        }];
+        model.ticket_list.table.selected_row = 0;
+
+        let (model, cmds) = update(model, Msg::Nav(NavMsg::TicketListDispatch));
+        assert!(cmds.is_empty(), "expected no cmds, got {}", cmds.len());
+        let banner = model.banner.expect("banner should be set");
+        assert!(banner.message.contains("myapp"), "{}", banner.message);
     }
 
     #[test]

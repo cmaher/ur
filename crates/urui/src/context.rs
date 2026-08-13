@@ -37,4 +37,17 @@ impl TuiContext {
         self.tui_config.theme_name = name.to_string();
         self.theme = Theme::resolve(&self.tui_config);
     }
+
+    /// True when `project_key` names a configured local project (`local = true`).
+    ///
+    /// Local projects have no git remote, so their tickets can never be dispatched.
+    /// Resolving this from the config the TUI already holds lets the list render the
+    /// right state and short-circuit the dispatch key without an RPC round-trip.
+    ///
+    /// Unknown keys are not local — the server owns that error.
+    pub fn project_is_local(&self, project_key: &str) -> bool {
+        self.project_configs
+            .get(project_key)
+            .is_some_and(ProjectConfig::is_local)
+    }
 }

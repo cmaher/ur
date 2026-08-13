@@ -84,6 +84,7 @@ Reusable rendering components (not navigation pages):
 - Theme colors are generated at compile time from `themes/themes.css` via `build.rs` (oklch to sRGB conversion).
 - Config is loaded from `ur_config::Config` which reads `~/.ur/ur.toml`.
 - UI event throttling: server push events mark tabs dirty; a cooldown window batches rapid-fire events into periodic re-fetches.
+- **Local projects** (`local = true`, no `repo`) can never be dispatched. `update` is pure and has no `TuiContext`, so `Model.local_projects` carries the key set (populated in `main.rs` at startup). Dispatch handlers gate on `Model::dispatch_is_blocked_by_locality` and return `update::local_project_dispatch_banner` instead of a dispatch `Cmd`; `ticket_table::dispatch_label` renders such tickets blocked (`□`) via `TuiContext::project_is_local`. Anything that reads locality during **render** uses the ctx helper; anything in **update** uses the model helper.
 
 ## Footer Command Ordering
 
