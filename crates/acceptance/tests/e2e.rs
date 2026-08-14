@@ -1923,9 +1923,14 @@ fn launch_and_verify_local_worker(
     container_name: &str,
     env_slice: &[(&str, &str)],
 ) {
+    // `--output json` so the generated process_id can be asserted from
+    // `data.worker_id`. The human-readable "Launching worker ..." line is built from
+    // the ticket_id, which is empty in manual mode, so it never carries the real name.
     let launch_output = run_cmd(
         &env.ur,
         &[
+            "--output",
+            "json",
             "worker",
             "launch",
             "-m",
@@ -1944,10 +1949,16 @@ fn launch_and_verify_local_worker(
         String::from_utf8_lossy(&launch_output.stdout),
         String::from_utf8_lossy(&launch_output.stderr),
     );
-    let launch_stdout = String::from_utf8_lossy(&launch_output.stdout);
-    assert!(
-        launch_stdout.contains(container_name),
-        "launch output should contain container name '{container_name}'.\nGot: {launch_stdout}"
+    let launch_json: serde_json::Value =
+        serde_json::from_slice(&launch_output.stdout).expect("launch output should be valid JSON");
+    let process_id = launch_json["data"]["worker_id"]
+        .as_str()
+        .expect("launch response should have data.worker_id");
+    assert_eq!(
+        process_id,
+        local_manual_process_id(key),
+        "a -p + -w manual launch derives its process_id as \
+         {{project_key}}-man-{{workspace basename}}"
     );
 
     wait_for_healthy(&env.runtime, container_name);
