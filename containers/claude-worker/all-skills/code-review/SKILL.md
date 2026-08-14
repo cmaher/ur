@@ -28,6 +28,7 @@ Once all sub-agents return, merge their reports into one review — do not conca
 
 - **Deduplicate.** Findings from different sub-agents that refer to the same underlying issue (same root cause at the same location) collapse into one. Keep the clearest summary; union any distinct detail.
 - **Union the rest.** A finding reported by only one sub-agent is still a finding — include it.
+- **Drop findings already covered by an existing PR comment.** Re-check the merged set against the comments already on the PR; a sub-agent that missed the overlap should not put a duplicate into the combined review.
 - **Reconcile priority.** When merged findings disagree on priority, take the highest (most severe).
 - **Single verdict.** Produce one overall-correctness verdict for the change. The patch is incorrect if *any* sub-agent surfaced a confirmed blocking bug; reconcile disagreement by re-checking the finding yourself rather than taking a majority vote.
 
@@ -67,7 +68,9 @@ Before reviewing the diff, do the following — these reads are required, not op
 
 7. **When the change introduces something meant to replace or absorb existing functionality, read the incumbent.** Even if the new code is not yet wired up, enumerate everything the existing implementation does and every output it produces: return values, side effects, emitted metrics or events, and persisted data. Hold this list against the new contract (see Design Review). A replacement that quietly omits an output the incumbent produced is one of the highest-value findings you can surface, because it is cheap to fix now and expensive once callers depend on the new shape.
 
-8. **Verify claims that comments and docs make.** When a comment names a concrete type as satisfying an interface, asserts that one thing is equivalent to or interchangeable with another, or documents a contract or invariant, open the referenced symbol and confirm the claim against its actual signature and behavior. A doc comment that is wrong — names a type that does not actually implement the interface, describes a guarantee the code does not provide — is a maintainability defect: it will send the next engineer down a path that does not compile or does not hold.
+8. **Skim the existing review comments on the PR.** Read them once, as *input to your own review* — not as a work list. They tell you what has already been raised, what the author has already answered, and occasionally point at a real problem you would otherwise miss. Two consequences: (a) do not re-raise a finding an existing comment already covers — a duplicate comment is noise, and posting one is the failure mode this step exists to prevent; (b) if a comment names something you have not yet examined, go look. Do not write a response to each comment, do not summarize them, and do not track their resolution status — that is the job of the address-feedback flow, not this review.
+
+9. **Verify claims that comments and docs make.** When a comment names a concrete type as satisfying an interface, asserts that one thing is equivalent to or interchangeable with another, or documents a contract or invariant, open the referenced symbol and confirm the claim against its actual signature and behavior. A doc comment that is wrong — names a type that does not actually implement the interface, describes a guarantee the code does not provide — is a maintainability defect: it will send the next engineer down a path that does not compile or does not hold.
 
 ## Bug Criteria
 
@@ -86,7 +89,7 @@ Here are the general guidelines for determining whether something is a bug and s
 
 **Framework semantic mismatches are bugs when they create silent misbehavior.** If code sets a timeout or retry policy on a construct that doesn't honor it (e.g. an activity context passed to a non-activity code path), and this creates an unbounded wait, missing safety net, or silently ignored bound, flag it — the code reads as if the bound applies when it doesn't.
 
-**A field documented as required but never validated is a finding.** A field, parameter, or option documented as required / non-empty / non-nil (in a doc comment, its name, or a nearby contract) but never checked before use. Flag it even when the only caller today is controlled and passes a valid value: an unenforced "required" contract lets an invalid value reach downstream state and fail far from the cause, and the guard is cheapest at the boundary that documents it. Validation analogue of Pre-Review item 8; P2/P3.
+**A field documented as required but never validated is a finding.** A field, parameter, or option documented as required / non-empty / non-nil (in a doc comment, its name, or a nearby contract) but never checked before use. Flag it even when the only caller today is controlled and passes a valid value: an unenforced "required" contract lets an invalid value reach downstream state and fail far from the cause, and the guard is cheapest at the boundary that documents it. Validation analogue of Pre-Review item 9; P2/P3.
 
 **A risky pre-existing pattern re-instantiated at a new boundary is in scope.** Criterion 4 excludes bugs that pre-date the diff. But when the diff introduces a *new* boundary, abstraction, or code path that re-creates a risky pattern (an unguarded dereference, a swallowed error, a missing validation), that new occurrence *was* introduced by this commit, even if it mirrors behavior that already exists elsewhere. A fresh, clean boundary is the cheapest place to get it right. Flag it, explicitly state that it mirrors existing behavior and is not a regression, and keep the priority modest (typically P2/P3) so the author can weigh it against consistency with the old code.
 
@@ -140,6 +143,7 @@ Output all findings the author would fix — or whose decision they'd want to ma
 - **Do not suppress a genuine quality or hardening finding** just because it is non-blocking or no current caller can trigger it.
 - **Defense-in-depth is welcome, not noise** — validating inputs, guarding new boundaries, hardening a contract before consumers depend on it. Flag these.
 - **One exception:** skip a purely defensive nil-guard on a constructor-wired value that no reachable path dereferences. The nil-dereference rules above already cover the cases worth raising.
+- **Never duplicate an existing review comment.** Before writing a finding, check it against the comments already on the PR (Pre-Review item 8). If one already raises the same issue at the same location, drop your finding — even if you would have worded it better or rated it more severely. The only reason to write about ground an existing comment already covers is that you *disagree* with it, and that goes in the "Disagreements" section, not in the findings.
 - **Still hold the anti-bikeshedding bar for design findings** — raise one only when it materially affects the change's fitness for purpose or would be expensive to reverse.
 
 Do not stop at the first qualifying finding. List every one.
@@ -176,7 +180,7 @@ Separate findings with a horizontal rule. Do not use internal line breaks within
 
 OUTPUT FORMAT:
 
-Do not output JSON. Present the review as prose in three parts: the findings, the verdict, then the existing PR comments.
+Do not output JSON. Present the review as prose in three parts: the findings, the verdict, then any disagreements with existing comments.
 
 ### Findings
 
@@ -204,15 +208,14 @@ The evidence, and the specific consumer or scenario the current shape cannot ser
 
 After the last finding, give the overall correctness verdict as its own section — `## Verdict: correct` or `## Verdict: incorrect` — followed by 1–3 sentences of justification. "Correct" implies existing code and tests will not break and the patch is free of bugs and other blocking issues; ignore non-blocking issues such as style, formatting, typos, documentation, and other nits. Design-category findings do not by themselves make a patch incorrect — only let one flip the verdict if it blocks the change's stated goal, and when the verdict is correct but design findings exist, say so.
 
-### PR comments
+### Disagreements
 
-After the verdict, read the existing comments on the pull request and address each one, in the same block shape. `<person>` is the comment author, the header summarizes what they raised, and the two labelled lines carry where it stands and what you recommend:
+After the verdict, add this section **only** for existing PR comments you actively disagree with — a comment that is wrong about the code, would make things worse if applied, or is already resolved by the diff and can be dismissed. Do not respond to comments you agree with, do not restate them, and do not report their resolution status; skip the section entirely when you disagree with nothing, which is the common case.
 
 ```
-### #1 <person> — <what they raised, in a few words>
+### <person> — <what they raised, in a few words>
 
-**Status:** what has happened to it — fixed in `<commit>`, still open, or superseded. Say plainly whether the fix is complete.
-**Action:** your recommended response, including anything an applied fix left behind.
+**Disagree:** why the comment is wrong or no longer applies, with the evidence.
 ```
 
 Do not generate a PR fix.
