@@ -2758,34 +2758,10 @@ fn scenario_reminder_ticket_type(env: &TestEnv) {
         "ticket show should report type reminder, got: {show_json}"
     );
 
-    // ---- a parent with one code child and one reminder child ----
-    assert_reminder_excluded_from_dispatchable(env, &env_slice, &reminder_id);
-
-    // ---- dispatching the reminder is refused, no worker is ever launched ----
-    let dispatch_output = run_cmd(
-        &env.ur,
-        &[
-            "worker",
-            "launch",
-            "-p",
-            env.project_key,
-            "-d",
-            &reminder_id,
-        ],
-        &env_slice,
-    );
-    assert!(
-        !dispatch_output.status.success(),
-        "dispatching a reminder ticket should fail.\nstdout: {}",
-        String::from_utf8_lossy(&dispatch_output.stdout),
-    );
-    let dispatch_stderr = String::from_utf8_lossy(&dispatch_output.stderr);
-    assert!(
-        dispatch_stderr.contains(&reminder_id) && dispatch_stderr.contains("reminder"),
-        "refusal error should name the ticket and the reason, got: {dispatch_stderr}"
-    );
-
     // ---- list --type reminder returns the reminder ----
+    // Checked before re-parenting below: `ticket list` defaults to top-level
+    // tickets only, and the next step re-parents the reminder under a scenario
+    // parent to exercise the dispatchable filter.
     let list_output = run_cmd(
         &env.ur,
         &[
@@ -2815,6 +2791,33 @@ fn scenario_reminder_ticket_type(env: &TestEnv) {
     assert!(
         list_ids.contains(&reminder_id.as_str()),
         "list --type reminder should include the reminder, got: {list_json}"
+    );
+
+    // ---- a parent with one code child and one reminder child ----
+    assert_reminder_excluded_from_dispatchable(env, &env_slice, &reminder_id);
+
+    // ---- dispatching the reminder is refused, no worker is ever launched ----
+    let dispatch_output = run_cmd(
+        &env.ur,
+        &[
+            "worker",
+            "launch",
+            "-p",
+            env.project_key,
+            "-d",
+            &reminder_id,
+        ],
+        &env_slice,
+    );
+    assert!(
+        !dispatch_output.status.success(),
+        "dispatching a reminder ticket should fail.\nstdout: {}",
+        String::from_utf8_lossy(&dispatch_output.stdout),
+    );
+    let dispatch_stderr = String::from_utf8_lossy(&dispatch_output.stderr);
+    assert!(
+        dispatch_stderr.contains(&reminder_id) && dispatch_stderr.contains("reminder"),
+        "refusal error should name the ticket and the reason, got: {dispatch_stderr}"
     );
 }
 
