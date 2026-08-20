@@ -4,7 +4,9 @@ use std::pin::Pin;
 use tonic::{Code, Request, Response, Status};
 use tracing::info;
 
-use ticket_db::{EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketUpdate};
+use ticket_db::{
+    EdgeKind, LifecycleStatus, NewTicket, TicketFilter, TicketRepo, TicketType, TicketUpdate,
+};
 use ur_rpc::error::{
     self, DOMAIN_TICKET, INTERNAL, INVALID_ARGUMENT, NOT_FOUND, TICKET_AMBIGUOUS_REF,
     TICKET_HAS_ACTIVE_WORKFLOW, TICKET_HAS_OPEN_CHILDREN,
@@ -1283,6 +1285,18 @@ impl TicketService for TicketServiceHandler {
             .into());
         }
 
+        if !ticket
+            .type_
+            .parse::<TicketType>()
+            .is_ok_and(|t| t.is_dispatchable())
+        {
+            return Err(TicketError::Validation(format!(
+                "ticket {} has type '{}', which cannot be dispatched",
+                req.ticket_id, ticket.type_,
+            ))
+            .into());
+        }
+
         let status: LifecycleStatus = req
             .status
             .parse()
@@ -1715,6 +1729,48 @@ mod tests {
 
         let err = result.unwrap_err();
         assert_eq!(err.code(), Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn create_workflow_rejects_reminder_ticket() {
+        let (_test_db, mut handler) = setup_handler().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        handler.transition_tx = Some(tx);
+
+        handler
+            .ticket_repo
+            .create_ticket(&NewTicket {
+                id: Some("t-reminder".into()),
+                type_: "reminder".into(),
+                priority: 1,
+                parent_id: None,
+                title: "Reminder ticket".into(),
+                body: String::new(),
+                project: "test".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let result = TicketService::create_workflow(
+            &handler,
+            Request::new(CreateWorkflowRequest {
+                ticket_id: "t-reminder".into(),
+                status: LifecycleStatus::Implementing.as_str().into(),
+            }),
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        assert!(err.message().contains("t-reminder"));
+        assert!(err.message().contains("reminder"));
+
+        let workflow = handler
+            .workflow_repo
+            .get_workflow_by_ticket("t-reminder")
+            .await
+            .unwrap();
+        assert!(workflow.is_none());
     }
 
     /// Create a ticket carrying `ref = ref_value`, for the ref-fallback tests.
