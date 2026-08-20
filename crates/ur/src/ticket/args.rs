@@ -13,7 +13,7 @@ pub enum TicketArgs {
         #[arg(short, long)]
         project: Option<String>,
 
-        /// Ticket type (task or design)
+        /// Ticket type (code, design, or reminder)
         #[arg(long = "type", default_value = "code", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: String,
 
@@ -52,7 +52,7 @@ pub enum TicketArgs {
         #[arg(long, short = 't')]
         tree: Option<String>,
 
-        /// Filter by ticket type (task or design)
+        /// Filter by ticket type (code, design, or reminder)
         #[arg(long = "type", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: Option<String>,
 
@@ -98,7 +98,7 @@ pub enum TicketArgs {
         #[arg(long)]
         priority: Option<i64>,
 
-        /// New ticket type (task or design)
+        /// New ticket type (code, design, or reminder)
         #[arg(long = "type", value_parser = PossibleValuesParser::new(TicketType::VALID))]
         ticket_type: Option<String>,
 

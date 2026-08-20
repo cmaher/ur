@@ -417,6 +417,36 @@ mod tests {
     }
 
     #[test]
+    fn test_create_accepts_reminder_type() {
+        let cmd = parse(&["ticket", "create", "My reminder", "--type", "reminder"]);
+        match cmd.command {
+            super::TicketArgs::Create { ticket_type, .. } => {
+                assert_eq!(ticket_type, "reminder");
+            }
+            other => panic!("expected Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_create_accepts_r_alias_as_reminder() {
+        let result =
+            TicketCommand::try_parse_from(["ticket", "create", "My reminder", "--type", "r"]);
+        assert!(
+            result.is_ok(),
+            "'r' should be accepted as alias for reminder"
+        );
+        match result.unwrap().command {
+            super::TicketArgs::Create { ticket_type, .. } => {
+                assert_eq!(
+                    ticket_type, "r",
+                    "raw string stays r; normalization happens in execute"
+                );
+            }
+            other => panic!("expected Create, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_list_no_filters() {
         let cmd = parse(&["ticket", "list"]);
         match cmd.command {
@@ -471,6 +501,17 @@ mod tests {
         match cmd.command {
             super::TicketArgs::List { meta, .. } => {
                 assert_eq!(meta.as_deref(), Some("ref=PROJ-3218"));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_list_type_reminder_filter() {
+        let cmd = parse(&["ticket", "list", "--type", "reminder"]);
+        match cmd.command {
+            super::TicketArgs::List { ticket_type, .. } => {
+                assert_eq!(ticket_type.as_deref(), Some("reminder"));
             }
             other => panic!("expected List, got {other:?}"),
         }
@@ -534,6 +575,17 @@ mod tests {
                 assert!(branch.is_none());
                 assert!(!no_branch);
                 assert!(project.is_none());
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_update_type_reminder() {
+        let cmd = parse(&["ticket", "update", "ur-abc12", "--type", "reminder"]);
+        match cmd.command {
+            super::TicketArgs::Update { ticket_type, .. } => {
+                assert_eq!(ticket_type.as_deref(), Some("reminder"));
             }
             other => panic!("expected Update, got {other:?}"),
         }

@@ -42,6 +42,14 @@ fn format_detail_minimal() {
 }
 
 #[test]
+fn format_detail_reminder_type() {
+    let mut t = sample_ticket("ur-abc12", "Test ticket");
+    t.ticket_type = "reminder".to_owned();
+    let out = format_ticket_detail(&t, &[], &[], &[]);
+    assert!(out.contains("Type:     reminder"));
+}
+
+#[test]
 fn format_detail_with_parent() {
     let t = Ticket {
         parent_id: "ur-epic1".to_owned(),
