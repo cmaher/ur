@@ -582,6 +582,18 @@ pub(crate) fn local_project_dispatch_banner(model: Model, project_key: &str) -> 
     )
 }
 
+pub(crate) fn reminder_dispatch_banner(model: Model, ticket_id: &str) -> (Model, Vec<Cmd>) {
+    let message =
+        format!("Ticket '{ticket_id}' is a reminder — a manual task and cannot be dispatched.");
+    update(
+        model,
+        Msg::BannerShow {
+            message,
+            variant: super::components::banner::BannerVariant::Error,
+        },
+    )
+}
+
 fn handle_banner_show(
     mut model: Model,
     message: String,
@@ -1709,6 +1721,20 @@ mod tests {
     }
 
     #[test]
+    fn reminder_dispatch_banner_produces_error_banner_and_no_cmd() {
+        let (model, cmds) = reminder_dispatch_banner(Model::initial(), "ur-abc12");
+        // No Cmd may be produced — the dispatch must not reach the server.
+        assert!(cmds.is_empty(), "expected no cmds, got {}", cmds.len());
+        let banner = model.banner.expect("banner should be set");
+        assert!(matches!(
+            banner.variant,
+            crate::components::banner::BannerVariant::Error
+        ));
+        assert!(banner.message.contains("ur-abc12"), "{}", banner.message);
+        assert!(banner.message.contains("manual"), "{}", banner.message);
+    }
+
+    #[test]
     fn dispatch_is_blocked_by_locality_only_for_local_projects() {
         let model = model_with_local_project();
         assert!(model.dispatch_is_blocked_by_locality("myapp"));
@@ -1755,6 +1781,37 @@ mod tests {
         assert!(cmds.is_empty(), "expected no cmds, got {}", cmds.len());
         let banner = model.banner.expect("banner should be set");
         assert!(banner.message.contains("myapp"), "{}", banner.message);
+    }
+
+    #[test]
+    fn dispatching_a_reminder_ticket_from_the_list_shows_banner_not_cmd() {
+        // End-to-end through the page handler: selecting a reminder ticket and
+        // pressing dispatch must produce a banner and no Cmd.
+        let mut model = Model::initial();
+        model.ticket_list.table.tickets = vec![ur_rpc::proto::ticket::Ticket {
+            id: "ur-rem01".into(),
+            ticket_type: "reminder".into(),
+            status: "open".into(),
+            priority: 2,
+            parent_id: String::new(),
+            title: "A reminder".into(),
+            body: String::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            project: "ur".into(),
+            branch: String::new(),
+            depth: 0,
+            children_total: 0,
+            children_completed: 0,
+            dispatch_status: String::new(),
+            blocked: false,
+        }];
+        model.ticket_list.table.selected_row = 0;
+
+        let (model, cmds) = update(model, Msg::Nav(NavMsg::TicketListDispatch));
+        assert!(cmds.is_empty(), "expected no cmds, got {}", cmds.len());
+        let banner = model.banner.expect("banner should be set");
+        assert!(banner.message.contains("ur-rem01"), "{}", banner.message);
     }
 
     #[test]

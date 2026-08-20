@@ -206,6 +206,9 @@ fn handle_dispatch(model: Model) -> (Model, Vec<Cmd>) {
     if model.dispatch_is_blocked_by_locality(&project_key) {
         return crate::update::local_project_dispatch_banner(model, &project_key);
     }
+    if ticket.ticket_type == "reminder" {
+        return crate::update::reminder_dispatch_banner(model, &ticket_id);
+    }
     let msg = if is_design {
         Msg::TicketOp(TicketOpMsg::LaunchDesign {
             ticket_id,
