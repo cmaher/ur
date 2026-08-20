@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::graph::GraphManager;
 use crate::model::{
     Activity, DispatchableTicket, Edge, EdgeKind, ImportError, LifecycleStatus,
-    MetadataMatchTicket, NewTicket, Ticket, TicketFilter, TicketUpdate,
+    MetadataMatchTicket, NewTicket, Ticket, TicketFilter, TicketType, TicketUpdate,
 };
 
 type TicketRow = (
@@ -1112,18 +1112,7 @@ impl TicketRepo {
         let child_ids: Vec<String> = children.iter().map(|(id, _, _, _)| id.clone()).collect();
         let blocked = self.graph_manager.blocked_among(&child_ids).await?;
 
-        let result = children
-            .into_iter()
-            .filter(|(id, _, _, _)| !blocked.contains(id))
-            .map(|(id, title, priority, type_)| DispatchableTicket {
-                id,
-                title,
-                priority,
-                type_,
-            })
-            .collect();
-
-        Ok(result)
+        Ok(filter_dispatchable(children, &blocked))
     }
 
     pub async fn delete_meta(
@@ -1786,5 +1775,97 @@ fn edge_kind_from_str(s: &str) -> EdgeKind {
     match s {
         "blocks" => EdgeKind::Blocks,
         _ => EdgeKind::RelatesTo,
+    }
+}
+
+/// Filters descendant rows down to dispatchable tickets: excludes any ticket
+/// with an open blocker and any ticket whose type is not dispatchable (e.g.
+/// `reminder`).
+fn filter_dispatchable(
+    children: Vec<(String, String, i32, String)>,
+    blocked: &HashSet<String>,
+) -> Vec<DispatchableTicket> {
+    children
+        .into_iter()
+        .filter(|(id, _, _, _)| !blocked.contains(id))
+        .filter(|(_, _, _, type_)| {
+            type_
+                .parse::<TicketType>()
+                .is_ok_and(|t| t.is_dispatchable())
+        })
+        .map(|(id, title, priority, type_)| DispatchableTicket {
+            id,
+            title,
+            priority,
+            type_,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod dispatchable_tests {
+    use super::*;
+
+    #[test]
+    fn filter_dispatchable_excludes_reminder_child() {
+        let children = vec![
+            (
+                "ur-code1".to_owned(),
+                "Code child".to_owned(),
+                1,
+                "code".to_owned(),
+            ),
+            (
+                "ur-rem1".to_owned(),
+                "Reminder child".to_owned(),
+                2,
+                "reminder".to_owned(),
+            ),
+        ];
+        let blocked = HashSet::new();
+
+        let result = filter_dispatchable(children, &blocked);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "ur-code1");
+    }
+
+    #[test]
+    fn filter_dispatchable_keeps_code_and_design() {
+        let children = vec![
+            (
+                "ur-code1".to_owned(),
+                "Code child".to_owned(),
+                1,
+                "code".to_owned(),
+            ),
+            (
+                "ur-design1".to_owned(),
+                "Design child".to_owned(),
+                2,
+                "design".to_owned(),
+            ),
+        ];
+        let blocked = HashSet::new();
+
+        let result = filter_dispatchable(children, &blocked);
+
+        let ids: Vec<&str> = result.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["ur-code1", "ur-design1"]);
+    }
+
+    #[test]
+    fn filter_dispatchable_still_excludes_blocked() {
+        let children = vec![(
+            "ur-code1".to_owned(),
+            "Code child".to_owned(),
+            1,
+            "code".to_owned(),
+        )];
+        let blocked: HashSet<String> = ["ur-code1".to_owned()].into_iter().collect();
+
+        let result = filter_dispatchable(children, &blocked);
+
+        assert!(result.is_empty());
     }
 }
