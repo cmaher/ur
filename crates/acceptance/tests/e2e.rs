@@ -1135,6 +1135,7 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_dispatch_creates_workflow(&env);
         scenario_ticket_close_preserves_workflow(&env);
         scenario_ticket_lookup_by_ref(&env);
+        scenario_reminder_ticket_type(&env);
         scenario_flow_list_and_cancel(&env);
         scenario_hostexec_script_pool(&env);
         scenario_hostexec_script_workspace(&env, &config_path);
@@ -2628,6 +2629,192 @@ fn scenario_ticket_lookup_by_ref(env: &TestEnv) {
     assert!(
         stderr.contains(&first) && stderr.contains(&second),
         "ambiguous ref error should list both candidates, got: {stderr}"
+    );
+}
+
+/// Create a parent with one code child and one reminder child (re-parenting
+/// `reminder_id` under it), then assert `ticket dispatchable` returns the code
+/// child but excludes the reminder.
+fn assert_reminder_excluded_from_dispatchable(
+    env: &TestEnv,
+    env_slice: &[(&str, &str)],
+    reminder_id: &str,
+) {
+    let parent_id = create_test_ticket(env, "Reminder scenario parent");
+    let code_child_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "Reminder scenario code child",
+            "-p",
+            env.project_key,
+            "--parent",
+            &parent_id,
+        ],
+        env_slice,
+    );
+    assert!(
+        code_child_output.status.success(),
+        "creating the code child failed"
+    );
+    let code_child_id = parse_ticket_id_from_create(&code_child_output.stdout);
+
+    let reparent_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "update",
+            reminder_id,
+            "--parent",
+            &parent_id,
+        ],
+        env_slice,
+    );
+    assert!(
+        reparent_output.status.success(),
+        "re-parenting the reminder under the scenario parent failed"
+    );
+
+    let dispatchable_output = run_cmd(
+        &env.ur,
+        &["--output", "json", "ticket", "dispatchable", &parent_id],
+        env_slice,
+    );
+    assert!(
+        dispatchable_output.status.success(),
+        "ur ticket dispatchable failed"
+    );
+    let dispatchable_json: serde_json::Value = serde_json::from_slice(&dispatchable_output.stdout)
+        .expect("dispatchable output should be JSON");
+    let dispatchable_ids: Vec<&str> = dispatchable_json["data"]["tickets"]
+        .as_array()
+        .expect("dispatchable output should have data.tickets")
+        .iter()
+        .map(|t| {
+            t["id"]
+                .as_str()
+                .expect("dispatchable ticket should have id")
+        })
+        .collect();
+    assert!(
+        dispatchable_ids.contains(&code_child_id.as_str()),
+        "dispatchable should include the code child, got: {dispatchable_json}"
+    );
+    assert!(
+        !dispatchable_ids.contains(&reminder_id),
+        "dispatchable should exclude the reminder, got: {dispatchable_json}"
+    );
+}
+
+/// Verify the `reminder` ticket type: it can be created and shown, is excluded from
+/// `ticket dispatchable`, and dispatching it is refused with a clear error.
+///
+/// No worker is launched: dispatch must fail before any container work happens.
+fn scenario_reminder_ticket_type(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    // ---- Create a reminder ticket ----
+    let create_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "Reminder scenario ticket",
+            "-p",
+            env.project_key,
+            "--type",
+            "reminder",
+        ],
+        &env_slice,
+    );
+    assert!(
+        create_output.status.success(),
+        "ur ticket create --type reminder failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+    let reminder_id = parse_ticket_id_from_create(&create_output.stdout);
+
+    // ---- show reports the reminder type ----
+    let show_output = run_cmd(
+        &env.ur,
+        &["--output", "json", "ticket", "show", &reminder_id],
+        &env_slice,
+    );
+    assert!(show_output.status.success(), "ur ticket show failed");
+    let show_json: serde_json::Value =
+        serde_json::from_slice(&show_output.stdout).expect("show output should be JSON");
+    assert_eq!(
+        show_json["data"]["ticket"]["ticket_type"].as_str(),
+        Some("reminder"),
+        "ticket show should report type reminder, got: {show_json}"
+    );
+
+    // ---- a parent with one code child and one reminder child ----
+    assert_reminder_excluded_from_dispatchable(env, &env_slice, &reminder_id);
+
+    // ---- dispatching the reminder is refused, no worker is ever launched ----
+    let dispatch_output = run_cmd(
+        &env.ur,
+        &[
+            "worker",
+            "launch",
+            "-p",
+            env.project_key,
+            "-d",
+            &reminder_id,
+        ],
+        &env_slice,
+    );
+    assert!(
+        !dispatch_output.status.success(),
+        "dispatching a reminder ticket should fail.\nstdout: {}",
+        String::from_utf8_lossy(&dispatch_output.stdout),
+    );
+    let dispatch_stderr = String::from_utf8_lossy(&dispatch_output.stderr);
+    assert!(
+        dispatch_stderr.contains(&reminder_id) && dispatch_stderr.contains("reminder"),
+        "refusal error should name the ticket and the reason, got: {dispatch_stderr}"
+    );
+
+    // ---- list --type reminder returns the reminder ----
+    let list_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "list",
+            "--type",
+            "reminder",
+            "-p",
+            env.project_key,
+        ],
+        &env_slice,
+    );
+    assert!(
+        list_output.status.success(),
+        "ur ticket list --type reminder failed"
+    );
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list_output.stdout).expect("list output should be JSON");
+    let list_ids: Vec<&str> = list_json["data"]["tickets"]
+        .as_array()
+        .expect("list output should have data.tickets")
+        .iter()
+        .map(|t| t["id"].as_str().expect("ticket should have id"))
+        .collect();
+    assert!(
+        list_ids.contains(&reminder_id.as_str()),
+        "list --type reminder should include the reminder, got: {list_json}"
     );
 }
 
