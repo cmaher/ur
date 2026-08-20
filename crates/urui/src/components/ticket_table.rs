@@ -96,6 +96,7 @@ pub fn ticket_progress(ticket: &Ticket) -> (u32, u32) {
 fn type_label(ticket: &Ticket) -> &'static str {
     match ticket.ticket_type.as_str() {
         "design" => "◇ Dsgn",
+        "reminder" => "○ Rmnd",
         _ => "◆ Code",
     }
 }
@@ -810,6 +811,20 @@ mod tests {
         let mut t = make_ticket("ur-001", "test");
         t.ticket_type = "design".to_string();
         assert_eq!(type_label(&t), "◇ Dsgn");
+    }
+
+    #[test]
+    fn type_label_reminder() {
+        let mut t = make_ticket("ur-001", "test");
+        t.ticket_type = "reminder".to_string();
+        assert_eq!(type_label(&t), "○ Rmnd");
+    }
+
+    #[test]
+    fn type_label_unknown_defaults_to_code() {
+        let mut t = make_ticket("ur-001", "test");
+        t.ticket_type = "bogus".to_string();
+        assert_eq!(type_label(&t), "◆ Code");
     }
 
     // ── build_rows tests ──────────────────────────────────────────────

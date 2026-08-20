@@ -13,7 +13,11 @@ use crate::model::{ActiveOverlay, Model};
 use crate::msg::{Msg, OverlayMsg};
 
 /// Ticket type definitions with labels.
-const TICKET_TYPES: &[(&str, &str)] = &[("code", "Code"), ("design", "Design")];
+const TICKET_TYPES: &[(&str, &str)] = &[
+    ("code", "Code"),
+    ("design", "Design"),
+    ("reminder", "Reminder"),
+];
 
 /// Handle a key event for the type menu overlay.
 ///
@@ -31,6 +35,7 @@ pub fn handle_key(key: KeyEvent) -> Msg {
         KeyCode::Char(' ') | KeyCode::Enter => Msg::Overlay(OverlayMsg::TypeMenuConfirm),
         KeyCode::Char('1') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 0 }),
         KeyCode::Char('2') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 }),
+        KeyCode::Char('3') => Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 2 }),
         _ => Msg::Overlay(OverlayMsg::Consumed),
     }
 }
@@ -44,7 +49,7 @@ pub fn footer_commands() -> Vec<FooterCommand> {
             common: false,
         },
         FooterCommand {
-            key_label: "1-2".to_string(),
+            key_label: "1-3".to_string(),
             description: "Quick set".to_string(),
             common: false,
         },
@@ -138,6 +143,10 @@ mod tests {
             handle_key(key(KeyCode::Char('2'))),
             Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 1 })
         ));
+        assert!(matches!(
+            handle_key(key(KeyCode::Char('3'))),
+            Msg::Overlay(OverlayMsg::TypeMenuQuickSelect { index: 2 })
+        ));
     }
 
     #[test]
@@ -184,6 +193,7 @@ mod tests {
     fn type_to_cursor_maps_correctly() {
         assert_eq!(type_to_cursor("code"), 0);
         assert_eq!(type_to_cursor("design"), 1);
+        assert_eq!(type_to_cursor("reminder"), 2);
     }
 
     #[test]
@@ -195,6 +205,7 @@ mod tests {
     fn cursor_to_type_maps_correctly() {
         assert_eq!(cursor_to_type(0), "code");
         assert_eq!(cursor_to_type(1), "design");
+        assert_eq!(cursor_to_type(2), "reminder");
     }
 
     #[test]

@@ -71,10 +71,14 @@ pub fn compute_meta_diff(
 ///
 /// Maps "task" → "code", "epic" → "code", "c" → "code", "d" → "design".
 /// All other values pass through unchanged.
+/// Duplicates `TicketType::normalize` in `ticket_db` — urui does not depend on
+/// `ticket_db` (it is a gRPC client, deps are `ur_rpc` only), so this alias
+/// logic must be kept in sync with the canonical copy by hand.
 pub fn normalize_ticket_type(s: &str) -> String {
     match s.trim() {
         "task" | "epic" | "c" => "code".to_owned(),
         "d" => "design".to_owned(),
+        "r" => "reminder".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -362,6 +366,8 @@ mod tests {
             ("code", "code"),
             ("d", "design"),
             ("design", "design"),
+            ("r", "reminder"),
+            ("reminder", "reminder"),
         ] {
             let content = format!("title: test\ntype: {alias}\npriority: 0\n---\n\n");
             let ticket = parse_ticket_file(&content).unwrap();
