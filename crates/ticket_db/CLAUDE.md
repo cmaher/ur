@@ -30,6 +30,12 @@ Workflow tables in `workflow_db` store `ticket_id` values that correspond to row
 
 The `ui_events` table DDL used in this crate's migrations must stay identical to the copy in `workflow_db/migrations/` and the canonical `db_events::UI_EVENTS_DDL` constant. If the DDL changes, update all three locations: add a new migration here, add a new migration in `workflow_db`, and update `db_events::UI_EVENTS_DDL`.
 
+## Ticket Types
+
+`TicketType` (`src/model.rs`) has three variants: `Code`, `Design`, `Reminder`.
+`Reminder` is a manual task for a human and is never dispatchable —
+`TicketType::is_dispatchable()` is the single source of truth for that rule.
+
 ## Conventions
 
 - All database access is async via sqlx with a `PgPool`.
