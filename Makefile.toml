@@ -99,6 +99,19 @@ dependencies = ["image-force-base"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
+[tasks.image-update-claude]
+description = "Build all container images, forcing a Claude Code update in the worker image (keeps the base image cache)"
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+env = { "UR_UPDATE_CLAUDE" = "1" }
+script_runner = "@shell"
+script = ["scripts/build/image.sh"]
+
+[tasks.install-update-claude]
+description = "Same as install but forces a Claude Code update in the worker image (no base rebuild)"
+dependencies = ["image-update-claude"]
+script_runner = "@shell"
+script = ["scripts/build/install.sh"]
+
 [tasks.image-force-base]
 description = "Build all container images, force-rebuilding the base image (no Docker cache)"
 dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]

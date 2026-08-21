@@ -5,6 +5,7 @@ Debian bookworm-slim container image for agent workers. Must work with Docker an
 - Build context is `containers/claude-worker/` — all files copied into the image must live here
 - Image is tagged `ur-worker:latest` by convention
 - `install-claude.sh` is a local wrapper around the upstream installer — cached in the build context so the Dockerfile doesn't depend on a remote URL directly
+- Claude Code is installed into the **base** image and refreshed by a `claude update` layer in the worker Dockerfile, gated on the `CACHEBUST` build arg. A plain `cargo make install` leaves that layer cached, so the version never moves — use `cargo make install-update-claude` (busts only the worker layers) or `cargo make install-nocache` (also rebuilds the base with `--no-cache`). The update is **not** best-effort: a failed `claude update` fails the build rather than silently shipping a stale version
 - Entrypoint runs `exec workerd`, making workerd PID 1 — it owns the full container lifecycle (init, tmux, claude, gRPC server)
 - Worker command binaries (`ur-ping`, `workertools`, `workerd`) are cross-compiled and staged into `bin/` by `stage-workercmd.sh`, then copied into the image at `/usr/local/bin/`
 - `workerd` handles initialization (skills, git hooks, hostexec shims), creates the tmux session, launches Claude Code, and serves gRPC

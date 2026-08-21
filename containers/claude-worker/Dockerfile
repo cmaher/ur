@@ -38,13 +38,15 @@ RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /hom
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 # Worker commands use these to connect back to the host's per-agent gRPC server.
 
-# Best-effort Claude Code update when force-rebuilding.
-# Pass --build-arg CACHEBUST=<timestamp> to bust the cache on this layer.
+# Claude Code update. Pass --build-arg CACHEBUST=<timestamp> to bust the cache on
+# this layer (cargo make install-update-claude / install-nocache do this for you).
 # CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
 # cache for layers that actually use the ARG, not merely declare it.
+# A failed update fails the build on purpose: silently shipping a stale Claude Code
+# is worse than a red build, since the cached layer would then hide it for weeks.
 ARG CACHEBUST=0
 USER worker
-RUN echo "CACHEBUST=$CACHEBUST" && claude update || true
+RUN echo "CACHEBUST=$CACHEBUST" && claude update && claude --version
 WORKDIR /workspace
 
 HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \

@@ -73,11 +73,15 @@ else
 fi
 echo "Base image built: ur-worker-base:$tag"
 
-if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
-    build_image_arg "ur-worker:$tag" "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT" "CACHEBUST=$(date +%s)" "BASE_TAG=$tag"
-else
-    build_image_arg "ur-worker:$tag" "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT" "BASE_TAG=$tag"
+# The worker image's `claude update` layer is cached like any other, so Claude Code
+# stays pinned at the version baked into the base image until CACHEBUST changes.
+# Both UR_FORCE_REBUILD_BASE=1 (full base rebuild) and UR_UPDATE_CLAUDE=1
+# (cheap: worker layers only) bust it.
+worker_args=("BASE_TAG=$tag")
+if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ] || [ "${UR_UPDATE_CLAUDE:-}" = "1" ]; then
+    worker_args+=("CACHEBUST=$(date +%s)")
 fi
+build_image_arg "ur-worker:$tag" "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT" "${worker_args[@]}"
 echo "Worker image built: ur-worker:$tag"
 
 build_image_arg "ur-worker-rust:$tag" "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT" "BASE_TAG=$tag"
