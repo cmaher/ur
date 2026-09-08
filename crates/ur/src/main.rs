@@ -315,19 +315,23 @@ fn start_server(
     // Seed credentials from host Claude Code before starting anything so
     // they're available for bind-mounting into worker containers. Force a
     // re-seed on every start so host re-logins propagate after a restart.
-    let cred_mgr = credential::CredentialManager;
-    if let Err(e) = cred_mgr.ensure_credentials(Duration::ZERO) {
-        debug!(error = %e, "credential seeding failed");
-    }
-    let has_credentials = credential::CredentialManager::host_credentials_path()
-        .ok()
-        .and_then(|p| std::fs::metadata(&p).ok())
-        .is_some_and(|m| m.len() > 10);
-    if !has_credentials {
-        warn!("no shared credentials found");
-        if !output.is_json() {
-            println!();
-            println!("No shared credentials found. Log in to Claude Code on this machine first.");
+    if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
+        if let Err(e) = cred_mgr.ensure_credentials(Duration::ZERO) {
+            debug!(error = %e, "credential seeding failed");
+        }
+        let has_credentials = cred_mgr
+            .host_credentials_path()
+            .ok()
+            .and_then(|p| std::fs::metadata(&p).ok())
+            .is_some_and(|m| m.len() > 10);
+        if !has_credentials {
+            warn!("no shared credentials found");
+            if !output.is_json() {
+                println!();
+                println!(
+                    "No shared credentials found. Log in to Claude Code on this machine first."
+                );
+            }
         }
     }
 
@@ -831,8 +835,9 @@ async fn process_launch(
     // Refresh credentials from host Claude Code and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    let cred_mgr = credential::CredentialManager;
-    cred_mgr.ensure_credentials(Duration::from_secs(60 * 60 * 24))?;
+    if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
+        cred_mgr.ensure_credentials(Duration::from_secs(60 * 60 * 24))?;
+    }
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -1045,9 +1050,12 @@ async fn handle_worker_attach(
 
 fn handle_worker_reseed_credentials(output: &OutputManager) -> Result<()> {
     info!("forcing credential re-seed from host");
-    let cred_mgr = credential::CredentialManager;
+    let agent = ur_config::AgentType::Claude;
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        anyhow::bail!("agent {} has no credentials to seed", agent.name());
+    };
     cred_mgr.ensure_credentials(Duration::ZERO)?;
-    let path = credential::CredentialManager::host_credentials_path()?;
+    let path = cred_mgr.host_credentials_path()?;
     if !path.exists()
         || std::fs::metadata(&path)
             .map(|m| m.len() < 10)
@@ -1076,7 +1084,10 @@ fn handle_worker_save_credentials(
     info!(worker_id = %worker_id, "saving credentials from container");
     let runtime = container::runtime_from_env();
     let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
-    let cred_mgr = credential::CredentialManager;
+    let agent = ur_config::AgentType::Claude;
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        anyhow::bail!("agent {} has no credentials to save", agent.name());
+    };
     let paths = cred_mgr.save_from_container(&runtime, &id)?;
     if output.is_json() {
         output.print_success(&CredentialsSaved {
