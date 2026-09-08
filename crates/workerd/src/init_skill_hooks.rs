@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
 use tracing::info;
+use ur_config::AgentType;
 
 const IN_REPO_SKILL_HOOKS: &str = "/workspace/ur-hooks/skills";
 const HOST_OVERLAY_SKILL_HOOKS: &str = "/var/ur/host-hooks/skills";
-const CLAUDE_SKILL_HOOKS: &str = "/home/worker/.claude/skill-hooks";
 
-/// Manages copying skill hooks from two source directories into `~/.claude/skill-hooks/`.
+/// Manages copying skill hooks from two source directories into
+/// `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/`.
 ///
 /// Source resolution order (both are always checked, independently):
 /// 1. `/workspace/ur-hooks/skills/` (in-repo convention — copied first)
@@ -14,15 +15,30 @@ const CLAUDE_SKILL_HOOKS: &str = "/home/worker/.claude/skill-hooks";
 ///
 /// Missing source directory is a no-op for that side. Copies are recursive.
 #[derive(Clone)]
-pub struct InitSkillHooksManager;
+pub struct InitSkillHooksManager {
+    agent: AgentType,
+}
 
 impl InitSkillHooksManager {
+    pub fn from_env() -> Self {
+        InitSkillHooksManager {
+            agent: AgentType::from_env(),
+        }
+    }
+
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let target_dir = PathBuf::from(CLAUDE_SKILL_HOOKS);
+        let target_dir = target_dir(self.agent);
         copy_skill_hooks_from(&PathBuf::from(IN_REPO_SKILL_HOOKS), &target_dir).await?;
         copy_skill_hooks_from(&PathBuf::from(HOST_OVERLAY_SKILL_HOOKS), &target_dir).await?;
         Ok(())
     }
+}
+
+/// Resolve the skill-hooks target directory for `agent`.
+fn target_dir(agent: AgentType) -> PathBuf {
+    PathBuf::from(ur_config::WORKER_HOME)
+        .join(agent.home_subdir())
+        .join(agent.skill_hooks_subdir())
 }
 
 /// Recursively copy all files from `source_dir` into `target_dir`.
@@ -72,6 +88,14 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn target_dir_resolves_for_claude() {
+        assert_eq!(
+            target_dir(AgentType::Claude),
+            PathBuf::from(ur_config::WORKER_HOME).join(".claude/skill-hooks")
+        );
+    }
 
     fn write_test_file(base: &Path, rel_path: &str, content: &str) {
         let p = base.join(rel_path);
