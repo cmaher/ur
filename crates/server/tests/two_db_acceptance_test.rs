@@ -283,6 +283,7 @@ async fn two_db_split_events_arrive_on_merged_stream() {
         container_id: "two-db-test-container".to_string(),
         worker_secret: "test-secret".to_string(),
         strategy: "code".to_string(),
+        agent_type: "claude".to_string(),
         container_status: "running".to_string(),
         agent_status: "starting".to_string(),
         workspace_path: Some("/tmp/two-db-test".to_string()),
