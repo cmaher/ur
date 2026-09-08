@@ -122,7 +122,7 @@ retain_count = 5
 
 ## `[skills]` Section
 
-Inject host-side skills into worker containers at runtime. Skills are bind-mounted read-only into `/home/worker/.claude/potential-skills/<name>/` alongside skills baked into the container image.
+Inject host-side skills into worker containers at runtime. Skills are bind-mounted read-only into `/home/worker/.agent-shared/potential-skills/<name>/` alongside skills baked into the container image.
 
 Scoping is by worker **strategy**, not by project. There is no `[projects.<key>].skills` field. To vary skills per project, define a mode in [`[worker_modes]`](#worker_modes-section) and launch that project's workers with `-m <mode>`.
 
@@ -151,7 +151,7 @@ internal-tool = "/opt/skills/internal-tool"
 
 **Use absolute host paths. `%URCONFIG%` is a trap here** — unlike every other template field:
 
-`[skills]` values become Docker volume **sources** verbatim (`RunOptsBuilder::add_extra_skills`), and there is no host↔container remapping the way `claude_md`/`memory_dir`/`brain_dir` get via `convention_check_path`. `Config::load` runs inside the server container where `UR_CONFIG=/config`, so `%URCONFIG%/skills/foo` resolves to `/config/skills/foo` — a path the host Docker daemon cannot see. Docker then binds an auto-created empty directory and the skill silently comes up blank. Existence checks are also skipped in-container (`resolve_skill_section` short-circuits when `UR_HOST_CONFIG` is set), so nothing warns you.
+`[skills]` values become Docker volume **sources** verbatim (`RunOptsBuilder::add_extra_skills`), and there is no host↔container remapping the way `instruction_md`/`memory_dir`/`brain_dir` get via `convention_check_path`. `Config::load` runs inside the server container where `UR_CONFIG=/config`, so `%URCONFIG%/skills/foo` resolves to `/config/skills/foo` — a path the host Docker daemon cannot see. Docker then binds an auto-created empty directory and the skill silently comes up blank. Existence checks are also skipped in-container (`resolve_skill_section` short-circuits when `UR_HOST_CONFIG` is set), so nothing warns you.
 
 Write `/Users/me/.ur/skills/foo`, not `%URCONFIG%/skills/foo`. The host CLI validates absolute paths at `ur start`, which is where a typo will surface.
 
@@ -186,7 +186,8 @@ Built-in modes come from `WorkerStrategy::skills()` (`crates/server/src/strategy
 |-------|------|----------|-------------|
 | `base` | string | **yes** | `"code"`, `"design"`, or `"manual"`. Sets pool-slot semantics (exclusive vs shared) and the default model |
 | `skills` | string[] | **yes** | Full skill list — **replaces** the base strategy's list, does not extend it |
-| `model` | string | no | Claude Code model alias override |
+| `model` | string | no | Model alias override |
+| `agent` | string | no | Which agent runs this mode (e.g. `"claude"`). Defaults to `"claude"` when omitted; an unrecognized value is a config error naming the mode |
 
 Custom modes are added alongside the built-in three; defining `[worker_modes.code]` replaces the built-in `code`.
 
@@ -195,6 +196,7 @@ Custom modes are added alongside the built-in three; defining `[worker_modes.cod
 base = "code"
 skills = ["code-review", "green", "bacon"]
 model = "claude-opus-5[1m]"
+agent = "claude"
 ```
 
 ### `[worker_models]` Section
@@ -212,7 +214,9 @@ Default model per **strategy** (not per mode). `deny_unknown_fields` — only `c
 manual = "claude-opus-5[1m]"
 ```
 
-**Model precedence:** `worker_modes.<mode>.model` → `[worker_models].<base>` → `WorkerStrategy::default_model()`.
+**Model precedence:** `worker_modes.<mode>.model` → `[worker_models].<base>` → `agent.default_model(strategy)` (`AgentType::default_model`, `crates/ur_config/src/agent.rs`).
+
+**Agent precedence** (`resolve_mode`): explicit override param (not yet exposed as a launch flag) → `worker_modes.<mode>.agent` → `"claude"`.
 
 **Skill precedence** (`resolve_skills`): explicit `-s/--skills` → `worker_modes.<mode>.skills` → `worker_modes.code`. `[skills]` globals are appended in every case.
 
@@ -273,7 +277,7 @@ Each project is a TOML table keyed by a short identifier (e.g., `[projects.ur]`)
 | `pool_limit` | u32 | `10` | no | Max cached repo clones in the pool. **Not valid with `local = true`** |
 | `hostexec` | string[] | `[]` | no | Additional host-exec commands workers may call for this project |
 | `hostexec_scripts` | string[] | `[]` | no | Relative paths to host-exec scripts workers may invoke |
-| `claude_md` | template path | — | no | Project-level CLAUDE.md. Falls back to `<config_dir>/projects/<key>/CLAUDE.md` |
+| `instruction_md` | template path | — | no | Project-level instruction file (e.g. CLAUDE.md). Falls back to `<config_dir>/projects/<key>/CLAUDE.md`. The old key `claude_md` is still accepted (deprecation warning) |
 | `memory_dir` | template path | — | no | Claude auto-memory dir, mounted read-write. `%PROJECT%` rejected. Falls back to `<config_dir>/projects/<key>/memory/` |
 | `brain_dir` | template path | — | no | Per-project brain dir, mounted read-write at `/brain`. `%PROJECT%` rejected. Falls back to `<config_dir>/projects/<key>/brain/` |
 | `max_fix_attempts` | u32 | `10` | no | Fix loop iterations before stalling the agent |
@@ -312,7 +316,7 @@ Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the work
 repo = "https://github.com/org/ur.git"
 pool_limit = 5
 hostexec = ["jq", "rg"]
-claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
+instruction_md = "%URCONFIG%/projects/ur/CLAUDE.md"
 max_fix_attempts = 8
 protected_branches = ["main", "master", "release/*"]
 ignored_workflow_checks = ["flaky-integration-test"]
@@ -346,7 +350,7 @@ mounts = ["%URCONFIG%/shared-data:/var/data:ro"]
 ```
 
 Everything except the repo works exactly as it does for a pool-backed project:
-image selection, mounts, ports, `hostexec` / `hostexec_scripts`, `claude_md`,
+image selection, mounts, ports, `hostexec` / `hostexec_scripts`, `instruction_md`,
 `brain_dir`, `memory_dir`, and the per-project TUI theme.
 
 **What works:**
@@ -379,7 +383,7 @@ between local and repo-backed by editing one line.
 
 ## Template Path System
 
-The `claude_md` field (and `container.mounts` source) uses template strings resolved at container launch time.
+The `instruction_md` field (and `container.mounts` source) uses template strings resolved at container launch time.
 
 | Form | Example | Resolves To | Effect |
 |------|---------|-------------|--------|
@@ -393,7 +397,7 @@ Validation runs at config load time. Unrecognized `%VAR%` patterns cause an imme
 
 | Config Field | Container Path | Env Var |
 |---|---|---|
-| `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` |
+| `instruction_md` | `/var/ur/project-instruction/CLAUDE.md` (agent-derived filename) | `UR_PROJECT_INSTRUCTION` |
 | `container.mounts` | user-specified destination | (none) |
 | host hooks overlay — git | `/var/ur/host-hooks/git/` | (none) |
 | host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) |
@@ -421,7 +425,7 @@ Several behaviors trigger automatically when files exist at expected paths under
 
 | Convention Path | Effect |
 |-----------------|--------|
-| `~/.ur/projects/<key>/CLAUDE.md` | Auto-mounted as the project CLAUDE.md if `claude_md` is not set in ur.toml |
+| `~/.ur/projects/<key>/CLAUDE.md` | Auto-mounted as the project instruction file if `instruction_md` is not set in ur.toml |
 | `~/.ur/projects/<key>/hooks/git/` | Host overlay for git hooks — mounted at `/var/ur/host-hooks/git/:ro`, wins over in-repo `ur-hooks/git/` |
 | `~/.ur/projects/<key>/hooks/skills/` | Host overlay for skill hooks — mounted at `/var/ur/host-hooks/skills/:ro`, wins over in-repo `ur-hooks/skills/` |
 | `~/.ur/projects/<key>/hooks/workflow/pre-push` | Host overlay for workflow verify hook — wins over in-repo `ur-hooks/workflow/pre-push` |
@@ -564,7 +568,7 @@ implement = "%URCONFIG%/skills/implement"
 repo = "https://github.com/org/myrepo.git"
 pool_limit = 8
 hostexec = ["jq", "rg"]
-claude_md = "%URCONFIG%/projects/myrepo/CLAUDE.md"
+instruction_md = "%URCONFIG%/projects/myrepo/CLAUDE.md"
 protected_branches = ["main", "release/*"]
 ignored_workflow_checks = ["slow-e2e"]
 

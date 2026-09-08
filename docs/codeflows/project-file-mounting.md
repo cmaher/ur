@@ -31,7 +31,7 @@ Configured in `ur.toml` under `[projects.<key>]`:
 ```toml
 [projects.ur]
 repo = "https://github.com/cmaher/ur.git"
-claude_md = "%URCONFIG%/projects/ur/CLAUDE.md"
+instruction_md = "%URCONFIG%/projects/ur/CLAUDE.md"
 memory_dir = "%URCONFIG%/projects/ur/memory"
 brain_dir = "%URCONFIG%/projects/ur/brain"
 
@@ -40,14 +40,16 @@ image = "ur-worker:latest"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
-Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claude_md`, `memory_dir`, `brain_dir`) and `ContainerConfig` (field: `mounts`).
+`instruction_md` was renamed from `claude_md`. The old key is still accepted via a deprecation shim — parsing `claude_md` populates `instruction_md` and emits a `tracing::warn!`; `instruction_md` wins if both are present.
+
+Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `instruction_md`, `memory_dir`, `brain_dir`) and `ContainerConfig` (field: `mounts`).
 
 ## Mount Destinations
 
 | Config Field | Container Mount Point | Env Var | Read-only? |
 |---|---|---|---|
-| `claude_md` | `/var/ur/project-claude/CLAUDE.md` | `UR_PROJECT_CLAUDE` | yes (`:ro`) |
-| `memory_dir` | `/home/worker/.claude/projects/-workspace/memory` | (none) | no |
+| `instruction_md` | `/var/ur/project-instruction/{agent.instruction_filename()}` (e.g. `CLAUDE.md` for Claude) | `UR_PROJECT_INSTRUCTION` | yes (`:ro`) |
+| `memory_dir` | `~/{agent.home_subdir()}/{agent.memory_subdir()}` (`/home/worker/.claude/projects/-workspace/memory` for Claude); no-op if the agent has no memory-dir concept | (none) | no |
 | `brain_dir` | `/brain` | (none) | no |
 | `workspace_brain_dir` (top-level) | `/brain` | (none) | no |
 | `container.mounts` | user-specified `destination` | (none) | no |
@@ -55,7 +57,7 @@ Source: `crates/ur_config/src/lib.rs` — `ProjectConfig` struct (fields: `claud
 | host hooks overlay — skills | `/var/ur/host-hooks/skills/` | (none) | yes (`:ro`) |
 | workflow hooks (server-side) | (not container-mounted — resolved server-side) | — | — |
 
-When `claude_md` resolves to `ProjectRelative`, no volume mount is created — only the env var is set, pointing to `/workspace/<rel_path>`.
+When `instruction_md` resolves to `ProjectRelative`, no volume mount is created — only the env var is set, pointing to `/workspace/<rel_path>`.
 
 ## Hook Overlay Model
 
@@ -79,7 +81,7 @@ Workerd copies both sources into `/workspace/.git/hooks/` at container startup.
 | In-repo | `/workspace/ur-hooks/skills/` | applied first |
 | Host overlay | `/var/ur/host-hooks/skills/:ro` | applied second, wins on conflict |
 
-The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/.claude/skill-hooks/` at container startup.
+The host overlay path `/var/ur/host-hooks/skills/` is volume-mounted from `<config_dir>/projects/<key>/hooks/skills/` on the host. Workerd copies both sources into `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/` at container startup (`~/.claude/skill-hooks/` for Claude), via `InitSkillHooksManager` (`crates/workerd/src/init_skill_hooks.rs`), which takes the agent through its constructor.
 
 ### Workflow Hooks (Server-Side, Not Container-Mounted)
 
@@ -92,24 +94,24 @@ Workflow hooks also use a two-layer overlay but are resolved and executed server
 
 Source: `crates/server/src/workflow/handlers/verify.rs`
 
-## CLAUDE.md Convention Fallback
+## Project Instruction File Convention Fallback
 
-`claude_md` has a special convention-based fallback when not explicitly configured:
+`instruction_md` has a special convention-based fallback when not explicitly configured:
 
 ```
-1. If claude_md is set in ur.toml → use it as-is (template resolution)
-2. If claude_md is None → check <config_dir>/projects/<key>/CLAUDE.md on disk
+1. If instruction_md is set in ur.toml → use it as-is (template resolution)
+2. If instruction_md is None → check <config_dir>/projects/<key>/{agent.instruction_filename()} on disk
 3. If that file exists → use its absolute path (treated as HostPath)
-4. If not → no CLAUDE.md mounted
+4. If not → no instruction file mounted
 ```
 
-This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed.
+This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed (for Claude; the convention filename is agent-derived via `agent.instruction_filename()`).
 
-Source: `resolve_claude_md()` in `crates/server/src/worker.rs:723`
+Source: `resolve_project_instruction()` in `crates/server/src/worker.rs` (renamed from `resolve_claude_md`)
 
 ## memory_dir Convention Fallback
 
-`memory_dir` follows the same convention pattern as `claude_md`. When not set in `ur.toml`, the server checks for a directory at the convention path:
+`memory_dir` follows the same convention pattern as `instruction_md`. When not set in `ur.toml`, the server checks for a directory at the convention path:
 
 ```
 1. If memory_dir is set in ur.toml → use it as-is (template resolution)
@@ -122,7 +124,7 @@ This means creating `~/.ur/projects/ur/memory/` on the host is enough — no con
 
 **No-project rule**: `memory_dir` is only mounted when a project key is associated with the worker. Workers launched without a project (`-w` workspace mode with no project config) never get a `memory_dir` mount.
 
-**Auto-create and chown**: When `memory_dir` resolves to a host path, `add_memory_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount. This ensures the non-root worker user can write to the directory on first use without manual host-side setup.
+**Auto-create and chown**: When `memory_dir` resolves to a host path, `add_memory_dir()` calls `create_dir_all` and `chown` to `WORKER_UID` before adding the volume mount (skipped entirely if `agent.memory_subdir()` is `None`). This ensures the non-root worker user can write to the directory on first use without manual host-side setup.
 
 **Concurrent-write caveat**: Multiple parallel workers on the same project share a single `memory_dir` host path. If parallel workers (or the host Claude Code session) write to `MEMORY.md` simultaneously, updates can race and overwrite each other. This is a known limitation; no mitigation is in place.
 
@@ -203,7 +205,9 @@ CLI: ur worker launch <ticket> -p <project>
 ur-server: CoreServiceHandler::worker_launch()   [server/src/grpc.rs]
   │
   ├─ Reads ProjectConfig from projects HashMap
-  │   └─ Extracts: claude_md, mounts, ports
+  │   └─ Extracts: instruction_md, mounts, ports
+  │
+  ├─ Resolves agent via resolve_mode(mode, requested_agent)   [server/src/worker.rs]
   │
   ├─ Builds WorkerConfig                         [server/src/worker.rs]
   │   └─ Copies LaunchManager.workspace_brain_dir onto WorkerConfig
@@ -211,16 +215,17 @@ ur-server: CoreServiceHandler::worker_launch()   [server/src/grpc.rs]
   ▼
 WorkerManager::run_and_record()                  [server/src/worker.rs]
   │
-  ├─ resolve_claude_md()     ← convention fallback for CLAUDE.md
+  ├─ resolve_project_instruction()     ← convention fallback, agent.instruction_filename()
   │
   ├─ RunOptsBuilder          [server/src/run_opts_builder.rs]
   │   ├─ .add_workspace()              → /workspace mount
-  │   ├─ .add_credentials()            → shared OAuth credentials
+  │   ├─ .add_credentials(agent)       → shared OAuth credentials; no-op if agent.auth() is None
   │   ├─ .add_host_hooks_overlay()     → <config_dir>/projects/<key>/hooks/git/ → /var/ur/host-hooks/git/:ro
   │   │                                  <config_dir>/projects/<key>/hooks/skills/ → /var/ur/host-hooks/skills/:ro
   │   │                                  (each mount added only if the host dir exists)
-  │   ├─ .add_project_claude_md()      → resolve_template_path → mount or env var
-  │   ├─ .add_memory_dir()             → create_dir_all + chown → /home/worker/.claude/projects/-workspace/memory
+  │   ├─ .add_project_instruction(agent) → resolve_template_path → mount or env var
+  │   ├─ .add_memory_dir(agent)         → create_dir_all + chown → ~/{agent.home_subdir()}/{agent.memory_subdir()}
+  │   │                                  (no-op if the agent has no memory-dir concept)
   │   ├─ .add_brain_dir()              → create_dir_all + chown → /brain (read-write)
   │   │                                  (project brain, or workspace_brain_dir when
   │   │                                   the worker has no project)
