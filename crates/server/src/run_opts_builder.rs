@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ur_config::{MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
+use ur_config::{AgentType, MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
 use ur_rpc::proto::builder_container::{
     EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap, Volume as ProtoVolume,
 };
@@ -74,17 +74,18 @@ impl RunOptsBuilder {
     /// containers in sync without per-launch credential injection.
     /// (.claude.json is baked into the image -- only credentials need mounting.)
     pub fn add_credentials(mut self, host_config_dir: &Path) -> Result<Self, String> {
+        let auth = AgentType::Claude
+            .auth()
+            .expect("Claude has an auth profile");
         let host_creds = host_config_dir
-            .join(ur_config::CLAUDE_DIR)
-            .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
+            .join(AgentType::Claude.name())
+            .join(auth.credentials_filename);
         ensure_file_exists(&host_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
         let worker_home = PathBuf::from(ur_config::WORKER_HOME);
         self.volumes.push((
             host_creds,
-            worker_home
-                .join(".claude")
-                .join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
+            worker_home.join(".claude").join(auth.credentials_filename),
         ));
         Ok(self)
     }
@@ -94,9 +95,9 @@ impl RunOptsBuilder {
     /// - If `claude_md` is `None`, this is a no-op.
     /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a read-only volume
     ///   mount from the host path to `/var/ur/project-claude/CLAUDE.md` and sets
-    ///   `UR_PROJECT_CLAUDE=/var/ur/project-claude/CLAUDE.md`.
+    ///   `UR_PROJECT_INSTRUCTION=/var/ur/project-claude/CLAUDE.md`.
     /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
-    ///   mount and sets `UR_PROJECT_CLAUDE=/workspace/<rel>`.
+    ///   mount and sets `UR_PROJECT_INSTRUCTION=/workspace/<rel>`.
     pub fn add_project_claude_md(
         mut self,
         claude_md: &Option<String>,
@@ -114,14 +115,14 @@ impl RunOptsBuilder {
                 let container_path = PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro");
                 self.volumes.push((host_path, container_path));
                 self.env_vars.push((
-                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
+                    ur_config::UR_PROJECT_INSTRUCTION_ENV.into(),
                     "/var/ur/project-claude/CLAUDE.md".into(),
                 ));
             }
             ResolvedTemplatePath::ProjectRelative(rel_path) => {
                 let container_claude = PathBuf::from("/workspace").join(&rel_path);
                 self.env_vars.push((
-                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
+                    ur_config::UR_PROJECT_INSTRUCTION_ENV.into(),
                     container_claude.to_string_lossy().into_owned(),
                 ));
             }
@@ -804,7 +805,7 @@ mod tests {
             "/var/ur/project-claude/CLAUDE.md:ro"
         );
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
         assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
     }
 
@@ -828,7 +829,7 @@ mod tests {
             "/var/ur/project-claude/CLAUDE.md:ro"
         );
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
         assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
     }
 
@@ -841,7 +842,7 @@ mod tests {
 
         assert!(req.volumes.is_empty());
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
         assert_eq!(req.env_vars[0].value, "/workspace/CLAUDE.md");
     }
 

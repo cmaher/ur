@@ -13,16 +13,23 @@ fn worker_home() -> &'static Path {
     Path::new(ur_config::WORKER_HOME)
 }
 
+/// Claude's auth profile (credential/app-config filenames, keychain service).
+fn claude_auth() -> ur_config::AgentAuth {
+    ur_config::AgentType::Claude
+        .auth()
+        .expect("Claude has an auth profile")
+}
+
 /// Path inside the container where Claude Code stores credentials.
 fn container_credentials_path() -> PathBuf {
     worker_home()
         .join(".claude")
-        .join(ur_config::CLAUDE_CREDENTIALS_FILENAME)
+        .join(claude_auth().credentials_filename)
 }
 
 /// Path inside the container where Claude Code stores app config.
 fn container_config_path() -> PathBuf {
-    worker_home().join(ur_config::CLAUDE_CONFIG_FILENAME)
+    worker_home().join(claude_auth().app_config_filename)
 }
 
 /// Manages Claude Code credentials for container workers.
@@ -146,16 +153,16 @@ impl CredentialManager {
     pub fn host_credentials_path() -> Result<PathBuf> {
         let config_dir = ur_config::resolve_config_dir()?;
         Ok(config_dir
-            .join(ur_config::CLAUDE_DIR)
-            .join(ur_config::CLAUDE_CREDENTIALS_FILENAME))
+            .join(ur_config::AgentType::Claude.name())
+            .join(claude_auth().credentials_filename))
     }
 
     /// Resolve the host-side Claude config file path.
     pub fn host_config_path() -> Result<PathBuf> {
         let config_dir = ur_config::resolve_config_dir()?;
         Ok(config_dir
-            .join(ur_config::CLAUDE_DIR)
-            .join(ur_config::CLAUDE_CONFIG_FILENAME))
+            .join(ur_config::AgentType::Claude.name())
+            .join(claude_auth().app_config_filename))
     }
 }
 
@@ -199,7 +206,7 @@ fn read_platform_credentials() -> Result<String> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let path = PathBuf::from(home)
         .join(".claude")
-        .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
+        .join(claude_auth().credentials_filename);
     debug!(path = %path.display(), "reading credentials from Claude Code config");
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -230,14 +237,14 @@ mod tests {
     #[test]
     fn host_credentials_path_is_under_config_dir() {
         if let Ok(path) = CredentialManager::host_credentials_path() {
-            assert!(path.ends_with(ur_config::CLAUDE_CREDENTIALS_FILENAME));
+            assert!(path.ends_with(claude_auth().credentials_filename));
         }
     }
 
     #[test]
     fn host_config_path_is_under_config_dir() {
         if let Ok(path) = CredentialManager::host_config_path() {
-            assert!(path.ends_with(ur_config::CLAUDE_CONFIG_FILENAME));
+            assert!(path.ends_with(claude_auth().app_config_filename));
         }
     }
 }

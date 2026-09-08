@@ -171,10 +171,10 @@ impl InitSkillsManager {
         Ok(())
     }
 
-    /// Read the project CLAUDE.md (if UR_PROJECT_CLAUDE is set), resolve %WORKSPACE%
+    /// Read the project CLAUDE.md (if UR_PROJECT_INSTRUCTION is set), resolve %WORKSPACE%
     /// placeholders using UR_HOST_WORKSPACE, and return the resolved content.
     async fn resolve_project_claude(&self) -> Result<Option<String>, std::io::Error> {
-        let project_path = match std::env::var(ur_config::UR_PROJECT_CLAUDE_ENV) {
+        let project_path = match std::env::var(ur_config::UR_PROJECT_INSTRUCTION_ENV) {
             Ok(val) if !val.trim().is_empty() => val,
             _ => return Ok(None),
         };
@@ -347,7 +347,7 @@ mod tests {
         unsafe {
             std::env::set_var(CLAUDE_ENV, "code");
             std::env::set_var(
-                ur_config::UR_PROJECT_CLAUDE_ENV,
+                ur_config::UR_PROJECT_INSTRUCTION_ENV,
                 project_path.to_str().unwrap(),
             );
             std::env::set_var(ur_config::UR_HOST_WORKSPACE_ENV, "/host/workspace");
@@ -358,7 +358,7 @@ mod tests {
 
         unsafe {
             std::env::remove_var(CLAUDE_ENV);
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
@@ -386,7 +386,7 @@ mod tests {
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe {
             std::env::set_var(CLAUDE_ENV, "code");
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
@@ -478,7 +478,7 @@ mod tests {
         unsafe {
             std::env::set_var(CLAUDE_ENV, "code");
             std::env::set_var(
-                ur_config::UR_PROJECT_CLAUDE_ENV,
+                ur_config::UR_PROJECT_INSTRUCTION_ENV,
                 project_path.to_str().unwrap(),
             );
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
@@ -489,7 +489,7 @@ mod tests {
 
         unsafe {
             std::env::remove_var(CLAUDE_ENV);
-            std::env::remove_var(ur_config::UR_PROJECT_CLAUDE_ENV);
+            std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
         };
 
         // PROJECT_CLAUDE.md should exist with unresolved %WORKSPACE%

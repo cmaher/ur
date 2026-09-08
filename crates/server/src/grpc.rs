@@ -521,7 +521,7 @@ impl LaunchManager {
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
-                proj.claude_md.clone(),
+                proj.instruction_md.clone(),
                 proj.container.mounts.clone(),
                 proj.container.ports.clone(),
                 proj.container.image.clone(),

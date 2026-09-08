@@ -457,7 +457,7 @@ mod tests {
                 name: "Test Project".into(),
                 pool_limit,
                 hostexec: Vec::new(),
-                claude_md: None,
+                instruction_md: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker:latest".into(),
                     mounts: Vec::new(),

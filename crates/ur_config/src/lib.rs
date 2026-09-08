@@ -183,9 +183,6 @@ pub const UR_WORKER_MODEL_ENV: &str = "UR_WORKER_MODEL";
 /// Sent by workertools on every request to the worker server for authentication.
 pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";
 
-/// Environment variable: Claude credentials JSON blob injected into containers.
-pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
-
 /// Environment variable: which [`AgentType`] a worker container is running.
 /// Read by workerd via `AgentType::from_env()` to resolve agent-specific
 /// paths and the spawn command. Empty/unset defaults to [`AgentType::Claude`].
@@ -197,17 +194,6 @@ pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 /// original host path when constructing volume mounts for worker containers
 /// (which go through the Docker socket and use host paths).
 pub const UR_HOST_CONFIG_ENV: &str = "UR_HOST_CONFIG";
-
-/// Subdirectory under `config_dir` for Claude-related files.
-pub const CLAUDE_DIR: &str = "claude";
-
-/// Credentials filename within `CLAUDE_DIR`.
-pub const CLAUDE_CREDENTIALS_FILENAME: &str = ".credentials.json";
-
-/// Claude Code app config filename (lives in the user's home directory, NOT inside `CLAUDE_DIR`).
-/// Contains onboarding state, oauthAccount, project trust settings, and feature flags.
-/// Without this file, Claude Code prompts for login even when credentials exist.
-pub const CLAUDE_CONFIG_FILENAME: &str = ".claude.json";
 
 /// Home directory of the worker user inside worker containers.
 pub const WORKER_HOME: &str = "/home/worker";
@@ -225,11 +211,11 @@ pub const WORKSPACE_MOUNT: &str = "/workspace";
 /// constructing paths for builderd (which runs on the host).
 pub const UR_HOST_WORKSPACE_ENV: &str = "UR_HOST_WORKSPACE";
 
-/// Environment variable: project-level CLAUDE.md content injected into the worker.
+/// Environment variable: project-level instruction file content injected into the worker.
 ///
 /// Set by the server when launching a worker so it can write the project's
-/// CLAUDE.md into the container without needing host filesystem access.
-pub const UR_PROJECT_CLAUDE_ENV: &str = "UR_PROJECT_CLAUDE";
+/// instruction file into the container without needing host filesystem access.
+pub const UR_PROJECT_INSTRUCTION_ENV: &str = "UR_PROJECT_INSTRUCTION";
 
 /// Container-side mount point for the backup directory.
 pub const BACKUP_CONTAINER_PATH: &str = "/backup";
@@ -486,6 +472,8 @@ struct RawProjectConfig {
     git_hooks_dir: Option<serde::de::IgnoredAny>,
     /// Removed field — emits a hard error if present.
     skill_hooks_dir: Option<serde::de::IgnoredAny>,
+    instruction_md: Option<String>,
+    /// Deprecated alias for `instruction_md`. Accepted with a warning.
     claude_md: Option<String>,
     container: Option<RawContainerConfig>,
     /// Reject mounts at the project root level with a helpful error.
@@ -1171,11 +1159,11 @@ pub struct ProjectConfig {
     /// Additional passthrough hostexec commands for this project.
     /// These are added to the global allowlist when agents run against this project.
     pub hostexec: Vec<String>,
-    /// Optional template path to a project-level CLAUDE.md file.
+    /// Optional template path to a project-level instruction file (e.g. CLAUDE.md).
     /// Supports `%PROJECT%/...`, `%URCONFIG%/...` template variables, or absolute paths.
     /// Resolve with [`resolve_template_path`] at use time.
     /// When None, the server falls back to `<config_dir>/projects/<key>/CLAUDE.md`.
-    pub claude_md: Option<String>,
+    pub instruction_md: Option<String>,
     /// Container configuration (image, mounts).
     pub container: ContainerConfig,
     /// Maximum fix loop iterations before stalling the agent (default: 5).
@@ -1582,7 +1570,9 @@ fn resolve_project_config(
 
     let repo = resolve_project_repo(&key, &raw_proj)?;
 
-    validate_project_templates(&key, &raw_proj)?;
+    let instruction_md = resolve_instruction_md(&key, &raw_proj);
+
+    validate_project_templates(&key, &instruction_md, &raw_proj)?;
 
     let raw_container = raw_proj.container.unwrap_or(RawContainerConfig {
         image: IMAGE_ALIASES
@@ -1627,7 +1617,7 @@ fn resolve_project_config(
         pool_limit: raw_proj.pool_limit.unwrap_or(DEFAULT_POOL_LIMIT),
         key: key.clone(),
         hostexec: raw_proj.hostexec,
-        claude_md: raw_proj.claude_md,
+        instruction_md,
         container,
         max_fix_attempts: raw_proj
             .max_fix_attempts
@@ -1922,11 +1912,33 @@ fn resolve_tui(raw: Option<RawTuiConfig>) -> TuiConfig {
     }
 }
 
+/// Resolve `instruction_md`, accepting the deprecated `claude_md` alias.
+///
+/// `instruction_md` takes precedence when both are set. Using only the
+/// deprecated key emits a `tracing::warn!` deprecation notice.
+fn resolve_instruction_md(key: &str, raw_proj: &RawProjectConfig) -> Option<String> {
+    match (&raw_proj.instruction_md, &raw_proj.claude_md) {
+        (Some(new), _) => Some(new.clone()),
+        (None, Some(old)) => {
+            tracing::warn!(
+                project = key,
+                "`claude_md` is deprecated, use `instruction_md` instead"
+            );
+            Some(old.clone())
+        }
+        (None, None) => None,
+    }
+}
+
 /// Determine the config directory from `$UR_CONFIG` or fall back to `~/.ur`.
-fn validate_project_templates(key: &str, raw_proj: &RawProjectConfig) -> anyhow::Result<()> {
-    if let Some(ref tpl) = raw_proj.claude_md {
+fn validate_project_templates(
+    key: &str,
+    instruction_md: &Option<String>,
+    raw_proj: &RawProjectConfig,
+) -> anyhow::Result<()> {
+    if let Some(tpl) = instruction_md {
         template_path::validate_template_str(tpl)
-            .map_err(|e| anyhow::anyhow!("project '{}': claude_md: {}", key, e))?;
+            .map_err(|e| anyhow::anyhow!("project '{}': instruction_md: {}", key, e))?;
     }
     if let Some(ref tpl) = raw_proj.memory_dir {
         template_path::validate_template_str(tpl)
@@ -2591,7 +2603,7 @@ node_id = "n"
 local = true
 hostexec = ["make", "npm"]
 hostexec_scripts = ["deploy.sh"]
-claude_md = "%PROJECT%/CLAUDE.md"
+instruction_md = "%PROJECT%/CLAUDE.md"
 brain_dir = "%URCONFIG%/brains/myapp"
 memory_dir = "%URCONFIG%/memory/myapp"
 ignored_workflow_checks = ["flaky"]
@@ -2612,7 +2624,7 @@ ports = ["8080:8080"]
         assert_eq!(proj.container.ports.len(), 1);
         assert_eq!(proj.hostexec, vec!["make", "npm"]);
         assert_eq!(proj.hostexec_scripts, vec!["deploy.sh"]);
-        assert_eq!(proj.claude_md.as_deref(), Some("%PROJECT%/CLAUDE.md"));
+        assert_eq!(proj.instruction_md.as_deref(), Some("%PROJECT%/CLAUDE.md"));
         assert_eq!(proj.brain_dir.as_deref(), Some("%URCONFIG%/brains/myapp"));
         assert_eq!(proj.memory_dir.as_deref(), Some("%URCONFIG%/memory/myapp"));
         assert_eq!(proj.ignored_workflow_checks, vec!["flaky"]);
@@ -2752,7 +2764,7 @@ image = "ur-worker"
     }
 
     #[test]
-    fn claude_md_none_when_absent() {
+    fn instruction_md_none_when_absent() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2766,11 +2778,133 @@ image = "ur-worker"
         )
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(cfg.projects["ur"].claude_md, None);
+        assert_eq!(cfg.projects["ur"].instruction_md, None);
     }
 
     #[test]
-    fn claude_md_stores_template_string() {
+    fn instruction_md_stores_template_string() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+instruction_md = "%PROJECT%/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].instruction_md.as_deref(),
+            Some("%PROJECT%/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn instruction_md_rejects_unrecognized_variable() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+instruction_md = "%BADVAR%/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unrecognized template variable"), "{msg}");
+        assert!(msg.contains("project 'ur'"), "{msg}");
+    }
+
+    #[test]
+    fn instruction_md_accepts_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+instruction_md = "/opt/claude/ur/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].instruction_md.as_deref(),
+            Some("/opt/claude/ur/CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn instruction_md_accepts_urconfig_template() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+instruction_md = "%URCONFIG%/projects/ur/CLAUDE.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].instruction_md.as_deref(),
+            Some("%URCONFIG%/projects/ur/CLAUDE.md")
+        );
+    }
+
+    /// Minimal `tracing::Subscriber` that captures event messages, so tests can
+    /// assert a deprecation warning was actually emitted (not just that parsing
+    /// produced the right value).
+    struct CapturingSubscriber {
+        messages: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+
+    /// Collects field values from a captured event into a single debug string.
+    struct EventVisitor<'a>(&'a mut String);
+
+    impl tracing::field::Visit for EventVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write;
+            let _ = write!(self.0, "{}={:?} ", field.name(), value);
+        }
+    }
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut msg = String::new();
+            event.record(&mut EventVisitor(&mut msg));
+            self.messages.lock().unwrap().push(msg);
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn legacy_ur_toml_compat() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2784,58 +2918,36 @@ image = "ur-worker"
 "#,
         )
         .unwrap();
+
+        let messages = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let subscriber = CapturingSubscriber {
+            messages: messages.clone(),
+        };
+        // Other tests exercise the same `tracing::warn!` callsite without a
+        // subscriber installed, which caches "not interested" for that
+        // callsite. Rebuild interest while our subscriber is the default so
+        // the event actually reaches it regardless of test execution order.
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
         let cfg = Config::load_from(tmp.path()).unwrap();
+        drop(_guard);
+        tracing::callsite::rebuild_interest_cache();
+
         assert_eq!(
-            cfg.projects["ur"].claude_md.as_deref(),
+            cfg.projects["ur"].instruction_md.as_deref(),
             Some("%PROJECT%/CLAUDE.md")
         );
-    }
-
-    #[test]
-    fn claude_md_rejects_unrecognized_variable() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[projects.ur]
-repo = "git@github.com:cmaher/ur.git"
-claude_md = "%BADVAR%/CLAUDE.md"
-[projects.ur.container]
-image = "ur-worker"
-"#,
-        )
-        .unwrap();
-        let err = Config::load_from(tmp.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("unrecognized template variable"), "{msg}");
-        assert!(msg.contains("project 'ur'"), "{msg}");
-    }
-
-    #[test]
-    fn claude_md_accepts_absolute_path() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("ur.toml"),
-            r#"
-node_id = "n"
-[projects.ur]
-repo = "git@github.com:cmaher/ur.git"
-claude_md = "/opt/claude/ur/CLAUDE.md"
-[projects.ur.container]
-image = "ur-worker"
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            cfg.projects["ur"].claude_md.as_deref(),
-            Some("/opt/claude/ur/CLAUDE.md")
+        let captured = messages.lock().unwrap();
+        assert!(
+            captured
+                .iter()
+                .any(|m| m.contains("claude_md") && m.contains("deprecated")),
+            "expected a claude_md deprecation warning, got: {captured:?}"
         );
     }
 
     #[test]
-    fn claude_md_accepts_urconfig_template() {
+    fn legacy_claude_md_takes_effect_over_absent_instruction_md() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
@@ -2851,7 +2963,7 @@ image = "ur-worker"
         .unwrap();
         let cfg = Config::load_from(tmp.path()).unwrap();
         assert_eq!(
-            cfg.projects["ur"].claude_md.as_deref(),
+            cfg.projects["ur"].instruction_md.as_deref(),
             Some("%URCONFIG%/projects/ur/CLAUDE.md")
         );
     }
@@ -4398,7 +4510,7 @@ quit = ["q"]
                     name: "ur".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
-                    claude_md: None,
+                    instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],
@@ -4423,7 +4535,7 @@ quit = ["q"]
                     name: "sample".to_owned(),
                     pool_limit: 10,
                     hostexec: vec![],
-                    claude_md: None,
+                    instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],
@@ -4542,7 +4654,7 @@ quit = ["q"]
                     name: "ur".to_owned(), // name matches the "ur" key
                     pool_limit: 10,
                     hostexec: vec![],
-                    claude_md: None,
+                    instruction_md: None,
                     container: ContainerConfig {
                         image: String::new(),
                         mounts: vec![],
