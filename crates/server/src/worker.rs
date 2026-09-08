@@ -1087,8 +1087,9 @@ fn build_worker_env_vars(
         config.strategy.instruction_strategy_name().into(),
     ));
 
-    // Inject resolved Claude Code model name (only when non-empty — empty
-    // means fall back to claude's built-in default)
+    // Inject the resolved model name (only when non-empty — empty means the
+    // agent launches with no model flag and uses its own built-in default,
+    // which is also what an agent with no model concept resolves to)
     if !config.model.is_empty() {
         env_vars.push((ur_config::UR_WORKER_MODEL_ENV.into(), config.model.clone()));
     }

@@ -324,14 +324,22 @@ fn prepare_project_mounts(config: &ur_config::Config) {
 /// to copy" is *not* an error: `ensure_credentials` warns and leaves the existing
 /// file alone. Callers that must tolerate failure (e.g. `ur start`, which prints
 /// its own guidance) log the error explicitly instead of dropping it here.
+///
+/// Every agent is attempted before returning: one agent's broken keychain must
+/// not leave a healthy agent unseeded, since the caller cannot know which agent
+/// the launch will resolve to. Failures are then reported together.
 fn ensure_credentials_for_all_agents(max_age: Duration) -> Result<()> {
+    let mut failures = Vec::new();
     for agent in ur_config::AgentType::ALL {
         let Some(cred_mgr) = credential::credential_manager_for(*agent) else {
             continue;
         };
-        cred_mgr
-            .ensure_credentials(max_age)
-            .with_context(|| format!("failed to seed {} credentials", agent.name()))?;
+        if let Err(e) = cred_mgr.ensure_credentials(max_age) {
+            failures.push(format!("{}: {e:#}", agent.name()));
+        }
+    }
+    if !failures.is_empty() {
+        bail!("failed to seed credentials — {}", failures.join("; "));
     }
     Ok(())
 }
@@ -1855,5 +1863,24 @@ mod tests {
             handle_worker_save_credentials("ur-worker-", &text_output(), "w1", "bogus-agent");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bogus-agent"), "{msg}");
+    }
+
+    /// The `--agent` default comes from `AgentType::Claude.name()` rather than a
+    /// literal, so it cannot drift into a value `AgentType::parse` rejects. Pins
+    /// both that clap applies the expression and that the result round-trips.
+    #[test]
+    fn agent_flag_defaults_to_a_parseable_agent_name() {
+        let cli = Cli::try_parse_from(["ur", "worker", "reseed-credentials"]).unwrap();
+        let Commands::Worker {
+            command: WorkerCommands::ReseedCredentials { agent },
+        } = cli.command
+        else {
+            panic!("expected worker reseed-credentials");
+        };
+        assert_eq!(agent, ur_config::AgentType::Claude.name());
+        assert_eq!(
+            ur_config::AgentType::parse(&agent).unwrap(),
+            ur_config::AgentType::Claude
+        );
     }
 }
