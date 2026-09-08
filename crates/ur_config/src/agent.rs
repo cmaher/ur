@@ -76,28 +76,16 @@ impl AgentType {
         }
     }
 
-    /// Container image tag this agent runs in.
-    ///
-    /// Returns `"ur-worker"`, the tag that exists today, not `"ur-worker-claude"`:
-    /// Claude keeps the unsuffixed legacy tag so `KNOWN_IMAGES`, existing
-    /// `ur.toml` fixtures, and the `ur-worker-rust` child image are untouched.
-    /// A second agent would introduce `ur-worker-<agent>` at that point.
-    pub fn image_name(&self) -> &'static str {
-        match self {
-            Self::Claude => "ur-worker",
-        }
-    }
-
-    /// Bare process/binary name, for logging and diagnostics only.
-    ///
-    /// Must NOT be used for foreground-process detection: the workerd exit
-    /// watcher matches shell-vs-non-shell, since Claude Code's foreground
-    /// process is `node`, not `claude`.
-    pub fn binary_name(&self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-        }
-    }
+    // No `image_name()`: image selection is not agent-derived today. Project
+    // images come from `ur.toml` (`IMAGE_ALIASES`) and the no-project fallback
+    // is `DEFAULT_FALLBACK_IMAGE` (`ur-worker-rust:latest`, deliberately the
+    // rust-toolchain image). A second agent adds `ur-worker-<agent>` and an
+    // accessor here at the point something actually resolves an image per agent.
+    //
+    // No `binary_name()` either: the workerd exit watcher matches
+    // shell-vs-non-shell foreground processes, never a binary name (Claude
+    // Code's foreground process is `node`, not `claude`), and `spawn_command`
+    // already carries the launch line. Add one when a caller needs it.
 
     /// Full shell command to launch the agent in the tmux pane, with the
     /// model flag applied if `model` is `Some` and non-blank.
@@ -169,12 +157,6 @@ impl AgentType {
         }
     }
 
-    /// Same as `name()`; provided for call sites that prefer `as_str()`
-    /// conventions over `name()`.
-    pub fn as_str(&self) -> &'static str {
-        self.name()
-    }
-
     /// Read `UR_AGENT_TYPE` from the environment. Defaults to `Claude` when
     /// unset, empty, or unrecognized (a warning is logged in the
     /// unrecognized case).
@@ -211,9 +193,6 @@ mod tests {
         assert_eq!(AgentType::Claude.instruction_filename(), "CLAUDE.md");
         assert_eq!(AgentType::Claude.skill_subdir(), "skills");
         assert_eq!(AgentType::Claude.skill_hooks_subdir(), "skill-hooks");
-        assert_eq!(AgentType::Claude.binary_name(), "claude");
-        assert_eq!(AgentType::Claude.image_name(), "ur-worker");
-        assert_eq!(AgentType::Claude.as_str(), "claude");
     }
 
     #[test]

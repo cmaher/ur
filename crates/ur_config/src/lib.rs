@@ -188,6 +188,14 @@ pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";
 /// paths and the spawn command. Empty/unset defaults to [`AgentType::Claude`].
 pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 
+/// Environment variable: which worker strategy's instruction file to compose
+/// (`"code"`, `"design"`, `"manual"` — `WorkerStrategy::instruction_strategy_name()`).
+///
+/// Set by the server at launch. workerd reads it twice: `InitInstructionsManager`
+/// picks `.agent-shared/instructions/{value}.md`, and the exit watcher treats
+/// `"design"` as "shut the container down when the agent exits".
+pub const UR_WORKER_INSTRUCTION_STRATEGY_ENV: &str = "UR_WORKER_INSTRUCTION_STRATEGY";
+
 /// Environment variable: host-side config directory path.
 ///
 /// The server container sees its config at `/config` (bind mount), but needs the
@@ -288,9 +296,9 @@ pub const DEFAULT_WORKER_CPUS: u32 = 2;
 pub const DEFAULT_WORKER_MEMORY: &str = "8G";
 
 /// Fallback image for a launch with no `image_id` and no project-configured
-/// image. Deliberately the rust-toolchain image, not `AgentType::image_name()`
-/// — swapping in the plain worker image here would silently drop the rust
-/// toolchain from default launches.
+/// image. Deliberately the rust-toolchain image — swapping in the plain
+/// `ur-worker` image here would silently drop the rust toolchain from default
+/// launches.
 pub const DEFAULT_FALLBACK_IMAGE: &str = "ur-worker-rust:latest";
 
 /// Domains required by Claude Code for normal operation.
@@ -2983,6 +2991,31 @@ image = "ur-worker"
         assert_eq!(
             cfg.projects["ur"].instruction_md.as_deref(),
             Some("%URCONFIG%/projects/ur/CLAUDE.md")
+        );
+    }
+
+    /// With both keys set, the new one wins and the deprecated value is ignored
+    /// — a project mid-migration must not silently keep using the stale path.
+    #[test]
+    fn instruction_md_wins_over_legacy_claude_md_when_both_present() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            r#"
+node_id = "n"
+[projects.ur]
+repo = "git@github.com:cmaher/ur.git"
+instruction_md = "%PROJECT%/NEW.md"
+claude_md = "%PROJECT%/OLD.md"
+[projects.ur.container]
+image = "ur-worker"
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(
+            cfg.projects["ur"].instruction_md.as_deref(),
+            Some("%PROJECT%/NEW.md")
         );
     }
 
