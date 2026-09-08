@@ -1,5 +1,12 @@
 FROM ur-worker-base:latest
 
+# Install Claude Code CLI as worker user
+COPY vendor/claude/install.sh /tmp/install-claude.sh
+USER worker
+RUN bash /tmp/install-claude.sh
+USER root
+RUN rm /tmp/install-claude.sh
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
@@ -22,8 +29,6 @@ RUN mkdir -p /workspace && chown worker:worker /workspace
 # Credentials (.credentials.json) are mounted at runtime; this file is static.
 COPY claude.json /home/worker/.claude.json
 COPY claude-settings.json /home/worker/.claude/potential-settings.json
-COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
-COPY all-skills/ /home/worker/.claude/potential-skills/
 RUN mkdir -p /home/worker/.claude/skills
 # Pre-create the transcript directory (Claude Code writes ~/.claude/projects/<cwd-slug>/*.jsonl;
 # cwd is /workspace → slug is -workspace). The project memory_dir is bind-mounted at
@@ -31,8 +36,6 @@ RUN mkdir -p /home/worker/.claude/skills
 # it as root and the worker user can't write transcripts there (EACCES). Owning it via the chown
 # below keeps it writable after the mount.
 RUN mkdir -p /home/worker/.claude/projects/-workspace
-COPY all-claudes/ /home/worker/.claude/potential-claudes/
-COPY shared-claudes/ /home/worker/.claude/shared-claudes/
 RUN chown worker:worker /home/worker/.claude.json && chown -R worker:worker /home/worker/.claude
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.

@@ -3544,8 +3544,8 @@ fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Pa
 }
 
 /// Global skill injection: verify that a skill declared in `[skills.code]` in ur.toml
-/// is bind-mounted into `~/.claude/potential-skills/<name>/` and subsequently copied
-/// to `~/.claude/skills/<name>/` by the `workerd init` step.
+/// is bind-mounted into `~/.agent-shared/potential-skills/<name>/` and subsequently
+/// copied to `~/.claude/skills/<name>/` by the `workerd init` step.
 ///
 /// This exercises the full path:
 ///   ur.toml `[skills.code]` → `GlobalSkillsConfig` → `WorkerManager::merge_global_skills`
@@ -3581,7 +3581,8 @@ fn scenario_global_skill_injection(env: &TestEnv) {
 
         // ---- Assert potential-skills bind mount is present ----
         // The bind mount should make SKILL.md visible at the potential-skills path.
-        let potential_skill_path = "/home/worker/.claude/potential-skills/test-skill/SKILL.md";
+        let potential_skill_path =
+            "/home/worker/.agent-shared/potential-skills/test-skill/SKILL.md";
         let ls_potential =
             exec_in_container(&env.runtime, &container_name, &["ls", potential_skill_path]);
         assert_exec_success(

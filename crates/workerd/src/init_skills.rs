@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 const SKILLS_ENV: &str = "UR_WORKER_SKILLS";
-const POTENTIAL_SKILLS_DIR: &str = ".claude/potential-skills";
+const POTENTIAL_SKILLS_DIR: &str = ".agent-shared/potential-skills";
 const SKILLS_DIR: &str = ".claude/skills";
 const CLAUDE_ENV: &str = "UR_WORKER_CLAUDE";
-const POTENTIAL_CLAUDES_DIR: &str = ".claude/potential-claudes";
-const SHARED_CLAUDES_DIR: &str = ".claude/shared-claudes";
+const POTENTIAL_CLAUDES_DIR: &str = ".agent-shared/instructions";
+const SHARED_CLAUDES_DIR: &str = ".agent-shared/shared-instructions";
 const CLAUDE_MD_DEST: &str = ".claude/CLAUDE.md";
 const PROJECT_CLAUDE_MD_DEST: &str = ".claude/PROJECT_CLAUDE.md";
 const POTENTIAL_SETTINGS_JSON: &str = ".claude/potential-settings.json";

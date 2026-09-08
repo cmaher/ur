@@ -1,6 +1,6 @@
 [submodule "submodules/superpowers"]
 	path = submodules/superpowers
 	url = https://github.com/obra/superpowers
-[submodule "containers/claude-worker/vendor/superpowers"]
-	path = containers/claude-worker/vendor/superpowers
+[submodule "containers/worker-base/vendor/superpowers"]
+	path = containers/worker-base/vendor/superpowers
 	url = https://github.com/obra/superpowers

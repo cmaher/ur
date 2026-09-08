@@ -8,10 +8,10 @@ attribution are documented below.
 - **Source:** https://github.com/obra/superpowers
 - **License:** MIT
 - **Copyright:** (c) 2025 Jesse Vincent
-- **Usage:** The design skill in `containers/claude-worker/all-skills/design/` is
+- **Usage:** The design skill in `containers/worker-base/potential-skills/design/` is
   adapted from the `superpowers` brainstorming skill. The original superpowers
   repository is also vendored as a submodule at
-  `containers/claude-worker/vendor/superpowers/`.
+  `containers/worker-base/vendor/superpowers/`.
 
 ```
 MIT License
@@ -43,7 +43,7 @@ SOFTWARE.
 - **License:** MIT
 - **Copyright:** (c) 2025 Jeff Dickey
 - **Usage:** The mise install script is vendored at
-  `containers/claude-worker/vendor/mise/install.sh` and used during container
+  `containers/worker-base/vendor/mise/install.sh` and used during container
   image builds to install the mise runtime manager without fetching from the
   internet at build time.
 
@@ -113,6 +113,6 @@ SOFTWARE.
 - **License:** Proprietary (Anthropic, PBC)
 - **Copyright:** (c) 2025 Anthropic, PBC. All rights reserved.
 - **Usage:** The Claude Code install script is vendored at
-  `containers/claude-worker/vendor/claude/install.sh` and used during container
+  `containers/agent-claude/vendor/claude/install.sh` and used during container
   image builds to install Claude Code without fetching from the internet at
   build time. Redistribution is subject to Anthropic's terms of service.

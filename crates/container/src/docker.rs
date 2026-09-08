@@ -188,8 +188,8 @@ mod tests {
     fn sample_build_opts() -> BuildOpts {
         BuildOpts {
             tag: "ur-worker:latest".into(),
-            dockerfile: PathBuf::from("/project/containers/claude-worker/Dockerfile"),
-            context: PathBuf::from("/project/containers/claude-worker"),
+            dockerfile: PathBuf::from("/project/containers/agent-claude/Dockerfile"),
+            context: PathBuf::from("/project/containers/agent-claude"),
         }
     }
 
@@ -225,8 +225,8 @@ mod tests {
                 s("-t"),
                 s("ur-worker:latest"),
                 s("-f"),
-                s("/project/containers/claude-worker/Dockerfile"),
-                s("/project/containers/claude-worker"),
+                s("/project/containers/agent-claude/Dockerfile"),
+                s("/project/containers/agent-claude"),
             ]
         );
     }

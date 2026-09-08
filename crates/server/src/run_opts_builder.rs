@@ -368,19 +368,23 @@ impl RunOptsBuilder {
         self
     }
 
-    /// Mount each `(name, host_path)` pair at `/home/worker/.claude/potential-skills/<name>:ro`.
+    /// Mount each `(name, host_path)` pair at `/home/worker/.agent-shared/potential-skills/<name>:ro`.
     ///
     /// Each mount is a read-only directory bind mount. The existing `workerd init` step
-    /// iterates `UR_WORKER_SKILLS` and copies `~/.claude/potential-skills/<name>/` →
+    /// iterates `UR_WORKER_SKILLS` and copies `~/.agent-shared/potential-skills/<name>/` →
     /// `~/.claude/skills/<name>/`, so bind-mounting here causes the copy step to pick
     /// up the host skill transparently. No env vars are set by this method —
     /// `UR_WORKER_SKILLS` is set elsewhere.
     ///
+    /// `.agent-shared` is agent-agnostic content baked by the base image, so this
+    /// mount target needs no `AgentType` — it stays a literal for every agent.
+    ///
     /// Empty slice → no-op (no volumes added).
     pub fn add_extra_skills(mut self, mounts: &[(String, PathBuf)]) -> Self {
         for (name, host_path) in mounts {
-            let container_path =
-                PathBuf::from(format!("/home/worker/.claude/potential-skills/{name}:ro"));
+            let container_path = PathBuf::from(format!(
+                "/home/worker/.agent-shared/potential-skills/{name}:ro"
+            ));
             self.volumes.push((host_path.clone(), container_path));
         }
         self
@@ -967,7 +971,7 @@ mod tests {
         assert_eq!(req.volumes[0].host_path, "/host/skills/my-skill");
         assert_eq!(
             req.volumes[0].container_path,
-            "/home/worker/.claude/potential-skills/my-skill:ro"
+            "/home/worker/.agent-shared/potential-skills/my-skill:ro"
         );
         assert!(req.env_vars.is_empty());
     }
@@ -987,17 +991,17 @@ mod tests {
         assert_eq!(req.volumes[0].host_path, "/host/skills/alpha");
         assert_eq!(
             req.volumes[0].container_path,
-            "/home/worker/.claude/potential-skills/alpha:ro"
+            "/home/worker/.agent-shared/potential-skills/alpha:ro"
         );
         assert_eq!(req.volumes[1].host_path, "/host/skills/beta");
         assert_eq!(
             req.volumes[1].container_path,
-            "/home/worker/.claude/potential-skills/beta:ro"
+            "/home/worker/.agent-shared/potential-skills/beta:ro"
         );
         assert_eq!(req.volumes[2].host_path, "/host/skills/gamma");
         assert_eq!(
             req.volumes[2].container_path,
-            "/home/worker/.claude/potential-skills/gamma:ro"
+            "/home/worker/.agent-shared/potential-skills/gamma:ro"
         );
         assert!(req.env_vars.is_empty());
     }
