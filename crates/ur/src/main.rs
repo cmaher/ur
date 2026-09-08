@@ -251,14 +251,14 @@ enum WorkerCommands {
     /// Force re-seed shared Claude Code credentials from the host (Keychain on macOS)
     ReseedCredentials {
         /// Which agent to reseed credentials for
-        #[arg(long, default_value = "claude")]
+        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
         agent: String,
     },
     /// Save credentials from a running container for reuse
     SaveCredentials {
         worker_id: String,
         /// Which agent to save credentials for
-        #[arg(long, default_value = "claude")]
+        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
         agent: String,
     },
     /// Show detailed worker information
@@ -316,18 +316,24 @@ fn prepare_project_mounts(config: &ur_config::Config) {
 /// The CLI cannot know which agent(s) a launch will actually use — `[worker_modes]`
 /// resolution is server-side and `crates/ur` has no `server` dependency — so this
 /// iterates `AgentType::ALL` rather than a single agent. With one variant today,
-/// this runs once for Claude, identical to seeding Claude alone. Failures are
-/// logged and non-fatal; callers needing a fatal error check `ensure_credentials`
-/// on a specific `credential_manager_for` result instead.
-fn ensure_credentials_for_all_agents(max_age: Duration) {
+/// this runs once for Claude, identical to seeding Claude alone.
+///
+/// Errors are real I/O failures (unresolvable config dir, unwritable credentials
+/// path) and propagate to the caller — a worker launched with an unwritten
+/// credentials file comes up unable to authenticate. "The host has no credentials
+/// to copy" is *not* an error: `ensure_credentials` warns and leaves the existing
+/// file alone. Callers that must tolerate failure (e.g. `ur start`, which prints
+/// its own guidance) log the error explicitly instead of dropping it here.
+fn ensure_credentials_for_all_agents(max_age: Duration) -> Result<()> {
     for agent in ur_config::AgentType::ALL {
         let Some(cred_mgr) = credential::credential_manager_for(*agent) else {
             continue;
         };
-        if let Err(e) = cred_mgr.ensure_credentials(max_age) {
-            debug!(agent = agent.name(), error = %e, "credential seeding failed");
-        }
+        cred_mgr
+            .ensure_credentials(max_age)
+            .with_context(|| format!("failed to seed {} credentials", agent.name()))?;
     }
+    Ok(())
 }
 
 #[instrument(skip(config, compose, output))]
@@ -343,7 +349,9 @@ fn start_server(
     // Seed credentials from host Claude Code before starting anything so
     // they're available for bind-mounting into worker containers. Force a
     // re-seed on every start so host re-logins propagate after a restart.
-    ensure_credentials_for_all_agents(Duration::ZERO);
+    if let Err(e) = ensure_credentials_for_all_agents(Duration::ZERO) {
+        warn!(error = %e, "credential seeding failed");
+    }
     if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
         let has_credentials = cred_mgr
             .host_credentials_path()
@@ -861,7 +869,7 @@ async fn process_launch(
     // Refresh credentials from host Claude Code and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24));
+    ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
