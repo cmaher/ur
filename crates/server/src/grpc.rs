@@ -29,6 +29,9 @@ pub enum CoreError {
     #[error("invalid mode: {reason}")]
     InvalidMode { reason: String },
 
+    #[error("invalid agent: {reason}")]
+    InvalidAgent { reason: String },
+
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -71,6 +74,13 @@ impl From<CoreError> for Status {
     fn from(err: CoreError) -> Self {
         match &err {
             CoreError::InvalidMode { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+            CoreError::InvalidAgent { .. } => error::status_with_info(
                 Code::InvalidArgument,
                 err.to_string(),
                 DOMAIN_CORE,
@@ -169,6 +179,7 @@ struct ResolvedLaunch {
     resolved_skills: Vec<String>,
     strategy: crate::WorkerStrategy,
     model: String,
+    agent: ur_config::AgentType,
     generated_process_id: Option<String>,
 }
 
@@ -215,17 +226,6 @@ fn local_launch_rejection_reason(
         );
     }
     None
-}
-
-/// Resolve the agent a launch request should run as. Empty defaults to
-/// claude — cheap belt-and-suspenders against in-flight requests from an
-/// older client during a rolling restart.
-fn resolve_agent_type(requested: &str) -> String {
-    if requested.is_empty() {
-        ur_config::AgentType::Claude.name().to_owned()
-    } else {
-        requested.to_owned()
-    }
 }
 
 impl LaunchManager {
@@ -423,9 +423,18 @@ impl LaunchManager {
         &self,
         req: &WorkerLaunchRequest,
     ) -> Result<ResolvedLaunch, Status> {
-        let (strategy, resolved_skills, model) = self
+        let requested_agent = if req.agent_type.is_empty() {
+            None
+        } else {
+            Some(ur_config::AgentType::parse(&req.agent_type).map_err(|e| {
+                CoreError::InvalidAgent {
+                    reason: e.to_string(),
+                }
+            })?)
+        };
+        let (strategy, resolved_skills, model, agent) = self
             .worker_manager
-            .resolve_mode(&req.mode)
+            .resolve_mode(&req.mode, requested_agent)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
         let effective_project_key = self.resolve_effective_project_key(req);
@@ -512,6 +521,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             generated_process_id,
         })
     }
@@ -566,6 +576,7 @@ impl LaunchManager {
         resolved_skills: Vec<String>,
         strategy: crate::WorkerStrategy,
         model: String,
+        agent: ur_config::AgentType,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
     ) -> crate::WorkerConfig {
@@ -577,11 +588,18 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) = self
             .worker_manager
             .merge_global_skills(strategy, mode_skills);
-        let (claude_md, mounts, ports, resolved_image, hostexec_scripts, memory_dir, brain_dir) =
-            self.extract_project_launch_fields(&project_key);
+        let (
+            instruction_md,
+            mounts,
+            ports,
+            resolved_image,
+            hostexec_scripts,
+            memory_dir,
+            brain_dir,
+        ) = self.extract_project_launch_fields(&project_key);
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
-                "ur-worker-rust:latest".to_owned()
+                ur_config::DEFAULT_FALLBACK_IMAGE.to_owned()
             } else {
                 resolved_image
             }
@@ -598,7 +616,6 @@ impl LaunchManager {
         } else {
             req.memory.clone()
         };
-        let agent_type = resolve_agent_type(&req.agent_type);
         crate::WorkerConfig {
             process_id,
             worker_id,
@@ -608,11 +625,11 @@ impl LaunchManager {
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
-            agent_type,
+            agent_type: agent.name().to_owned(),
             strategy,
             skills,
             model,
-            claude_md,
+            instruction_md,
             mounts,
             ports,
             slot_id,
@@ -638,6 +655,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
@@ -675,6 +693,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             workspace_dir,
             context_mounts,
         );
@@ -1682,18 +1701,6 @@ async fn resolve_gh_repo_for_worker(
 mod tests {
     use super::*;
     use crate::WorkerStrategy;
-
-    // ── resolve_agent_type ──────────────────────────────────────────────
-
-    #[test]
-    fn resolve_agent_type_empty_defaults_to_claude() {
-        assert_eq!(resolve_agent_type(""), ur_rpc::agent::CLAUDE);
-    }
-
-    #[test]
-    fn resolve_agent_type_passes_through_explicit_value() {
-        assert_eq!(resolve_agent_type("claude"), "claude");
-    }
 
     // ── local_launch_rejection_reason ──────────────────────────────────
 
