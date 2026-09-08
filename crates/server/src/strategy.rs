@@ -15,6 +15,10 @@ pub enum WorkerStrategy {
 }
 
 impl WorkerStrategy {
+    /// All strategy variants, so callers can seed per-strategy maps or assert
+    /// per-strategy invariants without re-listing the variants at each site.
+    pub const ALL: &'static [WorkerStrategy] = &[Self::Code, Self::Design, Self::Manual];
+
     /// Parse a strategy name into a variant.
     /// Valid values: `"code"`, `"design"`, `"manual"`.
     pub fn from_name(name: &str) -> Result<Self, String> {

@@ -38,6 +38,8 @@ pub use proxy::SquidManager;
 pub use snapshot::SnapshotManager;
 pub use strategy::WorkerStrategy;
 pub use ui_event_poller::UiEventPoller;
-pub use worker::{WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary};
+pub use worker::{
+    ResolvedMode, WorkerConfig, WorkerContext, WorkerId, WorkerManager, WorkerSummary,
+};
 pub use workerd_client::WorkerdClient;
 pub use workflow::{GithubPollerManager, HandlerEntry, WorkflowEngine};

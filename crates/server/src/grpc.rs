@@ -183,6 +183,23 @@ struct ResolvedLaunch {
     generated_process_id: Option<String>,
 }
 
+/// Resolve `WorkerLaunchRequest.agent_type` into an explicit agent override.
+///
+/// Empty means "no override" — the mode's own `agent` field (or claude) decides,
+/// which is what every in-tree client sends today since launch has no `--agent`
+/// flag yet. A non-empty unknown name is a client error, not a silent fallback
+/// to claude: launching the wrong agent is worse than a rejected request.
+fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType>, CoreError> {
+    if agent_type.is_empty() {
+        return Ok(None);
+    }
+    ur_config::AgentType::parse(agent_type)
+        .map(Some)
+        .map_err(|e| CoreError::InvalidAgent {
+            reason: e.to_string(),
+        })
+}
+
 /// Shared worker launch and stop logic used by both the host-facing
 /// `CoreServiceHandler` and the worker-facing `WorkerCoreServiceHandler`.
 #[derive(Clone)]
@@ -423,16 +440,13 @@ impl LaunchManager {
         &self,
         req: &WorkerLaunchRequest,
     ) -> Result<ResolvedLaunch, Status> {
-        let requested_agent = if req.agent_type.is_empty() {
-            None
-        } else {
-            Some(ur_config::AgentType::parse(&req.agent_type).map_err(|e| {
-                CoreError::InvalidAgent {
-                    reason: e.to_string(),
-                }
-            })?)
-        };
-        let (strategy, resolved_skills, model, agent) = self
+        let requested_agent = parse_requested_agent(&req.agent_type)?;
+        let crate::ResolvedMode {
+            strategy,
+            skills: resolved_skills,
+            model,
+            agent,
+        } = self
             .worker_manager
             .resolve_mode(&req.mode, requested_agent)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
@@ -1743,6 +1757,38 @@ mod tests {
         ] {
             assert!(local_launch_rejection_reason(strategy, mode, "").is_some());
         }
+    }
+
+    // ── agent_type on the launch request ───────────────────────────────
+
+    /// Empty `agent_type` — what every in-tree client sends — means "no
+    /// override", so mode-based resolution decides.
+    #[test]
+    fn empty_agent_type_is_no_override() {
+        assert_eq!(parse_requested_agent("").unwrap(), None);
+    }
+
+    #[test]
+    fn known_agent_type_parses_to_an_override() {
+        assert_eq!(
+            parse_requested_agent(ur_rpc::agent::CLAUDE).unwrap(),
+            Some(ur_config::AgentType::Claude)
+        );
+    }
+
+    /// An unknown agent name is rejected as InvalidArgument naming the offending
+    /// value, rather than silently falling back to claude.
+    #[test]
+    fn unknown_agent_type_maps_to_invalid_argument() {
+        let err = parse_requested_agent("bogus-agent").expect_err("should reject");
+        assert!(matches!(err, CoreError::InvalidAgent { .. }), "{err:?}");
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(
+            status.message().contains("bogus-agent"),
+            "{}",
+            status.message()
+        );
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────
