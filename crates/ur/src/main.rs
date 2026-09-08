@@ -914,12 +914,14 @@ async fn process_launch(
             cpus: 2,
             memory: "8G".into(),
             workspace_dir,
-            claude_credentials: String::new(),
             mode: mode.to_owned(),
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
             context_repos: context_repos.to_vec(),
             dispatch,
+            // No --agent flag on launch yet (ur-vui34 decision 6) — empty
+            // defaults to claude server-side.
+            agent_type: String::new(),
         })
         .await?;
 

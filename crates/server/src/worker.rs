@@ -316,6 +316,7 @@ pub struct WorkerSummary {
     pub directory: String,
     pub container_status: String,
     pub agent_status: String,
+    pub agent_type: String,
 }
 
 /// Configuration for launching a container process.
@@ -329,6 +330,10 @@ pub struct WorkerConfig {
     pub proxy_hostname: String,
     /// Project key if launched with `--project` (empty string for raw workspace launches).
     pub project_key: String,
+    /// Which agent runs this worker (e.g. "claude"). Resolved from the launch
+    /// request, defaulting to claude when unset — full mode-based resolution
+    /// lands in a follow-up ticket.
+    pub agent_type: String,
     /// Worker strategy governing slot acquisition and release behavior.
     pub strategy: WorkerStrategy,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
@@ -768,7 +773,7 @@ impl WorkerManager {
             container_id: container_id.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
-            agent_type: ur_config::AgentType::Claude.name().to_owned(),
+            agent_type: config.agent_type,
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
@@ -875,6 +880,7 @@ impl WorkerManager {
                 directory: worker.workspace_path.unwrap_or_default(),
                 container_status: worker.container_status,
                 agent_status: worker.agent_status,
+                agent_type: worker.agent_type,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
@@ -1491,6 +1497,7 @@ mod tests {
             workspace_dir: None,
             proxy_hostname: "ur-squid".into(),
             project_key: String::new(),
+            agent_type: ur_config::AgentType::Claude.name().to_owned(),
             strategy,
             skills: Vec::new(),
             model: model.into(),

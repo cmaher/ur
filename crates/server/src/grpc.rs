@@ -217,6 +217,17 @@ fn local_launch_rejection_reason(
     None
 }
 
+/// Resolve the agent a launch request should run as. Empty defaults to
+/// claude — cheap belt-and-suspenders against in-flight requests from an
+/// older client during a rolling restart.
+fn resolve_agent_type(requested: &str) -> String {
+    if requested.is_empty() {
+        ur_config::AgentType::Claude.name().to_owned()
+    } else {
+        requested.to_owned()
+    }
+}
+
 impl LaunchManager {
     /// Validate context repo keys and acquire shared slots in parallel.
     ///
@@ -587,6 +598,7 @@ impl LaunchManager {
         } else {
             req.memory.clone()
         };
+        let agent_type = resolve_agent_type(&req.agent_type);
         crate::WorkerConfig {
             process_id,
             worker_id,
@@ -596,6 +608,7 @@ impl LaunchManager {
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
+            agent_type,
             strategy,
             skills,
             model,
@@ -857,6 +870,7 @@ impl CoreService for CoreServiceHandler {
                 workflow_status,
                 workflow_stalled,
                 workflow_stall_reason,
+                agent_type: s.agent_type,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))
@@ -1668,6 +1682,18 @@ async fn resolve_gh_repo_for_worker(
 mod tests {
     use super::*;
     use crate::WorkerStrategy;
+
+    // ── resolve_agent_type ──────────────────────────────────────────────
+
+    #[test]
+    fn resolve_agent_type_empty_defaults_to_claude() {
+        assert_eq!(resolve_agent_type(""), ur_rpc::agent::CLAUDE);
+    }
+
+    #[test]
+    fn resolve_agent_type_passes_through_explicit_value() {
+        assert_eq!(resolve_agent_type("claude"), "claude");
+    }
 
     // ── local_launch_rejection_reason ──────────────────────────────────
 

@@ -1,6 +1,7 @@
 #[cfg(feature = "error")]
 pub mod error;
 
+pub mod agent;
 pub mod agent_status;
 pub mod edge_relation;
 pub mod feedback_mode;
