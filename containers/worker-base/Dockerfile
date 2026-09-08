@@ -36,8 +36,11 @@ RUN chown worker:worker /home/worker/.profile /home/worker/.bashrc
 # Agent-agnostic skills and instructions, shared by every agent image built
 # on top of this one (see containers/agent-claude/). Agent-specific assets
 # (CLI install, app config) live in the agent layer instead.
-COPY potential-skills/ /home/worker/.agent-shared/potential-skills/
+# Order matters: both COPYs land in the same directory, and the later one wins
+# a name collision. The repo's own skills go second so they override a
+# same-named vendored skill, not the other way round.
 COPY vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
+COPY potential-skills/ /home/worker/.agent-shared/potential-skills/
 COPY instructions/ /home/worker/.agent-shared/instructions/
 COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 RUN chown -R worker:worker /home/worker/.agent-shared

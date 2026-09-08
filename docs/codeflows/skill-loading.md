@@ -31,7 +31,7 @@ WorkerLaunchRequest { mode, skills, agent_type }
     │
     ▼
 WorkerManager::resolve_mode(mode, requested_agent)     [crates/server/src/worker.rs]
-    │   Returns (WorkerStrategy, skills, model, AgentType):
+    │   Returns ResolvedMode { strategy, skills, model, agent }:
     │     1. Mode name → WorkerModesConfig lookup (default: "code")
     │     2. Strategy from built-in or custom mode's `base` field
     │     3. Skills: explicit `skills` param > mode's skill list > code defaults
