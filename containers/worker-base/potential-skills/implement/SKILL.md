@@ -7,11 +7,37 @@ description: Use when implementing a ticket — implements a single ticket, or a
 
 Implement one or more tickets. An **epic** is any ticket with open descendants — detected at runtime, not by ticket type.
 
+## NEVER Pause — There Are Exactly Two Ways To Stop
+
+You are running unattended. Nobody is watching your terminal. **Ending your turn without one of the two signals below silently stalls the workflow: the ticket sits untouched, no human is notified, and the stall is only discovered by accident.**
+
+There are exactly two legal ways to stop working:
+
+| Situation | Required action |
+|-----------|-----------------|
+| All work is done | `workertools status step-complete` |
+| You are blocked and cannot finish | `workertools status request-human "<reason>"` |
+
+**Every other form of stopping is forbidden.** In particular, NEVER:
+
+- Pause, wait, or "hold off" for any reason
+- Ask the user a question in your response text and stop — your text is not delivered to anyone. A question is a `request-human` call or it does not exist
+- Say you will "await confirmation", "check in", "pause here", "stop for review", or "resume once clarified"
+- Report a plan, a summary, or a partial result and stop without a signal
+- Stop because the change feels large, risky, ambiguous, or out of scope — that is exactly what `request-human` is for
+- Stop because a verification failed, a command errored, or you hit something you don't understand
+- Assume something else will pick the work up, notice you stopped, or nudge you
+
+If any part of you is inclined to pause, that inclination is a `request-human` call. Make the call with a concrete reason, then stop. Uncertainty is never a reason to go quiet — it is a reason to call `request-human`.
+
+`workertools status pause-nudge` is NOT a way to pause work. It only suppresses nudge messages for 5 minutes while you keep working. It does not notify anyone and it does not end your turn.
+
 **Run `workertools status request-human "<reason>"` and stop when:**
 - Ticket acceptance criteria are ambiguous or contradictory
 - Work appears to require changes beyond `Files to change` that are not obvious small consequences (import sites, adjacent types are fine)
 - Error recovery activities contain contradictory or incomplete guidance
 - Ticket description and codebase together do not provide enough context to implement confidently
+- You need a decision, an approval, or an answer from a human for any other reason
 
 Do not guess or make assumptions about unclear requirements.
 
@@ -65,7 +91,7 @@ Do NOT run any verification commands unless specified in this section.
 
 @/home/worker/.claude/skill-hooks/implement/subtask-verifications.md
 
-If you cannot complete the work, run `workertools status request-human "<reason>"` and stop.
+If you cannot complete the work, run `workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
@@ -103,7 +129,7 @@ After all dispatchable tickets are done and verification passes:
    ur ticket set-meta <epic-id> pr_summary "Summary of all changes" --output json
    ```
 
-If you cannot complete all work, run `workertools status request-human "<reason>"` and stop.
+If you cannot complete all work, run `workertools status request-human "<reason>"` and stop. Never stop without either this or `step-complete`.
 
 Do NOT push, create PRs, or advance lifecycle status — that happens automatically after you stop.
 
@@ -113,6 +139,9 @@ Do NOT push, create PRs, or advance lifecycle status — that happens automatica
 
 | Mistake | Fix |
 |---------|-----|
+| Pausing / waiting / stopping without a signal | **Never.** Stop only via `step-complete` (done) or `request-human "<reason>"` (blocked) |
+| Asking a question in your response text and stopping | Nobody reads it. Ask via `workertools status request-human "<question>"` |
+| Using `pause-nudge` to pause work | It only mutes nudges for 5 min. It notifies nobody and does not end your turn |
 | Switching branches mid-work | **Never.** All commits go on the working branch |
 | Re-query skipped after completion | Always `ur ticket --output json dispatchable <epic>` again — deps may have unblocked |
 | Working a ticket without claiming | Always claim (`--status in_progress`) before implementing, and close when done |
