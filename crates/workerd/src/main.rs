@@ -15,9 +15,9 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
 mod grpc_service;
+mod init;
 mod init_git_hooks;
 mod init_skill_hooks;
-mod init_skills;
 mod logging;
 
 const SHIM_DIR: &str = ".local/bin";
@@ -60,11 +60,25 @@ async fn run_init() -> Result<()> {
     info!("workerd init starting");
 
     // Initialize skills
-    let skills_manager = init_skills::InitSkillsManager::from_env();
-    let exit_code = skills_manager.run().await;
-    if exit_code != 0 {
-        anyhow::bail!("skills initialization failed");
-    }
+    let skills_manager = init::InitSkillsManager::from_env();
+    skills_manager
+        .run()
+        .await
+        .context("skills initialization failed")?;
+
+    // Initialize instruction file (e.g. CLAUDE.md)
+    let instructions_manager = init::InitInstructionsManager::from_env();
+    instructions_manager
+        .run()
+        .await
+        .context("instructions initialization failed")?;
+
+    // Initialize settings file (e.g. settings.json)
+    let settings_manager = init::InitSettingsManager::from_env();
+    settings_manager
+        .run()
+        .await
+        .context("settings initialization failed")?;
 
     // Initialize git hooks
     let git_hooks_manager = init_git_hooks::InitGitHooksManager;
