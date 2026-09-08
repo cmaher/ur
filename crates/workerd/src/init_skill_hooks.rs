@@ -20,10 +20,8 @@ pub struct InitSkillHooksManager {
 }
 
 impl InitSkillHooksManager {
-    pub fn from_env() -> Self {
-        InitSkillHooksManager {
-            agent: AgentType::from_env(),
-        }
+    pub fn new(agent: AgentType) -> Self {
+        InitSkillHooksManager { agent }
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {

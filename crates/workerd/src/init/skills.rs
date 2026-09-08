@@ -16,12 +16,8 @@ pub struct InitSkillsManager {
 }
 
 impl InitSkillsManager {
-    pub fn from_env() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ur_config::WORKER_HOME.into());
-        InitSkillsManager {
-            home: PathBuf::from(home),
-            agent: AgentType::from_env(),
-        }
+    pub fn new(home: PathBuf, agent: AgentType) -> Self {
+        InitSkillsManager { home, agent }
     }
 
     /// Copy the skills named in `UR_WORKER_SKILLS` from `.agent-shared/potential-skills/`
@@ -76,16 +72,6 @@ impl InitSkillsManager {
 }
 
 #[cfg(test)]
-impl InitSkillsManager {
-    fn with_home(home: PathBuf) -> Self {
-        InitSkillsManager {
-            home,
-            agent: AgentType::Claude,
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -104,7 +90,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(SKILLS_ENV, "my-skill") };
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
         unsafe { std::env::remove_var(SKILLS_ENV) };
 
@@ -120,7 +106,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::set_var(SKILLS_ENV, "nonexistent") };
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         let result = mgr.run().await;
         unsafe { std::env::remove_var(SKILLS_ENV) };
 
@@ -135,7 +121,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(SKILLS_ENV) };
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         let result = mgr.run().await;
 
         assert!(result.is_ok(), "unset env should not cause an error");
@@ -155,7 +141,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe { std::env::remove_var(SKILLS_ENV) };
-        let mgr = InitSkillsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
         assert!(

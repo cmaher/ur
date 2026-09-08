@@ -14,7 +14,7 @@ Startup sequence (daemon mode):
 3. Spawns healthz HTTP server on port 9119 (Docker HEALTHCHECK)
 4. Starts gRPC server on port 9120 (long-lived, keeps the process alive)
 
-The exit watcher (`AgentWatchState`/`advance_agent_watch_state`) that shuts down a design worker's container is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process is `node`, not `claude`; `AgentType::binary_name()` exists for logging only and must never be used here.
+The exit watcher (`AgentWatchState`/`advance_agent_watch_state`) that shuts down a design worker's container is deliberately agent-agnostic — it matches shell-vs-non-shell foreground processes (`is_shell_process`), never the agent's binary name. Claude Code's foreground process is `node`, not `claude`, so `AgentType` deliberately carries no binary-name accessor for this code to reach for.
 
 Image-specific background processes (e.g., bacon, cargo sweep for rust variant) are launched
 by the image's entrypoint.sh between `workerd init` and `exec workerd daemon` — NOT by workerd
@@ -37,11 +37,11 @@ immediately, the hook completes, Claude Code returns to its prompt, and only the
 `Implement` / `Design` / `AddressFeedbackTickets` send inline instead — they arrive from the
 server rather than from a hook, so their errors can propagate back to the caller.
 
-Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split by concern):
+Init phase (`crates/workerd/src/init/{skills,instructions,settings}.rs`, split by concern). `run_init` resolves the agent (`AgentType::from_env()`) and home (`init::worker_home()`) **once** and injects both into every manager's constructor — no init manager reads `UR_AGENT_TYPE` itself, so the whole phase cannot disagree about which agent it is setting up:
 - `InitSkillsManager` copies skills from `.agent-shared/potential-skills/` (baked, agent-agnostic) based on `$UR_WORKER_SKILLS` env var into `~/{agent.home_subdir()}/{agent.skill_subdir()}/` (e.g. `~/.claude/skills/`)
 - `InitInstructionsManager` copies the strategy-specific instruction file from `.agent-shared/instructions/` based on `$UR_WORKER_INSTRUCTION_STRATEGY` env var, appends `.agent-shared/shared-instructions/*.md` fragments, and writes the result to `~/{agent.home_subdir()}/{agent.instruction_filename()}` (e.g. `~/.claude/CLAUDE.md`)
 - `InitSettingsManager` copies `~/{agent.home_subdir()}/potential-settings.json` (baked into the agent image) to `~/{agent.home_subdir()}/{agent.settings_filename()}` verbatim, gated on `agent.settings_filename().is_some()`, so Claude Code picks up hooks/permissions. The `model` key is intentionally NOT injected here — see step 2 of the daemon startup sequence above for why.
 - Copies git hooks from `/workspace/ur-hooks/git/` (in-repo), then `/var/ur/host-hooks/git/` (host overlay, wins on conflict), into `/workspace/.git/hooks/`
-- `InitSkillHooksManager` (constructor takes the agent) copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), into `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/` (e.g. `~/.claude/skill-hooks/`)
+- `InitSkillHooksManager` copies skill hooks from `/workspace/ur-hooks/skills/` (in-repo), then `/var/ur/host-hooks/skills/` (host overlay, wins on conflict), into `~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/` (e.g. `~/.claude/skill-hooks/`)
 - Calls `ListHostExecCommands` RPC on ur-server (retries with backoff)
 - Generates shims in `~/.local/bin/` that call `workertools host-exec <command> "$@"`

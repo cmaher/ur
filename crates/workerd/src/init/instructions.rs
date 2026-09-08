@@ -5,7 +5,6 @@ use ur_config::AgentType;
 
 use super::collect_md_files;
 
-const INSTRUCTION_STRATEGY_ENV: &str = "UR_WORKER_INSTRUCTION_STRATEGY";
 const POTENTIAL_INSTRUCTIONS_DIR: &str = ".agent-shared/instructions";
 const SHARED_INSTRUCTIONS_DIR: &str = ".agent-shared/shared-instructions";
 
@@ -18,12 +17,8 @@ pub struct InitInstructionsManager {
 }
 
 impl InitInstructionsManager {
-    pub fn from_env() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ur_config::WORKER_HOME.into());
-        InitInstructionsManager {
-            home: PathBuf::from(home),
-            agent: AgentType::from_env(),
-        }
+    pub fn new(home: PathBuf, agent: AgentType) -> Self {
+        InitInstructionsManager { home, agent }
     }
 
     fn instruction_dest(&self) -> PathBuf {
@@ -39,11 +34,11 @@ impl InitInstructionsManager {
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
-        let strategy_name = match std::env::var(INSTRUCTION_STRATEGY_ENV) {
+        let strategy_name = match std::env::var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) {
             Ok(val) if !val.trim().is_empty() => val,
             _ => {
                 info!(
-                    env = INSTRUCTION_STRATEGY_ENV,
+                    env = ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV,
                     "env var empty or missing, skipping instruction file setup"
                 );
                 return Ok(());
@@ -121,16 +116,6 @@ impl InitInstructionsManager {
 }
 
 #[cfg(test)]
-impl InitInstructionsManager {
-    fn with_home(home: PathBuf) -> Self {
-        InitInstructionsManager {
-            home,
-            agent: AgentType::Claude,
-        }
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
@@ -154,10 +139,10 @@ mod tests {
         setup_strategy_file(&tmp, "code", "# Code Worker\nBe a coder.");
 
         // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::set_var(INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
-        unsafe { std::env::remove_var(INSTRUCTION_STRATEGY_ENV) };
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         let dest = tmp.path().join(".claude/CLAUDE.md");
         assert!(dest.exists(), "CLAUDE.md should be created");
@@ -180,10 +165,10 @@ mod tests {
         std::fs::write(shared_dir.join("ignore.txt"), "nope").unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::set_var(INSTRUCTION_STRATEGY_ENV, "code") };
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code") };
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
-        unsafe { std::env::remove_var(INSTRUCTION_STRATEGY_ENV) };
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         let content = std::fs::read_to_string(tmp.path().join(".claude/CLAUDE.md")).unwrap();
         assert_eq!(content, "# Code Worker\n\n# Alpha\n\n# Beta");
@@ -196,10 +181,10 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::set_var(INSTRUCTION_STRATEGY_ENV, "nonexistent") };
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        unsafe { std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "nonexistent") };
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         let result = mgr.run().await;
-        unsafe { std::env::remove_var(INSTRUCTION_STRATEGY_ENV) };
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         assert!(result.is_ok(), "missing file should not cause an error");
         let dest = tmp.path().join(".claude/CLAUDE.md");
@@ -213,8 +198,8 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
         // SAFETY: tests are serialized via ENV_LOCK
-        unsafe { std::env::remove_var(INSTRUCTION_STRATEGY_ENV) };
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         let result = mgr.run().await;
 
         assert!(result.is_ok(), "unset env should not cause an error");
@@ -236,7 +221,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe {
-            std::env::set_var(INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(
                 ur_config::UR_PROJECT_INSTRUCTION_ENV,
                 project_path.to_str().unwrap(),
@@ -244,11 +229,11 @@ mod tests {
             std::env::set_var(ur_config::UR_HOST_WORKSPACE_ENV, "/host/workspace");
         };
 
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
         unsafe {
-            std::env::remove_var(INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
@@ -276,15 +261,15 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe {
-            std::env::set_var(INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
-        unsafe { std::env::remove_var(INSTRUCTION_STRATEGY_ENV) };
+        unsafe { std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV) };
 
         // PROJECT_CLAUDE.md should not exist
         let project_dest = tmp.path().join(".claude/PROJECT_CLAUDE.md");
@@ -312,7 +297,7 @@ mod tests {
 
         // SAFETY: tests are serialized via ENV_LOCK
         unsafe {
-            std::env::set_var(INSTRUCTION_STRATEGY_ENV, "code");
+            std::env::set_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV, "code");
             std::env::set_var(
                 ur_config::UR_PROJECT_INSTRUCTION_ENV,
                 project_path.to_str().unwrap(),
@@ -320,11 +305,11 @@ mod tests {
             std::env::remove_var(ur_config::UR_HOST_WORKSPACE_ENV);
         };
 
-        let mgr = InitInstructionsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitInstructionsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
         unsafe {
-            std::env::remove_var(INSTRUCTION_STRATEGY_ENV);
+            std::env::remove_var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV);
             std::env::remove_var(ur_config::UR_PROJECT_INSTRUCTION_ENV);
         };
 

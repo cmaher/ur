@@ -57,24 +57,29 @@ async fn main() -> Result<()> {
 
 /// Synchronous initialization: skills, git hooks, and hostexec shim creation.
 async fn run_init() -> Result<()> {
-    info!("workerd init starting");
+    // Resolve the agent and home once here and inject them into every init
+    // manager, so the whole init phase agrees on one agent rather than each
+    // manager re-reading UR_AGENT_TYPE for itself.
+    let agent = ur_config::AgentType::from_env();
+    let home = init::worker_home();
+    info!(agent = agent.name(), home = %home.display(), "workerd init starting");
 
     // Initialize skills
-    let skills_manager = init::InitSkillsManager::from_env();
+    let skills_manager = init::InitSkillsManager::new(home.clone(), agent);
     skills_manager
         .run()
         .await
         .context("skills initialization failed")?;
 
     // Initialize instruction file (e.g. CLAUDE.md)
-    let instructions_manager = init::InitInstructionsManager::from_env();
+    let instructions_manager = init::InitInstructionsManager::new(home.clone(), agent);
     instructions_manager
         .run()
         .await
         .context("instructions initialization failed")?;
 
     // Initialize settings file (e.g. settings.json)
-    let settings_manager = init::InitSettingsManager::from_env();
+    let settings_manager = init::InitSettingsManager::new(home, agent);
     settings_manager
         .run()
         .await
@@ -88,7 +93,7 @@ async fn run_init() -> Result<()> {
         .context("git hooks initialization failed")?;
 
     // Initialize skill hooks
-    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager::from_env();
+    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager::new(agent);
     skill_hooks_manager
         .run()
         .await
@@ -269,8 +274,9 @@ async fn check_design_worker_exit(session: &tmux::Session, state: &mut AgentWatc
 async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
     let session = tmux::Session::agent();
     let interval = Duration::from_secs(EXIT_WATCHER_POLL_SECS);
-    let is_design_worker =
-        std::env::var("UR_WORKER_INSTRUCTION_STRATEGY").unwrap_or_default() == "design";
+    let is_design_worker = std::env::var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV)
+        .unwrap_or_default()
+        == "design";
 
     info!(
         is_design_worker,

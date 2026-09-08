@@ -8,6 +8,15 @@ pub use skills::InitSkillsManager;
 
 use std::path::{Path, PathBuf};
 
+/// Resolve the worker's home directory from `$HOME`, falling back to the
+/// container's known home. Resolved once in `run_init` and injected into each
+/// init manager rather than re-read per manager.
+pub fn worker_home() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(ur_config::WORKER_HOME))
+}
+
 /// Recursively copy `src` into `dst`, creating directories as needed.
 pub(crate) async fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
     tokio::fs::create_dir_all(dst).await?;

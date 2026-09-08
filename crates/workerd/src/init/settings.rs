@@ -18,12 +18,8 @@ pub struct InitSettingsManager {
 }
 
 impl InitSettingsManager {
-    pub fn from_env() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ur_config::WORKER_HOME.into());
-        InitSettingsManager {
-            home: PathBuf::from(home),
-            agent: AgentType::from_env(),
-        }
+    pub fn new(home: PathBuf, agent: AgentType) -> Self {
+        InitSettingsManager { home, agent }
     }
 
     pub async fn run(&self) -> Result<(), std::io::Error> {
@@ -50,16 +46,6 @@ impl InitSettingsManager {
         tokio::fs::copy(&src, &dst).await?;
         info!(src = %src.display(), dst = %dst.display(), "copied settings file");
         Ok(())
-    }
-}
-
-#[cfg(test)]
-impl InitSettingsManager {
-    fn with_home(home: PathBuf) -> Self {
-        InitSettingsManager {
-            home,
-            agent: AgentType::Claude,
-        }
     }
 }
 
@@ -99,7 +85,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         setup_potential_settings(&tmp, BASE_SETTINGS);
 
-        let mgr = InitSettingsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSettingsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
         let written = std::fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
@@ -114,7 +100,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
 
-        let mgr = InitSettingsManager::with_home(tmp.path().to_path_buf());
+        let mgr = InitSettingsManager::new(tmp.path().to_path_buf(), AgentType::Claude);
         mgr.run().await.unwrap();
 
         assert!(
