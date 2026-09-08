@@ -779,15 +779,15 @@ impl WorkerManager {
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
-        .add_credentials(&self.host_config_dir)?
+        .add_credentials(&self.host_config_dir, agent)?
         .add_host_hooks_overlay(
             &config.project_key,
             &self.host_config_dir,
             &self.local_config_dir,
         )
         .add_extra_skills(&config.extra_skill_mounts)
-        .add_project_claude_md(&project_instruction, &self.host_config_dir)?
-        .add_memory_dir(&memory_dir, &self.host_config_dir)?
+        .add_project_instruction(&project_instruction, &self.host_config_dir, agent)?
+        .add_memory_dir(&memory_dir, &self.host_config_dir, agent)?
         .add_brain_dir(&brain_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
