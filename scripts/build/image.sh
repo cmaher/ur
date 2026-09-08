@@ -60,23 +60,29 @@ build_image_no_cache() {
     fi
 }
 
-WORKER_CONTEXT=containers/claude-worker
-RUST_WORKER_CONTEXT=containers/claude-worker-rust
+BASE_CONTEXT=containers/worker-base
+WORKER_CONTEXT=containers/agent-claude
+RUST_WORKER_CONTEXT=containers/agent-claude-rust
 
-# Stage vendored mise installer into rust worker build context
-cp "$WORKER_CONTEXT/vendor/mise/install.sh" "$RUST_WORKER_CONTEXT/install-mise.sh"
+# Stage vendored mise installer into the rust worker build context
+cp "$BASE_CONTEXT/vendor/mise/install.sh" "$RUST_WORKER_CONTEXT/install-mise.sh"
 
+# `ur-worker-base` now carries only agent-agnostic assets (shell setup, skills,
+# instructions) — no Claude CLI install — so UR_FORCE_REBUILD_BASE no longer
+# touches the Claude install at all. It still fully rebuilds this layer.
 if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
-    build_image_no_cache "ur-worker-base:$tag" "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
+    build_image_no_cache "ur-worker-base:$tag" "$BASE_CONTEXT/Dockerfile" "$BASE_CONTEXT"
 else
-    build_image "ur-worker-base:$tag" "$WORKER_CONTEXT/Dockerfile.base" "$WORKER_CONTEXT"
+    build_image "ur-worker-base:$tag" "$BASE_CONTEXT/Dockerfile" "$BASE_CONTEXT"
 fi
 echo "Base image built: ur-worker-base:$tag"
 
-# The worker image's `claude update` layer is cached like any other, so Claude Code
-# stays pinned at the version baked into the base image until CACHEBUST changes.
-# Both UR_FORCE_REBUILD_BASE=1 (full base rebuild) and UR_UPDATE_CLAUDE=1
-# (cheap: worker layers only) bust it.
+# The Claude CLI install (and its `claude update` layer) now lives in the
+# agent-claude image, not the base. The worker image's `claude update` layer
+# is cached like any other, so Claude Code stays pinned at the version baked
+# in until CACHEBUST changes. Both UR_FORCE_REBUILD_BASE=1 (full base
+# rebuild, which invalidates this layer's cache since it's FROM the base) and
+# UR_UPDATE_CLAUDE=1 (cheap: just this layer) bust it.
 worker_args=("BASE_TAG=$tag")
 if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ] || [ "${UR_UPDATE_CLAUDE:-}" = "1" ]; then
     worker_args+=("CACHEBUST=$(date +%s)")

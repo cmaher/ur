@@ -70,7 +70,7 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
     let squid_dir = config_dir.join("squid");
     init_dir(&squid_dir, output)?;
 
-    let claude_dir = config_dir.join(ur_config::CLAUDE_DIR);
+    let claude_dir = config_dir.join(ur_config::AgentType::Claude.name());
     init_dir(&claude_dir, output)?;
 
     let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
@@ -113,7 +113,12 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
     // Credentials file must exist on the host for Docker file mounts to work
     // (otherwise Docker creates a directory at the mount path).
     write_file(
-        &claude_dir.join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
+        &claude_dir.join(
+            ur_config::AgentType::Claude
+                .auth()
+                .expect("Claude has an auth profile")
+                .credentials_filename,
+        ),
         "",
         false,
         "--force",

@@ -15,9 +15,9 @@ use ur_rpc::proto::hostexec::host_exec_service_client::HostExecServiceClient;
 use ur_rpc::proto::workerd::worker_daemon_service_server::WorkerDaemonServiceServer;
 
 mod grpc_service;
+mod init;
 mod init_git_hooks;
 mod init_skill_hooks;
-mod init_skills;
 mod logging;
 
 const SHIM_DIR: &str = ".local/bin";
@@ -57,14 +57,33 @@ async fn main() -> Result<()> {
 
 /// Synchronous initialization: skills, git hooks, and hostexec shim creation.
 async fn run_init() -> Result<()> {
-    info!("workerd init starting");
+    // Resolve the agent and home once here and inject them into every init
+    // manager, so the whole init phase agrees on one agent rather than each
+    // manager re-reading UR_AGENT_TYPE for itself.
+    let agent = ur_config::AgentType::from_env();
+    let home = init::worker_home();
+    info!(agent = agent.name(), home = %home.display(), "workerd init starting");
 
     // Initialize skills
-    let skills_manager = init_skills::InitSkillsManager::from_env();
-    let exit_code = skills_manager.run().await;
-    if exit_code != 0 {
-        anyhow::bail!("skills initialization failed");
-    }
+    let skills_manager = init::InitSkillsManager::new(home.clone(), agent);
+    skills_manager
+        .run()
+        .await
+        .context("skills initialization failed")?;
+
+    // Initialize instruction file (e.g. CLAUDE.md)
+    let instructions_manager = init::InitInstructionsManager::new(home.clone(), agent);
+    instructions_manager
+        .run()
+        .await
+        .context("instructions initialization failed")?;
+
+    // Initialize settings file (e.g. settings.json)
+    let settings_manager = init::InitSettingsManager::new(home, agent);
+    settings_manager
+        .run()
+        .await
+        .context("settings initialization failed")?;
 
     // Initialize git hooks
     let git_hooks_manager = init_git_hooks::InitGitHooksManager;
@@ -74,7 +93,7 @@ async fn run_init() -> Result<()> {
         .context("git hooks initialization failed")?;
 
     // Initialize skill hooks
-    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager;
+    let skill_hooks_manager = init_skill_hooks::InitSkillHooksManager::new(agent);
     skill_hooks_manager
         .run()
         .await
@@ -99,7 +118,7 @@ async fn run_init() -> Result<()> {
     Ok(())
 }
 
-/// Background daemon: runs init, creates tmux session, launches Claude Code, serves healthz + gRPC.
+/// Background daemon: runs init, creates tmux session, launches the agent, serves healthz + gRPC.
 async fn run_daemon() -> Result<()> {
     info!("workerd daemon starting");
 
@@ -112,6 +131,8 @@ async fn run_daemon() -> Result<()> {
 /// Daemon without init — expects `workerd init` to have been called already.
 /// Used by image-specific entrypoints that need to launch background processes between init and daemon.
 async fn run_daemon_only() -> Result<()> {
+    let agent = ur_config::AgentType::from_env();
+
     // 1. Create tmux session `agent` (220x55)
     let session = tmux::Session::create(tmux::CreateOptions {
         name: "agent".into(),
@@ -127,19 +148,17 @@ async fn run_daemon_only() -> Result<()> {
     session.set_option("status-left-length", "50").await?;
     session.set_status_left(&status_left).await?;
 
-    // 3. Launch Claude Code via send-keys. Pass `--model <name>` when
+    // 3. Launch the agent via send-keys. Pass `--model <name>` when
     // UR_WORKER_MODEL is set so the model survives Claude Code's own
     // settings.json rewrites on startup (settings.json injection is
     // unreliable — Claude Code recomposes the file from .claude.json and
     // drops unrecognized keys).
-    let claude_cmd = match std::env::var(ur_config::UR_WORKER_MODEL_ENV) {
-        Ok(model) if !model.trim().is_empty() => format!("claude --model '{}'", model.trim()),
-        _ => "claude".to_owned(),
-    };
-    session.send_keys(&claude_cmd).await?;
-    info!(cmd = %claude_cmd, "claude launched in tmux session");
+    let model = std::env::var(ur_config::UR_WORKER_MODEL_ENV).ok();
+    let spawn_cmd = agent.spawn_command(model.as_deref());
+    session.send_keys(&spawn_cmd).await?;
+    info!(cmd = %spawn_cmd, agent = agent.name(), "agent launched in tmux session");
 
-    // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when Claude exits
+    // 3b. Spawn exit watcher that polls tmux pane and triggers shutdown when the agent exits
     {
         let server_addr = std::env::var(ur_config::UR_SERVER_ADDR_ENV)
             .unwrap_or_else(|_| "localhost:50051".into());
@@ -185,12 +204,12 @@ async fn run_daemon_only() -> Result<()> {
     Ok(())
 }
 
-/// State machine for tracking whether Claude has started and then exited in a design worker.
+/// State machine for tracking whether the agent has started and then exited in a design worker.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum ClaudeWatchState {
-    /// Claude hasn't started yet — the foreground process is still a shell.
+enum AgentWatchState {
+    /// The agent hasn't started yet — the foreground process is still a shell.
     Waiting,
-    /// Claude is running — a non-shell process is in the foreground.
+    /// The agent is running — a non-shell process is in the foreground.
     Running,
 }
 
@@ -202,24 +221,21 @@ fn is_shell_process(name: &str) -> bool {
 /// Advance the state machine given the current foreground process name.
 ///
 /// Returns `(next_state, should_stop)`. `should_stop` is true when the state
-/// transitions from `Running` back to a shell, indicating Claude has exited.
-fn advance_claude_watch_state(
-    state: ClaudeWatchState,
-    foreground: &str,
-) -> (ClaudeWatchState, bool) {
+/// transitions from `Running` back to a shell, indicating the agent has exited.
+fn advance_agent_watch_state(state: AgentWatchState, foreground: &str) -> (AgentWatchState, bool) {
     match state {
-        ClaudeWatchState::Waiting => {
+        AgentWatchState::Waiting => {
             if is_shell_process(foreground) {
-                (ClaudeWatchState::Waiting, false)
+                (AgentWatchState::Waiting, false)
             } else {
-                (ClaudeWatchState::Running, false)
+                (AgentWatchState::Running, false)
             }
         }
-        ClaudeWatchState::Running => {
+        AgentWatchState::Running => {
             if is_shell_process(foreground) {
-                (ClaudeWatchState::Running, true)
+                (AgentWatchState::Running, true)
             } else {
-                (ClaudeWatchState::Running, false)
+                (AgentWatchState::Running, false)
             }
         }
     }
@@ -227,11 +243,11 @@ fn advance_claude_watch_state(
 
 /// Check the foreground process for a design worker and advance the state machine.
 ///
-/// Returns `true` if Claude has exited and the container should stop.
-async fn check_design_worker_exit(session: &tmux::Session, state: &mut ClaudeWatchState) -> bool {
+/// Returns `true` if the agent has exited and the container should stop.
+async fn check_design_worker_exit(session: &tmux::Session, state: &mut AgentWatchState) -> bool {
     match session.pane_current_command().await {
         Ok(foreground) => {
-            let (next_state, stop) = advance_claude_watch_state(*state, &foreground);
+            let (next_state, stop) = advance_agent_watch_state(*state, &foreground);
             debug!(
                 foreground = %foreground,
                 state = ?state,
@@ -242,7 +258,7 @@ async fn check_design_worker_exit(session: &tmux::Session, state: &mut ClaudeWat
             if stop {
                 info!(
                     foreground = %foreground,
-                    "claude process exited in design worker, initiating shutdown"
+                    "agent process exited in design worker, initiating shutdown"
                 );
             }
             stop
@@ -254,18 +270,20 @@ async fn check_design_worker_exit(session: &tmux::Session, state: &mut ClaudeWat
     }
 }
 
-/// Poll the tmux agent session and initiate container shutdown when Claude Code exits.
+/// Poll the tmux agent session and initiate container shutdown when the agent exits.
 async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret: String) {
     let session = tmux::Session::agent();
     let interval = Duration::from_secs(EXIT_WATCHER_POLL_SECS);
-    let is_design_worker = std::env::var("UR_WORKER_CLAUDE").unwrap_or_default() == "design";
+    let is_design_worker = std::env::var(ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV)
+        .unwrap_or_default()
+        == "design";
 
     info!(
         is_design_worker,
         "exit watcher started, polling every {EXIT_WATCHER_POLL_SECS}s"
     );
 
-    let mut claude_watch_state = ClaudeWatchState::Waiting;
+    let mut agent_watch_state = AgentWatchState::Waiting;
 
     loop {
         tokio::time::sleep(interval).await;
@@ -274,7 +292,7 @@ async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret:
             Ok(true) => {
                 debug!("agent pane is alive");
                 if is_design_worker {
-                    check_design_worker_exit(&session, &mut claude_watch_state).await
+                    check_design_worker_exit(&session, &mut agent_watch_state).await
                 } else {
                     false
                 }
@@ -293,7 +311,7 @@ async fn run_exit_watcher(server_addr: String, worker_id: String, worker_secret:
             continue;
         }
 
-        // Pane is dead, claude exited (design), or check failed — send WorkerStop RPC
+        // Pane is dead, agent exited (design), or check failed — send WorkerStop RPC
         send_stop_and_wait(&server_addr, &worker_id, &worker_secret).await;
     }
 }
@@ -469,62 +487,62 @@ mod tests {
 
     #[test]
     fn test_waiting_stays_waiting_on_shell() {
-        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Waiting, "bash");
-        assert_eq!(state, ClaudeWatchState::Waiting);
+        let (state, stop) = advance_agent_watch_state(AgentWatchState::Waiting, "bash");
+        assert_eq!(state, AgentWatchState::Waiting);
         assert!(!stop);
     }
 
     #[test]
     fn test_waiting_transitions_to_running_on_non_shell() {
-        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Waiting, "claude");
-        assert_eq!(state, ClaudeWatchState::Running);
+        let (state, stop) = advance_agent_watch_state(AgentWatchState::Waiting, "vim");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
     }
 
     #[test]
     fn test_running_stays_running_on_non_shell() {
-        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, "claude");
-        assert_eq!(state, ClaudeWatchState::Running);
+        let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, "vim");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
     }
 
     #[test]
     fn test_running_triggers_stop_on_shell() {
-        let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, "bash");
-        assert_eq!(state, ClaudeWatchState::Running);
+        let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, "bash");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(stop);
     }
 
     #[test]
     fn test_full_waiting_running_stop_sequence() {
-        let state = ClaudeWatchState::Waiting;
+        let state = AgentWatchState::Waiting;
 
         // Shell processes keep us in Waiting
-        let (state, stop) = advance_claude_watch_state(state, "sh");
-        assert_eq!(state, ClaudeWatchState::Waiting);
+        let (state, stop) = advance_agent_watch_state(state, "sh");
+        assert_eq!(state, AgentWatchState::Waiting);
         assert!(!stop);
 
         // Non-shell transitions to Running
-        let (state, stop) = advance_claude_watch_state(state, "claude");
-        assert_eq!(state, ClaudeWatchState::Running);
+        let (state, stop) = advance_agent_watch_state(state, "vim");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
 
-        // Still running
-        let (state, stop) = advance_claude_watch_state(state, "node");
-        assert_eq!(state, ClaudeWatchState::Running);
+        // Still running — Claude Code's real foreground process is `node`, not `claude`
+        let (state, stop) = advance_agent_watch_state(state, "node");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(!stop);
 
-        // Claude exits, shell returns → stop
-        let (state, stop) = advance_claude_watch_state(state, "zsh");
-        assert_eq!(state, ClaudeWatchState::Running);
+        // Agent exits, shell returns → stop
+        let (state, stop) = advance_agent_watch_state(state, "zsh");
+        assert_eq!(state, AgentWatchState::Running);
         assert!(stop);
     }
 
     #[test]
     fn test_all_shell_names_recognized() {
         for shell in &["bash", "sh", "zsh", "dash", "fish"] {
-            let (state, stop) = advance_claude_watch_state(ClaudeWatchState::Running, shell);
-            assert_eq!(state, ClaudeWatchState::Running);
+            let (state, stop) = advance_agent_watch_state(AgentWatchState::Running, shell);
+            assert_eq!(state, AgentWatchState::Running);
             assert!(stop, "shell '{shell}' should trigger stop");
         }
     }

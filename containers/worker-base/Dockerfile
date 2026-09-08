@@ -27,15 +27,20 @@ COPY .tmux.conf /etc/tmux.conf
 # Create a non-root user (Claude Code refuses --dangerously-skip-permissions as root)
 RUN useradd -m -s /bin/bash worker
 
-# Install Claude Code CLI as worker user
-COPY vendor/claude/install.sh /tmp/install-claude.sh
-USER worker
-RUN bash /tmp/install-claude.sh
-USER root
-RUN rm /tmp/install-claude.sh
-
 # Bake in a clean shell profile. Debian's default ~/.profile modifies PATH
 # in ways that can conflict with our ENV PATH ordering in the Dockerfile.
 COPY worker.profile /home/worker/.profile
 COPY worker.bashrc /home/worker/.bashrc
 RUN chown worker:worker /home/worker/.profile /home/worker/.bashrc
+
+# Agent-agnostic skills and instructions, shared by every agent image built
+# on top of this one (see containers/agent-claude/). Agent-specific assets
+# (CLI install, app config) live in the agent layer instead.
+# Order matters: both COPYs land in the same directory, and the later one wins
+# a name collision. The repo's own skills go second so they override a
+# same-named vendored skill, not the other way round.
+COPY vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
+COPY potential-skills/ /home/worker/.agent-shared/potential-skills/
+COPY instructions/ /home/worker/.agent-shared/instructions/
+COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
+RUN chown -R worker:worker /home/worker/.agent-shared

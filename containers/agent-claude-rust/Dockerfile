@@ -1,4 +1,5 @@
-FROM ur-worker:latest
+ARG BASE_TAG=latest
+FROM ur-worker:${BASE_TAG}
 
 USER root
 

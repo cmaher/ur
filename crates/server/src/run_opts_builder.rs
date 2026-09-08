@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ur_config::{MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
+use ur_config::{AgentType, MountConfig, PortMapping, ResolvedTemplatePath, resolve_template_path};
 use ur_rpc::proto::builder_container::{
     EnvVar as ProtoEnvVar, LaunchWorkerRequest, PortMap as ProtoPortMap, Volume as ProtoVolume,
 };
@@ -70,59 +70,74 @@ impl RunOptsBuilder {
 
     /// Add the shared credentials volume mount so all containers share one OAuth session.
     ///
-    /// Claude Code reads/writes this file for token refresh, keeping all
-    /// containers in sync without per-launch credential injection.
-    /// (.claude.json is baked into the image -- only credentials need mounting.)
-    pub fn add_credentials(mut self, host_config_dir: &Path) -> Result<Self, String> {
+    /// The agent reads/writes this file for token refresh, keeping all containers in
+    /// sync without per-launch credential injection. No-op when `agent.auth()` is
+    /// `None` — a no-auth agent has no credentials file to mount.
+    /// (The app config, e.g. `.claude.json`, is baked into the image -- only
+    /// credentials need mounting.)
+    pub fn add_credentials(
+        mut self,
+        host_config_dir: &Path,
+        agent: AgentType,
+    ) -> Result<Self, String> {
+        let Some(auth) = agent.auth() else {
+            return Ok(self);
+        };
         let host_creds = host_config_dir
-            .join(ur_config::CLAUDE_DIR)
-            .join(ur_config::CLAUDE_CREDENTIALS_FILENAME);
+            .join(agent.name())
+            .join(auth.credentials_filename);
         ensure_file_exists(&host_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
         let worker_home = PathBuf::from(ur_config::WORKER_HOME);
         self.volumes.push((
             host_creds,
             worker_home
-                .join(".claude")
-                .join(ur_config::CLAUDE_CREDENTIALS_FILENAME),
+                .join(agent.home_subdir())
+                .join(auth.credentials_filename),
         ));
         Ok(self)
     }
 
-    /// Add project CLAUDE.md mount and env var based on project configuration.
+    /// Add project instruction-file (e.g. CLAUDE.md) mount and env var based on
+    /// project configuration.
     ///
-    /// - If `claude_md` is `None`, this is a no-op.
+    /// - If `instruction_md` is `None`, this is a no-op.
     /// - If the template resolves to a [`ResolvedTemplatePath::HostPath`], adds a read-only volume
-    ///   mount from the host path to `/var/ur/project-claude/CLAUDE.md` and sets
-    ///   `UR_PROJECT_CLAUDE=/var/ur/project-claude/CLAUDE.md`.
+    ///   mount from the host path to `/var/ur/project-instruction/{agent.instruction_filename()}`
+    ///   and sets `UR_PROJECT_INSTRUCTION` to the same path.
     /// - If the template resolves to a [`ResolvedTemplatePath::ProjectRelative`], adds no volume
-    ///   mount and sets `UR_PROJECT_CLAUDE=/workspace/<rel>`.
-    pub fn add_project_claude_md(
+    ///   mount and sets `UR_PROJECT_INSTRUCTION=/workspace/<rel>`.
+    pub fn add_project_instruction(
         mut self,
-        claude_md: &Option<String>,
+        instruction_md: &Option<String>,
         host_config_dir: &Path,
+        agent: AgentType,
     ) -> Result<Self, String> {
-        let Some(template) = claude_md.as_deref() else {
+        let Some(template) = instruction_md.as_deref() else {
             return Ok(self);
         };
 
         let resolved = resolve_template_path(template, host_config_dir)
-            .map_err(|e| format!("failed to resolve claude_md: {e}"))?;
+            .map_err(|e| format!("failed to resolve instruction_md: {e}"))?;
 
         match resolved {
             ResolvedTemplatePath::HostPath(host_path) => {
-                let container_path = PathBuf::from("/var/ur/project-claude/CLAUDE.md:ro");
+                let container_instruction_path = format!(
+                    "/var/ur/project-instruction/{}",
+                    agent.instruction_filename()
+                );
+                let container_path = PathBuf::from(format!("{container_instruction_path}:ro"));
                 self.volumes.push((host_path, container_path));
                 self.env_vars.push((
-                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
-                    "/var/ur/project-claude/CLAUDE.md".into(),
+                    ur_config::UR_PROJECT_INSTRUCTION_ENV.into(),
+                    container_instruction_path,
                 ));
             }
             ResolvedTemplatePath::ProjectRelative(rel_path) => {
-                let container_claude = PathBuf::from("/workspace").join(&rel_path);
+                let container_path = PathBuf::from("/workspace").join(&rel_path);
                 self.env_vars.push((
-                    ur_config::UR_PROJECT_CLAUDE_ENV.into(),
-                    container_claude.to_string_lossy().into_owned(),
+                    ur_config::UR_PROJECT_INSTRUCTION_ENV.into(),
+                    container_path.to_string_lossy().into_owned(),
                 ));
             }
         }
@@ -132,7 +147,8 @@ impl RunOptsBuilder {
 
     /// Add project memory directory mount.
     ///
-    /// - If `memory_dir` is `None`, this is a no-op.
+    /// - If `memory_dir` is `None`, or `agent.memory_subdir()` is `None` (the agent has
+    ///   no memory-dir concept), this is a no-op.
     /// - Otherwise, template-resolves via [`resolve_template_path`]. The result must be a
     ///   [`ResolvedTemplatePath::HostPath`]; a `ProjectRelative` result returns `Err` because
     ///   `%PROJECT%` is rejected for `memory_dir` at config validation time.
@@ -140,14 +156,19 @@ impl RunOptsBuilder {
     ///   non-root worker user can write to it (Docker would otherwise create the dir as root).
     ///   Errors from create/chown propagate as `Err(...)` — a missing or unwritable memory dir
     ///   would cause the mount to silently fail, so we surface the error early.
-    /// - Pushes a single volume mount: host path → `/home/worker/.claude/projects/-workspace/memory`.
-    /// - No env var is added; Claude Code discovers the dir by its cwd convention.
+    /// - Pushes a single volume mount: host path → `~/{agent.home_subdir()}/{agent.memory_subdir()}`
+    ///   (e.g. `/home/worker/.claude/projects/-workspace/memory` for Claude).
+    /// - No env var is added; the agent discovers the dir by its own convention.
     pub fn add_memory_dir(
         mut self,
         memory_dir: &Option<String>,
         host_config_dir: &Path,
+        agent: AgentType,
     ) -> Result<Self, String> {
         let Some(template) = memory_dir.as_deref() else {
+            return Ok(self);
+        };
+        let Some(memory_subdir) = agent.memory_subdir() else {
             return Ok(self);
         };
 
@@ -172,7 +193,9 @@ impl RunOptsBuilder {
         )
         .map_err(|e| format!("failed to chown memory_dir '{}': {e}", host_path.display()))?;
 
-        let container_path = PathBuf::from("/home/worker/.claude/projects/-workspace/memory");
+        let container_path = PathBuf::from(ur_config::WORKER_HOME)
+            .join(agent.home_subdir())
+            .join(memory_subdir);
         self.volumes.push((host_path, container_path));
 
         Ok(self)
@@ -367,19 +390,23 @@ impl RunOptsBuilder {
         self
     }
 
-    /// Mount each `(name, host_path)` pair at `/home/worker/.claude/potential-skills/<name>:ro`.
+    /// Mount each `(name, host_path)` pair at `/home/worker/.agent-shared/potential-skills/<name>:ro`.
     ///
     /// Each mount is a read-only directory bind mount. The existing `workerd init` step
-    /// iterates `UR_WORKER_SKILLS` and copies `~/.claude/potential-skills/<name>/` →
+    /// iterates `UR_WORKER_SKILLS` and copies `~/.agent-shared/potential-skills/<name>/` →
     /// `~/.claude/skills/<name>/`, so bind-mounting here causes the copy step to pick
     /// up the host skill transparently. No env vars are set by this method —
     /// `UR_WORKER_SKILLS` is set elsewhere.
     ///
+    /// `.agent-shared` is agent-agnostic content baked by the base image, so this
+    /// mount target needs no `AgentType` — it stays a literal for every agent.
+    ///
     /// Empty slice → no-op (no volumes added).
     pub fn add_extra_skills(mut self, mounts: &[(String, PathBuf)]) -> Self {
         for (name, host_path) in mounts {
-            let container_path =
-                PathBuf::from(format!("/home/worker/.claude/potential-skills/{name}:ro"));
+            let container_path = PathBuf::from(format!(
+                "/home/worker/.agent-shared/potential-skills/{name}:ro"
+            ));
             self.volumes.push((host_path.clone(), container_path));
         }
         self
@@ -544,7 +571,7 @@ mod tests {
     fn add_credentials_creates_mount() {
         let tmp = tempfile::tempdir().unwrap();
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_credentials(tmp.path())
+            .add_credentials(tmp.path(), AgentType::Claude)
             .unwrap()
             .build();
 
@@ -777,9 +804,9 @@ mod tests {
     }
 
     #[test]
-    fn add_project_claude_md_none_is_noop() {
+    fn add_project_instruction_none_is_noop() {
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_project_claude_md(&None, Path::new("/unused"))
+            .add_project_instruction(&None, Path::new("/unused"), AgentType::Claude)
             .unwrap()
             .build();
 
@@ -788,11 +815,12 @@ mod tests {
     }
 
     #[test]
-    fn add_project_claude_md_host_path_adds_mount_and_env() {
+    fn add_project_instruction_host_path_adds_mount_and_env() {
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_project_claude_md(
+            .add_project_instruction(
                 &Some("/opt/claude/ur/CLAUDE.md".into()),
                 Path::new("/unused"),
+                AgentType::Claude,
             )
             .unwrap()
             .build();
@@ -801,19 +829,23 @@ mod tests {
         assert_eq!(req.volumes[0].host_path, "/opt/claude/ur/CLAUDE.md");
         assert_eq!(
             req.volumes[0].container_path,
-            "/var/ur/project-claude/CLAUDE.md:ro"
+            "/var/ur/project-instruction/CLAUDE.md:ro"
         );
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
-        assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
+        assert_eq!(
+            req.env_vars[0].value,
+            "/var/ur/project-instruction/CLAUDE.md"
+        );
     }
 
     #[test]
-    fn add_project_claude_md_urconfig_adds_mount_and_env() {
+    fn add_project_instruction_urconfig_adds_mount_and_env() {
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_project_claude_md(
+            .add_project_instruction(
                 &Some("%URCONFIG%/projects/ur/CLAUDE.md".into()),
                 Path::new("/home/user/.ur"),
+                AgentType::Claude,
             )
             .unwrap()
             .build();
@@ -825,23 +857,30 @@ mod tests {
         );
         assert_eq!(
             req.volumes[0].container_path,
-            "/var/ur/project-claude/CLAUDE.md:ro"
+            "/var/ur/project-instruction/CLAUDE.md:ro"
         );
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
-        assert_eq!(req.env_vars[0].value, "/var/ur/project-claude/CLAUDE.md");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
+        assert_eq!(
+            req.env_vars[0].value,
+            "/var/ur/project-instruction/CLAUDE.md"
+        );
     }
 
     #[test]
-    fn add_project_claude_md_project_relative_no_mount() {
+    fn add_project_instruction_project_relative_no_mount() {
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_project_claude_md(&Some("%PROJECT%/CLAUDE.md".into()), Path::new("/unused"))
+            .add_project_instruction(
+                &Some("%PROJECT%/CLAUDE.md".into()),
+                Path::new("/unused"),
+                AgentType::Claude,
+            )
             .unwrap()
             .build();
 
         assert!(req.volumes.is_empty());
         assert_eq!(req.env_vars.len(), 1);
-        assert_eq!(req.env_vars[0].key, "UR_PROJECT_CLAUDE");
+        assert_eq!(req.env_vars[0].key, ur_config::UR_PROJECT_INSTRUCTION_ENV);
         assert_eq!(req.env_vars[0].value, "/workspace/CLAUDE.md");
     }
 
@@ -966,7 +1005,7 @@ mod tests {
         assert_eq!(req.volumes[0].host_path, "/host/skills/my-skill");
         assert_eq!(
             req.volumes[0].container_path,
-            "/home/worker/.claude/potential-skills/my-skill:ro"
+            "/home/worker/.agent-shared/potential-skills/my-skill:ro"
         );
         assert!(req.env_vars.is_empty());
     }
@@ -986,17 +1025,17 @@ mod tests {
         assert_eq!(req.volumes[0].host_path, "/host/skills/alpha");
         assert_eq!(
             req.volumes[0].container_path,
-            "/home/worker/.claude/potential-skills/alpha:ro"
+            "/home/worker/.agent-shared/potential-skills/alpha:ro"
         );
         assert_eq!(req.volumes[1].host_path, "/host/skills/beta");
         assert_eq!(
             req.volumes[1].container_path,
-            "/home/worker/.claude/potential-skills/beta:ro"
+            "/home/worker/.agent-shared/potential-skills/beta:ro"
         );
         assert_eq!(req.volumes[2].host_path, "/host/skills/gamma");
         assert_eq!(
             req.volumes[2].container_path,
-            "/home/worker/.claude/potential-skills/gamma:ro"
+            "/home/worker/.agent-shared/potential-skills/gamma:ro"
         );
         assert!(req.env_vars.is_empty());
     }
@@ -1005,7 +1044,7 @@ mod tests {
     fn add_memory_dir_none_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_memory_dir(&None, tmp.path())
+            .add_memory_dir(&None, tmp.path(), AgentType::Claude)
             .unwrap()
             .build();
 
@@ -1029,7 +1068,7 @@ mod tests {
         let memory_dir = Some(memory_host_path.display().to_string());
 
         let req = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_memory_dir(&memory_dir, host_config_dir)
+            .add_memory_dir(&memory_dir, host_config_dir, AgentType::Claude)
             .unwrap()
             .build();
 
@@ -1213,8 +1252,11 @@ mod tests {
         // %PROJECT%/... resolves to ProjectRelative — should be rejected defensively.
         let memory_dir = Some("%PROJECT%/memory".to_string());
 
-        let result = RunOptsBuilder::new("img".into(), "name".into(), "net".into())
-            .add_memory_dir(&memory_dir, tmp.path());
+        let result = RunOptsBuilder::new("img".into(), "name".into(), "net".into()).add_memory_dir(
+            &memory_dir,
+            tmp.path(),
+            AgentType::Claude,
+        );
 
         assert!(result.is_err(), "ProjectRelative should return an error");
         let err = result.unwrap_err();

@@ -253,6 +253,7 @@ async fn restart_reclaims_worker_with_live_container() {
         container_id: "live-container-abc".to_owned(),
         worker_secret: secret.to_owned(),
         strategy: "code".to_owned(),
+        agent_type: "claude".to_owned(),
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_path.display().to_string()),
@@ -294,6 +295,9 @@ async fn restart_reclaims_worker_with_live_container() {
         .unwrap()
         .unwrap();
     assert_eq!(post.container_status, "running");
+    // agent_type survives the restart: it is read back through reconciliation,
+    // not just through a fresh handle on the same row.
+    assert_eq!(post.agent_type, "claude");
 
     // Verify worker_slot link stays (slot is still in use by the reclaimed worker).
     let ws_post = worker_repo2.get_worker_slot(worker_id_str).await.unwrap();
@@ -370,6 +374,7 @@ async fn restart_cleans_up_deleted_slot_and_marks_worker_stopped() {
         container_id: "dead-container-xyz".to_owned(),
         worker_secret: "secret-deleted".to_owned(),
         strategy: "code".to_owned(),
+        agent_type: "claude".to_owned(),
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: Some(slot_dir.display().to_string()),
@@ -467,6 +472,7 @@ async fn insert_worker_with_slot(
         container_id: container_id.to_owned(),
         worker_secret: secret.to_owned(),
         strategy: "code".to_owned(),
+        agent_type: "claude".to_owned(),
         container_status: "running".to_owned(),
         agent_status: "starting".to_owned(),
         workspace_path: None,

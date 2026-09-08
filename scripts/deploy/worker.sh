@@ -23,8 +23,8 @@ else
     exit 1
 fi
 
-WORKER_CONTEXT=containers/claude-worker
-RUST_WORKER_CONTEXT=containers/claude-worker-rust
+WORKER_CONTEXT=containers/agent-claude
+RUST_WORKER_CONTEXT=containers/agent-claude-rust
 
 $RUNTIME build -t ur-worker:latest -f "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
 $RUNTIME build -t ur-worker-rust:latest -f "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"

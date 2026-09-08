@@ -5,7 +5,7 @@ set -euo pipefail
 
 cargo build --release -p ur-ping -p workertools -p workerd
 
-DEST=containers/claude-worker/bin
+DEST=containers/agent-claude/bin
 mkdir -p "$DEST"
 cp target/release/ur-ping "$DEST/ur-ping"
 cp target/release/workertools "$DEST/workertools"

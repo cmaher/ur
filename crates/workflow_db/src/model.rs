@@ -102,6 +102,7 @@ pub struct Worker {
     pub container_id: String,
     pub worker_secret: String,
     pub strategy: String,
+    pub agent_type: String,
     pub container_status: String,
     pub agent_status: String,
     pub workspace_path: Option<String>,

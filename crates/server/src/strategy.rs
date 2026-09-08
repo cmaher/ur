@@ -5,7 +5,7 @@ use crate::RepoPoolManager;
 /// Worker strategy enum governing mode-specific behavior: skill selection,
 /// slot acquisition, and slot release. Three variants exist: `Code`
 /// (exclusive numbered pool slots), `Design` (shared named slot), and
-/// `Manual` (exclusive numbered pool slots, no branch checkout, fable model,
+/// `Manual` (exclusive numbered pool slots, no branch checkout, opus model,
 /// all skills).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerStrategy {
@@ -15,6 +15,10 @@ pub enum WorkerStrategy {
 }
 
 impl WorkerStrategy {
+    /// All strategy variants, so callers can seed per-strategy maps or assert
+    /// per-strategy invariants without re-listing the variants at each site.
+    pub const ALL: &'static [WorkerStrategy] = &[Self::Code, Self::Design, Self::Manual];
+
     /// Parse a strategy name into a variant.
     /// Valid values: `"code"`, `"design"`, `"manual"`.
     pub fn from_name(name: &str) -> Result<Self, String> {
@@ -81,21 +85,12 @@ impl WorkerStrategy {
         }
     }
 
-    /// Returns the CLAUDE.md filename (without extension) for this strategy.
-    /// Used to set `UR_WORKER_CLAUDE` env var so workerd can copy the right
-    /// file from `potential-claudes/` to `~/.claude/CLAUDE.md`.
-    pub fn claude_md_name(&self) -> &'static str {
+    /// Returns the instruction-strategy name (without extension) for this
+    /// strategy. Used to set `UR_WORKER_INSTRUCTION_STRATEGY` env var so
+    /// workerd can copy the right file from `.agent-shared/instructions/` to
+    /// `~/{agent.home_subdir()}/{agent.instruction_filename()}` (e.g. `~/.claude/CLAUDE.md`).
+    pub fn instruction_strategy_name(&self) -> &'static str {
         self.name()
-    }
-
-    /// Returns the default Claude Code model name for this strategy.
-    ///
-    /// Values are passed through verbatim to Claude Code's `--model` flag.
-    pub fn default_model(&self) -> &'static str {
-        match self {
-            Self::Code => "sonnet",
-            Self::Design | Self::Manual => "opus",
-        }
     }
 
     /// Returns the default skill list for this strategy.
@@ -221,11 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn manual_model_default() {
-        assert_eq!(WorkerStrategy::Manual.default_model(), "opus");
-    }
-
-    #[test]
     fn manual_name_roundtrip() {
         assert_eq!(WorkerStrategy::Manual.name(), "manual");
         assert_eq!(
@@ -235,25 +225,15 @@ mod tests {
     }
 
     #[test]
-    fn manual_claude_md_name() {
-        assert_eq!(WorkerStrategy::Manual.claude_md_name(), "manual");
+    fn manual_instruction_strategy_name() {
+        assert_eq!(WorkerStrategy::Manual.instruction_strategy_name(), "manual");
     }
 
     #[test]
-    fn claude_md_name_matches_strategy_name() {
-        assert_eq!(WorkerStrategy::Code.claude_md_name(), "code");
-        assert_eq!(WorkerStrategy::Design.claude_md_name(), "design");
-        assert_eq!(WorkerStrategy::Manual.claude_md_name(), "manual");
-    }
-
-    #[test]
-    fn default_model_code_is_sonnet() {
-        assert_eq!(WorkerStrategy::Code.default_model(), "sonnet");
-    }
-
-    #[test]
-    fn default_model_design() {
-        assert_eq!(WorkerStrategy::Design.default_model(), "opus");
+    fn instruction_strategy_name_matches_strategy_name() {
+        assert_eq!(WorkerStrategy::Code.instruction_strategy_name(), "code");
+        assert_eq!(WorkerStrategy::Design.instruction_strategy_name(), "design");
+        assert_eq!(WorkerStrategy::Manual.instruction_strategy_name(), "manual");
     }
 
     #[test]

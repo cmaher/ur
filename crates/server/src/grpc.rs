@@ -29,6 +29,9 @@ pub enum CoreError {
     #[error("invalid mode: {reason}")]
     InvalidMode { reason: String },
 
+    #[error("invalid agent: {reason}")]
+    InvalidAgent { reason: String },
+
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -71,6 +74,13 @@ impl From<CoreError> for Status {
     fn from(err: CoreError) -> Self {
         match &err {
             CoreError::InvalidMode { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+            CoreError::InvalidAgent { .. } => error::status_with_info(
                 Code::InvalidArgument,
                 err.to_string(),
                 DOMAIN_CORE,
@@ -169,7 +179,25 @@ struct ResolvedLaunch {
     resolved_skills: Vec<String>,
     strategy: crate::WorkerStrategy,
     model: String,
+    agent: ur_config::AgentType,
     generated_process_id: Option<String>,
+}
+
+/// Resolve `WorkerLaunchRequest.agent_type` into an explicit agent override.
+///
+/// Empty means "no override" — the mode's own `agent` field (or claude) decides,
+/// which is what every in-tree client sends today since launch has no `--agent`
+/// flag yet. A non-empty unknown name is a client error, not a silent fallback
+/// to claude: launching the wrong agent is worse than a rejected request.
+fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType>, CoreError> {
+    if agent_type.is_empty() {
+        return Ok(None);
+    }
+    ur_config::AgentType::parse(agent_type)
+        .map(Some)
+        .map_err(|e| CoreError::InvalidAgent {
+            reason: e.to_string(),
+        })
 }
 
 /// Shared worker launch and stop logic used by both the host-facing
@@ -412,9 +440,15 @@ impl LaunchManager {
         &self,
         req: &WorkerLaunchRequest,
     ) -> Result<ResolvedLaunch, Status> {
-        let (strategy, resolved_skills, model) = self
+        let requested_agent = parse_requested_agent(&req.agent_type)?;
+        let crate::ResolvedMode {
+            strategy,
+            skills: resolved_skills,
+            model,
+            agent,
+        } = self
             .worker_manager
-            .resolve_mode(&req.mode)
+            .resolve_mode(&req.mode, requested_agent)
             .map_err(|e| CoreError::InvalidMode { reason: e })?;
 
         let effective_project_key = self.resolve_effective_project_key(req);
@@ -501,6 +535,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             generated_process_id,
         })
     }
@@ -521,7 +556,7 @@ impl LaunchManager {
     ) {
         match self.project_registry.get(project_key) {
             Some(proj) if !project_key.is_empty() => (
-                proj.claude_md.clone(),
+                proj.instruction_md.clone(),
                 proj.container.mounts.clone(),
                 proj.container.ports.clone(),
                 proj.container.image.clone(),
@@ -555,6 +590,7 @@ impl LaunchManager {
         resolved_skills: Vec<String>,
         strategy: crate::WorkerStrategy,
         model: String,
+        agent: ur_config::AgentType,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
     ) -> crate::WorkerConfig {
@@ -566,11 +602,18 @@ impl LaunchManager {
         let (skills, extra_skill_mounts) = self
             .worker_manager
             .merge_global_skills(strategy, mode_skills);
-        let (claude_md, mounts, ports, resolved_image, hostexec_scripts, memory_dir, brain_dir) =
-            self.extract_project_launch_fields(&project_key);
+        let (
+            instruction_md,
+            mounts,
+            ports,
+            resolved_image,
+            hostexec_scripts,
+            memory_dir,
+            brain_dir,
+        ) = self.extract_project_launch_fields(&project_key);
         let image_id = if req.image_id.is_empty() {
             if resolved_image.is_empty() {
-                "ur-worker-rust:latest".to_owned()
+                ur_config::DEFAULT_FALLBACK_IMAGE.to_owned()
             } else {
                 resolved_image
             }
@@ -596,10 +639,11 @@ impl LaunchManager {
             workspace_dir,
             proxy_hostname: self.proxy_hostname.clone(),
             project_key,
+            agent_type: agent.name().to_owned(),
             strategy,
             skills,
             model,
-            claude_md,
+            instruction_md,
             mounts,
             ports,
             slot_id,
@@ -625,6 +669,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
@@ -662,6 +707,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            agent,
             workspace_dir,
             context_mounts,
         );
@@ -857,6 +903,7 @@ impl CoreService for CoreServiceHandler {
                 workflow_status,
                 workflow_stalled,
                 workflow_stall_reason,
+                agent_type: s.agent_type,
             });
         }
         Ok(Response::new(WorkerListResponse { workers }))
@@ -1710,6 +1757,38 @@ mod tests {
         ] {
             assert!(local_launch_rejection_reason(strategy, mode, "").is_some());
         }
+    }
+
+    // ── agent_type on the launch request ───────────────────────────────
+
+    /// Empty `agent_type` — what every in-tree client sends — means "no
+    /// override", so mode-based resolution decides.
+    #[test]
+    fn empty_agent_type_is_no_override() {
+        assert_eq!(parse_requested_agent("").unwrap(), None);
+    }
+
+    #[test]
+    fn known_agent_type_parses_to_an_override() {
+        assert_eq!(
+            parse_requested_agent(ur_rpc::agent::CLAUDE).unwrap(),
+            Some(ur_config::AgentType::Claude)
+        );
+    }
+
+    /// An unknown agent name is rejected as InvalidArgument naming the offending
+    /// value, rather than silently falling back to claude.
+    #[test]
+    fn unknown_agent_type_maps_to_invalid_argument() {
+        let err = parse_requested_agent("bogus-agent").expect_err("should reject");
+        assert!(matches!(err, CoreError::InvalidAgent { .. }), "{err:?}");
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(
+            status.message().contains("bogus-agent"),
+            "{}",
+            status.message()
+        );
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────

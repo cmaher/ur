@@ -4,49 +4,51 @@ How skills get baked into the container image and selectively activated at runti
 
 ## Skill Sources
 
-Two directories in the container build context supply skills:
+Two directories in the **base** container build context supply skills:
 
-- `containers/claude-worker/vendor/superpowers/skills/` — upstream/third-party skills
-- `containers/claude-worker/all-skills/` — project-specific skills and overrides
+- `containers/worker-base/vendor/superpowers/skills/` — upstream/third-party skills
+- `containers/worker-base/potential-skills/` — project-specific skills and overrides
 
-Both are merged into a single `potential-skills/` pool during the Docker build. **all-skills/ copies second, so project-specific versions override vendor skills with the same name.**
+Both are merged into a single `potential-skills/` pool during the Docker build. **`potential-skills/` copies second, so project-specific versions override vendor skills with the same name.**
+
+These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not the Claude-specific layer (`ur-worker:latest`) — any future agent image built on the same base inherits them for free.
 
 ## Build Time (Dockerfile)
 
 ```
-COPY vendor/superpowers/skills/ /home/worker/.claude/potential-skills/
-COPY all-skills/               /home/worker/.claude/potential-skills/
-RUN mkdir -p /home/worker/.claude/skills
+COPY vendor/superpowers/skills/ /home/worker/.agent-shared/potential-skills/
+COPY potential-skills/          /home/worker/.agent-shared/potential-skills/
 ```
 
-All skills land in `~/.claude/potential-skills/`. The `~/.claude/skills/` directory starts empty — skills are not active until explicitly selected at runtime.
+All skills land in `~/.agent-shared/potential-skills/`. The agent's own skill directory (e.g. `~/.claude/skills/` for Claude) starts empty — skills are not active until explicitly selected at runtime.
 
 ## Mode Resolution (ur-server)
 
-When a process launches, the server resolves which skills and model to use.
+When a process launches, the server resolves which skills, model, and agent to use.
 
 ```
-WorkerLaunchRequest { mode, skills }
+WorkerLaunchRequest { mode, skills, agent_type }
     │
     ▼
-WorkerManager::resolve_mode()                  [crates/server/src/worker.rs]
-    │   Returns (WorkerStrategy, skills, model):
+WorkerManager::resolve_mode(mode, requested_agent)     [crates/server/src/worker.rs]
+    │   Returns ResolvedMode { strategy, skills, model, agent }:
     │     1. Mode name → WorkerModesConfig lookup (default: "code")
     │     2. Strategy from built-in or custom mode's `base` field
     │     3. Skills: explicit `skills` param > mode's skill list > code defaults
-    │     4. Model: mode's `model` field (or base strategy's effective default —
-│        `[worker_models]` override, else `default_model()`)
+    │     4. Model: mode's `model` field, else the three-level chain below
+    │     5. Agent: explicit `requested_agent` param > mode's `agent` field > claude
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
-UR_WORKER_MODEL env var set on container        (Claude Code model name, e.g. "sonnet", "opus")
+UR_WORKER_MODEL env var set on container        (model name, e.g. "sonnet", "opus")
+UR_AGENT_TYPE env var set on container          (e.g. "claude")
 ```
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 
-Default skill lists and models for each mode are defined in `crates/server/src/strategy.rs` (`WorkerStrategy::skills()`, `common_skills()`, and `default_model()`). See that file for the current lists.
+Default skill lists are defined in `crates/server/src/strategy.rs` (`WorkerStrategy::skills()`, `common_skills()`). Default models are defined per agent in `crates/ur_config/src/agent.rs` (`AgentType::default_model()`). See those files for the current lists.
 
-| Mode | Default Model |
+| Mode | Default Model (claude) |
 |------|---------------|
 | code | sonnet |
 | design | opus |
@@ -62,9 +64,10 @@ skills = ["tickets", "custom-skill"]
 base = "design"
 skills = ["a", "b", "c"]
 model = "my-custom-model"    # overrides the base strategy's default
+agent = "claude"             # optional; defaults to "claude" when omitted
 ```
 
-Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved. Each mode may optionally specify a `model` field to override the base strategy's default model.
+Config-defined modes merge with defaults: defined names replace their default counterpart, undefined defaults are preserved. Each mode may optionally specify a `model` field to override the base strategy's default model, and an `agent` field to override which agent runs it (an unrecognized `agent` value is a config error naming the offending mode).
 
 ### `[worker_models]` Override (strategy-level default)
 
@@ -75,15 +78,15 @@ design = "sonnet"
 manual = "sonnet"
 ```
 
-`[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model` — including the built-in `code`/`design` modes themselves. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key. Keys are optional; an omitted key falls back to `WorkerStrategy::default_model()` for that strategy.
+`[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model` — including the built-in `code`/`design` modes themselves. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key. Keys are optional; an omitted key falls back to `agent.default_model(strategy)` for that strategy. This section stays flat and agent-independent — it is not keyed by agent, only by strategy.
 
-Resolution precedence (highest wins):
+### Model Resolution Precedence (highest wins)
 
 1. A custom mode's explicit `worker_modes.<name>.model`
 2. The `[worker_models]` override for that mode's base strategy
-3. `WorkerStrategy::default_model()` ("sonnet" for code, "opus" for design/manual)
+3. `agent.default_model(strategy)` — the agent's own built-in table ("sonnet" for code, "opus" for design/manual, for Claude)
 
-So a custom mode's explicit `model` always wins over `[worker_models]`, and `[worker_models]` always wins over the hardcoded default.
+So a custom mode's explicit `model` always wins over `[worker_models]`, and `[worker_models]` always wins over the agent's hardcoded default. The resolved value reaches the container as `UR_WORKER_MODEL` and is turned into a `--model` flag by `agent.spawn_command(model)` — **it is not injected into `settings.json`**, because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops unrecognized keys.
 
 ## Container Startup (entrypoint.sh → workerd init)
 
@@ -91,63 +94,70 @@ So a custom mode's explicit `model` always wins over `[worker_models]`, and `[wo
 entrypoint.sh
     │
     ▼
-workerd init                                     [crates/workerd/src/init_skills.rs]
+workerd init                          [crates/workerd/src/init/{skills,instructions,settings}.rs]
+    │   let agent = AgentType::from_env();   // reads UR_AGENT_TYPE, defaults to claude
     │
-    ├─ InitSkillsManager::init_skills()
-    │     1. Wipe ~/.claude/skills/ (remove + recreate)
+    ├─ InitSkillsManager::run()            [init/skills.rs]
+    │     1. Wipe ~/{agent.home_subdir()}/{agent.skill_subdir()}/ (remove + recreate)
     │     2. Read UR_WORKER_SKILLS env var
     │     3. For each comma-separated skill name:
-    │        - src: ~/.claude/potential-skills/<name>/
-    │        - dst: ~/.claude/skills/<name>/
+    │        - src: ~/.agent-shared/potential-skills/<name>/
+    │        - dst: ~/{agent.home_subdir()}/{agent.skill_subdir()}/<name>/
     │        - Recursive directory copy (preserves subdirs)
     │        - Missing skills log a warning, don't fail
     │
-    ├─ InitSkillsManager::init_claude_md()
-    │     (compose strategy CLAUDE.md + shared fragments)
+    ├─ InitInstructionsManager::run()      [init/instructions.rs]
+    │     (compose strategy instruction file + shared fragments — see below)
     │
-    ├─ InitSkillsManager::init_settings_json()
-    │     1. Read ~/.claude/potential-settings.json (baked in at build time)
-    │     2. Read UR_WORKER_MODEL env var
-    │     3. If non-empty: merge "model": "<value>" into JSON object
-    │     4. If empty/missing: write base file unchanged (no model key)
-    │     5. Write result to ~/.claude/settings.json
+    ├─ InitSettingsManager::run()          [init/settings.rs]
+    │     Gated on agent.settings_filename().is_some().
+    │     1. Read ~/{agent.home_subdir()}/potential-settings.json (baked in at build time)
+    │     2. Copy it VERBATIM to ~/{agent.home_subdir()}/{agent.settings_filename()}
+    │        — no model merge. The model reaches the agent only via the
+    │        `--model` launch flag (agent.spawn_command()), never settings.json.
     │
     ▼
-~/.claude/skills/ now contains only the requested skills
-~/.claude/settings.json has the resolved model (if any)
+~/.claude/skills/ now contains only the requested skills (Claude values shown)
+~/.claude/settings.json is a verbatim copy of the baked-in file
     │
     ▼
 Claude Code reads ~/.claude/skills/ and ~/.claude/settings.json at session start
 ```
 
-## Per-Strategy CLAUDE.md Delivery
+`crates/workerd/src/init/mod.rs` holds the shared `copy_dir_recursive`/`collect_md_files` helpers used by the skills and instructions managers. Source paths under `.agent-shared/` are plain literals (agent-agnostic, baked by the base image); destinations are agent-derived via `AgentType`.
 
-Some capabilities (e.g., ticket management) are delivered as CLAUDE.md content rather than skills. This avoids the skill loading overhead and puts instructions directly in the worker's system context.
+## Per-Strategy Instruction File Delivery
+
+Some capabilities (e.g., ticket management) are delivered as instruction-file content (e.g. `CLAUDE.md`) rather than skills. This avoids the skill loading overhead and puts instructions directly in the worker's system context.
 
 ### Build Time
 
 ```
-COPY all-claudes/   /home/worker/.claude/potential-claudes/
-COPY shared-claudes/ /home/worker/.claude/shared-claudes/
+COPY instructions/        /home/worker/.agent-shared/instructions/
+COPY shared-instructions/ /home/worker/.agent-shared/shared-instructions/
 ```
 
-- `all-claudes/` contains one `{strategy}.md` file per strategy (e.g., `code.md`, `design.md`)
-- `shared-claudes/` contains `.md` fragments included in all strategies (e.g., `tickets.md`)
+- `instructions/` contains one `{strategy}.md` file per strategy (e.g., `code.md`, `design.md`, `manual.md`) — the layout is flat; agent-specific naming comes from `agent.instruction_filename()` at write time, not from the source filenames
+- `shared-instructions/` contains `.md` fragments included in all strategies (e.g., `tickets.md`)
 
 ### Runtime (workerd init)
 
 ```
-InitSkillsManager::init_claude_md()
-    1. Read UR_WORKER_CLAUDE env var (set by server from WorkerStrategy)
-    2. Read ~/.claude/potential-claudes/{value}.md as strategy content
-    3. Append all ~/.claude/shared-claudes/*.md files (sorted alphabetically)
-    4. Write composed result to ~/.claude/CLAUDE.md
-    5. Missing strategy file → warning (non-fatal)
+InitInstructionsManager::run()
+    1. Read UR_WORKER_INSTRUCTION_STRATEGY env var (set by server from WorkerStrategy)
+    2. Read ~/.agent-shared/instructions/{value}.md as strategy content
+    3. Append all ~/.agent-shared/shared-instructions/*.md files (sorted alphabetically)
+    4. If UR_PROJECT_INSTRUCTION names a readable file, resolve %WORKSPACE% in it,
+       write it to ~/{agent.home_subdir()}/PROJECT_{agent.instruction_filename()},
+       and append an `@<path>` reference to the composed output
+    5. Write composed result to ~/{agent.home_subdir()}/{agent.instruction_filename()}
+       (e.g. ~/.claude/CLAUDE.md for Claude)
+    6. Missing strategy file → warning (non-fatal); empty/unset env var → skip entirely
 ```
 
 ## Host Skills (Runtime Injection via ur.toml)
 
-In addition to skills baked into the container image at build time, operators can inject skills from the host machine at runtime via the `[skills]` section of `ur.toml`. These host skills are bind-mounted read-only into the container's `potential-skills/` directory and become available for selection alongside baked-in skills.
+In addition to skills baked into the container image at build time, operators can inject skills from the host machine at runtime via the `[skills]` section of `ur.toml`. These host skills are bind-mounted read-only into the container's `.agent-shared/potential-skills/` directory and become available for selection alongside baked-in skills.
 
 ### Schema
 
@@ -195,14 +205,14 @@ Keys in mode-specific tables shadow same-named keys in `common`. The merged map 
 Each host skill directory is mounted into the container at:
 
 ```
-/home/worker/.claude/potential-skills/<name>  (read-only)
+/home/worker/.agent-shared/potential-skills/<name>  (read-only)
 ```
 
-This is the same directory tree where baked-in skills live, so `workerd init` treats host skills and image skills identically when copying to `~/.claude/skills/` at startup.
+`.agent-shared` is agent-agnostic baked content, so this mount target needs no `AgentType` parameterization — it is the same literal for every agent. This is the same directory tree where baked-in skills live, so `workerd init` treats host skills and image skills identically when copying to `~/{agent.home_subdir()}/{agent.skill_subdir()}/` at startup.
 
 ### Override-of-Baked Semantics
 
-Because host skills are mounted directly into `potential-skills/`, a host skill with the same name as a baked-in skill **shadows** the baked version. The bind-mount is applied after the image layer, so the host path wins. This allows operators to patch or replace a shipped skill without rebuilding the image.
+Because host skills are mounted directly into `.agent-shared/potential-skills/`, a host skill with the same name as a baked-in skill **shadows** the baked version. The bind-mount is applied after the image layer, so the host path wins. This allows operators to patch or replace a shipped skill without rebuilding the image.
 
 ### Server-Container Visibility Caveat
 
@@ -214,15 +224,18 @@ Prefer `%URCONFIG%/...` paths stored under `~/.ur/` (or wherever `$UR_CONFIG` po
 
 | File | Role |
 |------|------|
-| `containers/claude-worker/Dockerfile` | Bakes skill sources, strategy CLAUDEs, and shared CLAUDEs into image |
-| `containers/claude-worker/all-skills/` | Project-specific skills (override vendor) |
-| `containers/claude-worker/all-claudes/` | Per-strategy CLAUDE.md files |
-| `containers/claude-worker/shared-claudes/` | CLAUDE.md fragments shared across all strategies |
-| `containers/claude-worker/vendor/superpowers/skills/` | Upstream/third-party skills |
-| `containers/claude-worker/entrypoint.sh` | Calls `workerd init` at container start |
-| `crates/workerd/src/init_skills.rs` | Copies skills, composes strategy CLAUDE.md, writes settings.json with model |
-| `crates/server/src/strategy.rs` | Default skill lists and models per mode (`WorkerStrategy::skills()`, `common_skills()`, `default_model()`) |
-| `crates/server/src/worker.rs` | Mode resolution, `[worker_models]` parsing (`RawWorkerModels`, `effective_default_model()`), injects UR_WORKER_SKILLS, UR_WORKER_CLAUDE, and UR_WORKER_MODEL env vars |
+| `containers/worker-base/Dockerfile` | Bakes skill sources and instruction files into `.agent-shared/` in the base image |
+| `containers/worker-base/potential-skills/` | Project-specific skills (override vendor) |
+| `containers/worker-base/instructions/` | Per-strategy instruction files (`code.md`, `design.md`, `manual.md`) |
+| `containers/worker-base/shared-instructions/` | Instruction-file fragments shared across all strategies |
+| `containers/worker-base/vendor/superpowers/skills/` | Upstream/third-party skills |
+| `containers/agent-claude/entrypoint.sh` | Calls `workerd init` at container start |
+| `crates/workerd/src/init/skills.rs` | Copies skills into the agent's own skill directory |
+| `crates/workerd/src/init/instructions.rs` | Composes the strategy instruction file + shared fragments + project reference |
+| `crates/workerd/src/init/settings.rs` | Verbatim-copies the baked settings file (no model merge) |
+| `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth` — per-agent home subdir, skill subdir, instruction filename, default models |
+| `crates/server/src/strategy.rs` | Default skill lists per mode (`WorkerStrategy::skills()`, `common_skills()`) |
+| `crates/server/src/worker.rs` | Mode resolution, `[worker_models]` parsing (`RawWorkerModels`, `effective_default_model()`), injects UR_WORKER_SKILLS, UR_WORKER_INSTRUCTION_STRATEGY, UR_WORKER_MODEL, and UR_AGENT_TYPE env vars |
 
 ## Skill Hook Integration
 

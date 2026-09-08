@@ -42,8 +42,10 @@ message WorkerLaunchRequest {
   uint32 cpus = 3;
   string memory = 4;
   string workspace_dir = 5;
-  // Claude Code credentials JSON blob, read from the host keychain by the CLI.
-  string claude_credentials = 6;
+  // Formerly a credentials JSON blob field, dead on the wire (credentials
+  // travel by bind mount, not RPC). Reserved so an old client's credential
+  // string can never be silently decoded as an agent name.
+  reserved 6;
   // Skills mode to use for the worker.
   string mode = 7;
   // Skills to install in the worker container.
@@ -54,6 +56,8 @@ message WorkerLaunchRequest {
   repeated string context_repos = 10;
   // Whether the server should auto-dispatch commands to the worker after launch.
   bool dispatch = 11;
+  // Which agent should run the worker. Empty defaults to claude server-side.
+  string agent_type = 12;
 }
 
 message WorkerLaunchResponse {
@@ -124,6 +128,8 @@ message WorkerSummary {
   string workflow_status = 14;
   bool workflow_stalled = 15;
   string workflow_stall_reason = 16;
+  // Which agent is running this worker (e.g. "claude").
+  string agent_type = 17;
 }
 
 message WorkflowStepCompleteRequest {

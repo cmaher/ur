@@ -412,6 +412,7 @@ mod tests {
             workflow_status: String::new(),
             workflow_stalled: false,
             workflow_stall_reason: String::new(),
+            agent_type: ur_rpc::agent::CLAUDE.to_owned(),
         }
     }
 

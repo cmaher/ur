@@ -63,7 +63,7 @@ Configure projects in `~/.ur/ur.toml` — each `[projects.<key>]` entry specifie
 
 - **`container.image`** — Container image for workers; optional, defaults to `"ur-worker"` (e.g. `"ur-worker-rust"` for Rust projects)
 - **`container.mounts`** — Additional volume mounts for the container
-- **`claude_md`** — Template path to project-level CLAUDE.md file (e.g. `"%PROJECT%/CLAUDE.md"`)
+- **`instruction_md`** — Template path to project-level instruction file, e.g. CLAUDE.md (`"%PROJECT%/CLAUDE.md"`); the old key `claude_md` is still accepted with a deprecation warning
 
 Template paths support `%PROJECT%/...` (resolved relative to the project repo) and `%URCONFIG%/...` (resolved relative to `~/.ur/`).
 

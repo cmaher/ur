@@ -14,7 +14,7 @@ esac
 echo "Cross-compiling worker binaries for $TARGET"
 cargo zigbuild --release --target "$TARGET" -p ur-ping -p workertools -p workerd
 
-DEST=containers/claude-worker/bin
+DEST=containers/agent-claude/bin
 mkdir -p "$DEST"
 cp "target/$TARGET/release/ur-ping" "$DEST/ur-ping"
 cp "target/$TARGET/release/workertools" "$DEST/workertools"

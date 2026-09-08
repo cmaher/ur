@@ -927,12 +927,14 @@ async fn dispatch_ticket(
             cpus: 2,
             memory: "8G".into(),
             workspace_dir: String::new(),
-            claude_credentials: String::new(),
             mode: String::new(),
             skills: Vec::new(),
             project_key: project_key.to_owned(),
             context_repos: vec![],
             dispatch: false,
+            // No --agent flag on launch yet (ur-vui34 decision 6) — empty
+            // defaults to claude server-side.
+            agent_type: String::new(),
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -1171,12 +1173,14 @@ fn launch_design_worker(
                 cpus: 2,
                 memory: "8G".into(),
                 workspace_dir: String::new(),
-                claude_credentials: String::new(),
                 mode: "design".to_owned(),
                 skills: Vec::new(),
                 project_key,
                 context_repos: vec![],
                 dispatch: true,
+                // No --agent flag on launch yet (ur-vui34 decision 6) — empty
+                // defaults to claude server-side.
+                agent_type: String::new(),
             })
             .await
             .map_err(|e| e.to_string())?;

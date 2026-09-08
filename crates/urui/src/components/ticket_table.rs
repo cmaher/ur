@@ -367,7 +367,7 @@ mod tests {
                 name: key.to_string(),
                 pool_limit: 10,
                 hostexec: vec![],
-                claude_md: None,
+                instruction_md: None,
                 container: ur_config::ContainerConfig {
                     image: "ur-worker".to_string(),
                     mounts: vec![],

@@ -249,9 +249,18 @@ enum WorkerCommands {
     /// List all running processes
     List,
     /// Force re-seed shared Claude Code credentials from the host (Keychain on macOS)
-    ReseedCredentials,
+    ReseedCredentials {
+        /// Which agent to reseed credentials for
+        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
+        agent: String,
+    },
     /// Save credentials from a running container for reuse
-    SaveCredentials { worker_id: String },
+    SaveCredentials {
+        worker_id: String,
+        /// Which agent to save credentials for
+        #[arg(long, default_value = ur_config::AgentType::Claude.name())]
+        agent: String,
+    },
     /// Show detailed worker information
     Describe { worker_id: Option<String> },
     /// Send a message to a running worker's agent
@@ -302,6 +311,39 @@ fn prepare_project_mounts(config: &ur_config::Config) {
     }
 }
 
+/// Re-seed credentials for every agent that has an auth profile.
+///
+/// The CLI cannot know which agent(s) a launch will actually use — `[worker_modes]`
+/// resolution is server-side and `crates/ur` has no `server` dependency — so this
+/// iterates `AgentType::ALL` rather than a single agent. With one variant today,
+/// this runs once for Claude, identical to seeding Claude alone.
+///
+/// Errors are real I/O failures (unresolvable config dir, unwritable credentials
+/// path) and propagate to the caller — a worker launched with an unwritten
+/// credentials file comes up unable to authenticate. "The host has no credentials
+/// to copy" is *not* an error: `ensure_credentials` warns and leaves the existing
+/// file alone. Callers that must tolerate failure (e.g. `ur start`, which prints
+/// its own guidance) log the error explicitly instead of dropping it here.
+///
+/// Every agent is attempted before returning: one agent's broken keychain must
+/// not leave a healthy agent unseeded, since the caller cannot know which agent
+/// the launch will resolve to. Failures are then reported together.
+fn ensure_credentials_for_all_agents(max_age: Duration) -> Result<()> {
+    let mut failures = Vec::new();
+    for agent in ur_config::AgentType::ALL {
+        let Some(cred_mgr) = credential::credential_manager_for(*agent) else {
+            continue;
+        };
+        if let Err(e) = cred_mgr.ensure_credentials(max_age) {
+            failures.push(format!("{}: {e:#}", agent.name()));
+        }
+    }
+    if !failures.is_empty() {
+        bail!("failed to seed credentials — {}", failures.join("; "));
+    }
+    Ok(())
+}
+
 #[instrument(skip(config, compose, output))]
 fn start_server(
     config: &ur_config::Config,
@@ -315,19 +357,23 @@ fn start_server(
     // Seed credentials from host Claude Code before starting anything so
     // they're available for bind-mounting into worker containers. Force a
     // re-seed on every start so host re-logins propagate after a restart.
-    let cred_mgr = credential::CredentialManager;
-    if let Err(e) = cred_mgr.ensure_credentials(Duration::ZERO) {
-        debug!(error = %e, "credential seeding failed");
+    if let Err(e) = ensure_credentials_for_all_agents(Duration::ZERO) {
+        warn!(error = %e, "credential seeding failed");
     }
-    let has_credentials = credential::CredentialManager::host_credentials_path()
-        .ok()
-        .and_then(|p| std::fs::metadata(&p).ok())
-        .is_some_and(|m| m.len() > 10);
-    if !has_credentials {
-        warn!("no shared credentials found");
-        if !output.is_json() {
-            println!();
-            println!("No shared credentials found. Log in to Claude Code on this machine first.");
+    if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
+        let has_credentials = cred_mgr
+            .host_credentials_path()
+            .ok()
+            .and_then(|p| std::fs::metadata(&p).ok())
+            .is_some_and(|m| m.len() > 10);
+        if !has_credentials {
+            warn!("no shared credentials found");
+            if !output.is_json() {
+                println!();
+                println!(
+                    "No shared credentials found. Log in to Claude Code on this machine first."
+                );
+            }
         }
     }
 
@@ -831,8 +877,7 @@ async fn process_launch(
     // Refresh credentials from host Claude Code and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    let cred_mgr = credential::CredentialManager;
-    cred_mgr.ensure_credentials(Duration::from_secs(60 * 60 * 24))?;
+    ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -885,12 +930,14 @@ async fn process_launch(
             cpus: 2,
             memory: "8G".into(),
             workspace_dir,
-            claude_credentials: String::new(),
             mode: mode.to_owned(),
             skills: skills.to_vec(),
             project_key: project_key.to_owned(),
             context_repos: context_repos.to_vec(),
             dispatch,
+            // No --agent flag on launch yet (ur-vui34 decision 6) — empty
+            // defaults to claude server-side.
+            agent_type: String::new(),
         })
         .await?;
 
@@ -965,9 +1012,11 @@ async fn handle_worker(
             let mut client = connect(port).await?;
             process_stop(&mut client, &worker_id, output).await
         }
-        WorkerCommands::ReseedCredentials => handle_worker_reseed_credentials(output),
-        WorkerCommands::SaveCredentials { worker_id } => {
-            handle_worker_save_credentials(worker_prefix, output, &worker_id)
+        WorkerCommands::ReseedCredentials { agent } => {
+            handle_worker_reseed_credentials(output, &agent)
+        }
+        WorkerCommands::SaveCredentials { worker_id, agent } => {
+            handle_worker_save_credentials(worker_prefix, output, &worker_id, &agent)
         }
         WorkerCommands::Launch {
             ticket_id,
@@ -1043,11 +1092,15 @@ async fn handle_worker_attach(
     process::exit(exit_code);
 }
 
-fn handle_worker_reseed_credentials(output: &OutputManager) -> Result<()> {
-    info!("forcing credential re-seed from host");
-    let cred_mgr = credential::CredentialManager;
+fn handle_worker_reseed_credentials(output: &OutputManager, agent: &str) -> Result<()> {
+    info!(agent, "forcing credential re-seed from host");
+    let agent =
+        ur_config::AgentType::parse(agent).with_context(|| format!("invalid --agent {agent:?}"))?;
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        anyhow::bail!("agent {} has no credentials to seed", agent.name());
+    };
     cred_mgr.ensure_credentials(Duration::ZERO)?;
-    let path = credential::CredentialManager::host_credentials_path()?;
+    let path = cred_mgr.host_credentials_path()?;
     if !path.exists()
         || std::fs::metadata(&path)
             .map(|m| m.len() < 10)
@@ -1071,12 +1124,17 @@ fn handle_worker_save_credentials(
     worker_prefix: &str,
     output: &OutputManager,
     worker_id: &str,
+    agent: &str,
 ) -> Result<()> {
     input::validate_id(worker_id, "worker_id")?;
-    info!(worker_id = %worker_id, "saving credentials from container");
+    info!(worker_id = %worker_id, agent, "saving credentials from container");
     let runtime = container::runtime_from_env();
     let id = container::ContainerId(format!("{worker_prefix}{worker_id}"));
-    let cred_mgr = credential::CredentialManager;
+    let agent =
+        ur_config::AgentType::parse(agent).with_context(|| format!("invalid --agent {agent:?}"))?;
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        anyhow::bail!("agent {} has no credentials to save", agent.name());
+    };
     let paths = cred_mgr.save_from_container(&runtime, &id)?;
     if output.is_json() {
         output.print_success(&CredentialsSaved {
@@ -1376,7 +1434,7 @@ fn command_name(cmd: &WorkerCommands) -> &'static str {
         WorkerCommands::Attach { .. } => "attach",
         WorkerCommands::Kill { .. } => "kill",
         WorkerCommands::List => "list",
-        WorkerCommands::ReseedCredentials => "reseed_credentials",
+        WorkerCommands::ReseedCredentials { .. } => "reseed_credentials",
         WorkerCommands::SaveCredentials { .. } => "save_credentials",
         WorkerCommands::Send { .. } => "send",
         WorkerCommands::Launch { .. } => "launch",
@@ -1617,7 +1675,7 @@ mod tests {
             name: key.to_owned(),
             pool_limit: 10,
             hostexec: vec![],
-            claude_md: None,
+            instruction_md: None,
             container: ur_config::ContainerConfig {
                 image: "ur-worker".to_owned(),
                 mounts: vec![],
@@ -1784,5 +1842,45 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("could not derive project"));
+    }
+
+    // ── --agent flag on credential commands ────────────────────────────
+
+    fn text_output() -> OutputManager {
+        OutputManager::from_args(Some("text"))
+    }
+
+    #[test]
+    fn reseed_credentials_unknown_agent_errors_without_panicking() {
+        let result = handle_worker_reseed_credentials(&text_output(), "bogus-agent");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("bogus-agent"), "{msg}");
+    }
+
+    #[test]
+    fn save_credentials_unknown_agent_errors_without_panicking() {
+        let result =
+            handle_worker_save_credentials("ur-worker-", &text_output(), "w1", "bogus-agent");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("bogus-agent"), "{msg}");
+    }
+
+    /// The `--agent` default comes from `AgentType::Claude.name()` rather than a
+    /// literal, so it cannot drift into a value `AgentType::parse` rejects. Pins
+    /// both that clap applies the expression and that the result round-trips.
+    #[test]
+    fn agent_flag_defaults_to_a_parseable_agent_name() {
+        let cli = Cli::try_parse_from(["ur", "worker", "reseed-credentials"]).unwrap();
+        let Commands::Worker {
+            command: WorkerCommands::ReseedCredentials { agent },
+        } = cli.command
+        else {
+            panic!("expected worker reseed-credentials");
+        };
+        assert_eq!(agent, ur_config::AgentType::Claude.name());
+        assert_eq!(
+            ur_config::AgentType::parse(&agent).unwrap(),
+            ur_config::AgentType::Claude
+        );
     }
 }

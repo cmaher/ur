@@ -131,7 +131,7 @@ operation with a repo-less project:
 | TUI | `Model::dispatch_is_blocked_by_locality` → banner instead of a `Cmd`; `dispatch_label` renders such tickets blocked (`□`) |
 
 Only `-m manual` **with** `-w <dir>` is supported. Everything else about the project
-— image, mounts, ports, `hostexec`, `hostexec_scripts`, `claude_md`, `brain_dir`,
+— image, mounts, ports, `hostexec`, `hostexec_scripts`, `instruction_md`, `brain_dir`,
 `memory_dir`, TUI theme — resolves identically to a pool-backed project, because
 `-p <key> -w <dir>` already bypasses the pool while still applying project config.
 
@@ -152,7 +152,7 @@ How each resolved variant maps to container behavior:
 
 - **`ProjectRelative(rel_path)`**: The path exists inside the already-mounted workspace. No additional volume mount is created. The container path is `/workspace/<rel_path>`. Works for both `-w` workspace mode (user's checkout) and `-p` pool mode (pool slot's clone) — but only if the path exists in the repo checkout.
 
-- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...` or `/opt/...`). Used by `mounts` and `claude_md`.
+- **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...` or `/opt/...`). Used by `mounts` and `instruction_md`.
 
 ## Config Flow Through the System
 
@@ -163,17 +163,19 @@ ur.toml
 
 CLI launch request
   → grpc.rs: CoreServiceHandler::worker_launch()
-    → reads ProjectConfig fields (claude_md, mounts, hostexec, etc.)
+    → reads ProjectConfig fields (instruction_md, mounts, hostexec, etc.)
+    → resolve_mode(mode, requested_agent) resolves the agent
     → builds WorkerConfig struct (crates/server/src/worker.rs)
 
 WorkerConfig
   → WorkerManager::run_and_record()
     → RunOptsBuilder (crates/server/src/run_opts_builder.rs)
-      .add_workspace()           — mounts workspace_dir → /workspace
-      .add_credentials()         — mounts credentials file
-      .add_host_hooks_overlay()  — convention hook dirs → /var/ur/host-hooks/{git,skills}/:ro
-      .add_mounts()              — mounts project-configured volumes (source → destination)
-      .add_env_vars()            — proxy vars, worker ID, server addr, skills
+      .add_workspace()             — mounts workspace_dir → /workspace
+      .add_credentials(agent)      — mounts credentials file; no-op if agent.auth() is None
+      .add_host_hooks_overlay()    — convention hook dirs → /var/ur/host-hooks/{git,skills}/:ro
+      .add_project_instruction(agent) — instruction_md convention fallback → mount or env var
+      .add_mounts()                — mounts project-configured volumes (source → destination)
+      .add_env_vars()              — proxy vars, worker ID, server addr, skills, UR_AGENT_TYPE
       .build() → RunOpts → container runtime
 ```
 

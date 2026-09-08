@@ -258,7 +258,7 @@ repo = "https://github.com/cmaher/ur.git"
 name = "Ur"
 pool_limit = 10
 hostexec = ["ur"]
-claude_md = "%PROJECT%/CLAUDE.md"
+instruction_md = "%PROJECT%/CLAUDE.md"
 max_fix_attempts = 10
 protected_branches = ["main", "master"]
 ignored_workflow_checks = []
@@ -270,7 +270,7 @@ ignored_workflow_checks = []
 | `name` | string | `<key>` | no | Display-friendly label |
 | `pool_limit` | u32 | `10` | no | Max cached repo clones in pool |
 | `hostexec` | string[] | `[]` | no | Additional passthrough commands granted to this project |
-| `claude_md` | string | — | no | Template path to project-level CLAUDE.md file |
+| `instruction_md` | string | — | no | Template path to project-level instruction file (e.g. CLAUDE.md). The old key `claude_md` is still accepted (deprecation warning). |
 | `max_fix_attempts` | u32 | `10` | no | Max fix loop iterations before stalling agent |
 | `protected_branches` | string[] | `["main", "master"]` | no | Branches that cannot be force-pushed (glob patterns supported) |
 | `ignored_workflow_checks` | string[] | `[]` | no | CI check names to ignore when evaluating workflow status |
@@ -327,7 +327,7 @@ theme = "nord"
 
 ## Template Paths
 
-The `claude_md` field (and `container.mounts` source) accepts template path strings. Three forms are supported:
+The `instruction_md` field (and `container.mounts` source) accepts template path strings. Three forms are supported:
 
 | Form | Example | Resolves To |
 |------|---------|-------------|
@@ -409,7 +409,7 @@ projects = ["ur"]
 repo = "https://github.com/cmaher/ur.git"
 pool_limit = 10
 hostexec = ["ur"]
-claude_md = "%PROJECT%/CLAUDE.md"
+instruction_md = "%PROJECT%/CLAUDE.md"
 protected_branches = ["main", "master"]
 
 [projects.ur.container]

@@ -99,9 +99,13 @@ struct RawModeEntry {
     skills: Vec<String>,
     /// Optional Claude Code model alias override. When omitted, the mode
     /// inherits the effective default (a `[worker_models]` override, if any,
-    /// else `default_model()`) from its base strategy.
+    /// else `agent.default_model(strategy)`) from its base strategy.
     #[serde(default)]
     model: Option<String>,
+    /// Optional agent override for this mode (e.g. "claude"). Defaults to
+    /// claude when omitted.
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 /// Raw TOML representation for the `[worker_models]` section, letting users
@@ -128,34 +132,66 @@ impl RawWorkerModels {
 }
 
 /// Resolve the effective default model for a strategy: the `[worker_models]`
-/// override if present, else `WorkerStrategy::default_model()`.
-fn effective_default_model(strategy: WorkerStrategy, overrides: &RawWorkerModels) -> String {
+/// override if present, else `agent.default_model(strategy)`.
+///
+/// An empty string means "no model" and is a valid outcome, not a failure: it
+/// is what an agent with no model concept returns, and `build_worker_env_vars`
+/// then omits `UR_WORKER_MODEL` so `spawn_command(None)` launches the agent
+/// bare. Deliberately not a panic — `every_strategy_has_a_default_model` pins
+/// the invariant that Claude (and any future model-bearing agent) covers every
+/// `WorkerStrategy`, so a missing table entry fails in CI rather than at launch.
+fn effective_default_model(
+    agent: ur_config::AgentType,
+    strategy: WorkerStrategy,
+    overrides: &RawWorkerModels,
+) -> String {
     overrides
         .get(strategy)
-        .map(str::to_owned)
-        .unwrap_or_else(|| strategy.default_model().to_owned())
+        .or_else(|| agent.default_model(strategy.name()))
+        .unwrap_or_default()
+        .to_owned()
 }
 
-/// Seed the built-in strategies/models maps for "code", "design", and "manual",
+/// Seed the built-in strategies/models maps, one entry per [`WorkerStrategy`],
 /// using `overrides` (parsed from `[worker_models]`) to compute each mode's
-/// effective default model.
+/// effective default model. `agent` is the agent running these built-in modes
+/// (always claude today — only custom modes can override their agent).
 fn seed_strategies_and_models(
+    agent: ur_config::AgentType,
     overrides: &RawWorkerModels,
 ) -> (HashMap<String, WorkerStrategy>, HashMap<String, String>) {
     let mut strategies = HashMap::new();
     let mut models = HashMap::new();
-    for strategy in [
-        WorkerStrategy::Code,
-        WorkerStrategy::Design,
-        WorkerStrategy::Manual,
-    ] {
+    for strategy in WorkerStrategy::ALL.iter().copied() {
         strategies.insert(strategy.name().to_owned(), strategy);
         models.insert(
             strategy.name().to_owned(),
-            effective_default_model(strategy, overrides),
+            effective_default_model(agent, strategy, overrides),
         );
     }
     (strategies, models)
+}
+
+/// Seed the built-in agents map, one entry per [`WorkerStrategy`] — all claude,
+/// since built-in modes have no `agent` field of their own.
+fn default_agents() -> HashMap<String, ur_config::AgentType> {
+    WorkerStrategy::ALL
+        .iter()
+        .map(|strategy| (strategy.name().to_owned(), ur_config::AgentType::Claude))
+        .collect()
+}
+
+/// Resolve a custom mode's agent field, defaulting to claude when omitted.
+/// Errors name the offending mode, matching the `base` validation convention.
+fn resolve_entry_agent(
+    mode_name: &str,
+    raw_agent: Option<&str>,
+) -> Result<ur_config::AgentType, String> {
+    match raw_agent {
+        Some(name) => ur_config::AgentType::parse(name)
+            .map_err(|e| format!("invalid agent '{name}' for worker mode '{mode_name}': {e}")),
+        None => Ok(ur_config::AgentType::Claude),
+    }
 }
 
 /// Resolved worker modes configuration mapping mode names to skill lists, strategies,
@@ -167,19 +203,24 @@ pub struct WorkerModesConfig {
     /// map to their corresponding variants; custom modes map via their `base` field.
     strategies: HashMap<String, WorkerStrategy>,
     /// Maps mode names to their resolved Claude Code model alias. Defaults come
-    /// from `WorkerStrategy::default_model()`, unless overridden per-strategy via
+    /// from `agent.default_model(strategy)`, unless overridden per-strategy via
     /// `[worker_models]`; custom modes may further override via
     /// `worker_modes.<name>.model`.
     models: HashMap<String, String>,
+    /// Maps mode names to their agent. Built-in modes default to claude;
+    /// custom modes may override via `worker_modes.<name>.agent`.
+    agents: HashMap<String, ur_config::AgentType>,
 }
 
 impl Default for WorkerModesConfig {
     fn default() -> Self {
-        let (strategies, models) = seed_strategies_and_models(&RawWorkerModels::default());
+        let (strategies, models) =
+            seed_strategies_and_models(ur_config::AgentType::Claude, &RawWorkerModels::default());
         Self {
             modes: default_worker_modes(),
             strategies,
             models,
+            agents: default_agents(),
         }
     }
 }
@@ -192,9 +233,9 @@ impl WorkerModesConfig {
     ///
     /// An optional `[worker_models]` section overrides the built-in default
     /// model per strategy (code/design/manual). Omitted keys fall back to
-    /// `WorkerStrategy::default_model()`; unknown keys are a config error.
+    /// `agent.default_model(strategy)`; unknown keys are a config error.
     /// Resolution precedence: custom mode explicit `model` > `[worker_models]`
-    /// override > `default_model()`.
+    /// override > `agent.default_model(strategy)`.
     pub fn from_toml(toml_content: &str) -> Result<Self, String> {
         // Parse the full TOML to extract just the worker_modes section
         let value: toml::Value =
@@ -209,11 +250,13 @@ impl WorkerModesConfig {
         };
 
         let Some(section) = value.get("worker_modes") else {
-            let (strategies, models) = seed_strategies_and_models(&model_overrides);
+            let (strategies, models) =
+                seed_strategies_and_models(ur_config::AgentType::Claude, &model_overrides);
             return Ok(Self {
                 modes: default_worker_modes(),
                 strategies,
                 models,
+                agents: default_agents(),
             });
         };
 
@@ -222,7 +265,9 @@ impl WorkerModesConfig {
             .try_into()
             .map_err(|e| format!("invalid worker_modes config: {e}"))?;
         let mut modes = default_worker_modes();
-        let (mut strategies, mut models) = seed_strategies_and_models(&model_overrides);
+        let (mut strategies, mut models) =
+            seed_strategies_and_models(ur_config::AgentType::Claude, &model_overrides);
+        let mut agents = default_agents();
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -230,17 +275,20 @@ impl WorkerModesConfig {
                     entry.base, name
                 )
             })?;
+            let agent = resolve_entry_agent(&name, entry.agent.as_deref())?;
             let model = entry
                 .model
-                .unwrap_or_else(|| effective_default_model(strategy, &model_overrides));
+                .unwrap_or_else(|| effective_default_model(agent, strategy, &model_overrides));
             strategies.insert(name.clone(), strategy);
             models.insert(name.clone(), model);
+            agents.insert(name.clone(), agent);
             modes.insert(name, entry.skills);
         }
         Ok(Self {
             modes,
             strategies,
             models,
+            agents,
         })
     }
 
@@ -263,7 +311,7 @@ impl WorkerModesConfig {
             .ok_or_else(|| format!("unknown worker mode: {mode_name}"))
     }
 
-    /// Resolve a mode name to its worker strategy, skill list, and Claude Code model.
+    /// Resolve a mode name to its worker strategy, skill list, model, and agent.
     ///
     /// For built-in modes ("code", "design"), returns the corresponding
     /// `WorkerStrategy` variant, its default skills, and its default model.
@@ -271,10 +319,14 @@ impl WorkerModesConfig {
     /// the custom skills, and the resolved model (either the explicit
     /// `worker_modes.<name>.model` override or the base strategy's default).
     /// An empty mode name defaults to "code".
+    ///
+    /// Agent resolution order: `requested_agent` (explicit override, e.g. from
+    /// the launch request) → the mode's `agent` field → claude.
     pub fn resolve_mode(
         &self,
         mode: &str,
-    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
+        requested_agent: Option<ur_config::AgentType>,
+    ) -> Result<ResolvedMode, String> {
         let mode_name = if mode.is_empty() { "code" } else { mode };
         let strategy = self
             .strategies
@@ -291,8 +343,34 @@ impl WorkerModesConfig {
             .get(mode_name)
             .cloned()
             .ok_or_else(|| format!("unknown worker mode: {mode_name}"))?;
-        Ok((strategy, skills, model))
+        let agent = requested_agent.unwrap_or_else(|| {
+            self.agents
+                .get(mode_name)
+                .copied()
+                .unwrap_or(ur_config::AgentType::Claude)
+        });
+        Ok(ResolvedMode {
+            strategy,
+            skills,
+            model,
+            agent,
+        })
     }
+}
+
+/// What a worker mode name resolves to. Named rather than a positional tuple:
+/// `skills` and `model` are both string-ish and every caller destructures all
+/// four fields, so ordering mistakes would not be caught by the type checker.
+#[derive(Debug, Clone)]
+pub struct ResolvedMode {
+    /// Strategy governing slot acquisition, release, and default skills.
+    pub strategy: WorkerStrategy,
+    /// Skills to install in the container, before global-skill merging.
+    pub skills: Vec<String>,
+    /// Model alias for the agent, or empty for "no model flag".
+    pub model: String,
+    /// Which agent runs this mode.
+    pub agent: ur_config::AgentType,
 }
 
 /// Context for a running worker, returned by `WorkerManager::get_worker_context`.
@@ -316,6 +394,7 @@ pub struct WorkerSummary {
     pub directory: String,
     pub container_status: String,
     pub agent_status: String,
+    pub agent_type: String,
 }
 
 /// Configuration for launching a container process.
@@ -329,17 +408,23 @@ pub struct WorkerConfig {
     pub proxy_hostname: String,
     /// Project key if launched with `--project` (empty string for raw workspace launches).
     pub project_key: String,
+    /// Which agent runs this worker (e.g. "claude"). Resolved from the launch
+    /// request, defaulting to claude when unset — full mode-based resolution
+    /// lands in a follow-up ticket.
+    pub agent_type: String,
     /// Worker strategy governing slot acquisition and release behavior.
     pub strategy: WorkerStrategy,
     /// Resolved skills to pass as `UR_WORKER_SKILLS` env var (comma-separated).
     pub skills: Vec<String>,
-    /// Resolved Claude Code model name to pass as `UR_WORKER_MODEL` env var.
-    /// Empty string means no `UR_WORKER_MODEL` env var is set (falls back to
-    /// `claude`'s built-in default).
+    /// Resolved agent model name to pass as `UR_WORKER_MODEL` env var.
+    /// Empty string means no `UR_WORKER_MODEL` env var is set, so
+    /// `AgentType::spawn_command(None)` launches the agent with no model flag
+    /// and it falls back to its own built-in default.
     pub model: String,
-    /// Optional project CLAUDE.md template string from project config.
-    /// When None, the server falls back to `<config_dir>/projects/<project_key>/CLAUDE.md`.
-    pub claude_md: Option<String>,
+    /// Optional project instruction-file (e.g. CLAUDE.md) template string from
+    /// project config. When None, the server falls back to
+    /// `<config_dir>/projects/<project_key>/{agent.instruction_filename()}`.
+    pub instruction_md: Option<String>,
     /// Additional volume mounts from project config (source:destination pairs).
     pub mounts: Vec<ur_config::MountConfig>,
     /// Port mappings from project config (host_port:container_port pairs).
@@ -354,7 +439,7 @@ pub struct WorkerConfig {
     pub hostexec_scripts: Vec<String>,
     /// Extra skill mounts from global config, merged by `WorkerManager::merge_global_skills`.
     /// Each entry is `(name, host_path)` — mounted read-only at
-    /// `/home/worker/.claude/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
+    /// `/home/worker/.agent-shared/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
     pub extra_skill_mounts: Vec<(String, PathBuf)>,
     /// Optional memory directory template string from project config.
     /// Mounted at `/home/worker/.claude/projects/-workspace/memory` inside the container.
@@ -440,12 +525,13 @@ impl WorkerManager {
         self.worker_modes.resolve_skills(mode, skills)
     }
 
-    /// Resolve a mode name to its worker strategy, skill list, and Claude Code model alias.
+    /// Resolve a mode name to its worker strategy, skill list, model alias, and agent.
     pub fn resolve_mode(
         &self,
         mode: &str,
-    ) -> Result<(WorkerStrategy, Vec<String>, String), String> {
-        self.worker_modes.resolve_mode(mode)
+        requested_agent: Option<ur_config::AgentType>,
+    ) -> Result<ResolvedMode, String> {
+        self.worker_modes.resolve_mode(mode, requested_agent)
     }
 
     /// Merge global skills with mode-resolved skills.
@@ -550,6 +636,7 @@ impl WorkerManager {
             container_id,
             worker_secret,
             strategy: strategy.name().to_owned(),
+            agent_type: ur_config::AgentType::Claude.name().to_owned(),
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: slot_path.map(|p| p.display().to_string()),
@@ -648,11 +735,14 @@ impl WorkerManager {
             self.worker_port,
         );
 
-        // Resolve project CLAUDE.md: use explicit config, fall back to convention path
-        let claude_md = resolve_claude_md(
-            &config.claude_md,
+        // Resolve project instruction file: use explicit config, fall back to convention path
+        let agent =
+            ur_config::AgentType::parse(&config.agent_type).unwrap_or(ur_config::AgentType::Claude);
+        let project_instruction = resolve_project_instruction(
+            &config.instruction_md,
             &config.project_key,
             &self.host_config_dir,
+            agent,
         );
 
         // Resolve project memory dir: use explicit config or convention path
@@ -703,15 +793,15 @@ impl WorkerManager {
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
-        .add_credentials(&self.host_config_dir)?
+        .add_credentials(&self.host_config_dir, agent)?
         .add_host_hooks_overlay(
             &config.project_key,
             &self.host_config_dir,
             &self.local_config_dir,
         )
         .add_extra_skills(&config.extra_skill_mounts)
-        .add_project_claude_md(&claude_md, &self.host_config_dir)?
-        .add_memory_dir(&memory_dir, &self.host_config_dir)?
+        .add_project_instruction(&project_instruction, &self.host_config_dir, agent)?
+        .add_memory_dir(&memory_dir, &self.host_config_dir, agent)?
         .add_brain_dir(&brain_dir, &self.host_config_dir)?
         .add_mounts(&config.mounts, &self.host_config_dir)?
         .add_mounts(
@@ -767,6 +857,7 @@ impl WorkerManager {
             container_id: container_id.clone(),
             worker_secret: worker_secret.clone(),
             strategy: config.strategy.name().to_owned(),
+            agent_type: config.agent_type,
             container_status: "running".to_owned(),
             agent_status: "starting".to_owned(),
             workspace_path: config.workspace_dir.map(|p| p.display().to_string()),
@@ -873,6 +964,7 @@ impl WorkerManager {
                 directory: worker.workspace_path.unwrap_or_default(),
                 container_status: worker.container_status,
                 agent_status: worker.agent_status,
+                agent_type: worker.agent_type,
             })
             .collect();
         result.sort_by(|a, b| a.process_id.cmp(&b.process_id));
@@ -952,8 +1044,9 @@ fn tolerate_missing(
 
 /// Build the environment variables for a worker container launch.
 ///
-/// Assembles server address, worker identity, proxy, skills, strategy CLAUDE.md name,
-/// project key, and host workspace path into a list of key-value pairs.
+/// Assembles server address, worker identity, proxy, skills, agent type,
+/// strategy instruction-file name, project key, and host workspace path into
+/// a list of key-value pairs.
 fn build_worker_env_vars(
     config: &WorkerConfig,
     worker_secret: &str,
@@ -981,14 +1074,22 @@ fn build_worker_env_vars(
         env_vars.push(("UR_WORKER_SKILLS".into(), config.skills.join(",")));
     }
 
-    // Inject strategy-specific CLAUDE.md name for workerd to copy at init
+    // Inject which agent this worker runs, so workerd can resolve
+    // agent-specific paths and the spawn command via `AgentType::from_env()`.
     env_vars.push((
-        "UR_WORKER_CLAUDE".into(),
-        config.strategy.claude_md_name().into(),
+        ur_config::UR_AGENT_TYPE_ENV.into(),
+        config.agent_type.clone(),
     ));
 
-    // Inject resolved Claude Code model name (only when non-empty — empty
-    // means fall back to claude's built-in default)
+    // Inject strategy-specific instruction-file name for workerd to copy at init
+    env_vars.push((
+        ur_config::UR_WORKER_INSTRUCTION_STRATEGY_ENV.into(),
+        config.strategy.instruction_strategy_name().into(),
+    ));
+
+    // Inject the resolved model name (only when non-empty — empty means the
+    // agent launches with no model flag and uses its own built-in default,
+    // which is also what an agent with no model concept resolves to)
     if !config.model.is_empty() {
         env_vars.push((ur_config::UR_WORKER_MODEL_ENV.into(), config.model.clone()));
     }
@@ -1058,19 +1159,21 @@ fn remap_to_container_config(
     }
 }
 
-/// Resolve the project CLAUDE.md template string, falling back to the convention path.
+/// Resolve the project instruction-file template string, falling back to the
+/// convention path.
 ///
-/// When `claude_md` is already set (from project config), returns it as-is.
-/// When `claude_md` is None and a non-empty `project_key` is provided, checks
-/// `<host_config_dir>/projects/<project_key>/CLAUDE.md` — if it exists, returns
-/// the absolute path as a host path string.
-fn resolve_claude_md(
-    claude_md: &Option<String>,
+/// When `instruction_md` is already set (from project config), returns it as-is.
+/// When `instruction_md` is None and a non-empty `project_key` is provided,
+/// checks `<host_config_dir>/projects/<project_key>/{agent.instruction_filename()}`
+/// — if it exists, returns the absolute path as a host path string.
+fn resolve_project_instruction(
+    instruction_md: &Option<String>,
     project_key: &str,
     host_config_dir: &std::path::Path,
+    agent: ur_config::AgentType,
 ) -> Option<String> {
-    if claude_md.is_some() {
-        return claude_md.clone();
+    if instruction_md.is_some() {
+        return instruction_md.clone();
     }
     if project_key.is_empty() {
         return None;
@@ -1078,7 +1181,7 @@ fn resolve_claude_md(
     let convention_path = host_config_dir
         .join("projects")
         .join(project_key)
-        .join("CLAUDE.md");
+        .join(agent.instruction_filename());
     if convention_check_path(&convention_path, host_config_dir).exists() {
         Some(convention_path.to_string_lossy().into_owned())
     } else {
@@ -1489,10 +1592,11 @@ mod tests {
             workspace_dir: None,
             proxy_hostname: "ur-squid".into(),
             project_key: String::new(),
+            agent_type: ur_config::AgentType::Claude.name().to_owned(),
             strategy,
             skills: Vec::new(),
             model: model.into(),
-            claude_md: None,
+            instruction_md: None,
             mounts: Vec::new(),
             ports: Vec::new(),
             slot_id: None,
@@ -1517,7 +1621,9 @@ mod tests {
     #[test]
     fn build_worker_env_vars_design_mode_sets_model() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, _skills, model) = cfg.resolve_mode("design").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("design", None).unwrap();
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
@@ -1529,7 +1635,9 @@ mod tests {
     #[test]
     fn build_worker_env_vars_code_mode_sets_sonnet_model() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, _skills, model) = cfg.resolve_mode("code").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("code", None).unwrap();
         let config = test_worker_config(strategy, &model);
         let vars = build_worker_env_vars(&config, "secret", &test_network_config(), 12322);
         assert!(
@@ -1605,7 +1713,12 @@ skills = ["a", "b"]
     #[test]
     fn resolve_mode_default_returns_code_strategy() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, skills, model) = cfg.resolve_mode("").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert!(skills.contains(&"implement".to_string()));
         assert_eq!(model, "sonnet");
@@ -1614,7 +1727,12 @@ skills = ["a", "b"]
     #[test]
     fn resolve_mode_design_returns_design_strategy() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, skills, model) = cfg.resolve_mode("design").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("design", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert!(skills.contains(&"design".to_string()));
         assert_eq!(model, "opus");
@@ -1628,7 +1746,12 @@ base = "design"
 skills = ["tickets", "my-custom-skill"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, model) = cfg.resolve_mode("my-docs").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("my-docs", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(skills, vec!["tickets", "my-custom-skill"]);
         assert_eq!(model, "opus");
@@ -1637,7 +1760,7 @@ skills = ["tickets", "my-custom-skill"]
     #[test]
     fn resolve_mode_unknown_errors() {
         let cfg = WorkerModesConfig::default();
-        let result = cfg.resolve_mode("nonexistent");
+        let result = cfg.resolve_mode("nonexistent", None);
         assert!(result.is_err());
     }
 
@@ -1665,7 +1788,12 @@ skills = ["tickets"]
     #[test]
     fn resolve_mode_manual_returns_manual_strategy() {
         let cfg = WorkerModesConfig::default();
-        let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("manual", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         // All skills — union of code and design plus common
         assert!(skills.contains(&"implement".to_string()));
@@ -1677,7 +1805,7 @@ skills = ["tickets"]
     #[test]
     fn resolve_mode_manual_default_model() {
         let cfg = WorkerModesConfig::default();
-        let (_, _, model) = cfg.resolve_mode("manual").unwrap();
+        let ResolvedMode { model, .. } = cfg.resolve_mode("manual", None).unwrap();
         assert_eq!(model, "opus");
     }
 
@@ -1689,7 +1817,12 @@ base = "manual"
 skills = ["implement", "design", "custom-skill"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, model) = cfg.resolve_mode("my-manual").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("my-manual", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert_eq!(skills, vec!["implement", "design", "custom-skill"]);
         assert_eq!(model, "opus");
@@ -1704,7 +1837,9 @@ skills = ["implement"]
 model = "haiku"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, _, model) = cfg.resolve_mode("haiku-manual").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("haiku-manual", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert_eq!(model, "haiku");
     }
@@ -1713,7 +1848,12 @@ model = "haiku"
     fn resolve_mode_manual_in_no_section_toml_works() {
         let toml = "server_port = 5000\n";
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, model) = cfg.resolve_mode("manual").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("manual", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Manual);
         assert!(skills.contains(&"implement".to_string()));
         assert_eq!(model, "opus");
@@ -1727,7 +1867,12 @@ base = "code"
 skills = ["only-one"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, skills, model) = cfg.resolve_mode("code").unwrap();
+        let ResolvedMode {
+            strategy,
+            skills,
+            model,
+            ..
+        } = cfg.resolve_mode("code", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(skills, vec!["only-one"]);
         // No explicit model override; inherits code's default ("sonnet").
@@ -1737,14 +1882,14 @@ skills = ["only-one"]
     #[test]
     fn resolve_mode_code_default_model_is_sonnet() {
         let cfg = WorkerModesConfig::default();
-        let (_, _, model) = cfg.resolve_mode("code").unwrap();
+        let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
         assert_eq!(model, "sonnet");
     }
 
     #[test]
     fn resolve_mode_design_default_model() {
         let cfg = WorkerModesConfig::default();
-        let (_, _, model) = cfg.resolve_mode("design").unwrap();
+        let ResolvedMode { model, .. } = cfg.resolve_mode("design", None).unwrap();
         assert_eq!(model, "opus");
     }
 
@@ -1757,7 +1902,9 @@ skills = ["only-one"]
 model = "opus"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, _, model) = cfg.resolve_mode("code").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("code", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Code);
         assert_eq!(model, "opus");
     }
@@ -1770,7 +1917,9 @@ base = "design"
 skills = ["tickets"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, _, model) = cfg.resolve_mode("x").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("x", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(model, "opus");
     }
@@ -1784,7 +1933,7 @@ skills = ["tickets"]
 model = "haiku"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (_, _, model) = cfg.resolve_mode("x").unwrap();
+        let ResolvedMode { model, .. } = cfg.resolve_mode("x", None).unwrap();
         assert_eq!(model, "haiku");
     }
 
@@ -1797,9 +1946,17 @@ design = "haiku"
 manual = "haiku"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
-        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
-        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
+        let ResolvedMode {
+            model: code_model, ..
+        } = cfg.resolve_mode("code", None).unwrap();
+        let ResolvedMode {
+            model: design_model,
+            ..
+        } = cfg.resolve_mode("design", None).unwrap();
+        let ResolvedMode {
+            model: manual_model,
+            ..
+        } = cfg.resolve_mode("manual", None).unwrap();
         assert_eq!(code_model, "opus");
         assert_eq!(design_model, "haiku");
         assert_eq!(manual_model, "haiku");
@@ -1812,12 +1969,30 @@ manual = "haiku"
 code = "opus"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
-        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
-        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
+        let ResolvedMode {
+            model: code_model, ..
+        } = cfg.resolve_mode("code", None).unwrap();
+        let ResolvedMode {
+            model: design_model,
+            ..
+        } = cfg.resolve_mode("design", None).unwrap();
+        let ResolvedMode {
+            model: manual_model,
+            ..
+        } = cfg.resolve_mode("manual", None).unwrap();
         assert_eq!(code_model, "opus");
-        assert_eq!(design_model, WorkerStrategy::Design.default_model());
-        assert_eq!(manual_model, WorkerStrategy::Manual.default_model());
+        assert_eq!(
+            design_model,
+            ur_config::AgentType::Claude
+                .default_model("design")
+                .unwrap()
+        );
+        assert_eq!(
+            manual_model,
+            ur_config::AgentType::Claude
+                .default_model("manual")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1842,7 +2017,9 @@ base = "design"
 skills = ["tickets"]
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (strategy, _, model) = cfg.resolve_mode("my-docs").unwrap();
+        let ResolvedMode {
+            strategy, model, ..
+        } = cfg.resolve_mode("my-docs", None).unwrap();
         assert_eq!(strategy, WorkerStrategy::Design);
         assert_eq!(model, "haiku");
     }
@@ -1859,19 +2036,150 @@ skills = ["tickets"]
 model = "opus"
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
-        let (_, _, model) = cfg.resolve_mode("my-docs").unwrap();
+        let ResolvedMode { model, .. } = cfg.resolve_mode("my-docs", None).unwrap();
         assert_eq!(model, "opus");
     }
 
     #[test]
     fn worker_models_no_section_default_unaffected() {
         let cfg = WorkerModesConfig::default();
-        let (_, _, code_model) = cfg.resolve_mode("code").unwrap();
-        let (_, _, design_model) = cfg.resolve_mode("design").unwrap();
-        let (_, _, manual_model) = cfg.resolve_mode("manual").unwrap();
-        assert_eq!(code_model, WorkerStrategy::Code.default_model());
-        assert_eq!(design_model, WorkerStrategy::Design.default_model());
-        assert_eq!(manual_model, WorkerStrategy::Manual.default_model());
+        let ResolvedMode {
+            model: code_model, ..
+        } = cfg.resolve_mode("code", None).unwrap();
+        let ResolvedMode {
+            model: design_model,
+            ..
+        } = cfg.resolve_mode("design", None).unwrap();
+        let ResolvedMode {
+            model: manual_model,
+            ..
+        } = cfg.resolve_mode("manual", None).unwrap();
+        assert_eq!(
+            code_model,
+            ur_config::AgentType::Claude.default_model("code").unwrap()
+        );
+        assert_eq!(
+            design_model,
+            ur_config::AgentType::Claude
+                .default_model("design")
+                .unwrap()
+        );
+        assert_eq!(
+            manual_model,
+            ur_config::AgentType::Claude
+                .default_model("manual")
+                .unwrap()
+        );
+    }
+
+    /// Every `WorkerStrategy` has a built-in default model for every agent that
+    /// has a model concept at all. This is the invariant `effective_default_model`
+    /// relies on instead of panicking: adding a `WorkerStrategy` variant without
+    /// extending `AgentType::default_model` fails here, not at worker launch.
+    ///
+    /// An agent with no model concept returns `None` for every strategy — that
+    /// is legitimate, and such an agent is skipped rather than failed.
+    #[test]
+    fn every_strategy_has_a_default_model() {
+        for agent in ur_config::AgentType::ALL {
+            let has_models = WorkerStrategy::ALL
+                .iter()
+                .any(|s| agent.default_model(s.name()).is_some());
+            if !has_models {
+                continue; // agent with no model concept
+            }
+            for strategy in WorkerStrategy::ALL {
+                assert!(
+                    agent.default_model(strategy.name()).is_some(),
+                    "agent '{}' has default models but none for strategy '{}' — \
+                     add it to AgentType::default_model",
+                    agent.name(),
+                    strategy.name(),
+                );
+            }
+        }
+    }
+
+    /// mode `model` beats `[worker_models]` beats `agent.default_model(strategy)`,
+    /// across all three strategies.
+    #[test]
+    fn model_resolution_precedence() {
+        for (base, worker_models_key) in
+            [("code", "code"), ("design", "design"), ("manual", "manual")]
+        {
+            // Bottom rung: no overrides at all.
+            let cfg = WorkerModesConfig::default();
+            let ResolvedMode { model, .. } = cfg.resolve_mode(base, None).unwrap();
+            assert_eq!(
+                model,
+                ur_config::AgentType::Claude.default_model(base).unwrap(),
+                "bottom rung for {base}"
+            );
+
+            // Middle rung: [worker_models] override beats the built-in default.
+            let toml =
+                format!("[worker_models]\n{worker_models_key} = \"worker-models-override\"\n");
+            let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
+            let ResolvedMode { model, .. } = cfg.resolve_mode(base, None).unwrap();
+            assert_eq!(model, "worker-models-override", "middle rung for {base}");
+
+            // Top rung: an explicit mode `model` beats both [worker_models] and the default.
+            let toml = format!(
+                "[worker_models]\n{worker_models_key} = \"worker-models-override\"\n\n\
+                 [worker_modes.custom-{base}]\nbase = \"{base}\"\nskills = []\nmodel = \"mode-override\"\n"
+            );
+            let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
+            let ResolvedMode { model, .. } =
+                cfg.resolve_mode(&format!("custom-{base}"), None).unwrap();
+            assert_eq!(model, "mode-override", "top rung for {base}");
+        }
+    }
+
+    /// Agent resolution order: explicit `resolve_mode` param → mode's `agent`
+    /// field → claude.
+    #[test]
+    fn mode_agent_resolution() {
+        // (a) mode config has no `agent` field → claude.
+        let toml = r#"
+[worker_modes.no-agent]
+base = "code"
+skills = []
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let ResolvedMode { agent, .. } = cfg.resolve_mode("no-agent", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Claude);
+
+        // (b) mode config has `agent = "claude"` → claude.
+        let toml = r#"
+[worker_modes.explicit-claude]
+base = "code"
+skills = []
+agent = "claude"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let ResolvedMode { agent, .. } = cfg.resolve_mode("explicit-claude", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Claude);
+
+        // (c) explicit override param wins over the mode's own agent field.
+        let ResolvedMode { agent, .. } = cfg
+            .resolve_mode("explicit-claude", Some(ur_config::AgentType::Claude))
+            .unwrap();
+        assert_eq!(agent, ur_config::AgentType::Claude);
+    }
+
+    #[test]
+    fn from_toml_rejects_unknown_agent() {
+        let toml = r#"
+[worker_modes.bad-agent]
+base = "code"
+skills = []
+agent = "bogus"
+"#;
+        let result = WorkerModesConfig::from_toml(toml);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("bad-agent"), "{msg}");
+        assert!(msg.contains("bogus"), "{msg}");
     }
 
     #[tokio::test]
@@ -2004,35 +2312,43 @@ model = "opus"
     }
 
     #[test]
-    fn resolve_claude_md_returns_explicit_value() {
+    fn resolve_project_instruction_returns_explicit_value() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_claude_md(&Some("%PROJECT%/CLAUDE.md".into()), "myproj", tmp.path());
+        let result = resolve_project_instruction(
+            &Some("%PROJECT%/CLAUDE.md".into()),
+            "myproj",
+            tmp.path(),
+            ur_config::AgentType::Claude,
+        );
         assert_eq!(result.as_deref(), Some("%PROJECT%/CLAUDE.md"));
     }
 
     #[test]
-    fn resolve_claude_md_none_empty_project_returns_none() {
+    fn resolve_project_instruction_none_empty_project_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_claude_md(&None, "", tmp.path());
+        let result =
+            resolve_project_instruction(&None, "", tmp.path(), ur_config::AgentType::Claude);
         assert_eq!(result, None);
     }
 
     #[test]
-    fn resolve_claude_md_convention_fallback_when_file_exists() {
+    fn resolve_project_instruction_convention_fallback_when_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
         let proj_dir = tmp.path().join("projects").join("myproj");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join("CLAUDE.md"), "# Project").unwrap();
 
-        let result = resolve_claude_md(&None, "myproj", tmp.path());
+        let result =
+            resolve_project_instruction(&None, "myproj", tmp.path(), ur_config::AgentType::Claude);
         let expected = proj_dir.join("CLAUDE.md").to_string_lossy().into_owned();
         assert_eq!(result.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
-    fn resolve_claude_md_convention_fallback_no_file_returns_none() {
+    fn resolve_project_instruction_convention_fallback_no_file_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = resolve_claude_md(&None, "myproj", tmp.path());
+        let result =
+            resolve_project_instruction(&None, "myproj", tmp.path(), ur_config::AgentType::Claude);
         assert_eq!(result, None);
     }
 

@@ -1151,6 +1151,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_brain_pool(&env);
         scenario_brain_workspace_no_project(&env, &config_path);
         scenario_hook_overlay_precedence(&env);
+        scenario_agent_type_in_summary(&env);
+        scenario_agent_shared_layout(&env);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -1170,6 +1172,8 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "brain-pool-test",
         "nobrain-ws-test",
         "hook-overlay-test",
+        "agent-type-summary-test",
+        "agent-shared-layout-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -3544,8 +3548,8 @@ fn scenario_hostexec_script_workspace(env: &TestEnv, config_path: &std::path::Pa
 }
 
 /// Global skill injection: verify that a skill declared in `[skills.code]` in ur.toml
-/// is bind-mounted into `~/.claude/potential-skills/<name>/` and subsequently copied
-/// to `~/.claude/skills/<name>/` by the `workerd init` step.
+/// is bind-mounted into `~/.agent-shared/potential-skills/<name>/` and subsequently
+/// copied to `~/.claude/skills/<name>/` by the `workerd init` step.
 ///
 /// This exercises the full path:
 ///   ur.toml `[skills.code]` → `GlobalSkillsConfig` → `WorkerManager::merge_global_skills`
@@ -3581,7 +3585,8 @@ fn scenario_global_skill_injection(env: &TestEnv) {
 
         // ---- Assert potential-skills bind mount is present ----
         // The bind mount should make SKILL.md visible at the potential-skills path.
-        let potential_skill_path = "/home/worker/.claude/potential-skills/test-skill/SKILL.md";
+        let potential_skill_path =
+            "/home/worker/.agent-shared/potential-skills/test-skill/SKILL.md";
         let ls_potential =
             exec_in_container(&env.runtime, &container_name, &["ls", potential_skill_path]);
         assert_exec_success(
@@ -4733,6 +4738,128 @@ fn scenario_hook_overlay_precedence(env: &TestEnv) {
         assert!(
             stop_output.status.success(),
             "ur worker stop (hook-overlay-test) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// A default code-mode worker reports `agent_type == "claude"` in `ur worker list`.
+fn scenario_agent_type_in_summary(env: &TestEnv) {
+    let ticket_id = "agent-type-summary-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a default code-mode pool worker ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Assert agent_type == "claude" in the worker list summary ----
+        let list_output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env_slice);
+        assert!(
+            list_output.status.success(),
+            "ur worker list failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&list_output.stdout),
+            String::from_utf8_lossy(&list_output.stderr),
+        );
+        let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
+            .expect("worker list output should be valid JSON");
+        let workers = list_json["data"]
+            .as_array()
+            .expect("worker list data should be an array");
+        let worker = workers
+            .iter()
+            .find(|w| w["worker_id"].as_str() == Some(ticket_id))
+            .unwrap_or_else(|| {
+                panic!("worker list should contain '{ticket_id}'.\nlist: {list_json}")
+            });
+        assert_eq!(
+            worker["agent_type"].as_str(),
+            Some("claude"),
+            "worker '{ticket_id}' should have agent_type 'claude', got: {:?}",
+            worker["agent_type"]
+        );
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop (agent-type-summary-test) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// The base image's agent-agnostic `.agent-shared/` layout exists in a running container.
+fn scenario_agent_shared_layout(env: &TestEnv) {
+    let ticket_id = "agent-shared-layout-test";
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a pool worker ----
+        let launch_output = run_cmd(
+            &env.ur,
+            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            env.project_key,
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, &container_name);
+
+        // ---- Assert the base-image .agent-shared/ layout exists ----
+        for path in [
+            "/home/worker/.agent-shared/potential-skills",
+            "/home/worker/.agent-shared/instructions/code.md",
+            "/home/worker/.agent-shared/shared-instructions",
+        ] {
+            let ls_output = exec_in_container(&env.runtime, &container_name, &["ls", path]);
+            assert_exec_success(
+                &ls_output,
+                &format!(
+                    "{path} should exist in the base image — \
+                     check that the worker-base Dockerfile COPYs it into .agent-shared/"
+                ),
+            );
+        }
+
+        // ---- Stop worker ----
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop (agent-shared-layout-test) failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
