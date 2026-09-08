@@ -9,6 +9,7 @@ dirs = "6"
 indexmap = { version = "2", features = ["serde"] }
 serde = { workspace = true }
 toml = "0.8"
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

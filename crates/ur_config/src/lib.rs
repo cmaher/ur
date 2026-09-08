@@ -1,5 +1,7 @@
+mod agent;
 mod template_path;
 
+pub use agent::{AgentAuth, AgentType, ParseAgentError};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };
@@ -183,6 +185,11 @@ pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";
 
 /// Environment variable: Claude credentials JSON blob injected into containers.
 pub const CLAUDE_CREDENTIALS_ENV: &str = "CLAUDE_CREDENTIALS";
+
+/// Environment variable: which [`AgentType`] a worker container is running.
+/// Read by workerd via `AgentType::from_env()` to resolve agent-specific
+/// paths and the spawn command. Empty/unset defaults to [`AgentType::Claude`].
+pub const UR_AGENT_TYPE_ENV: &str = "UR_AGENT_TYPE";
 
 /// Environment variable: host-side config directory path.
 ///
