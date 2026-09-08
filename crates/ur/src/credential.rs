@@ -39,6 +39,7 @@ pub trait AgentCredentialManager: Send + Sync {
 /// Credentials (`.credentials.json`) are stored at `$UR_CONFIG/claude/` on the
 /// host and bind-mounted into all worker containers. The app config
 /// (`.claude.json`) is baked into the container image.
+#[derive(Clone)]
 pub struct ClaudeCredentialManager {
     auth: AgentAuth,
 }
@@ -109,7 +110,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
             },
         };
         if needs_seed {
-            if let Ok(creds_json) = read_host_credentials(self.agent_type()) {
+            if let Ok(creds_json) = read_host_credentials(self.agent_type(), self.auth) {
                 info!(path = %creds_path.display(), "seeding credentials from host Claude Code");
                 write_file(&creds_path, &creds_json)?;
             } else {
@@ -185,16 +186,23 @@ pub fn credential_manager_for(agent: AgentType) -> Option<Box<dyn AgentCredentia
 /// On macOS, reads from the Keychain. On Linux, reads directly from the
 /// agent's native credentials file in its own home directory (e.g.
 /// `~/.claude/.credentials.json` for Claude).
-#[instrument(skip(agent))]
-fn read_host_credentials(agent: AgentType) -> Result<String> {
-    read_platform_credentials(agent)
+///
+/// Takes the resolved [`AgentAuth`] rather than re-deriving it from `agent`:
+/// only a manager built by [`credential_manager_for`] can reach here, and that
+/// manager already holds the profile, so "this agent has no auth" is
+/// unrepresentable instead of being an unwrap.
+#[instrument(skip(agent, auth))]
+fn read_host_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
+    read_platform_credentials(agent, auth)
 }
 
 #[cfg(target_os = "macos")]
-fn read_platform_credentials(agent: AgentType) -> Result<String> {
+fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
     use std::process::Command;
-    let auth = agent.auth().expect("agent has an auth profile");
-    debug!("reading credentials from macOS Keychain");
+    debug!(
+        agent = agent.name(),
+        "reading credentials from macOS Keychain"
+    );
     let output = Command::new("security")
         .args(["find-generic-password", "-s", auth.keychain_service, "-w"])
         .output()
@@ -219,8 +227,7 @@ fn read_platform_credentials(agent: AgentType) -> Result<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_platform_credentials(agent: AgentType) -> Result<String> {
-    let auth = agent.auth().expect("agent has an auth profile");
+fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let path = PathBuf::from(home)
         .join(agent.home_subdir())
