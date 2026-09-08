@@ -2195,6 +2195,11 @@ mod tests {
     /// Serialize tests that mutate process-wide env vars.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// Serialize tests that exercise the `claude_md` deprecation `tracing::warn!`
+    /// callsite. Its interest is cached process-wide; running these concurrently
+    /// with other tests hitting the same callsite races that global cache.
+    static CLAUDE_MD_WARN_MUTEX: Mutex<()> = Mutex::new(());
+
     #[test]
     fn errors_when_no_toml_file() {
         let tmp = TempDir::new().unwrap();
@@ -2925,14 +2930,17 @@ image = "ur-worker"
         )
         .unwrap();
 
-        let messages = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let subscriber = CapturingSubscriber {
-            messages: messages.clone(),
-        };
         // Other tests exercise the same `tracing::warn!` callsite without a
         // subscriber installed, which caches "not interested" for that
         // callsite. Rebuild interest while our subscriber is the default so
         // the event actually reaches it regardless of test execution order.
+        // The interest cache is process-wide, so serialize against any other
+        // test hitting this callsite concurrently.
+        let _claude_md_guard = CLAUDE_MD_WARN_MUTEX.lock().unwrap();
+        let messages = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let subscriber = CapturingSubscriber {
+            messages: messages.clone(),
+        };
         let _guard = tracing::subscriber::set_default(subscriber);
         tracing::callsite::rebuild_interest_cache();
         let cfg = Config::load_from(tmp.path()).unwrap();
@@ -2954,6 +2962,10 @@ image = "ur-worker"
 
     #[test]
     fn legacy_claude_md_takes_effect_over_absent_instruction_md() {
+        // Shares the `claude_md` deprecation `tracing::warn!` callsite with
+        // `legacy_ur_toml_compat`, which manipulates that callsite's
+        // process-wide interest cache. Serialize against it.
+        let _claude_md_guard = CLAUDE_MD_WARN_MUTEX.lock().unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("ur.toml"),
