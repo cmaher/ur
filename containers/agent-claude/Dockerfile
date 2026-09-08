@@ -1,4 +1,5 @@
-FROM ur-worker-base:latest
+ARG BASE_TAG=latest
+FROM ur-worker-base:${BASE_TAG}
 
 # Install Claude Code CLI as worker user
 COPY vendor/claude/install.sh /tmp/install-claude.sh
