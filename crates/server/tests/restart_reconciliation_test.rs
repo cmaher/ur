@@ -578,3 +578,45 @@ async fn restart_mixed_live_and_dead_workers() {
         "stopped worker credentials remain valid in DB"
     );
 }
+
+/// A worker's `agent_type` column survives a server restart: build a second
+/// `WorkerRepo` over the same pool (simulating restart) and read it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_type_persisted() {
+    let test_db = ur_db_test::TestDb::new().await;
+    let workflow_pool = test_db.workflow_pool();
+
+    // --- Phase 1: "Original server" registers a worker ---
+    let worker_repo1 = workflow_db::WorkerRepo::new(workflow_pool.clone());
+
+    let worker_id_str = "agent-type-restart-worker";
+    let worker = workflow_db::model::Worker {
+        worker_id: worker_id_str.to_owned(),
+        process_id: "agent-type-restart".to_owned(),
+        project_key: "test-proj".to_owned(),
+        container_id: "agent-type-container".to_owned(),
+        worker_secret: "agent-type-secret".to_owned(),
+        strategy: "code".to_owned(),
+        agent_type: "claude".to_owned(),
+        container_status: "running".to_owned(),
+        agent_status: "starting".to_owned(),
+        workspace_path: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        idle_redispatch_count: 0,
+    };
+    worker_repo1.insert_worker(&worker).await.unwrap();
+
+    // --- Phase 2: "Server restart" — rebuild WorkerRepo over the same pool ---
+    let worker_repo2 = workflow_db::WorkerRepo::new(workflow_pool.clone());
+
+    let fetched = worker_repo2
+        .get_worker(worker_id_str)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fetched.agent_type, "claude",
+        "agent_type should survive a fresh WorkerRepo over the same pool"
+    );
+}
