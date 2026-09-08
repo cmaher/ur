@@ -109,7 +109,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
             },
         };
         if needs_seed {
-            if let Ok(creds_json) = read_host_credentials(&self.auth) {
+            if let Ok(creds_json) = read_host_credentials(self.agent_type()) {
                 info!(path = %creds_path.display(), "seeding credentials from host Claude Code");
                 write_file(&creds_path, &creds_json)?;
             } else {
@@ -180,18 +180,20 @@ pub fn credential_manager_for(agent: AgentType) -> Option<Box<dyn AgentCredentia
     }
 }
 
-/// Read Claude Code OAuth credentials from the host system.
+/// Read the agent's own OAuth credentials from the host system.
 ///
 /// On macOS, reads from the Keychain. On Linux, reads directly from the
-/// Claude Code credentials file at `~/.claude/.credentials.json`.
-#[instrument(skip(auth))]
-fn read_host_credentials(auth: &AgentAuth) -> Result<String> {
-    read_platform_credentials(auth)
+/// agent's native credentials file in its own home directory (e.g.
+/// `~/.claude/.credentials.json` for Claude).
+#[instrument(skip(agent))]
+fn read_host_credentials(agent: AgentType) -> Result<String> {
+    read_platform_credentials(agent)
 }
 
 #[cfg(target_os = "macos")]
-fn read_platform_credentials(auth: &AgentAuth) -> Result<String> {
+fn read_platform_credentials(agent: AgentType) -> Result<String> {
     use std::process::Command;
+    let auth = agent.auth().expect("agent has an auth profile");
     debug!("reading credentials from macOS Keychain");
     let output = Command::new("security")
         .args(["find-generic-password", "-s", auth.keychain_service, "-w"])
@@ -217,19 +219,20 @@ fn read_platform_credentials(auth: &AgentAuth) -> Result<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_platform_credentials(auth: &AgentAuth) -> Result<String> {
+fn read_platform_credentials(agent: AgentType) -> Result<String> {
+    let auth = agent.auth().expect("agent has an auth profile");
     let home = std::env::var("HOME").context("HOME not set")?;
     let path = PathBuf::from(home)
-        .join(".claude")
+        .join(agent.home_subdir())
         .join(auth.credentials_filename);
-    debug!(path = %path.display(), "reading credentials from Claude Code config");
+    debug!(path = %path.display(), "reading credentials from agent's native config");
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let trimmed = contents.trim().to_string();
     if trimmed.is_empty() {
         anyhow::bail!("{} is empty", path.display());
     }
-    info!(path = %path.display(), "credentials read from Claude Code config");
+    info!(path = %path.display(), "credentials read from agent's native config");
     Ok(trimmed)
 }
 

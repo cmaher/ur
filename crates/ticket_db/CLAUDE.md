@@ -1,18 +1,18 @@
 # ticket_db
 
-Postgres-backed ticket database crate. Owns the ticket lifecycle schema: tickets, activities, metadata, edges, dependency graph, workers, slots, and the ticket-side `ui_events` trigger infrastructure.
+Postgres-backed ticket database crate. Owns the ticket lifecycle schema: tickets, activities, metadata, edges, dependency graph, and the ticket-side `ui_events` trigger infrastructure.
 
 ## Responsibilities
 
-- Migrations for the ticket domain (`ticket`, `activity`, `meta`, `edge`, `slot`, `worker`, `worker_slot`, `ticket_comments`, `ui_events` tables and their triggers).
+- Migrations for the ticket domain (`ticket`, `activity`, `meta`, `edge`, `ticket_comments`, `ui_events` tables and their triggers).
 - `DatabaseManager` — opens a `PgPool` for `ur_tickets`, runs migrations on startup.
 - `TicketRepo` — CRUD operations for tickets, activities, and metadata.
 - `GraphManager` — dependency graph operations using petgraph, loaded from Postgres.
-- `WorkerRepo` — worker and slot management.
 
 ## What Does NOT Live Here
 
 - Workflow state (`workflow`, `workflow_intent`, `workflow_comments`, `workflow_events`) — those live in `workflow_db`.
+- Worker/slot management (`worker`, `slot`, `worker_slot`, `WorkerRepo`) — those live in `workflow_db` too. This crate's `001_initial.sql` still declares copies of those tables, but they are dead schema: nothing ever reads or writes them (removing the duplicate is a tracked follow-up).
 - Shared event infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`) — those live in `db_events`.
 - Cross-DB foreign keys — the `workflow` table references `ticket_id` as a plain TEXT soft reference; no DB-level FK exists.
 

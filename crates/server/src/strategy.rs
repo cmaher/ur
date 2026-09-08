@@ -83,8 +83,8 @@ impl WorkerStrategy {
 
     /// Returns the instruction-strategy name (without extension) for this
     /// strategy. Used to set `UR_WORKER_INSTRUCTION_STRATEGY` env var so
-    /// workerd can copy the right file from `potential-claudes/` to
-    /// `~/.claude/CLAUDE.md`.
+    /// workerd can copy the right file from `.agent-shared/instructions/` to
+    /// `~/{agent.home_subdir()}/{agent.instruction_filename()}` (e.g. `~/.claude/CLAUDE.md`).
     pub fn instruction_strategy_name(&self) -> &'static str {
         self.name()
     }

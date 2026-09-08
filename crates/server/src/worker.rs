@@ -424,7 +424,7 @@ pub struct WorkerConfig {
     pub hostexec_scripts: Vec<String>,
     /// Extra skill mounts from global config, merged by `WorkerManager::merge_global_skills`.
     /// Each entry is `(name, host_path)` — mounted read-only at
-    /// `/home/worker/.claude/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
+    /// `/home/worker/.agent-shared/potential-skills/<name>` by `RunOptsBuilder::add_extra_skills`.
     pub extra_skill_mounts: Vec<(String, PathBuf)>,
     /// Optional memory directory template string from project config.
     /// Mounted at `/home/worker/.claude/projects/-workspace/memory` inside the container.

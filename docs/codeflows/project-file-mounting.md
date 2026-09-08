@@ -107,7 +107,7 @@ Source: `crates/server/src/workflow/handlers/verify.rs`
 
 This means placing a file at `~/.ur/projects/ur/CLAUDE.md` is enough — no config change needed (for Claude; the convention filename is agent-derived via `agent.instruction_filename()`).
 
-Source: `resolve_project_instruction()` in `crates/server/src/worker.rs` (renamed from `resolve_claude_md`)
+Source: `resolve_project_instruction()` in `crates/server/src/worker.rs`
 
 ## memory_dir Convention Fallback
 

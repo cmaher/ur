@@ -1,18 +1,21 @@
 # workflow_db
 
-Postgres-backed workflow database crate. Owns the workflow lifecycle schema: workflow state, events, intents, comments, and the workflow-side `ui_events` trigger infrastructure.
+Postgres-backed workflow database crate. Owns the workflow lifecycle schema: workflow state, events, intents, comments, worker/slot lifecycle, and the workflow-side `ui_events` trigger infrastructure.
 
 ## Responsibilities
 
-- Migrations for the workflow domain (`workflow`, `workflow_event`, `workflow_intent`, `workflow_comments`, `workflow_events`, `ui_events` tables and their triggers).
+- Migrations for the workflow domain (`workflow`, `workflow_event`, `workflow_intent`, `workflow_comments`, `workflow_events`, `worker`, `slot`, `worker_slot`, `ui_events` tables and their triggers).
 - `DatabaseManager` — opens a `PgPool` for `ur_workflow`, runs migrations on startup.
 - `WorkflowRepo` — CRUD operations for workflow state, events, intents, and comments.
+- `WorkerRepo` — worker and slot management, including `worker.agent_type` (which agent — e.g. Claude — is running that worker; orthogonal to `strategy`, which describes what kind of work).
 
 ## What Does NOT Live Here
 
-- Ticket data (`ticket`, `activity`, `meta`, `edge`, `slot`, `worker`) — those live in `ticket_db`.
+- Ticket data (`ticket`, `activity`, `meta`, `edge`) — those live in `ticket_db`.
 - Shared event infrastructure (`PgEventPoller`, `UI_EVENTS_CHANNEL`, `UI_EVENTS_DDL`) — those live in `db_events`.
 - Cross-DB foreign keys — this crate references `ticket_id` values from `ticket_db` as plain TEXT soft references; no DB-level FK exists.
+
+`ticket_db`'s migrations also declare `slot`/`worker`/`worker_slot` tables, but they are dead schema nothing ever writes to — this crate's copies are the only ones any code reads or writes. Removing the dead duplicate is a tracked follow-up.
 
 ## Cross-DB References
 
