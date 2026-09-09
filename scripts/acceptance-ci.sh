@@ -2,12 +2,14 @@
 set -euo pipefail
 
 # Run acceptance tests with isolated CI-tagged images.
-# Builds all 5 images with a unique ci-<label> tag, runs acceptance tests,
+# Builds every image with a unique ci-<label> tag, runs acceptance tests,
 # then cleans up the tagged images (even on failure).
 
 LABEL=$(od -An -tx1 -N5 /dev/urandom | tr -d ' \n' | cut -c1-5)
 TAG="ci-${LABEL}"
-IMAGES=(ur-worker-base ur-worker ur-worker-rust ur-server ur-squid)
+# Keep in sync with scripts/build/image.sh's AGENT_IMAGES table (image tag
+# column) plus the non-agent images it also builds (base, server, squid).
+IMAGES=(ur-worker-base ur-worker-claude ur-worker-rust-claude ur-worker-codex ur-worker-rust-codex ur-server ur-squid)
 
 # --- Mutex: only one acceptance-ci / pre-push runs image builds at a time ---
 LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"
