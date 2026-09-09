@@ -173,8 +173,22 @@ fn wait_for_healthy(runtime: &str, container: &str) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
         if i == 59 {
+            let logs_output = Command::new(runtime)
+                .args(["logs", "--tail", "100", container])
+                .output();
+            let logs = logs_output.map_or_else(
+                |e| format!("(failed to fetch logs: {e})"),
+                |o| {
+                    format!(
+                        "stdout:\n{}\nstderr:\n{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    )
+                },
+            );
             panic!(
-                "container '{container}' did not become healthy after 30s (last status: {status})"
+                "container '{container}' did not become healthy after 30s \
+                 (last status: {status}).\nContainer logs:\n{logs}"
             );
         }
     }
