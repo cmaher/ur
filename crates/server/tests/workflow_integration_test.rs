@@ -404,6 +404,7 @@ fn dummy_launch_manager(
         workflow_repo,
         network_config: config.network.clone(),
         workspace_brain_dir: None,
+        config_dir: config.config_dir.clone(),
     }
 }
 

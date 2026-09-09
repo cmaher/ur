@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use futures::future::try_join_all;
 use tonic::{Code, Request, Response, Status};
@@ -50,6 +50,13 @@ pub enum CoreError {
          ur worker launch -m manual -w <dir> -p {project_key}"
     )]
     LocalProjectUnsupportedLaunch { project_key: String, reason: String },
+
+    /// The resolved agent has no seeded host credentials. Caught before
+    /// `run_and_record` so the container never boots into an interactive
+    /// login prompt nobody sees — `add_credentials` would otherwise create an
+    /// empty file at the bind-mount source and let the launch "succeed."
+    #[error("{remediation}")]
+    MissingCredentials { agent: String, remediation: String },
 
     #[error("prepare failed: {reason}")]
     PrepareFailed { reason: String },
@@ -114,6 +121,17 @@ impl From<CoreError> for Status {
             CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => {
                 let mut meta = HashMap::new();
                 meta.insert("project_key".into(), project_key.clone());
+                error::status_with_info(
+                    Code::FailedPrecondition,
+                    err.to_string(),
+                    DOMAIN_CORE,
+                    INVALID_ARGUMENT,
+                    meta,
+                )
+            }
+            CoreError::MissingCredentials { agent, .. } => {
+                let mut meta = HashMap::new();
+                meta.insert("agent".into(), agent.clone());
                 error::status_with_info(
                     Code::FailedPrecondition,
                     err.to_string(),
@@ -242,6 +260,36 @@ fn resolve_worker_image(
     }
 }
 
+/// Check that `agent` has seeded host credentials before launching a
+/// container for it — otherwise `RunOptsBuilder::add_credentials` creates an
+/// empty file at the bind-mount source so the launch "succeeds," and the
+/// worker boots straight into an interactive login prompt nobody sees.
+///
+/// Exempt for an agent with no auth profile (`agent.auth()` is `None`, so
+/// `host_credentials_path` returns `None`) — there is nothing to seed. This
+/// check is deliberately strict, unlike `ur start`'s credential seeding
+/// (`ensure_credentials_for_all_agents`), which must stay permissive so a
+/// Claude-only user isn't blocked by an unconfigured codex: seeding every
+/// agent on `ur start` is best-effort, but *launching* a specific agent with
+/// no credentials for it is a real, actionable failure.
+fn check_credentials_seeded(
+    agent: ur_config::AgentType,
+    config_dir: &Path,
+) -> Result<(), CoreError> {
+    let Some(path) = agent.host_credentials_path(config_dir) else {
+        return Ok(());
+    };
+    let seeded = std::fs::metadata(&path).is_ok_and(|m| m.len() >= 10);
+    if seeded {
+        Ok(())
+    } else {
+        Err(CoreError::MissingCredentials {
+            agent: agent.name().to_owned(),
+            remediation: agent.credentials_remediation(),
+        })
+    }
+}
+
 /// Shared worker launch and stop logic used by both the host-facing
 /// `CoreServiceHandler` and the worker-facing `WorkerCoreServiceHandler`.
 #[derive(Clone)]
@@ -257,6 +305,10 @@ pub struct LaunchManager {
     /// Top-level `workspace_brain_dir` from `ur.toml`, mounted at `/brain` for workers
     /// launched without a project. Resolution happens in `resolve_brain_dir`.
     pub workspace_brain_dir: Option<String>,
+    /// Locally-reachable `$UR_CONFIG` root (bind-mounted at `/config` inside
+    /// the server container) — used to check whether the resolved agent has
+    /// seeded credentials before launching a container for it.
+    pub config_dir: PathBuf,
 }
 
 /// Why a launch against a local project cannot proceed, or `None` if it can.
@@ -712,6 +764,8 @@ impl LaunchManager {
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
         let slot_id = slot_claim.as_ref().map(|claim| claim.slot_id().to_owned());
+
+        check_credentials_seeded(agent, &self.config_dir)?;
 
         // For Manual mode, use the auto-generated process_id; otherwise use req.worker_id.
         let process_id = generated_process_id.unwrap_or_else(|| req.worker_id.clone());
@@ -1892,6 +1946,62 @@ mod tests {
         assert_eq!(status.code(), Code::InvalidArgument);
         assert!(status.message().contains("bogus"), "{}", status.message());
         assert!(status.message().contains("codex"), "{}", status.message());
+    }
+
+    // ── credential seeding check before launch ──────────────────────────
+
+    #[test]
+    fn check_credentials_seeded_passes_when_file_is_seeded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds_dir = tmp.path().join("claude");
+        std::fs::create_dir_all(&creds_dir).unwrap();
+        std::fs::write(creds_dir.join(".credentials.json"), "{\"token\":\"abc\"}").unwrap();
+
+        assert!(check_credentials_seeded(ur_config::AgentType::Claude, tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn check_credentials_seeded_fails_when_file_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let err = check_credentials_seeded(ur_config::AgentType::Codex, tmp.path())
+            .expect_err("should reject");
+        assert!(
+            matches!(err, CoreError::MissingCredentials { .. }),
+            "{err:?}"
+        );
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert!(status.message().contains("codex"), "{}", status.message());
+        assert!(
+            status.message().contains("codex login"),
+            "{}",
+            status.message()
+        );
+        assert!(
+            status
+                .message()
+                .contains("ur worker reseed-credentials --agent codex"),
+            "{}",
+            status.message()
+        );
+    }
+
+    /// A stub file left behind by a Docker bind-mount setup (or a previous
+    /// empty seed) must not be mistaken for real credentials.
+    #[test]
+    fn check_credentials_seeded_fails_when_file_is_empty_stub() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds_dir = tmp.path().join("codex");
+        std::fs::create_dir_all(&creds_dir).unwrap();
+        std::fs::write(creds_dir.join("auth.json"), "").unwrap();
+
+        let err = check_credentials_seeded(ur_config::AgentType::Codex, tmp.path())
+            .expect_err("should reject");
+        assert!(
+            matches!(err, CoreError::MissingCredentials { .. }),
+            "{err:?}"
+        );
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────

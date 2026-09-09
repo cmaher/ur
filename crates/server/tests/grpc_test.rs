@@ -163,6 +163,7 @@ async fn make_grpc_handler(
         workflow_repo: workflow_repo.clone(),
         network_config: network_config.clone(),
         workspace_brain_dir: None,
+        config_dir: workspace.clone(),
     };
     let handler = ur_server::grpc::CoreServiceHandler {
         launch_manager,
@@ -289,6 +290,7 @@ async fn make_worker_handler() -> (
         workflow_repo: workflow_repo.clone(),
         network_config,
         workspace_brain_dir: None,
+        config_dir: workspace.clone(),
     };
 
     let handler = ur_server::grpc::WorkerCoreServiceHandler {

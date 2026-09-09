@@ -277,6 +277,45 @@ impl AgentType {
         }
     }
 
+    /// Host-side path to this agent's seeded credentials file, under
+    /// `$UR_CONFIG/<agent-name>/`, or `None` for an agent with no auth
+    /// profile. `config_dir` is the locally-reachable `$UR_CONFIG` root (the
+    /// server sees it bind-mounted at `/config`; the `ur` CLI sees it
+    /// directly) — `credential_manager_for` (`crates/ur/src/credential/`)
+    /// resolves this exact path for the CLI side; this is the server-side
+    /// equivalent, since `crates/server` cannot depend on `crates/ur`.
+    pub fn host_credentials_path(
+        &self,
+        config_dir: &std::path::Path,
+    ) -> Option<std::path::PathBuf> {
+        let auth = self.auth()?;
+        let filename = std::path::Path::new(auth.credentials_path).file_name()?;
+        Some(config_dir.join(self.name()).join(filename))
+    }
+
+    /// How to log into this agent on the host, for use in
+    /// [`AgentType::credentials_remediation`].
+    fn login_instruction(&self) -> &'static str {
+        match self {
+            Self::Claude => "log in to Claude Code on this machine",
+            Self::Codex => "run `codex login` on this machine",
+        }
+    }
+
+    /// Remediation message for a launch attempted with no seeded credentials
+    /// for this agent: names the agent, how to log in, and the reseed
+    /// command that picks the login up. Callers should only reach for this
+    /// when `auth()` is `Some` — an agent with no auth profile has nothing to
+    /// remediate.
+    pub fn credentials_remediation(&self) -> String {
+        format!(
+            "no credentials for agent '{name}' — {login}, then run \
+             `ur worker reseed-credentials --agent {name}`",
+            name = self.name(),
+            login = self.login_instruction(),
+        )
+    }
+
     /// Domains this agent needs through the forward proxy.
     pub fn proxy_domains(&self) -> &'static [&'static str] {
         match self {
@@ -501,6 +540,37 @@ mod tests {
             AuthSource::HostFile {
                 path_from_home: ".codex/auth.json",
             }
+        );
+    }
+
+    #[test]
+    fn host_credentials_path_per_agent() {
+        let config_dir = std::path::Path::new("/config");
+        assert_eq!(
+            AgentType::Claude.host_credentials_path(config_dir).unwrap(),
+            std::path::PathBuf::from("/config/claude/.credentials.json")
+        );
+        assert_eq!(
+            AgentType::Codex.host_credentials_path(config_dir).unwrap(),
+            std::path::PathBuf::from("/config/codex/auth.json")
+        );
+    }
+
+    #[test]
+    fn credentials_remediation_is_per_agent() {
+        let claude_msg = AgentType::Claude.credentials_remediation();
+        assert!(claude_msg.contains("claude"), "{claude_msg}");
+        assert!(claude_msg.contains("Claude Code"), "{claude_msg}");
+        assert!(
+            claude_msg.contains("ur worker reseed-credentials --agent claude"),
+            "{claude_msg}"
+        );
+
+        let codex_msg = AgentType::Codex.credentials_remediation();
+        assert!(codex_msg.contains("codex login"), "{codex_msg}");
+        assert!(
+            codex_msg.contains("ur worker reseed-credentials --agent codex"),
+            "{codex_msg}"
         );
     }
 
