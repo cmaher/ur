@@ -172,6 +172,14 @@ independently from the same `ur.toml` document by `ur_config::resolve_top_level_
 `WorkerModesConfig::from_toml` already re-parses the whole file to pull out `[worker_modes]`
 and `[worker_models]`, so reading one more top-level key needs no new plumbing.
 
+`--agent` on `ur worker launch` (`crates/ur/src/main.rs`) sets `WorkerLaunchRequest.agent_type`
+via `resolve_launch_agent_flag`; omitting it sends an empty string, which is exactly what the
+server already treated as "resolve it yourself" via `resolve_mode`'s `requested_agent`
+parameter — the CLI flag is real now, but the empty-means-unset contract it relies on isn't
+new. `ur worker reseed-credentials`/`save-credentials --agent` follow the same top-level
+default (via `resolve_agent_flag`) instead of a hardcoded `claude`, since the CLI process loads
+`Config` directly and has no reason to fall back to a literal.
+
 **Consequence worth flagging:** default models are agent-derived (`AgentType::default_model`),
 so setting `agent = "codex"` globally does not just swap which binary runs — the built-in
 `code` mode also resolves to `gpt-5.6-terra` instead of `sonnet`, because nothing in `code`'s
