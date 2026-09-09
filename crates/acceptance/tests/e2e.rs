@@ -308,6 +308,7 @@ fn write_test_config(
     projects: &[ProjectEntry],
     workspace_brain_dir: &Path,
     extra_toml: &str,
+    top_level_agent: Option<&str>,
 ) {
     let workspace_dir = config_dir.join("workspace");
     std::fs::create_dir_all(&workspace_dir).expect("failed to create workspace dir");
@@ -338,12 +339,20 @@ fn write_test_config(
 
     let projects_toml = render_projects_toml(projects);
 
+    // Optional top-level `agent` default, e.g. for `scenario_default_agent_config`.
+    // Like `workspace_brain_dir`, this is a top-level key so it must precede
+    // every table header below.
+    let agent_line = top_level_agent
+        .map(|a| format!("agent = \"{a}\"\n"))
+        .unwrap_or_default();
+
     // `workspace_brain_dir` is a top-level key, so it must precede every table header.
     let toml_content = format!(
         "server_port = {server_port}\n\
          workspace = \"{workspace}\"\n\
          compose_file = \"{compose}\"\n\
          workspace_brain_dir = \"{workspace_brain}\"\n\
+         {agent_line}\
          \n\
          [proxy]\n\
          hostname = \"{squid}\"\n\
@@ -490,6 +499,26 @@ fn stop_server(ur: &Path, config_dir: &Path) {
         &["server", "stop"],
         &[("UR_CONFIG", config_dir.to_str().unwrap())],
     );
+}
+
+/// Seed a placeholder Codex credentials file so `check_credentials_seeded`
+/// (`crates/server/src/grpc.rs`) does not reject a codex-agent launch.
+///
+/// Acceptance scenarios never drive a real Codex model turn — they only
+/// assert on the launch path (agent resolution, in-container layout, dispatch
+/// phrasing) — so a placeholder blob is enough. `check_credentials_seeded`
+/// only checks that the file exists and is at least 10 bytes; it never reads
+/// its content. See `AgentType::host_credentials_path` for why this lands at
+/// `$UR_CONFIG/codex/auth.json`, and `crates/acceptance/CLAUDE.md` for the
+/// documented decision.
+fn seed_dummy_codex_credentials(config_path: &Path) {
+    let codex_dir = config_path.join("codex");
+    std::fs::create_dir_all(&codex_dir).expect("failed to create codex credentials dir");
+    std::fs::write(
+        codex_dir.join("auth.json"),
+        "{\"acceptance-test\":\"dummy-token\"}",
+    )
+    .expect("failed to write dummy codex auth.json");
 }
 
 /// Shared test environment holding everything needed across all scenarios.
@@ -1043,6 +1072,7 @@ fn e2e_all() {
         &fixtures.projects,
         &fixtures.workspace_brain_dir.path,
         &fixtures.skills_extra_toml,
+        None,
     );
 
     let ur = bin("ur");
@@ -1154,6 +1184,16 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         scenario_hook_overlay_precedence(&env);
         scenario_agent_type_in_summary(&env);
         scenario_agent_shared_layout(&env);
+        scenario_codex_manual_worker(&env);
+        scenario_codex_image_template(&env);
+        scenario_codex_dispatch(&env);
+    }));
+
+    // Runs its own isolated `ur start`/`ur stop` cycle (see its doc comment for
+    // why), so it stays outside the shared scenario_result catch_unwind above —
+    // a failure here must not skip the shared stack's own teardown below.
+    let default_agent_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        scenario_default_agent_config(&env.runtime);
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
@@ -1174,7 +1214,12 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         "nobrain-ws-test",
         "hook-overlay-test",
         "agent-type-summary-test",
+        "agent-type-summary-codex-test",
         "agent-shared-layout-test",
+        "agent-shared-layout-codex-test",
+        "codex-manual-worker-test",
+        "rust-image-template-claude-test",
+        "rust-image-template-codex-test",
     ] {
         force_remove_container(&env.runtime, &env.container_name(ticket));
     }
@@ -1200,6 +1245,22 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     );
     stop_server(&env.ur, &env.config_path);
 
+    // Report both failures if both occurred, but resume_unwind can only carry
+    // one panic payload — prefer the shared-stack failure since it runs first
+    // and blocks more scenarios; the isolated stack's own failure is still
+    // printed either way.
+    if let Err(e) = &default_agent_result {
+        if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!(
+                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
+            );
+        } else if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!(
+                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
+            );
+        }
+    }
+
     if let Err(e) = scenario_result {
         // Reprint the panic message near the end of output so it's visible
         // in tail-truncated logs (e.g., the pre-push hook shows only the last 30 lines).
@@ -1208,6 +1269,10 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         } else if let Some(msg) = e.downcast_ref::<&str>() {
             eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
         }
+        std::panic::resume_unwind(e);
+    }
+
+    if let Err(e) = default_agent_result {
         std::panic::resume_unwind(e);
     }
 }
@@ -3648,6 +3713,49 @@ fn read_tmux_status_left(runtime: &str, container: &str) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+/// Capture the scrollback of the agent's tmux pane (`tmux capture-pane -p -t agent`).
+fn capture_agent_pane(runtime: &str, container: &str) -> String {
+    let output = Command::new(runtime)
+        .args([
+            "exec",
+            container,
+            "tmux",
+            "capture-pane",
+            "-p",
+            "-t",
+            "agent",
+            "-S",
+            "-200",
+        ])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to exec tmux capture-pane in {container}: {e}"));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Poll the agent's tmux pane until it contains `needle`, up to 30s.
+///
+/// Dispatch text (`Implement` RPC) is only sent once the agent reports idle for
+/// the first time (see `docs/codeflows/lifecycle-workflow.md`'s "Worker Readiness
+/// Flow"), which happens asynchronously shortly after the container is healthy —
+/// not synchronously as part of the launch call.
+fn wait_for_pane_contains(runtime: &str, container: &str, needle: &str) -> String {
+    let mut last = String::new();
+    for i in 0..60 {
+        last = capture_agent_pane(runtime, container);
+        if last.contains(needle) {
+            return last;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if i == 59 {
+            panic!(
+                "container '{container}' tmux pane did not contain '{needle}' after 30s.\n\
+                 Last pane contents:\n{last}"
+            );
+        }
+    }
+    last
+}
+
 /// Manual worker launch: verify auto-generated process_id, no branch checkout,
 /// worker appears in list with mode "manual", and clean shutdown.
 ///
@@ -4750,23 +4858,199 @@ fn scenario_hook_overlay_precedence(env: &TestEnv) {
     }
 }
 
-/// A default code-mode worker reports `agent_type == "claude"` in `ur worker list`.
+/// Launch a pool worker for `ticket_id`, with an optional `--agent` override, and
+/// assert `agent_type` in `ur worker list` matches `expected_agent`. Stops the
+/// worker afterward. Shared by `scenario_agent_type_in_summary`'s claude and
+/// codex cases.
+fn assert_agent_type_in_summary(
+    env: &TestEnv,
+    ticket_id: &str,
+    agent_flag: Option<&str>,
+    expected_agent: &str,
+) {
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let mut launch_args = vec!["worker", "launch", "-p", env.project_key, ticket_id];
+    if let Some(agent) = agent_flag {
+        launch_args.push("--agent");
+        launch_args.push(agent);
+    }
+    let launch_output = run_cmd(&env.ur, &launch_args, &env_slice);
+    assert!(
+        launch_output.status.success(),
+        "ur worker launch -p {} {} failed.\nstdout: {}\nstderr: {}",
+        env.project_key,
+        agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+
+    wait_for_healthy(&env.runtime, &container_name);
+
+    // ---- Assert agent_type == expected_agent in the worker list summary ----
+    let list_output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env_slice);
+    assert!(
+        list_output.status.success(),
+        "ur worker list failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list_output.stdout),
+        String::from_utf8_lossy(&list_output.stderr),
+    );
+    let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
+        .expect("worker list output should be valid JSON");
+    let workers = list_json["data"]
+        .as_array()
+        .expect("worker list data should be an array");
+    let worker = workers
+        .iter()
+        .find(|w| w["worker_id"].as_str() == Some(ticket_id))
+        .unwrap_or_else(|| panic!("worker list should contain '{ticket_id}'.\nlist: {list_json}"));
+    assert_eq!(
+        worker["agent_type"].as_str(),
+        Some(expected_agent),
+        "worker '{ticket_id}' should have agent_type '{expected_agent}', got: {:?}",
+        worker["agent_type"]
+    );
+
+    // ---- Stop worker ----
+    let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+    assert!(
+        stop_output.status.success(),
+        "ur worker stop ({ticket_id}) failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&stop_output.stdout),
+        String::from_utf8_lossy(&stop_output.stderr),
+    );
+}
+
 fn scenario_agent_type_in_summary(env: &TestEnv) {
-    let ticket_id = "agent-type-summary-test";
+    let claude_ticket_id = "agent-type-summary-test";
+    let codex_ticket_id = "agent-type-summary-codex-test";
+    let claude_container_name = env.container_name(claude_ticket_id);
+    let codex_container_name = env.container_name(codex_ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Default code-mode pool worker: no --agent flag resolves to claude ----
+        assert_agent_type_in_summary(env, claude_ticket_id, None, "claude");
+
+        // ---- Explicit --agent codex resolves to codex ----
+        seed_dummy_codex_credentials(&env.config_path);
+        assert_agent_type_in_summary(env, codex_ticket_id, Some("codex"), "codex");
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &claude_container_name);
+        force_remove_container(&env.runtime, &codex_container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Launch a pool worker for `ticket_id`, with an optional `--agent` override, and
+/// assert the base image's agent-agnostic `.agent-shared/` layout exists. Stops
+/// the worker afterward. Shared by `scenario_agent_shared_layout`'s claude and
+/// codex cases — `.agent-shared/` is baked into `worker-base`, which every
+/// per-agent image extends, so the layout must be identical regardless of agent.
+fn assert_agent_shared_layout(env: &TestEnv, ticket_id: &str, agent_flag: Option<&str>) {
+    let container_name = env.container_name(ticket_id);
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    let mut launch_args = vec!["worker", "launch", "-p", env.project_key, ticket_id];
+    if let Some(agent) = agent_flag {
+        launch_args.push("--agent");
+        launch_args.push(agent);
+    }
+    let launch_output = run_cmd(&env.ur, &launch_args, &env_slice);
+    assert!(
+        launch_output.status.success(),
+        "ur worker launch -p {} {} failed.\nstdout: {}\nstderr: {}",
+        env.project_key,
+        agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
+        String::from_utf8_lossy(&launch_output.stdout),
+        String::from_utf8_lossy(&launch_output.stderr),
+    );
+
+    wait_for_healthy(&env.runtime, &container_name);
+
+    // ---- Assert the base-image .agent-shared/ layout exists ----
+    for path in [
+        "/home/worker/.agent-shared/potential-skills",
+        "/home/worker/.agent-shared/instructions/code.md",
+        "/home/worker/.agent-shared/shared-instructions",
+    ] {
+        let ls_output = exec_in_container(&env.runtime, &container_name, &["ls", path]);
+        assert_exec_success(
+            &ls_output,
+            &format!(
+                "{path} should exist in the base image — \
+                 check that the worker-base Dockerfile COPYs it into .agent-shared/"
+            ),
+        );
+    }
+
+    // ---- Stop worker ----
+    let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+    assert!(
+        stop_output.status.success(),
+        "ur worker stop ({ticket_id}) failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&stop_output.stdout),
+        String::from_utf8_lossy(&stop_output.stderr),
+    );
+}
+
+/// The base image's agent-agnostic `.agent-shared/` layout exists in a running container,
+/// for both the claude and codex per-agent images.
+fn scenario_agent_shared_layout(env: &TestEnv) {
+    let claude_ticket_id = "agent-shared-layout-test";
+    let codex_ticket_id = "agent-shared-layout-codex-test";
+    let claude_container_name = env.container_name(claude_ticket_id);
+    let codex_container_name = env.container_name(codex_ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert_agent_shared_layout(env, claude_ticket_id, None);
+
+        seed_dummy_codex_credentials(&env.config_path);
+        assert_agent_shared_layout(env, codex_ticket_id, Some("codex"));
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &claude_container_name);
+        force_remove_container(&env.runtime, &codex_container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Codex-agent worker: `--agent codex` resolves `agent_type=codex`, and the
+/// in-container `~/.codex/` layout mirrors `~/.claude/`'s for the claude agent
+/// (`config.toml`, `AGENTS.md`, `skills/<name>/SKILL.md`, `skill-hooks/`), with
+/// `auth.json` mounted as a single file (not a directory) — see
+/// `RunOptsBuilder::add_credentials`.
+fn scenario_codex_manual_worker(env: &TestEnv) {
+    let ticket_id = "codex-manual-worker-test";
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch a default code-mode pool worker ----
+        seed_dummy_codex_credentials(&env.config_path);
+
+        // ---- Launch a code-mode pool worker with --agent codex ----
         let launch_output = run_cmd(
             &env.ur,
-            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &[
+                "worker",
+                "launch",
+                "-p",
+                env.project_key,
+                "--agent",
+                "codex",
+                ticket_id,
+            ],
             &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -p {} --agent codex failed.\nstdout: {}\nstderr: {}",
             env.project_key,
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
@@ -4774,7 +5058,7 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Assert agent_type == "claude" in the worker list summary ----
+        // ---- Assert agent_type == "codex" in the worker list ----
         let list_output = run_cmd(&env.ur, &["--output", "json", "worker", "list"], &env_slice);
         assert!(
             list_output.status.success(),
@@ -4784,10 +5068,9 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
         );
         let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
             .expect("worker list output should be valid JSON");
-        let workers = list_json["data"]
+        let worker = list_json["data"]
             .as_array()
-            .expect("worker list data should be an array");
-        let worker = workers
+            .expect("worker list data should be an array")
             .iter()
             .find(|w| w["worker_id"].as_str() == Some(ticket_id))
             .unwrap_or_else(|| {
@@ -4795,16 +5078,49 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
             });
         assert_eq!(
             worker["agent_type"].as_str(),
-            Some("claude"),
-            "worker '{ticket_id}' should have agent_type 'claude', got: {:?}",
+            Some("codex"),
+            "worker '{ticket_id}' should have agent_type 'codex', got: {:?}",
             worker["agent_type"]
+        );
+
+        // ---- Assert the in-container .codex layout ----
+        for path in [
+            "/home/worker/.codex/config.toml",
+            "/home/worker/.codex/AGENTS.md",
+            "/home/worker/.codex/skills/test-skill/SKILL.md",
+        ] {
+            let ls_output = exec_in_container(&env.runtime, &container_name, &["ls", path]);
+            assert_exec_success(
+                &ls_output,
+                &format!("{path} should exist for a codex-agent worker"),
+            );
+        }
+        let skill_hooks_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["ls", "-d", "/home/worker/.codex/skill-hooks"],
+        );
+        assert_exec_success(
+            &skill_hooks_output,
+            "/home/worker/.codex/skill-hooks should exist for a codex-agent worker",
+        );
+
+        // ---- Assert auth.json is mounted as a single file, not a directory ----
+        let is_file_output = exec_in_container(
+            &env.runtime,
+            &container_name,
+            &["test", "-f", "/home/worker/.codex/auth.json"],
+        );
+        assert_exec_success(
+            &is_file_output,
+            "/home/worker/.codex/auth.json should be a regular file, not a directory",
         );
 
         // ---- Stop worker ----
         let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur worker stop (agent-type-summary-test) failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop ({ticket_id}) failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
@@ -4816,23 +5132,121 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
     }
 }
 
-/// The base image's agent-agnostic `.agent-shared/` layout exists in a running container.
-fn scenario_agent_shared_layout(env: &TestEnv) {
-    let ticket_id = "agent-shared-layout-test";
-    let container_name = env.container_name(ticket_id);
+/// A single project configured with the agent-agnostic `container.image = "ur-worker-rust"`
+/// alias resolves to a different concrete image per launch agent: `ur-worker-rust-claude`
+/// for the default agent, `ur-worker-rust-codex` for `--agent codex`. Exercises
+/// `AgentType::resolve_image` / `resolve_worker_image` (`crates/server/src/grpc.rs`),
+/// the single decision point for both project-configured image and `ur --image`.
+fn scenario_codex_image_template(env: &TestEnv) {
+    let claude_ticket_id = "rust-image-template-claude-test";
+    let codex_ticket_id = "rust-image-template-codex-test";
+    let claude_container_name = env.container_name(claude_ticket_id);
+    let codex_container_name = env.container_name(codex_ticket_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
+    let launch_and_verify_image = |ticket_id: &str,
+                                   container_name: &str,
+                                   agent_flag: Option<&str>,
+                                   expected_image_substr: &str| {
+        let mut launch_args = vec!["worker", "launch", "-p", "rustproj"];
+        if let Some(agent) = agent_flag {
+            launch_args.push("--agent");
+            launch_args.push(agent);
+        }
+        launch_args.push(ticket_id);
+        let launch_output = run_cmd(&env.ur, &launch_args, &env_slice);
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p rustproj {} failed.\nstdout: {}\nstderr: {}",
+            agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(&env.runtime, container_name);
+
+        let inspect_output = Command::new(&env.runtime)
+            .args(["inspect", "--format", "{{.Config.Image}}", container_name])
+            .output()
+            .expect("failed to inspect container image");
+        let image = String::from_utf8_lossy(&inspect_output.stdout)
+            .trim()
+            .to_string();
+        assert!(
+            image.contains(expected_image_substr),
+            "container should use an image containing '{expected_image_substr}', got: {image}"
+        );
+
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop ({ticket_id}) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    };
+
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Launch a pool worker ----
+        // ---- Default agent resolves "ur-worker-rust" -> ur-worker-rust-claude ----
+        launch_and_verify_image(
+            claude_ticket_id,
+            &claude_container_name,
+            None,
+            "ur-worker-rust-claude",
+        );
+
+        // ---- --agent codex resolves the SAME configured alias -> ur-worker-rust-codex ----
+        seed_dummy_codex_credentials(&env.config_path);
+        launch_and_verify_image(
+            codex_ticket_id,
+            &codex_container_name,
+            Some("codex"),
+            "ur-worker-rust-codex",
+        );
+    }));
+
+    if let Err(e) = result {
+        force_remove_container(&env.runtime, &claude_container_name);
+        force_remove_container(&env.runtime, &codex_container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Dispatching a ticket to a codex-agent worker sends the codex-phrased skill
+/// invocation (not the claude slash-command form) to the agent's tmux pane.
+/// Exercises `dispatch_commands` (`crates/workerd/src/grpc_service.rs`), which
+/// builds `[agent.clear_command(), agent.skill_invocation(skill, args)]` —
+/// for codex that's `["/new", "Run the \`implement\` skill. Arguments: <ticket>"]`,
+/// never the claude-only `/implement` literal.
+fn scenario_codex_dispatch(env: &TestEnv) {
+    let env_pairs = env.env();
+    let env_slice = env_pairs.to_vec();
+
+    seed_dummy_codex_credentials(&env.config_path);
+
+    let ticket_id = create_test_ticket(env, "Codex dispatch test");
+    let container_name = env.container_name(&ticket_id);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ---- Launch a codex-agent worker with dispatch (-d) ----
         let launch_output = run_cmd(
             &env.ur,
-            &["worker", "launch", "-p", env.project_key, ticket_id],
+            &[
+                "worker",
+                "launch",
+                "-p",
+                env.project_key,
+                "--agent",
+                "codex",
+                "-d",
+                &ticket_id,
+            ],
             &env_slice,
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch -p {} failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -p {} --agent codex -d failed.\nstdout: {}\nstderr: {}",
             env.project_key,
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
@@ -4840,27 +5254,20 @@ fn scenario_agent_shared_layout(env: &TestEnv) {
 
         wait_for_healthy(&env.runtime, &container_name);
 
-        // ---- Assert the base-image .agent-shared/ layout exists ----
-        for path in [
-            "/home/worker/.agent-shared/potential-skills",
-            "/home/worker/.agent-shared/instructions/code.md",
-            "/home/worker/.agent-shared/shared-instructions",
-        ] {
-            let ls_output = exec_in_container(&env.runtime, &container_name, &["ls", path]);
-            assert_exec_success(
-                &ls_output,
-                &format!(
-                    "{path} should exist in the base image — \
-                     check that the worker-base Dockerfile COPYs it into .agent-shared/"
-                ),
-            );
-        }
+        // ---- Assert the codex-phrased skill invocation reached the pane ----
+        let expected_invocation = format!("Run the `implement` skill. Arguments: {ticket_id}");
+        let pane = wait_for_pane_contains(&env.runtime, &container_name, &expected_invocation);
+        assert!(
+            !pane.contains("/implement"),
+            "codex dispatch should never send the claude-only '/implement' slash command.\n\
+             Pane contents:\n{pane}"
+        );
 
         // ---- Stop worker ----
-        let stop_output = run_cmd(&env.ur, &["worker", "stop", ticket_id], &env_slice);
+        let stop_output = run_cmd(&env.ur, &["worker", "stop", &ticket_id], &env_slice);
         assert!(
             stop_output.status.success(),
-            "ur worker stop (agent-shared-layout-test) failed.\nstdout: {}\nstderr: {}",
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&stop_output.stdout),
             String::from_utf8_lossy(&stop_output.stderr),
         );
@@ -4868,6 +5275,116 @@ fn scenario_agent_shared_layout(env: &TestEnv) {
 
     if let Err(e) = result {
         force_remove_container(&env.runtime, &container_name);
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// With a top-level `agent = "codex"` in `ur.toml` and no `--agent` flag and no
+/// mode-level `agent` field, a launch resolves to codex. `WorkerModesConfig` is
+/// parsed once at server startup (not live-reloadable, unlike `ProjectRegistry`),
+/// so this needs its own isolated `ur start`/`ur stop` cycle rather than the
+/// shared always-claude-default stack every other scenario runs against.
+fn scenario_default_agent_config(runtime: &str) {
+    let names = test_names("agent-default");
+    // The shared e2e stack uses server_port 19870, which derives worker_port
+    // 19871 and builderd_port 19872 (`server_port + 1` / `+ 2`, see
+    // `ur_config::Config::from_toml_str`) — well clear of that range so this
+    // isolated stack's own derived ports (19881/19882) never collide with it.
+    let server_port = 19880u16;
+    let prefix_filter = format!("ur-{}-agent-default", &*RUN_ID);
+
+    force_remove_by_prefix(runtime, &prefix_filter);
+    kill_process_on_port(server_port + 2);
+
+    let config_dir =
+        tempfile::tempdir().expect("failed to create temp config dir for agent-default stack");
+    let config_path = config_dir.path().to_path_buf();
+
+    let project_key = "agentdefaultproj";
+    let fixtures = create_project_fixtures(&config_path, project_key);
+    write_test_config(
+        &config_path,
+        server_port,
+        &names,
+        &fixtures.projects,
+        &fixtures.workspace_brain_dir.path,
+        &fixtures.skills_extra_toml,
+        Some("codex"),
+    );
+
+    let ur = bin("ur");
+    assert!(ur.exists(), "ur binary not found at {}", ur.display());
+    let env_slice = vec![("UR_CONFIG", config_path.to_str().unwrap())];
+
+    let ticket_id = "default-agent-test";
+    let container_name = format!("{}{ticket_id}", names.worker_prefix);
+
+    // Everything from `ur start` onward is wrapped in catch_unwind so that
+    // `stop_server` below still runs even if `ur start` itself fails.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let up_output = run_cmd(&ur, &["server", "start"], &env_slice);
+        assert!(
+            up_output.status.success(),
+            "ur start (agent-default stack) failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&up_output.stdout),
+            String::from_utf8_lossy(&up_output.stderr),
+        );
+
+        seed_dummy_codex_credentials(&config_path);
+
+        // ---- Launch with no --agent flag and no mode agent field ----
+        let launch_output = run_cmd(
+            &ur,
+            &["worker", "launch", "-p", project_key, ticket_id],
+            &env_slice,
+        );
+        assert!(
+            launch_output.status.success(),
+            "ur worker launch -p {project_key} failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&launch_output.stdout),
+            String::from_utf8_lossy(&launch_output.stderr),
+        );
+
+        wait_for_healthy(runtime, &container_name);
+
+        let list_output = run_cmd(&ur, &["--output", "json", "worker", "list"], &env_slice);
+        assert!(
+            list_output.status.success(),
+            "ur worker list failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&list_output.stdout),
+            String::from_utf8_lossy(&list_output.stderr),
+        );
+        let list_json: serde_json::Value = serde_json::from_slice(&list_output.stdout)
+            .expect("worker list output should be valid JSON");
+        let worker = list_json["data"]
+            .as_array()
+            .expect("worker list data should be an array")
+            .iter()
+            .find(|w| w["worker_id"].as_str() == Some(ticket_id))
+            .unwrap_or_else(|| {
+                panic!("worker list should contain '{ticket_id}'.\nlist: {list_json}")
+            });
+        assert_eq!(
+            worker["agent_type"].as_str(),
+            Some("codex"),
+            "worker '{ticket_id}' should resolve agent_type 'codex' from the top-level \
+             `agent` default (no --agent flag, no mode agent field), got: {:?}",
+            worker["agent_type"]
+        );
+
+        let stop_output = run_cmd(&ur, &["worker", "stop", ticket_id], &env_slice);
+        assert!(
+            stop_output.status.success(),
+            "ur worker stop failed.\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
+        );
+    }));
+
+    stop_server(&ur, &config_path);
+
+    if let Err(e) = result {
+        force_remove_container(runtime, &container_name);
         std::panic::resume_unwind(e);
     }
 }
