@@ -1197,6 +1197,45 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
     }));
 
     // ---- (4) Always tear down: force-remove leftover worker containers, then stop server ----
+    teardown_worker_containers(&env);
+    stop_server(&env.ur, &env.config_path);
+
+    // Report both failures if both occurred, but resume_unwind can only carry
+    // one panic payload — prefer the shared-stack failure since it runs first
+    // and blocks more scenarios; the isolated stack's own failure is still
+    // printed either way.
+    if let Err(e) = &default_agent_result {
+        if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!(
+                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
+            );
+        } else if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!(
+                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
+            );
+        }
+    }
+
+    if let Err(e) = scenario_result {
+        // Reprint the panic message near the end of output so it's visible
+        // in tail-truncated logs (e.g., the pre-push hook shows only the last 30 lines).
+        if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
+        } else if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
+        }
+        std::panic::resume_unwind(e);
+    }
+
+    if let Err(e) = default_agent_result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// Force-remove every worker container the shared-stack scenarios may have left
+/// running, covering both ticket-id-named containers and the generated
+/// `{basename}-man-{n}` process IDs manual launches produce.
+fn teardown_worker_containers(env: &TestEnv) {
     for ticket in [
         "pool-test",
         "design-test-1",
@@ -1243,38 +1282,6 @@ fn run_scenarios(env: TestEnv, ur: PathBuf, config_path: PathBuf) {
         &env.runtime,
         &env.container_name(&local_manual_process_id("addedlocal")),
     );
-    stop_server(&env.ur, &env.config_path);
-
-    // Report both failures if both occurred, but resume_unwind can only carry
-    // one panic payload — prefer the shared-stack failure since it runs first
-    // and blocks more scenarios; the isolated stack's own failure is still
-    // printed either way.
-    if let Err(e) = &default_agent_result {
-        if let Some(msg) = e.downcast_ref::<String>() {
-            eprintln!(
-                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
-            );
-        } else if let Some(msg) = e.downcast_ref::<&str>() {
-            eprintln!(
-                "\n=== SCENARIO FAILURE (scenario_default_agent_config) ===\n{msg}\n=== END ===\n"
-            );
-        }
-    }
-
-    if let Err(e) = scenario_result {
-        // Reprint the panic message near the end of output so it's visible
-        // in tail-truncated logs (e.g., the pre-push hook shows only the last 30 lines).
-        if let Some(msg) = e.downcast_ref::<String>() {
-            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
-        } else if let Some(msg) = e.downcast_ref::<&str>() {
-            eprintln!("\n=== SCENARIO FAILURE ===\n{msg}\n=== END ===\n");
-        }
-        std::panic::resume_unwind(e);
-    }
-
-    if let Err(e) = default_agent_result {
-        std::panic::resume_unwind(e);
-    }
 }
 
 // ---------------------------------------------------------------------------

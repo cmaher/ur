@@ -148,6 +148,15 @@ struct RawWorkerModels {
     per_agent: HashMap<ur_config::AgentType, RawStrategyModels>,
 }
 
+/// Error message for an unrecognized `[worker_models.<agent>]` table name.
+fn unknown_worker_models_agent_error(key: &str) -> String {
+    let valid: Vec<&str> = ur_config::AgentType::ALL.iter().map(|a| a.name()).collect();
+    format!(
+        "invalid worker_models config: unknown agent '{key}' in \
+         [worker_models.{key}]. Valid agents: {valid:?}"
+    )
+}
+
 impl RawWorkerModels {
     /// Parse `[worker_models]` from its raw `toml::Value`, or return the
     /// (empty) default when the section is absent.
@@ -163,14 +172,8 @@ impl RawWorkerModels {
         let mut per_agent = HashMap::new();
         for (key, val) in table {
             if let toml::Value::Table(_) = val {
-                let agent = ur_config::AgentType::parse(key).map_err(|_| {
-                    let valid: Vec<&str> =
-                        ur_config::AgentType::ALL.iter().map(|a| a.name()).collect();
-                    format!(
-                        "invalid worker_models config: unknown agent '{key}' in \
-                         [worker_models.{key}]. Valid agents: {valid:?}"
-                    )
-                })?;
+                let agent = ur_config::AgentType::parse(key)
+                    .map_err(|_| unknown_worker_models_agent_error(key))?;
                 let strategy_models: RawStrategyModels = val
                     .clone()
                     .try_into()

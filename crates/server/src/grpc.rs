@@ -80,116 +80,72 @@ pub enum CoreError {
     Unimplemented,
 }
 
+/// Build a `Status` for a `CoreError` variant with no extra metadata fields.
+fn simple_status(code: Code, err: &CoreError, err_type: &str) -> Status {
+    error::status_with_info(code, err.to_string(), DOMAIN_CORE, err_type, HashMap::new())
+}
+
+/// Build a `Status` for a `CoreError` variant carrying one metadata field.
+fn status_with_meta(
+    code: Code,
+    err: &CoreError,
+    err_type: &str,
+    key: &str,
+    value: String,
+) -> Status {
+    let mut meta = HashMap::new();
+    meta.insert(key.to_owned(), value);
+    error::status_with_info(code, err.to_string(), DOMAIN_CORE, err_type, meta)
+}
+
 impl From<CoreError> for Status {
     fn from(err: CoreError) -> Self {
         match &err {
-            CoreError::InvalidMode { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::InvalidAgent { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::InvalidImage { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::PoolSlotFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::InvalidContextRepo { .. } => error::status_with_info(
-                Code::InvalidArgument,
-                err.to_string(),
-                DOMAIN_CORE,
-                INVALID_ARGUMENT,
-                HashMap::new(),
-            ),
-            CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => {
-                let mut meta = HashMap::new();
-                meta.insert("project_key".into(), project_key.clone());
-                error::status_with_info(
-                    Code::FailedPrecondition,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    INVALID_ARGUMENT,
-                    meta,
-                )
+            CoreError::InvalidMode { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::MissingCredentials { agent, .. } => {
-                let mut meta = HashMap::new();
-                meta.insert("agent".into(), agent.clone());
-                error::status_with_info(
-                    Code::FailedPrecondition,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    INVALID_ARGUMENT,
-                    meta,
-                )
+            CoreError::InvalidAgent { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::PrepareFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::RunFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::StopFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::WorkerNotFound { worker_id } => {
-                let mut meta = HashMap::new();
-                meta.insert("worker_id".into(), worker_id.clone());
-                error::status_with_info(
-                    Code::NotFound,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    NOT_FOUND,
-                    meta,
-                )
+            CoreError::InvalidImage { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
-            CoreError::SendMessageFailed { .. } => error::status_with_info(
-                Code::Internal,
-                err.to_string(),
-                DOMAIN_CORE,
-                INTERNAL,
-                HashMap::new(),
-            ),
-            CoreError::WorkspaceNotFound { process_id } => {
-                let mut meta = HashMap::new();
-                meta.insert("process_id".into(), process_id.clone());
-                error::status_with_info(
-                    Code::NotFound,
-                    err.to_string(),
-                    DOMAIN_CORE,
-                    NOT_FOUND,
-                    meta,
-                )
+            CoreError::PoolSlotFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::InvalidContextRepo { .. } => {
+                simple_status(Code::InvalidArgument, &err, INVALID_ARGUMENT)
             }
+            CoreError::LocalProjectUnsupportedLaunch { project_key, .. } => status_with_meta(
+                Code::FailedPrecondition,
+                &err,
+                INVALID_ARGUMENT,
+                "project_key",
+                project_key.clone(),
+            ),
+            CoreError::MissingCredentials { agent, .. } => status_with_meta(
+                Code::FailedPrecondition,
+                &err,
+                INVALID_ARGUMENT,
+                "agent",
+                agent.clone(),
+            ),
+            CoreError::PrepareFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::RunFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::StopFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::WorkerNotFound { worker_id } => status_with_meta(
+                Code::NotFound,
+                &err,
+                NOT_FOUND,
+                "worker_id",
+                worker_id.clone(),
+            ),
+            CoreError::SendMessageFailed { .. } => simple_status(Code::Internal, &err, INTERNAL),
+            CoreError::WorkspaceNotFound { process_id } => status_with_meta(
+                Code::NotFound,
+                &err,
+                NOT_FOUND,
+                "process_id",
+                process_id.clone(),
+            ),
             CoreError::Unimplemented => Status::unimplemented(err.to_string()),
         }
     }
