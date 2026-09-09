@@ -248,7 +248,7 @@ enum WorkerCommands {
     },
     /// List all running processes
     List,
-    /// Force re-seed shared Claude Code credentials from the host (Keychain on macOS)
+    /// Force re-seed shared agent credentials from the host (Keychain on macOS for Claude)
     ReseedCredentials {
         /// Which agent to reseed credentials for
         #[arg(long, default_value = ur_config::AgentType::Claude.name())]
@@ -311,39 +311,6 @@ fn prepare_project_mounts(config: &ur_config::Config) {
     }
 }
 
-/// Re-seed credentials for every agent that has an auth profile.
-///
-/// The CLI cannot know which agent(s) a launch will actually use — `[worker_modes]`
-/// resolution is server-side and `crates/ur` has no `server` dependency — so this
-/// iterates `AgentType::ALL` rather than a single agent. With one variant today,
-/// this runs once for Claude, identical to seeding Claude alone.
-///
-/// Errors are real I/O failures (unresolvable config dir, unwritable credentials
-/// path) and propagate to the caller — a worker launched with an unwritten
-/// credentials file comes up unable to authenticate. "The host has no credentials
-/// to copy" is *not* an error: `ensure_credentials` warns and leaves the existing
-/// file alone. Callers that must tolerate failure (e.g. `ur start`, which prints
-/// its own guidance) log the error explicitly instead of dropping it here.
-///
-/// Every agent is attempted before returning: one agent's broken keychain must
-/// not leave a healthy agent unseeded, since the caller cannot know which agent
-/// the launch will resolve to. Failures are then reported together.
-fn ensure_credentials_for_all_agents(max_age: Duration) -> Result<()> {
-    let mut failures = Vec::new();
-    for agent in ur_config::AgentType::ALL {
-        let Some(cred_mgr) = credential::credential_manager_for(*agent) else {
-            continue;
-        };
-        if let Err(e) = cred_mgr.ensure_credentials(max_age) {
-            failures.push(format!("{}: {e:#}", agent.name()));
-        }
-    }
-    if !failures.is_empty() {
-        bail!("failed to seed credentials — {}", failures.join("; "));
-    }
-    Ok(())
-}
-
 #[instrument(skip(config, compose, output))]
 fn start_server(
     config: &ur_config::Config,
@@ -354,10 +321,10 @@ fn start_server(
 
     prepare_project_mounts(config);
 
-    // Seed credentials from host Claude Code before starting anything so
+    // Seed credentials for every known agent before starting anything so
     // they're available for bind-mounting into worker containers. Force a
     // re-seed on every start so host re-logins propagate after a restart.
-    if let Err(e) = ensure_credentials_for_all_agents(Duration::ZERO) {
+    if let Err(e) = credential::ensure_credentials_for_all_agents(Duration::ZERO) {
         warn!(error = %e, "credential seeding failed");
     }
     if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
@@ -874,10 +841,10 @@ async fn process_launch(
 ) -> Result<String> {
     info!(ticket_id, project_key, "launching worker process");
 
-    // Refresh credentials from host Claude Code and ensure config exists.
+    // Refresh credentials for every known agent and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
+    credential::ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -1107,7 +1074,8 @@ fn handle_worker_reseed_credentials(output: &OutputManager, agent: &str) -> Resu
             .unwrap_or(true)
     {
         anyhow::bail!(
-            "no host Claude Code credentials found to seed — log in to Claude Code on this machine first"
+            "no host credentials found to seed for agent {} — log in to that agent on this machine first",
+            agent.name()
         );
     }
     if output.is_json() {

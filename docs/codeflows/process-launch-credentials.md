@@ -5,22 +5,30 @@ How `ur process launch` starts a worker container with agent credentials.
 ## Credential Flow
 
 ```
-macOS: Keychain ("Claude Code-credentials")
-Linux: ~/.claude/.credentials.json
+Claude — macOS: Keychain ("Claude Code-credentials")
+         Linux: ~/.claude/.credentials.json
+Codex  — any OS: ~/.codex/auth.json (no keychain integration)
     │
     ▼
 ur CLI: credential_manager_for(agent) -> Option<Box<dyn AgentCredentialManager>>
-    │                                              [crates/ur/src/credential.rs]
+    │                                       [crates/ur/src/credential/mod.rs]
     │   None for a no-auth agent (agent.auth() is None) — every caller acknowledges
     │   the no-auth path instead of the trait silently no-op'ing.
-    │   ClaudeCredentialManager is the sole impl today. Its ensure_credentials(max_age):
-    │     re-seeds if ~/.ur/{agent.name()}/{auth.credentials_filename} is missing,
-    │     empty, or older than max_age:
-    │       macOS: runs: security find-generic-password -s "<auth.keychain_service>" -w
-    │       Linux: reads ~/.claude/.credentials.json directly
-    │       writes result to ~/.ur/claude/.credentials.json
+    │   ClaudeCredentialManager [credential/claude.rs] and CodexCredentialManager
+    │   [credential/codex.rs] each implement ensure_credentials(max_age): re-seeds
+    │   if ~/.ur/{agent.name()}/{filename component of auth.credentials_path} is
+    │   missing, empty, or older than max_age:
+    │       Claude, macOS: runs: security find-generic-password -s "<service>" -w
+    │       Claude, Linux: reads ~/.claude/.credentials.json directly
+    │       Codex, any OS: reads ~/.codex/auth.json directly
+    │       writes result to ~/.ur/{claude,codex}/{credentials file}
+    │   A missing host source (never logged into that agent) is a skip with a
+    │   warning, not a failure — one agent's absent login must not break
+    │   ur start for users of the other agent. A host source that exists but is
+    │   unreadable or empty is a hard failure.
     │   max_age callers (via the shared ensure_credentials_for_all_agents(max_age) helper,
-    │   which loops AgentType::ALL so it is correct for any number of agents):
+    │   which loops AgentType::ALL so it is correct for any number of agents, and
+    │   aggregates per-agent failures instead of short-circuiting):
     │     ur start          → Duration::ZERO (force re-seed every restart)
     │     ur worker launch  → 1 day (re-seed if file is stale; otherwise let containers refresh)
     │     ur worker reseed-credentials → Duration::ZERO (manual force re-seed, takes --agent)
@@ -38,6 +46,9 @@ ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.r
     │   agent.auth() is None; for Claude, bind-mounts:
     │   ~/.ur/claude/.credentials.json
     │   → /home/worker/.claude/.credentials.json
+    │   (Codex mounts ~/.ur/codex/auth.json → /home/worker/.codex/auth.json the
+    │   same way — never the whole ~/.codex directory, which also holds sqlite
+    │   state that must not be shared across concurrent containers.)
     │
     ▼  gRPC LaunchWorker RPC → builderd (host, native)
     │                         [BuilderContainerService::launch_worker]
@@ -47,6 +58,8 @@ ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.r
     │
 Container: Claude Code reads ~/.claude/.credentials.json
             Claude Code reads ~/.claude.json (baked into image)
+           Codex reads ~/.codex/auth.json
+            Codex reads ~/.codex/config.toml (baked into image)
 ```
 
 **Two files are required for Claude Code to skip login:**
@@ -64,8 +77,9 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
    ├── -f flag? → kill_container() (docker stop + rm)
    ├── ensure_credentials_for_all_agents(max_age = 1 day)
    │   └── for each AgentType::ALL with an auth profile, re-seed from the host
-   │       if ~/.ur/{agent.name()}/{credentials_filename} is missing, empty, or
-   │       older than max_age (macOS: Keychain, Linux: ~/.claude/.credentials.json)
+   │       if ~/.ur/{agent.name()}/{credentials filename} is missing, empty, or
+   │       older than max_age (Claude: macOS Keychain / Linux ~/.claude/.credentials.json;
+   │       Codex: ~/.codex/auth.json on any OS)
    ├── connect() → gRPC channel to server at 127.0.0.1:<port>
    └── client.worker_launch(WorkerLaunchRequest { ... })
 
@@ -140,8 +154,10 @@ The Claude CLI install moved from the base image into the `agent-claude` layer (
 
 | File | Purpose |
 |---|---|
-| `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth` — single source of truth for per-agent names, paths, and the Keychain service name |
-| `crates/ur/src/credential.rs` | `AgentCredentialManager` trait, `ClaudeCredentialManager` impl, `credential_manager_for(agent)` factory |
+| `crates/ur_config/src/agent.rs` | `AgentType`/`AgentAuth`/`AuthSource` — single source of truth for per-agent names, paths, and how each agent's credentials are sourced |
+| `crates/ur/src/credential/mod.rs` | `AgentCredentialManager` trait, `credential_manager_for(agent)` factory, `ensure_credentials_for_all_agents`, shared file/container-read helpers |
+| `crates/ur/src/credential/claude.rs` | `ClaudeCredentialManager` impl (Keychain on macOS, home-relative file fallback on Linux) |
+| `crates/ur/src/credential/codex.rs` | `CodexCredentialManager` impl (always a home-relative host file, no keychain) |
 | `crates/ur/src/main.rs` | CLI entry; `process_launch()` and `start_server()` call `ensure_credentials_for_all_agents()` |
 | `crates/server/src/worker.rs` | WorkerManager: injects `UR_AGENT_TYPE`, launches containers |
 | `crates/server/src/run_opts_builder.rs` | `add_credentials` — mounts the credentials file, no-op when `agent.auth()` is `None` |
@@ -154,6 +170,6 @@ The Claude CLI install moved from the base image into the `agent-claude` layer (
 
 ## Manual Credential Management
 
-- `ur worker reseed-credentials [--agent claude]` — force re-seed `~/.ur/{agent}/.credentials.json` from the host (Keychain on macOS, `~/.claude/.credentials.json` on Linux). Use after re-logging into Claude Code on the host when you don't want to wait for the next `ur start` or 1-day age trigger. `--agent` defaults to `claude`; an unrecognized value is a descriptive error, not a panic.
-- `ur worker save-credentials <id> [--agent claude]` — copy `.credentials.json` and `.claude.json` from a running container to `~/.ur/{agent}/`. Useful for bootstrapping from a container login.
-- Delete `~/.ur/claude/.credentials.json` to force re-seeding from host credentials on next launch.
+- `ur worker reseed-credentials [--agent claude|codex]` — force re-seed that agent's credentials file from the host (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json` on any OS). Use after re-logging in on the host when you don't want to wait for the next `ur start` or 1-day age trigger. `--agent` defaults to `claude`; an unrecognized value is a descriptive error, not a panic. If the agent has never been logged into on this host, this fails loudly (unlike the `ensure_credentials_for_all_agents` skip-with-warning path, since a manual reseed request implies the caller expects a source to exist).
+- `ur worker save-credentials <id> [--agent claude|codex]` — copy that agent's credential files from a running container to `~/.ur/{agent}/` (`.credentials.json` + `.claude.json` for Claude, `auth.json` only for Codex — its app config is baked into the image, not extracted). Useful for bootstrapping from a container login.
+- Delete `~/.ur/claude/.credentials.json` (or `~/.ur/codex/auth.json`) to force re-seeding from host credentials on next launch.

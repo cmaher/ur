@@ -1,48 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use container::{ContainerId, ContainerRuntime, ExecOpts};
+use container::{ContainerId, ContainerRuntime};
 use tracing::{debug, info, instrument, warn};
 use ur_config::{AgentAuth, AgentType, AuthSource};
 
-fn worker_home() -> &'static Path {
-    Path::new(ur_config::WORKER_HOME)
-}
-
-/// Extract the filename component of a home-relative auth path (e.g.
-/// `.claude/.credentials.json` -> `.credentials.json`), for host-side storage
-/// under `$UR_CONFIG/<agent>/`, which flattens every agent's files into one
-/// directory regardless of their subdirectory nesting in the worker home.
-fn home_relative_filename(path: &str) -> Result<&std::ffi::OsStr> {
-    Path::new(path)
-        .file_name()
-        .with_context(|| format!("auth path '{path}' has no filename"))
-}
-
-/// Per-agent credential management: seeding, extraction, and host path
-/// resolution. `None` from [`credential_manager_for`] means the agent has no
-/// auth profile — every caller acknowledges that rather than the trait
-/// silently no-op'ing.
-pub trait AgentCredentialManager: Send + Sync {
-    fn agent_type(&self) -> AgentType;
-
-    /// Ensure credentials exist on disk for container mounting.
-    fn ensure_credentials(&self, max_age: Duration) -> Result<()>;
-
-    /// Save credentials and config extracted from a running container to the host config dir.
-    fn save_from_container(
-        &self,
-        runtime: &dyn ContainerRuntime,
-        container_id: &ContainerId,
-    ) -> Result<Vec<PathBuf>>;
-
-    /// Resolve the host-side credentials file path.
-    fn host_credentials_path(&self) -> Result<PathBuf>;
-
-    /// Resolve the host-side app config file path.
-    fn host_app_config_path(&self) -> Result<PathBuf>;
-}
+use super::{
+    AgentCredentialManager, home_relative_filename, save_file_from_container, worker_home,
+    write_file,
+};
 
 /// Manages Claude Code credentials for container workers.
 ///
@@ -51,41 +18,7 @@ pub trait AgentCredentialManager: Send + Sync {
 /// (`.claude.json`) is baked into the container image.
 #[derive(Clone)]
 pub struct ClaudeCredentialManager {
-    auth: AgentAuth,
-}
-
-impl ClaudeCredentialManager {
-    /// Read a file from the container and write it to the host path.
-    #[instrument(skip(self, runtime), fields(container = %container_id.0))]
-    fn save_file_from_container(
-        &self,
-        runtime: &dyn ContainerRuntime,
-        container_id: &ContainerId,
-        container_path: &str,
-        host_path: &Path,
-    ) -> Result<PathBuf> {
-        debug!(container_path, host_path = %host_path.display(), "reading file from container");
-        let opts = ExecOpts {
-            command: vec!["cat".into(), container_path.into()],
-            workdir: None,
-        };
-        let output = runtime
-            .exec(container_id, &opts)
-            .with_context(|| format!("failed to read {container_path} from container"))?;
-        if output.exit_code != 0 {
-            anyhow::bail!(
-                "container has no file at {container_path} — \
-                 login to Claude Code in the container first"
-            );
-        }
-        let contents = output.stdout.trim();
-        if contents.is_empty() {
-            anyhow::bail!("{container_path} in container is empty");
-        }
-        write_file(host_path, contents)?;
-        info!(host_path = %host_path.display(), "saved file from container");
-        Ok(host_path.to_path_buf())
-    }
+    pub(super) auth: AgentAuth,
 }
 
 impl AgentCredentialManager for ClaudeCredentialManager {
@@ -144,7 +77,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
         let mut saved = Vec::new();
 
         let creds_container_path = worker_home().join(self.auth.credentials_path);
-        let creds_path = self.save_file_from_container(
+        let creds_path = save_file_from_container(
             runtime,
             container_id,
             &creds_container_path.to_string_lossy(),
@@ -153,7 +86,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
         saved.push(creds_path);
 
         let config_container_path = worker_home().join(self.auth.app_config_path);
-        let config_path = self.save_file_from_container(
+        let config_path = save_file_from_container(
             runtime,
             container_id,
             &config_container_path.to_string_lossy(),
@@ -180,15 +113,6 @@ impl AgentCredentialManager for ClaudeCredentialManager {
     }
 }
 
-/// Build the credential manager for `agent`, or `None` if the agent has no
-/// auth profile.
-pub fn credential_manager_for(agent: AgentType) -> Option<Box<dyn AgentCredentialManager>> {
-    let auth = agent.auth()?;
-    match agent {
-        AgentType::Claude => Some(Box::new(ClaudeCredentialManager { auth })),
-    }
-}
-
 /// Read the agent's own OAuth credentials from the host system.
 ///
 /// On macOS, reads from the Keychain. On Linux, reads directly from the
@@ -196,8 +120,8 @@ pub fn credential_manager_for(agent: AgentType) -> Option<Box<dyn AgentCredentia
 /// `~/.claude/.credentials.json` for Claude).
 ///
 /// Takes the resolved [`AgentAuth`] rather than re-deriving it from `agent`:
-/// only a manager built by [`credential_manager_for`] can reach here, and that
-/// manager already holds the profile, so "this agent has no auth" is
+/// only a manager built by [`super::credential_manager_for`] can reach here, and
+/// that manager already holds the profile, so "this agent has no auth" is
 /// unrepresentable instead of being an unwrap.
 #[instrument(skip(agent, auth))]
 fn read_host_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
@@ -265,21 +189,10 @@ fn read_host_file_credentials(agent: AgentType, path_from_home: &str) -> Result<
     Ok(trimmed)
 }
 
-/// Write content to a file, creating parent directories as needed.
-#[instrument(skip(contents), fields(path = %path.display()))]
-fn write_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    std::fs::write(path, contents)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::credential_manager_for;
 
     #[test]
     fn host_credentials_path_is_under_config_dir() {
