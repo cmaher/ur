@@ -34,9 +34,22 @@ release_json="$(curl -fsSL -H "Accept: application/vnd.github+json" "$api_url")"
 
 # jq is already part of the base image (worker-base/Dockerfile), so parse
 # the release JSON properly rather than scraping it with grep/sed.
+#
+# A plain `contains($target)` match is not enough: the release also ships a
+# bundled `bwrap-<target>...` sandboxing helper plus `.sigstore`/`.sha256`
+# sidecar files for every asset, all of which contain the target string too.
+# Scope to the codex CLI's own archive by requiring the asset's filename to
+# start with "codex-" and end in a supported archive extension.
 asset_url="$(printf '%s' "$release_json" \
     | jq -r --arg target "$target" \
-        '[.assets[].browser_download_url | select(contains($target))][0] // empty')"
+        '[.assets[].browser_download_url
+            | select(
+                (split("/") | last) as $name
+                | ($name | startswith("codex-"))
+                and ($name | contains($target))
+                and (($name | endswith(".tar.gz")) or ($name | endswith(".tgz")))
+              )
+         ][0] // empty')"
 
 if [ -z "$asset_url" ]; then
     echo "Could not find a release asset for target '$target' in the latest $REPO release" >&2
