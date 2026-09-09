@@ -20,10 +20,10 @@ Tests MUST use only CLI commands (`ur-server`, `ur`, `ur-ping`, `git`) — never
 
 Codex-agent scenarios never drive a real Codex model turn — they only assert on the launch
 path itself (agent resolution reaching `agent_type` in `ur worker list`, the in-container
-`~/.codex/` layout, dispatch phrasing reaching the tmux pane). `check_credentials_seeded`
-(`crates/server/src/grpc.rs`) gates every launch on that agent's host credentials file
-existing and being at least 10 bytes, regardless of whether the launch will ever actually use
-it — so a codex launch with no seeded credentials fails before the container even starts.
+`~/.codex/` layout). `check_credentials_seeded` (`crates/server/src/grpc.rs`) gates every
+launch on that agent's host credentials file existing and being at least 10 bytes, regardless
+of whether the launch will ever actually use it — so a codex launch with no seeded credentials
+fails before the container even starts.
 
 `seed_dummy_codex_credentials` (`tests/e2e.rs`) writes a placeholder blob directly to
 `$UR_CONFIG/codex/auth.json` (`AgentType::host_credentials_path`) before any codex-agent
@@ -32,6 +32,18 @@ principle above: it is a *test fixture* standing in for a real Codex OAuth login
 command can perform non-interactively in CI), not a workaround for a missing CLI feature. The
 launch path itself — resolution, the credential gate, the mount, the container boot — is still
 exercised entirely through `ur worker launch`.
+
+**Limit of the dummy credential:** it is enough to pass `check_credentials_seeded` and boot the
+container, but not enough for codex itself to reach an idle prompt. The real codex CLI performs
+an `account/read` check during its own TUI bootstrap ("plan type is required for chatgpt
+authentication") and exits immediately when that fails, before ever firing hooks. That is fine
+for scenarios that only need the container **healthy** (workerd's own healthz server comes up
+independently of whether the spawned `codex` process succeeds) — but it means dispatch can never
+be observed reaching a real agent pane: `NotifyIdle`/`UpdateAgentStatus(idle)` only fires once
+codex is actually running, so `AwaitingDispatch` never advances to `Implementing` under a dummy
+credential. `scenario_codex_dispatch` therefore only verifies the CLI/workflow side (dispatch
+accepted, ticket stays open) — the exact agent-phrased dispatch text is covered by unit tests in
+`crates/workerd/src/grpc_service.rs` instead of end-to-end.
 
 ## Isolated stacks for config that isn't live-reloadable
 
