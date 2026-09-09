@@ -11,7 +11,7 @@
 //! Gated behind `--features acceptance` so they never run in normal `cargo test`.
 //! Requires:
 //!   - Pre-built `ur` binary in `target/debug/`
-//!   - Container images (`ur-server`, `ur-worker`) already built (tag via `UR_IMAGE_TAG`, default: `latest`)
+//!   - Container images (`ur-server`, `ur-worker-claude`) already built (tag via `UR_IMAGE_TAG`, default: `latest`)
 //!   - A Docker-compatible container runtime
 #![cfg(feature = "acceptance")]
 
@@ -241,7 +241,8 @@ fn test_names(label: &str) -> TestNames {
 /// "opus" for design) that other scenarios assert against.
 /// Render the `[projects.<key>]` TOML blocks for all project entries.
 ///
-/// Resolves each image alias against the configured tag and emits the optional
+/// Resolves each image alias against the configured tag (and the claude agent
+/// layer — these scenarios are all Claude-only) and emits the optional
 /// `hostexec_scripts`, `mounts`, `memory_dir`, and `brain_dir` fields only when set.
 fn render_projects_toml(projects: &[ProjectEntry]) -> String {
     let tag = &*IMAGE_TAG;
@@ -252,7 +253,7 @@ fn render_projects_toml(projects: &[ProjectEntry]) -> String {
         let image_ref = if proj.image.contains(':') || proj.image.contains('/') {
             proj.image.clone()
         } else {
-            format!("{}:{}", proj.image, tag)
+            format!("{}-claude:{}", proj.image, tag)
         };
         let scripts_line = if proj.hostexec_scripts.is_empty() {
             String::new()
@@ -1979,7 +1980,7 @@ fn launch_and_verify_local_worker(
         .to_string();
     assert_eq!(
         image,
-        format!("ur-worker:{}", &*IMAGE_TAG),
+        format!("ur-worker-claude:{}", &*IMAGE_TAG),
         "local project worker should use the project's configured image"
     );
 
@@ -2096,7 +2097,7 @@ fn scenario_project_add_local(env: &TestEnv) {
         let project_dir = env.config_path.join(key);
         std::fs::create_dir_all(&project_dir).expect("failed to create local project dir");
 
-        let image_ref = format!("ur-worker:{}", &*IMAGE_TAG);
+        let image_ref = format!("ur-worker-claude:{}", &*IMAGE_TAG);
         let add_output = run_cmd(
             &env.ur,
             &[
@@ -2409,7 +2410,7 @@ fn scenario_project_add_image_flag(env: &TestEnv) {
         String::from_utf8_lossy(&no_image_output.stderr),
     );
 
-    // ---- Verify the default image resolves to ur-worker:latest in TOML ----
+    // ---- Verify the default image alias ("ur-worker") is written as-is to TOML ----
     let toml_content =
         std::fs::read_to_string(env.config_path.join("ur.toml")).expect("failed to read ur.toml");
     assert!(
@@ -3215,7 +3216,7 @@ fn scenario_project_add_then_launch(env: &TestEnv) {
         );
 
         // ---- Add the project via `ur project add` (triggers ReloadProjects RPC) ----
-        let image_ref = format!("ur-worker:{}", &*IMAGE_TAG);
+        let image_ref = format!("ur-worker-claude:{}", &*IMAGE_TAG);
         let add_output = run_cmd(
             &env.ur,
             &[

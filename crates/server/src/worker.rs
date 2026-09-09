@@ -1674,7 +1674,7 @@ mod tests {
         WorkerConfig {
             process_id: "test-proc".into(),
             worker_id: WorkerId("test-proc-ab12".into()),
-            image_id: "ur-worker-rust:latest".into(),
+            image_id: "ur-worker-rust-claude:latest".into(),
             cpus: 1,
             memory: "512m".into(),
             workspace_dir: None,

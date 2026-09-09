@@ -13,4 +13,4 @@ the new version.
 | `superpowers/`| https://github.com/obra/superpowers | See submodule    |
 
 Agent-specific vendored files (e.g. the Claude CLI installer) live in the
-corresponding agent directory instead — see `containers/agent-claude/vendor/README.md`.
+corresponding agent directory instead — see `containers/worker-claude/vendor/README.md`.

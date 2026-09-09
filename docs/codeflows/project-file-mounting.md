@@ -36,7 +36,7 @@ memory_dir = "%URCONFIG%/projects/ur/memory"
 brain_dir = "%URCONFIG%/projects/ur/brain"
 
 [projects.ur.container]
-image = "ur-worker:latest"
+image = "ur-worker"
 mounts = ["%URCONFIG%/shared-data:/var/data"]
 ```
 
