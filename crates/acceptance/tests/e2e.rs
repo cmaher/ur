@@ -991,6 +991,21 @@ fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
     std::fs::create_dir_all(&rust_codex_repos_dir).expect("failed to create rust-codex-repos dir");
     let bare_repo_rust_codex = create_bare_repo(&rust_codex_repos_dir);
 
+    // Host overlay skill hook for "codexproj" so InitSkillHooksManager actually
+    // creates ~/{agent.home_subdir()}/{agent.skill_hooks_subdir()}/ — the target
+    // dir is only created when a hooks source exists (copy_skill_hooks_from is a
+    // no-op otherwise), so scenario_codex_manual_worker needs this to assert the
+    // codex skill-hooks path resolves correctly.
+    let codex_skills_overlay_dir = config_path
+        .join("projects")
+        .join("codexproj")
+        .join("hooks")
+        .join("skills");
+    std::fs::create_dir_all(&codex_skills_overlay_dir)
+        .expect("failed to create codexproj skills overlay hooks dir");
+    std::fs::write(codex_skills_overlay_dir.join("my-hook.sh"), "sentinel\n")
+        .expect("failed to write codexproj overlay my-hook.sh");
+
     vec![
         ProjectEntry {
             key: "codexproj".into(),
