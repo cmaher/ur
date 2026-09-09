@@ -136,10 +136,16 @@ esac
 # the archive is expected to use, so a companion binary shipped alongside it
 # can never win on `find` order; fall back to a sorted (deterministic) pick
 # and say so.
-binary_path="$(find "$extract_dir" -type f \( -name codex -o -name "codex-$target" \) \
-    | sort | head -n1)"
+#
+# Each search collects the whole sorted list and then takes its first line,
+# rather than piping into `head -n1`: `head` closing the pipe early kills
+# `sort` with SIGPIPE, which `set -o pipefail` turns into a bare exit 141 that
+# aborts the build with no message once the list outgrows the 64KB pipe buffer.
+matches="$(find "$extract_dir" -type f \( -name codex -o -name "codex-$target" \) | sort)"
+binary_path="${matches%%$'\n'*}"
 if [ -z "$binary_path" ]; then
-    binary_path="$(find "$extract_dir" -type f -name 'codex*' | sort | head -n1)"
+    matches="$(find "$extract_dir" -type f -name 'codex*' | sort)"
+    binary_path="${matches%%$'\n'*}"
     if [ -n "$binary_path" ]; then
         echo "WARNING: no file named 'codex' or 'codex-$target' in the archive; falling back" >&2
         echo "         to $binary_path" >&2
