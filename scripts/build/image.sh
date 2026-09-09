@@ -97,10 +97,12 @@ AGENT_IMAGES=(
     "worker-claude:ur-worker-claude:claude:true"
     "worker-rust-claude:ur-worker-rust-claude:claude:false"
     "worker-codex:ur-worker-codex:codex:true"
+    "worker-rust-codex:ur-worker-rust-codex:codex:false"
 )
 
-# Stage vendored mise installer into the rust worker build context
+# Stage vendored mise installer into each rust worker build context
 cp "$BASE_CONTEXT/vendor/mise/install.sh" "containers/worker-rust-claude/install-mise.sh"
+cp "$BASE_CONTEXT/vendor/mise/install.sh" "containers/worker-rust-codex/install-mise.sh"
 
 # `ur-worker-base` now carries only agent-agnostic assets (shell setup, skills,
 # instructions) — no agent CLI install — so UR_FORCE_REBUILD_BASE no longer
