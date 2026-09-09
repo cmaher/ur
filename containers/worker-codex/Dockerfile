@@ -3,10 +3,11 @@ FROM ur-worker-base:${BASE_TAG}
 
 # Install the codex CLI as root — it's a single native binary at a
 # system-wide path, not a per-user install like Claude Code's own installer.
+# install-codex.sh stays around (deleted after the CACHEBUST update step
+# below re-runs it) rather than being removed here.
 COPY vendor/codex/install.sh /tmp/install-codex.sh
 RUN bash /tmp/install-codex.sh
-RUN rm /tmp/install-codex.sh
-# `codex update` (below) runs as the worker user and needs to overwrite the
+# The update step (below) runs as the worker user and needs to overwrite the
 # binary this just installed as root.
 RUN chown worker:worker /usr/local/bin/codex
 
@@ -47,13 +48,26 @@ COPY managed_config.toml /etc/codex/managed_config.toml
 # on this layer (UR_UPDATE_AGENT=codex / UR_FORCE_REBUILD_BASE=1 do this for
 # you via scripts/build/image.sh — see cargo make install-update-claude for
 # the equivalent claude-only task).
+#
+# `codex update` itself does NOT work here: it refuses to update a binary it
+# didn't install itself, failing with "Could not detect the Codex
+# installation method" — unlike Claude Code, whose own CLI tracks and
+# self-updates a manually-dropped native binary just fine. Re-running our own
+# install script is the actual update mechanism: it re-resolves and
+# re-downloads the latest release, overwriting the binary in place (the
+# `chown` above means the worker user can write the existing file's content
+# without needing write access to the root-owned /usr/local/bin directory).
+#
 # CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
 # cache for layers that actually use the ARG, not merely declare it.
 # A failed update fails the build on purpose: silently shipping a stale codex
 # is worse than a red build, since the cached layer would then hide it for weeks.
 ARG CACHEBUST=0
 USER worker
-RUN echo "CACHEBUST=$CACHEBUST" && codex update && codex --version
+RUN echo "CACHEBUST=$CACHEBUST" && bash /tmp/install-codex.sh && codex --version
+USER root
+RUN rm /tmp/install-codex.sh
+USER worker
 WORKDIR /workspace
 
 HEALTHCHECK --interval=1s --timeout=1s --start-period=30s --retries=1 \

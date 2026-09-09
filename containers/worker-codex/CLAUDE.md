@@ -13,10 +13,14 @@ layer for layer. Must work with Docker and nerdctl (containerd) runtimes.
 - Codex is installed as **root** (a system-wide binary, not a per-user install), then
   `chown worker:worker /usr/local/bin/codex` so the later `codex update` layer (run as `worker`)
   can overwrite it
-- Refreshed by a `codex update` layer gated on the `CACHEBUST` build arg, same convention as
-  Claude's `claude update` layer — use `UR_UPDATE_AGENT=codex` (see `scripts/build/image.sh`)
-  to bust only this layer. The update is **not** best-effort: a failed `codex update` fails the
-  build rather than silently shipping a stale version
+- Refreshed by re-running `install.sh` in a layer gated on the `CACHEBUST` build arg — use
+  `UR_UPDATE_AGENT=codex` (see `scripts/build/image.sh`) to bust only this layer. This is
+  **not** `codex update`: that subcommand refuses to touch a binary it didn't install itself
+  (`Could not detect the Codex installation method`), unlike Claude Code's CLI, which tracks
+  and self-updates a manually-dropped native binary fine. Re-running the install script is the
+  actual update mechanism here, so `install-codex.sh` is kept around in the image (not deleted
+  until after this layer) specifically so it can run a second time. The update is **not**
+  best-effort: a failed re-install fails the build rather than silently shipping a stale version
 
 ## The `potential-settings.json`-holding-TOML wrinkle
 
