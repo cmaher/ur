@@ -108,6 +108,27 @@ Do not add a parallel `local: bool` to `ProjectConfig` — the `Option` is what 
 every consumer of `repo` to handle absence at compile time. See
 `docs/codeflows/config.md#local-projects`.
 
+## Agents (`AgentType`)
+
+`AgentType` is the single source of truth for everything that varies per coding agent:
+`Claude` (Claude Code) and `Codex` (OpenAI Codex CLI). Every accessor is an exhaustive match
+over the variants — adding a third agent means the compiler flags every accessor that needs a
+new arm.
+
+Two accessors are deliberately `None` for `Codex`:
+
+- `memory_subdir()` — Claude's memory dir is Claude Code's own transcript-adjacent layout;
+  Codex has no directory equivalent (it keeps memories in a sqlite database). Callers gate on
+  `if let Some(memory_subdir) = agent.memory_subdir()` and no-op otherwise (e.g.
+  `RunOptsBuilder::add_memory_dir` in `crates/server`).
+- (Claude's `settings_filename()` and `auth()` are both `Some` for every current agent, but
+  follow the same optional pattern for an agent with no settings-file or no-credentials
+  concept.)
+
+`proxy_domains()` returns the domains an agent needs through the forward proxy; wiring the
+squid allowlist to this accessor (rather than the historical hardcoded
+`default_proxy_allowlist()`) is tracked separately.
+
 ## Agent Auth (`AgentAuth` / `AuthSource`)
 
 `AgentType::auth()` returns an optional [`AgentAuth`] describing how an agent's credentials

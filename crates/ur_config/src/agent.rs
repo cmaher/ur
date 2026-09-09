@@ -25,8 +25,8 @@ pub struct AgentAuth {
     pub app_config_path: &'static str,
 }
 
-/// Which AI agent runs a worker. Currently a single variant (`Claude`); future
-/// agents (e.g. a network-hosted local model) add variants here.
+/// Which AI agent runs a worker. `Claude` (Claude Code) and `Codex` (OpenAI
+/// Codex CLI) today; future agents add variants here.
 ///
 /// This is the single source of truth for everything that varies per agent:
 /// home subdir, instruction filename, spawn command, image name, default
@@ -34,6 +34,7 @@ pub struct AgentAuth {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentType {
     Claude,
+    Codex,
 }
 
 /// Error returned when parsing an unrecognized agent type string.
@@ -51,13 +52,14 @@ impl std::error::Error for ParseAgentError {}
 impl AgentType {
     /// All known agent variants. Lets callers with no dependency on the crate
     /// that parses `[worker_modes]` (e.g. the host CLI) iterate agents anyway.
-    pub const ALL: &'static [AgentType] = &[AgentType::Claude];
+    pub const ALL: &'static [AgentType] = &[AgentType::Claude, AgentType::Codex];
 
     /// Short, stable name for this agent. Used as the `UR_AGENT_TYPE` value,
     /// the credential directory name, and in `agent_type` proto fields.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Claude => "claude",
+            Self::Codex => "codex",
         }
     }
 
@@ -66,6 +68,7 @@ impl AgentType {
     pub fn home_subdir(&self) -> &'static str {
         match self {
             Self::Claude => ".claude",
+            Self::Codex => ".codex",
         }
     }
 
@@ -73,20 +76,21 @@ impl AgentType {
     pub fn instruction_filename(&self) -> &'static str {
         match self {
             Self::Claude => "CLAUDE.md",
+            Self::Codex => "AGENTS.md",
         }
     }
 
     /// Subdirectory (relative to `home_subdir()`) holding installed skills.
     pub fn skill_subdir(&self) -> &'static str {
         match self {
-            Self::Claude => "skills",
+            Self::Claude | Self::Codex => "skills",
         }
     }
 
     /// Subdirectory (relative to `home_subdir()`) holding skill hooks.
     pub fn skill_hooks_subdir(&self) -> &'static str {
         match self {
-            Self::Claude => "skill-hooks",
+            Self::Claude | Self::Codex => "skill-hooks",
         }
     }
 
@@ -112,6 +116,10 @@ impl AgentType {
                 Some(model) if !model.is_empty() => format!("claude --model '{model}'"),
                 _ => "claude".to_string(),
             },
+            Self::Codex => match model.map(str::trim) {
+                Some(model) if !model.is_empty() => format!("codex -m '{model}'"),
+                _ => "codex".to_string(),
+            },
         }
     }
 
@@ -128,6 +136,11 @@ impl AgentType {
                 "design" | "manual" => Some("opus"),
                 _ => None,
             },
+            Self::Codex => match strategy {
+                "code" => Some("gpt-5.6-terra"),
+                "design" | "manual" => Some("gpt-5.6-sol"),
+                _ => None,
+            },
         }
     }
 
@@ -136,6 +149,7 @@ impl AgentType {
     pub fn settings_filename(&self) -> Option<&'static str> {
         match self {
             Self::Claude => Some("settings.json"),
+            Self::Codex => Some("config.toml"),
         }
     }
 
@@ -143,10 +157,13 @@ impl AgentType {
     /// no memory-dir concept.
     ///
     /// This is Claude Code's own transcript layout, which `home_subdir()`
-    /// alone does not cover.
+    /// alone does not cover. Codex has no directory equivalent — it keeps
+    /// memories in a sqlite database — so this is `None` and callers (e.g.
+    /// `RunOptsBuilder::add_memory_dir`) no-op the mount.
     pub fn memory_subdir(&self) -> Option<&'static str> {
         match self {
             Self::Claude => Some("projects/-workspace/memory"),
+            Self::Codex => None,
         }
     }
 
@@ -163,6 +180,25 @@ impl AgentType {
                 credentials_path: ".claude/.credentials.json",
                 app_config_path: ".claude.json",
             }),
+            Self::Codex => Some(AgentAuth {
+                source: AuthSource::HostFile {
+                    path_from_home: ".codex/auth.json",
+                },
+                credentials_path: ".codex/auth.json",
+                app_config_path: ".codex/config.toml",
+            }),
+        }
+    }
+
+    /// Domains this agent needs through the forward proxy.
+    pub fn proxy_domains(&self) -> &'static [&'static str] {
+        match self {
+            Self::Claude => &[
+                "api.anthropic.com",
+                "platform.claude.com",
+                "downloads.claude.ai",
+            ],
+            Self::Codex => &["chatgpt.com", "api.openai.com", "auth.openai.com"],
         }
     }
 
@@ -170,6 +206,7 @@ impl AgentType {
     pub fn parse(s: &str) -> Result<Self, ParseAgentError> {
         match s {
             "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
             other => Err(ParseAgentError(other.to_string())),
         }
     }
@@ -213,8 +250,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_name_and_subdirs() {
+        assert_eq!(AgentType::Codex.name(), "codex");
+        assert_eq!(AgentType::Codex.home_subdir(), ".codex");
+        assert_eq!(AgentType::Codex.instruction_filename(), "AGENTS.md");
+        assert_eq!(AgentType::Codex.skill_subdir(), "skills");
+        assert_eq!(AgentType::Codex.skill_hooks_subdir(), "skill-hooks");
+    }
+
+    #[test]
     fn spawn_command_no_model() {
         assert_eq!(AgentType::Claude.spawn_command(None), "claude");
+        assert_eq!(AgentType::Codex.spawn_command(None), "codex");
     }
 
     #[test]
@@ -222,6 +269,10 @@ mod tests {
         assert_eq!(
             AgentType::Claude.spawn_command(Some("opus")),
             "claude --model 'opus'"
+        );
+        assert_eq!(
+            AgentType::Codex.spawn_command(Some("gpt-5.6-sol")),
+            "codex -m 'gpt-5.6-sol'"
         );
     }
 
@@ -231,11 +282,16 @@ mod tests {
             AgentType::Claude.spawn_command(Some("  opus  ")),
             "claude --model 'opus'"
         );
+        assert_eq!(
+            AgentType::Codex.spawn_command(Some("  gpt-5.6-sol  ")),
+            "codex -m 'gpt-5.6-sol'"
+        );
     }
 
     #[test]
     fn spawn_command_blank_model_is_none() {
         assert_eq!(AgentType::Claude.spawn_command(Some("   ")), "claude");
+        assert_eq!(AgentType::Codex.spawn_command(Some("   ")), "codex");
     }
 
     #[test]
@@ -244,6 +300,35 @@ mod tests {
         assert_eq!(AgentType::Claude.default_model("design"), Some("opus"));
         assert_eq!(AgentType::Claude.default_model("manual"), Some("opus"));
         assert_eq!(AgentType::Claude.default_model("bogus"), None);
+
+        assert_eq!(
+            AgentType::Codex.default_model("code"),
+            Some("gpt-5.6-terra")
+        );
+        assert_eq!(
+            AgentType::Codex.default_model("design"),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(
+            AgentType::Codex.default_model("manual"),
+            Some("gpt-5.6-sol")
+        );
+        assert_eq!(AgentType::Codex.default_model("bogus"), None);
+    }
+
+    /// Every agent must have a default model for every strategy the workflow
+    /// coordinator dispatches — a `None` here would silently drop the
+    /// `--model` flag for that agent/strategy combination.
+    #[test]
+    fn every_strategy_has_a_default_model() {
+        for agent in AgentType::ALL {
+            for strategy in ["code", "design", "manual"] {
+                assert!(
+                    agent.default_model(strategy).is_some(),
+                    "{agent:?} has no default model for strategy {strategy:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -253,11 +338,14 @@ mod tests {
             AgentType::Claude.memory_subdir(),
             Some("projects/-workspace/memory")
         );
+
+        assert_eq!(AgentType::Codex.settings_filename(), Some("config.toml"));
+        assert_eq!(AgentType::Codex.memory_subdir(), None);
     }
 
     #[test]
-    fn all_contains_claude() {
-        assert_eq!(AgentType::ALL, &[AgentType::Claude]);
+    fn all_contains_claude_and_codex() {
+        assert_eq!(AgentType::ALL, &[AgentType::Claude, AgentType::Codex]);
     }
 
     #[test]
@@ -275,8 +363,38 @@ mod tests {
     }
 
     #[test]
+    fn codex_auth_profile() {
+        let auth = AgentType::Codex.auth().expect("codex has auth");
+        assert_eq!(auth.credentials_path, ".codex/auth.json");
+        assert_eq!(auth.app_config_path, ".codex/config.toml");
+        assert_eq!(
+            auth.source,
+            AuthSource::HostFile {
+                path_from_home: ".codex/auth.json",
+            }
+        );
+    }
+
+    #[test]
+    fn proxy_domains_per_agent() {
+        assert_eq!(
+            AgentType::Claude.proxy_domains(),
+            &[
+                "api.anthropic.com",
+                "platform.claude.com",
+                "downloads.claude.ai"
+            ]
+        );
+        assert_eq!(
+            AgentType::Codex.proxy_domains(),
+            &["chatgpt.com", "api.openai.com", "auth.openai.com"]
+        );
+    }
+
+    #[test]
     fn parse_known_and_unknown() {
         assert_eq!(AgentType::parse("claude"), Ok(AgentType::Claude));
+        assert_eq!(AgentType::parse("codex"), Ok(AgentType::Codex));
         assert_eq!(
             AgentType::parse("bogus"),
             Err(ParseAgentError("bogus".to_string()))
@@ -311,6 +429,18 @@ mod tests {
             std::env::set_var(UR_AGENT_TYPE_ENV, "claude");
         }
         assert_eq!(AgentType::from_env(), AgentType::Claude);
+        unsafe {
+            std::env::remove_var(UR_AGENT_TYPE_ENV);
+        }
+    }
+
+    #[test]
+    fn from_env_reads_codex() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var(UR_AGENT_TYPE_ENV, "codex");
+        }
+        assert_eq!(AgentType::from_env(), AgentType::Codex);
         unsafe {
             std::env::remove_var(UR_AGENT_TYPE_ENV);
         }
