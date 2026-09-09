@@ -118,6 +118,18 @@ Host (macOS / Linux)
         └── worker containers (launched dynamically)
 ```
 
+## Image Tags Are Agent-Named
+
+Container directories/tags are named `<layer>-<agent>` rather than a bare layer name:
+`containers/worker-claude/` (`ur-worker-claude:latest`), `containers/worker-rust-claude/`
+(`ur-worker-rust-claude:latest`), `containers/worker-codex/` (`ur-worker-codex:latest`),
+`containers/worker-rust-codex/` (`ur-worker-rust-codex:latest`) — each on top of the shared,
+agent-agnostic `ur-worker-base:latest`. These were previously `containers/agent-claude/` and
+`containers/agent-claude-rust/`; the rename happened when Codex support made "the agent layer"
+ambiguous. `scripts/build/image.sh`'s `AGENT_IMAGES` table (`dir:tag:agent_name:needs_cachebust`)
+is the single place that maps a build context directory to its image tag and agent name — adding
+a third agent's images is a data change to that table, not a code change to the build loop.
+
 ## Squid Allowlist Default
 
 There is **one shared `ur-squid` instance for every worker**, regardless of which agent it

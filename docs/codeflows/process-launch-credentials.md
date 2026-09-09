@@ -47,8 +47,13 @@ ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.r
     │   ~/.ur/claude/.credentials.json
     │   → /home/worker/.claude/.credentials.json
     │   (Codex mounts ~/.ur/codex/auth.json → /home/worker/.codex/auth.json the
-    │   same way — never the whole ~/.codex directory, which also holds sqlite
-    │   state that must not be shared across concurrent containers.)
+    │   same way — never the whole ~/.codex directory. Codex keeps a sqlite
+    │   database under ~/.codex for session/memory state, and sqlite's WAL
+    │   mode assumes a single writer process holds the file's WAL/SHM
+    │   sidecar files; bind-mounting the whole directory into N concurrent
+    │   containers would let N processes open the same WAL simultaneously,
+    │   which is exactly the corruption scenario WAL mode does not tolerate.
+    │   Mounting only auth.json avoids sharing that file at all.)
     │
     ▼  gRPC LaunchWorker RPC → builderd (host, native)
     │                         [BuilderContainerService::launch_worker]

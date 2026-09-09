@@ -15,6 +15,7 @@ Config is loaded by `Config::load()` in `crates/ur_config/src/lib.rs`. Missing f
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"` or `"codex"`), when not overridden by `--agent` or `worker_modes.<mode>.agent`. See "Agent precedence" under the `[worker_models]` section below. An unrecognized value is a startup config error naming the valid agents |
 | `workspace` | path | `<config_dir>/workspace` | Host-side worker workspace directory |
 | `server_port` | u16 | `12321` | TCP port for ur→server gRPC |
 | `worker_port` | u16 | `server_port + 1` | TCP port for the shared worker gRPC server |
@@ -201,9 +202,25 @@ agent = "claude"
 
 ### `[worker_models]` Section
 
-Default model per **strategy** (not per mode). `deny_unknown_fields` — only `code`, `design`, `manual` are valid; a typo fails at server startup.
+Default model per **strategy** (not per mode), with an optional per-agent override layer. Two
+shapes share one table:
 
-| Key | Built-in Default |
+```toml
+[worker_models]              # flat: applies to any agent
+code = "sonnet"
+
+[worker_models.codex]        # per-agent: wins over the flat table, codex modes only
+code = "gpt-5.6-terra"
+design = "gpt-5.6-sol"
+```
+
+Each key under `[worker_models]` is classified by its TOML value type — a bare string is a
+flat, agent-independent strategy override (`code`/`design`/`manual`); a table (`[worker_models.<agent>]`)
+is a per-agent override, keyed by agent name (`claude`/`codex`). Both the flat table and every
+per-agent table use `deny_unknown_fields` — a typo'd strategy key errors either way, and an
+unrecognized agent table name (e.g. `[worker_models.codexx]`) errors naming the valid agents.
+
+| Key (flat or per-agent) | Built-in Default (claude) |
 |-----|------------------|
 | `code` | `sonnet` |
 | `design` | `opus` |
@@ -214,9 +231,9 @@ Default model per **strategy** (not per mode). `deny_unknown_fields` — only `c
 manual = "claude-opus-5[1m]"
 ```
 
-**Model precedence:** `worker_modes.<mode>.model` → `[worker_models].<base>` → `agent.default_model(strategy)` (`AgentType::default_model`, `crates/ur_config/src/agent.rs`).
+**Model precedence:** `worker_modes.<mode>.model` → `[worker_models.<agent>].<base>` → `[worker_models].<base>` → `agent.default_model(strategy)` (`AgentType::default_model`, `crates/ur_config/src/agent.rs`). Model resolution happens *after* the agent is resolved (not at parse time), since an explicit `--agent` launch override can pick a different agent than the mode's own configured/default one.
 
-**Agent precedence** (`resolve_mode`): explicit override param (not yet exposed as a launch flag) → `worker_modes.<mode>.agent` → `"claude"`.
+**Agent precedence** (`resolve_mode`, and see the top-level `agent` field above): `--agent` launch flag → `worker_modes.<mode>.agent` → top-level `agent` key → `"claude"`.
 
 **Skill precedence** (`resolve_skills`): explicit `-s/--skills` → `worker_modes.<mode>.skills` → `worker_modes.code`. `[skills]` globals are appended in every case.
 

@@ -46,6 +46,14 @@ posture for a container running other people's code.
 strictly worse — it trusts *any* hook a checked-out repo ships — so reach for it only if the
 managed layer stops working, and record why here if you do.
 
+**An unrecognized hook event name is silently accepted, not rejected.** Codex does not validate
+event names in `[hooks]` against a known set — typo `SesionStart` or `Stopp` and the config
+still loads cleanly, the event key just never matches anything and the hook never fires. There
+is no config-time signal that a hook is wired wrong. If you add or rename a hook here, verify it
+by actually triggering the event (launch a worker and confirm `workertools notify-idle` ran —
+e.g. check that the worker reports `idle` via `ur worker list`, or check server/worker logs for
+the `NotifyIdle` RPC) rather than trusting `codex` to complain about a bad event name.
+
 ## Other config
 
 - `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` in the baked config:

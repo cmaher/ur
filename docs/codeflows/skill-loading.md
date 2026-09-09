@@ -11,7 +11,15 @@ Two directories in the **base** container build context supply skills:
 
 Both are merged into a single `potential-skills/` pool during the Docker build. **`potential-skills/` copies second, so project-specific versions override vendor skills with the same name.**
 
-These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not the Claude-specific layer (`ur-worker-claude:latest`) — any future agent image built on the same base inherits them for free.
+These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not either agent-specific layer (`ur-worker-claude:latest`/`ur-worker-codex:latest`) — any future agent image built on the same base inherits them for free.
+
+**Skills themselves did not change for Codex.** There is no codex-specific skill format, no
+second `SKILL.md` dialect, and no codex-only skill source directory — `potential-skills/` is
+shared verbatim, and the only thing that varies per agent is *where* a selected skill gets
+copied at init time (`~/{agent.home_subdir()}/{agent.skill_subdir()}/`, i.e. `~/.claude/skills/`
+vs `~/.codex/skills/` — both literally `"skills"` for `skill_subdir()`). Codex discovers
+installed skills via its own `skill_search` tool over that same directory; nothing in the
+image build or `[skills]`/`[worker_modes]` config needed to change to support a second agent.
 
 ## Build Time (Dockerfile)
 

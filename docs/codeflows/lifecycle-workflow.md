@@ -181,7 +181,16 @@ Served by the `workerd` daemon inside each worker container on port 9120.
 - Pops and sends the first command (context reset) to tmux immediately
 
 **`NotifyIdle()`** -- Called by the agent's own `Stop` hook (`workertools notify-idle`) as its
-turn ends — Claude Code's and Codex's `Stop` hooks both wire to this the same way.
+turn ends — Claude Code's and Codex's `Stop` hooks both wire to this the same way. For Claude
+the hook is user-config (`~/.claude/settings.json`, `permissions`/`hooks` baked at build time).
+For Codex it is declared in `/etc/codex/managed_config.toml` (`allow_managed_hooks_only = true`)
+rather than `~/.codex/config.toml`, because `bypass_hook_trust` is only a CLI flag
+(`--dangerously-bypass-hook-trust`), never a config key — a hook declared in user config would
+sit behind codex's interactive hook-trust gate, which never clears in a non-interactive
+container. Codex also fires `SessionStart` into the same `NotifyIdle` handler (case 4, since no
+dispatch is active yet at session start), which is how a freshly-launched codex worker reports
+`idle` for the first time without ever having run a `Stop` hook. See
+`containers/worker-codex/CLAUDE.md` for the full managed-hooks rationale.
 - 4-state machine:
   1. Buffer has commands → pop and send to tmux
   2. Buffer empty + step_complete → send `WorkflowStepComplete` RPC to server
