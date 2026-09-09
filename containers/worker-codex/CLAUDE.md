@@ -19,8 +19,13 @@ layer for layer. Must work with Docker and nerdctl (containerd) runtimes.
   (`Could not detect the Codex installation method`), unlike Claude Code's CLI, which tracks
   and self-updates a manually-dropped native binary fine. Re-running the install script is the
   actual update mechanism here, so `install-codex.sh` is kept around in the image (not deleted
-  until after this layer) specifically so it can run a second time. The update is **not**
-  best-effort: a failed re-install fails the build rather than silently shipping a stale version
+  until after this layer) specifically so it can run a second time. Both the initial install
+  and this update run as **root** (unlike Claude's per-user, worker-run install) — `install`'s
+  destination-replace step unlinks the existing file first, which needs write access to the
+  root-owned `/usr/local/bin` directory itself, not just the file, so running the update as
+  `worker` fails with `Permission denied` even though `worker` owns the file's content. The
+  update is **not** best-effort: a failed re-install fails the build rather than silently
+  shipping a stale version
 
 ## The `potential-settings.json`-holding-TOML wrinkle
 
