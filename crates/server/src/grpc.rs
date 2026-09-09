@@ -1563,10 +1563,13 @@ async fn send_transition(
     Ok(())
 }
 
-/// Wait for a design worker to become idle, then send `/design {ticket_id}`.
+/// Wait for a design worker to become idle, then dispatch the `design` skill.
 ///
 /// Polls the worker's agent status at short intervals. Once idle, derives the
-/// workerd gRPC address and sends the design command via the `Design` RPC.
+/// workerd gRPC address and sends the design command via the `Design` RPC —
+/// workerd phrases the actual command for whichever agent the worker runs
+/// (`AgentType::clear_command()` / `skill_invocation()`), so nothing here
+/// needs to know Claude's `/design` slash-command syntax.
 /// Times out after 60 seconds if the worker never becomes idle.
 async fn dispatch_design_on_ready(
     worker_repo: &WorkerRepo,
@@ -1603,7 +1606,7 @@ async fn dispatch_design_on_ready(
     info!(
         process_id = %process_id,
         workerd_addr = %workerd_addr,
-        "design worker ready — dispatching /design command"
+        "design worker ready — dispatching design command"
     );
 
     let workerd_client = crate::WorkerdClient::with_status_tracking(
@@ -1616,7 +1619,7 @@ async fn dispatch_design_on_ready(
         .await
         .map_err(|e| anyhow::anyhow!("workerd Design RPC failed: {e}"))?;
 
-    info!(process_id = %process_id, "/design command dispatched successfully");
+    info!(process_id = %process_id, "design command dispatched successfully");
     Ok(())
 }
 
