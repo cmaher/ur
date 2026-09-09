@@ -31,7 +31,7 @@ pub struct AgentAuth {
 /// This is the single source of truth for everything that varies per agent:
 /// home subdir, instruction filename, spawn command, image name, default
 /// models, and auth profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentType {
     Claude,
     Codex,

@@ -183,11 +183,42 @@ default (via `resolve_agent_flag`) instead of a hardcoded `claude`, since the CL
 **Consequence worth flagging:** default models are agent-derived (`AgentType::default_model`),
 so setting `agent = "codex"` globally does not just swap which binary runs — the built-in
 `code` mode also resolves to `gpt-5.6-terra` instead of `sonnet`, because nothing in `code`'s
-definition names a model directly. Use `[worker_models.<agent>]` (per-agent model overrides)
-if a mode's model needs to stay agent-independent.
+definition names a model directly. Use `[worker_models.<agent>]` (per-agent model overrides,
+below) if a mode's model needs to stay agent-independent.
 
 Deliberately out of scope: a per-project `[projects.<key>].agent` override. A project that
 needs a specific harness declares a custom mode with an explicit `agent` field instead.
+
+## `[worker_models]` Section
+
+Overrides the built-in default model per worker strategy (`code`/`design`/`manual`). Two
+shapes live under the same table:
+
+```toml
+[worker_models]            # applies to any agent
+code = "sonnet"
+
+[worker_models.codex]      # wins over the flat table, for codex modes only
+code = "gpt-5.6-terra"
+design = "gpt-5.6-sol"
+```
+
+`RawWorkerModels::from_value` (`crates/server/src/worker.rs`) classifies each key under
+`[worker_models]` by its TOML value type — a table means a per-agent override
+(`AgentType::parse`d from the key name), anything else joins the flat table — since a plain
+`#[derive(Deserialize)]` struct can't express "some values are strings, some are tables" in one
+shape. Both the flat table and every per-agent table use `deny_unknown_fields`, so a typo'd
+strategy key errors in either; an unrecognized agent table name (e.g. `[worker_models.codexx]`)
+errors naming the valid agents.
+
+Model resolution precedence, most specific first:
+
+```
+custom mode's explicit `model`
+  → [worker_models.<agent>].<strategy>
+  → [worker_models].<strategy>
+  → agent.default_model(strategy)
+```
 
 ## Image Aliases (`container.image`)
 
