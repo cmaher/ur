@@ -123,6 +123,47 @@ impl AgentType {
         }
     }
 
+    /// Command that resets the agent's context (typed into the tmux pane).
+    pub fn clear_command(&self) -> &'static str {
+        match self {
+            Self::Claude => "/clear",
+            Self::Codex => "/new",
+        }
+    }
+
+    /// How to ask this agent to run a named skill with arguments, as a single
+    /// line typed into the tmux pane and submitted.
+    ///
+    /// Claude has a custom slash command per skill (`/implement ur-x`). Codex
+    /// 0.153.4 has no custom slash commands — its skills are discovered by the
+    /// model through the `skill_search` tool from the same `SKILL.md` directory
+    /// format Claude uses — so the invocation instead names the skill
+    /// explicitly and unambiguously enough for `skill_search` to find it.
+    ///
+    /// Takes `args: &[&str]` rather than a single pre-joined string because a
+    /// skill like `address-feedback` takes two arguments (a ticket and a PR
+    /// number); joining at the call site would push formatting knowledge back
+    /// out of `AgentType`.
+    pub fn skill_invocation(&self, skill: &str, args: &[&str]) -> String {
+        match self {
+            Self::Claude => {
+                let mut invocation = format!("/{skill}");
+                for arg in args {
+                    invocation.push(' ');
+                    invocation.push_str(arg);
+                }
+                invocation
+            }
+            Self::Codex => {
+                if args.is_empty() {
+                    format!("Run the `{skill}` skill.")
+                } else {
+                    format!("Run the `{skill}` skill. Arguments: {}", args.join(", "))
+                }
+            }
+        }
+    }
+
     /// Built-in default model for the given worker strategy name (`"code"`,
     /// `"design"`, `"manual"`), or `None` for an unknown strategy or an agent
     /// with no model concept.
@@ -292,6 +333,48 @@ mod tests {
     fn spawn_command_blank_model_is_none() {
         assert_eq!(AgentType::Claude.spawn_command(Some("   ")), "claude");
         assert_eq!(AgentType::Codex.spawn_command(Some("   ")), "codex");
+    }
+
+    #[test]
+    fn clear_command_per_agent() {
+        assert_eq!(AgentType::Claude.clear_command(), "/clear");
+        assert_eq!(AgentType::Codex.clear_command(), "/new");
+    }
+
+    #[test]
+    fn skill_invocation_zero_args() {
+        assert_eq!(
+            AgentType::Claude.skill_invocation("implement", &[]),
+            "/implement"
+        );
+        assert_eq!(
+            AgentType::Codex.skill_invocation("implement", &[]),
+            "Run the `implement` skill."
+        );
+    }
+
+    #[test]
+    fn skill_invocation_one_arg() {
+        assert_eq!(
+            AgentType::Claude.skill_invocation("implement", &["ur-x"]),
+            "/implement ur-x"
+        );
+        assert_eq!(
+            AgentType::Codex.skill_invocation("implement", &["ur-x"]),
+            "Run the `implement` skill. Arguments: ur-x"
+        );
+    }
+
+    #[test]
+    fn skill_invocation_multiple_args() {
+        assert_eq!(
+            AgentType::Claude.skill_invocation("address-feedback", &["ur-x", "123"]),
+            "/address-feedback ur-x 123"
+        );
+        assert_eq!(
+            AgentType::Codex.skill_invocation("address-feedback", &["ur-x", "123"]),
+            "Run the `address-feedback` skill. Arguments: ur-x, 123"
+        );
     }
 
     #[test]
