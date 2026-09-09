@@ -295,13 +295,22 @@ pub const DEFAULT_WORKER_CPUS: u32 = 2;
 /// Default memory limit for a worker container (used when the launch request omits it).
 pub const DEFAULT_WORKER_MEMORY: &str = "8G";
 
-/// Domains required by Claude Code for normal operation.
+/// Union of every known agent's required domains.
+///
+/// There is one shared Squid instance for all workers (`ur-squid`), so the
+/// default allowlist must cover every agent that might run behind it, not
+/// just whichever agent a given project happens to use. Deduplicated and
+/// stably ordered (by `AgentType::ALL` order, then each agent's own
+/// `proxy_domains()` order) so the generated `allowlist.txt` doesn't churn
+/// between runs.
 fn default_proxy_allowlist() -> Vec<String> {
-    vec![
-        "api.anthropic.com".to_string(),
-        "platform.claude.com".to_string(),
-        "downloads.claude.ai".to_string(),
-    ]
+    let mut seen = std::collections::HashSet::new();
+    AgentType::ALL
+        .iter()
+        .flat_map(|agent| agent.proxy_domains().iter().copied())
+        .filter(|domain| seen.insert(*domain))
+        .map(str::to_string)
+        .collect()
 }
 
 // ---- Config ----
@@ -2284,6 +2293,28 @@ mod tests {
         // SAFETY: serialized by ENV_MUTEX.
         unsafe { std::env::remove_var(UR_CONFIG_ENV) };
         assert_eq!(dir, tmp.path());
+    }
+
+    /// The default allowlist is the union of every known agent's domains —
+    /// one shared Squid instance serves every worker, regardless of which
+    /// agent it runs.
+    #[test]
+    fn default_proxy_allowlist_is_union_of_all_agents() {
+        let allowlist = default_proxy_allowlist();
+        for domain in [
+            "api.anthropic.com",
+            "platform.claude.com",
+            "downloads.claude.ai",
+            "chatgpt.com",
+            "api.openai.com",
+            "auth.openai.com",
+        ] {
+            assert!(
+                allowlist.contains(&domain.to_string()),
+                "missing {domain} in {allowlist:?}"
+            );
+        }
+        assert_eq!(allowlist.len(), 6, "unexpected duplicates in {allowlist:?}");
     }
 
     #[test]

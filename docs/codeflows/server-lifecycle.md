@@ -118,6 +118,21 @@ Host (macOS / Linux)
         └── worker containers (launched dynamically)
 ```
 
+## Squid Allowlist Default
+
+There is **one shared `ur-squid` instance for every worker**, regardless of which agent it
+runs, so the default allowlist (`[proxy].allowlist` when unset in `ur.toml`) must cover every
+known agent's domains, not just one. `default_proxy_allowlist()` (`crates/ur_config/src/lib.rs`)
+folds over `AgentType::ALL`, collecting each agent's `proxy_domains()` into a deduplicated,
+stably-ordered list — Claude's three domains plus Codex's three (`chatgpt.com`,
+`api.openai.com`, `auth.openai.com`) today.
+
+An explicit `[proxy] allowlist = [...]` in `ur.toml` still **overrides the default entirely**
+rather than merging with it — unchanged behavior. The consequence: someone who pinned a
+Claude-only allowlist before Codex support existed must add the Codex domains by hand: the
+failure mode is a Codex worker that starts but can't reach its API, not a config error at
+startup.
+
 ## Concurrency Safety
 
 - `start_builderd()` uses an exclusive file lock (`builderd.lock`) to prevent races
