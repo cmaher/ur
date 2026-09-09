@@ -2,13 +2,27 @@ use std::fmt;
 
 use crate::UR_AGENT_TYPE_ENV;
 
-/// Auth profile for agents using OAuth-style credentials backed by the host keychain.
-/// Future agents may use other auth styles — those would become new variants if/when needed.
+/// Where an agent's host-side credentials come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthSource {
+    /// macOS keychain, falling back to a home-relative file on Linux.
+    Keychain {
+        service: &'static str,
+        linux_fallback: &'static str,
+    },
+    /// Plain file under the host user's home directory.
+    HostFile { path_from_home: &'static str },
+}
+
+/// Auth profile for an agent. Future agents may use other auth styles —
+/// those become new [`AuthSource`] variants if/when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentAuth {
-    pub keychain_service: &'static str,
-    pub credentials_filename: &'static str,
-    pub app_config_filename: &'static str,
+    pub source: AuthSource,
+    /// Credentials file, relative to the worker home. Bind-mounted into the container.
+    pub credentials_path: &'static str,
+    /// App config, relative to the worker home. Baked into the image.
+    pub app_config_path: &'static str,
 }
 
 /// Which AI agent runs a worker. Currently a single variant (`Claude`); future
@@ -142,9 +156,12 @@ impl AgentType {
     pub fn auth(&self) -> Option<AgentAuth> {
         match self {
             Self::Claude => Some(AgentAuth {
-                keychain_service: "Claude Code-credentials",
-                credentials_filename: ".credentials.json",
-                app_config_filename: ".claude.json",
+                source: AuthSource::Keychain {
+                    service: "Claude Code-credentials",
+                    linux_fallback: ".claude/.credentials.json",
+                },
+                credentials_path: ".claude/.credentials.json",
+                app_config_path: ".claude.json",
             }),
         }
     }
@@ -246,9 +263,15 @@ mod tests {
     #[test]
     fn auth_profile() {
         let auth = AgentType::Claude.auth().expect("claude has auth");
-        assert_eq!(auth.keychain_service, "Claude Code-credentials");
-        assert_eq!(auth.credentials_filename, ".credentials.json");
-        assert_eq!(auth.app_config_filename, ".claude.json");
+        assert_eq!(auth.credentials_path, ".claude/.credentials.json");
+        assert_eq!(auth.app_config_path, ".claude.json");
+        assert_eq!(
+            auth.source,
+            AuthSource::Keychain {
+                service: "Claude Code-credentials",
+                linux_fallback: ".claude/.credentials.json",
+            }
+        );
     }
 
     #[test]

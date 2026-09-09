@@ -1,7 +1,7 @@
 mod agent;
 mod template_path;
 
-pub use agent::{AgentAuth, AgentType, ParseAgentError};
+pub use agent::{AgentAuth, AgentType, AuthSource, ParseAgentError};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };

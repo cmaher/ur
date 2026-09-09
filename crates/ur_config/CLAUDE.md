@@ -108,6 +108,23 @@ Do not add a parallel `local: bool` to `ProjectConfig` — the `Option` is what 
 every consumer of `repo` to handle absence at compile time. See
 `docs/codeflows/config.md#local-projects`.
 
+## Agent Auth (`AgentAuth` / `AuthSource`)
+
+`AgentType::auth()` returns an optional [`AgentAuth`] describing how an agent's credentials
+are sourced and where its files live, for agents that need credentials at all (`None` means
+no auth profile).
+
+- `AgentAuth.source: AuthSource` — either `Keychain { service, linux_fallback }` (macOS
+  keychain, falling back to a home-relative file on Linux) or `HostFile { path_from_home }`
+  (always a plain file under the host user's home directory, no keychain).
+- `AgentAuth.credentials_path` / `AgentAuth.app_config_path` — both home-relative paths
+  (e.g. `.claude/.credentials.json`, `.claude.json`), used as-is when joining onto the
+  *worker's* home directory inside a container.
+- Host-side storage under `$UR_CONFIG/<agent-name>/` flattens every agent's files into one
+  directory, so callers building a host path take only the filename component (via
+  `Path::file_name()`) of `credentials_path` / `app_config_path` rather than the full
+  relative path.
+
 ## Other Config
 
 - Proxy constants: `DEFAULT_PROXY_HOSTNAME` ("ur-squid"), `SQUID_PORT` (3128); `hostname` replaces the old `port` field

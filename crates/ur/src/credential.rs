@@ -4,10 +4,20 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use container::{ContainerId, ContainerRuntime, ExecOpts};
 use tracing::{debug, info, instrument, warn};
-use ur_config::{AgentAuth, AgentType};
+use ur_config::{AgentAuth, AgentType, AuthSource};
 
 fn worker_home() -> &'static Path {
     Path::new(ur_config::WORKER_HOME)
+}
+
+/// Extract the filename component of a home-relative auth path (e.g.
+/// `.claude/.credentials.json` -> `.credentials.json`), for host-side storage
+/// under `$UR_CONFIG/<agent>/`, which flattens every agent's files into one
+/// directory regardless of their subdirectory nesting in the worker home.
+fn home_relative_filename(path: &str) -> Result<&std::ffi::OsStr> {
+    Path::new(path)
+        .file_name()
+        .with_context(|| format!("auth path '{path}' has no filename"))
 }
 
 /// Per-agent credential management: seeding, extraction, and host path
@@ -133,9 +143,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
     ) -> Result<Vec<PathBuf>> {
         let mut saved = Vec::new();
 
-        let creds_container_path = worker_home()
-            .join(self.agent_type().home_subdir())
-            .join(self.auth.credentials_filename);
+        let creds_container_path = worker_home().join(self.auth.credentials_path);
         let creds_path = self.save_file_from_container(
             runtime,
             container_id,
@@ -144,7 +152,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
         )?;
         saved.push(creds_path);
 
-        let config_container_path = worker_home().join(self.auth.app_config_filename);
+        let config_container_path = worker_home().join(self.auth.app_config_path);
         let config_path = self.save_file_from_container(
             runtime,
             container_id,
@@ -161,14 +169,14 @@ impl AgentCredentialManager for ClaudeCredentialManager {
         let config_dir = ur_config::resolve_config_dir()?;
         Ok(config_dir
             .join(self.agent_type().name())
-            .join(self.auth.credentials_filename))
+            .join(home_relative_filename(self.auth.credentials_path)?))
     }
 
     fn host_app_config_path(&self) -> Result<PathBuf> {
         let config_dir = ur_config::resolve_config_dir()?;
         Ok(config_dir
             .join(self.agent_type().name())
-            .join(self.auth.app_config_filename))
+            .join(home_relative_filename(self.auth.app_config_path)?))
     }
 }
 
@@ -199,20 +207,25 @@ fn read_host_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
 #[cfg(target_os = "macos")]
 fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
     use std::process::Command;
+    let service = match auth.source {
+        AuthSource::Keychain { service, .. } => service,
+        AuthSource::HostFile { path_from_home } => {
+            return read_host_file_credentials(agent, path_from_home);
+        }
+    };
     debug!(
         agent = agent.name(),
         "reading credentials from macOS Keychain"
     );
     let output = Command::new("security")
-        .args(["find-generic-password", "-s", auth.keychain_service, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .context("failed to run `security` command")?;
     if !output.status.success() {
         warn!("no credentials found in macOS Keychain");
         anyhow::bail!(
-            "no credentials in macOS Keychain for service {:?} — \
-             log in to Claude Code on this machine first",
-            auth.keychain_service
+            "no credentials in macOS Keychain for service {service:?} — \
+             log in to Claude Code on this machine first"
         );
     }
     let json =
@@ -228,11 +241,20 @@ fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String
 
 #[cfg(not(target_os = "macos"))]
 fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String> {
+    let path_from_home = match auth.source {
+        AuthSource::Keychain { linux_fallback, .. } => linux_fallback,
+        AuthSource::HostFile { path_from_home } => path_from_home,
+    };
+    read_host_file_credentials(agent, path_from_home)
+}
+
+/// Read credentials from a plain file under the host user's home directory,
+/// used both for [`AuthSource::HostFile`] agents and as the Linux fallback
+/// for [`AuthSource::Keychain`] agents.
+fn read_host_file_credentials(agent: AgentType, path_from_home: &str) -> Result<String> {
     let home = std::env::var("HOME").context("HOME not set")?;
-    let path = PathBuf::from(home)
-        .join(agent.home_subdir())
-        .join(auth.credentials_filename);
-    debug!(path = %path.display(), "reading credentials from agent's native config");
+    let path = PathBuf::from(home).join(path_from_home);
+    debug!(agent = agent.name(), path = %path.display(), "reading credentials from agent's native config");
     let contents = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let trimmed = contents.trim().to_string();
@@ -263,14 +285,7 @@ mod tests {
     fn host_credentials_path_is_under_config_dir() {
         let mgr = credential_manager_for(AgentType::Claude).expect("claude has a manager");
         if let Ok(path) = mgr.host_credentials_path() {
-            assert!(
-                path.ends_with(
-                    AgentType::Claude
-                        .auth()
-                        .expect("claude has auth")
-                        .credentials_filename
-                )
-            );
+            assert!(path.ends_with(".credentials.json"));
         }
     }
 
@@ -278,14 +293,23 @@ mod tests {
     fn host_config_path_is_under_config_dir() {
         let mgr = credential_manager_for(AgentType::Claude).expect("claude has a manager");
         if let Ok(path) = mgr.host_app_config_path() {
-            assert!(
-                path.ends_with(
-                    AgentType::Claude
-                        .auth()
-                        .expect("claude has auth")
-                        .app_config_filename
-                )
-            );
+            assert!(path.ends_with(".claude.json"));
         }
+    }
+
+    /// Pins Claude's resolved container-side auth paths to their pre-refactor
+    /// values, since nothing else in the test suite exercises the exact
+    /// strings baked into `AgentAuth`.
+    #[test]
+    fn claude_container_paths_are_unchanged() {
+        let auth = AgentType::Claude.auth().expect("claude has auth");
+        assert_eq!(
+            worker_home().join(auth.credentials_path),
+            PathBuf::from("/home/worker/.claude/.credentials.json")
+        );
+        assert_eq!(
+            worker_home().join(auth.app_config_path),
+            PathBuf::from("/home/worker/.claude.json")
+        );
     }
 }

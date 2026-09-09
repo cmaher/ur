@@ -112,13 +112,15 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
 
     // Credentials file must exist on the host for Docker file mounts to work
     // (otherwise Docker creates a directory at the mount path).
+    let credentials_path = ur_config::AgentType::Claude
+        .auth()
+        .expect("Claude has an auth profile")
+        .credentials_path;
+    let credentials_filename = Path::new(credentials_path)
+        .file_name()
+        .expect("credentials_path has a filename");
     write_file(
-        &claude_dir.join(
-            ur_config::AgentType::Claude
-                .auth()
-                .expect("Claude has an auth profile")
-                .credentials_filename,
-        ),
+        &claude_dir.join(credentials_filename),
         "",
         false,
         "--force",
