@@ -45,10 +45,12 @@ pub trait AgentCredentialManager: Send + Sync {
 
     /// Resolve the host-side credentials file path.
     fn host_credentials_path(&self) -> Result<PathBuf>;
-
-    /// Resolve the host-side app config file path.
-    fn host_app_config_path(&self) -> Result<PathBuf>;
 }
+
+// No `host_app_config_path` on the trait: only Claude extracts an app config
+// from a container, and only its own `save_from_container` ever needs the host
+// path. It lives as an inherent method on `ClaudeCredentialManager` so a new
+// agent isn't made to implement something nothing calls through the trait.
 
 /// Build the credential manager for `agent`, or `None` if the agent has no
 /// auth profile.

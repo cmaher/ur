@@ -102,7 +102,7 @@ script = ["scripts/build/install.sh"]
 [tasks.image-update-claude]
 description = "Build all container images, forcing a Claude Code update in the worker image (keeps the base image cache)"
 dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
-env = { "UR_UPDATE_CLAUDE" = "1" }
+env = { "UR_UPDATE_AGENT" = "claude" }
 script_runner = "@shell"
 script = ["scripts/build/image.sh"]
 

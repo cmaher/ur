@@ -5,27 +5,29 @@ layer for layer. Must work with Docker and nerdctl (containerd) runtimes.
 
 - Build context is `containers/worker-codex/` — all files copied into the image must live here
 - Image is tagged `ur-worker-codex:latest` by convention — the directory name matches the tag
-- `vendor/codex/install.sh` is a wrapper we wrote (not a vendored upstream script — codex has no
-  fixed-checksum manifest to pin against the way Claude Code's GCS bucket does) that resolves
-  the current release from GitHub's API and installs the native
-  `codex-{aarch64,x86_64}-unknown-linux-musl` binary at `/usr/local/bin/codex`. No node in this
-  image — codex ships a single native binary, unlike the npm-distributed Claude CLI
-- Codex is installed as **root** (a system-wide binary, not a per-user install), then
-  `chown worker:worker /usr/local/bin/codex` so the later `codex update` layer (run as `worker`)
-  can overwrite it
-- Refreshed by re-running `install.sh` in a layer gated on the `CACHEBUST` build arg — use
-  `UR_UPDATE_AGENT=codex` (see `scripts/build/image.sh`) to bust only this layer. This is
-  **not** `codex update`: that subcommand refuses to touch a binary it didn't install itself
-  (`Could not detect the Codex installation method`), unlike Claude Code's CLI, which tracks
-  and self-updates a manually-dropped native binary fine. Re-running the install script is the
-  actual update mechanism here, so `install-codex.sh` is kept around in the image (not deleted
-  until after this layer) specifically so it can run a second time. Both the initial install
-  and this update run as **root** (unlike Claude's per-user, worker-run install) — `install`'s
-  destination-replace step unlinks the existing file first, which needs write access to the
-  root-owned `/usr/local/bin` directory itself, not just the file, so running the update as
-  `worker` fails with `Permission denied` even though `worker` owns the file's content. The
-  update is **not** best-effort: a failed re-install fails the build rather than silently
-  shipping a stale version
+- `vendor/codex/install.sh` is a wrapper we wrote (not a vendored upstream script — codex
+  publishes no fixed-version manifest to pin a URL against the way Claude Code's GCS bucket
+  does) that resolves the current release from GitHub's API and installs the native
+  `codex-{aarch64,x86_64}-unknown-linux-musl` binary at `/usr/local/bin/codex`. It matches the
+  exact expected asset name (`codex-<target>.tar.gz`) rather than any `codex-*<target>*`
+  archive, and verifies the download against the release's `<asset>.sha256` sidecar — a
+  mismatch fails the build, a missing sidecar warns. No node in this image — codex ships a
+  single native binary, unlike the npm-distributed Claude CLI
+- Codex is installed as **root** (a system-wide binary, not a per-user install, and unlike
+  Claude's per-user worker-run install) — `install`'s destination-replace step unlinks the
+  existing file first, which needs write access to the root-owned `/usr/local/bin` directory
+  itself, not just the file, so running it as `worker` fails with `Permission denied` even
+  after a `chown` of the binary. There is deliberately no such `chown`
+- **Install and update are one layer**, gated on the `CACHEBUST` build arg — use
+  `UR_UPDATE_AGENT=codex` (see `scripts/build/image.sh`) to bust it. Refreshing means
+  re-running `install.sh`, **not** `codex update`: that subcommand refuses to touch a binary it
+  didn't install itself (`Could not detect the Codex installation method`), unlike Claude
+  Code's CLI, which tracks and self-updates a manually-dropped native binary fine. Because
+  re-running the script *is* the update, claude's install-then-update pair would download the
+  same release twice on a cold build, so this image has a single `RUN` that references
+  `CACHEBUST`; with the arg defaulted the layer caches normally, and it sits above the worker
+  binary `COPY`s so a plain `cargo make image` reuses it. The install is **not** best-effort: a
+  failure fails the build rather than silently shipping a stale (or missing) version
 
 ## The `potential-settings.json`-holding-TOML wrinkle
 

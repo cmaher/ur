@@ -10,9 +10,10 @@ container.
   the tag
 - Inherits everything from `ur-worker-codex` (codex CLI, tmux entrypoint, worker binaries)
 - Rust toolchain (cargo, bacon, etc.) runs on the host via hostexec shims — no mise or local
-  toolchain in the container. `mise.toml` is staged into this build context by
-  `scripts/build/image.sh` for consistency with `worker-rust-claude`, but nothing in this
-  image's `Dockerfile` installs it — see `worker-rust-claude/CLAUDE.md`'s own note on this
+  toolchain in the container. Unlike `worker-rust-claude`, this context deliberately carries
+  no `mise.toml` / `install-mise.sh`: this `Dockerfile` never references them, so staging a
+  generated copy here would be dead weight. Don't add them "for symmetry" — the claude
+  context's copies are unreferenced too
 - At runtime, `workerd` creates shims for hostexec commands (git, gh, cargo, bacon, etc.)
 - `AgentType::Codex.fallback_image()` resolves to `ur-worker-rust-codex:latest` — a no-project
   codex launch lands here, so this image existing and healthy is load-bearing, not optional

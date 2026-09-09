@@ -315,6 +315,34 @@ fn prepare_project_mounts(config: &ur_config::Config) {
     }
 }
 
+/// Warn when the configured default agent has no seeded credentials, naming
+/// that agent's own remediation.
+///
+/// Only the default agent is checked, not every agent in `AgentType::ALL`: a
+/// Claude-only user must not be nagged about an unconfigured codex (and vice
+/// versa), and a launch that resolves to some *other* agent still fails loudly
+/// at the RPC via `check_credentials_seeded` with the same remediation text.
+fn warn_if_default_agent_unseeded(agent: ur_config::AgentType, output: &OutputManager) {
+    let Some(cred_mgr) = credential::credential_manager_for(agent) else {
+        return;
+    };
+    let seeded = cred_mgr
+        .host_credentials_path()
+        .is_ok_and(|p| ur_config::credentials_file_is_seeded(&p));
+    if seeded {
+        return;
+    }
+    // Reuse the launch-time remediation text verbatim so `ur start`'s guidance
+    // and the `MissingCredentials` RPC error a later launch would produce say
+    // exactly the same thing.
+    let remediation = agent.credentials_remediation();
+    warn!(agent = agent.name(), %remediation, "no shared credentials found");
+    if !output.is_json() {
+        println!();
+        println!("{remediation}");
+    }
+}
+
 #[instrument(skip(config, compose, output))]
 fn start_server(
     config: &ur_config::Config,
@@ -331,22 +359,7 @@ fn start_server(
     if let Err(e) = credential::ensure_credentials_for_all_agents(Duration::ZERO) {
         warn!(error = %e, "credential seeding failed");
     }
-    if let Some(cred_mgr) = credential::credential_manager_for(ur_config::AgentType::Claude) {
-        let has_credentials = cred_mgr
-            .host_credentials_path()
-            .ok()
-            .and_then(|p| std::fs::metadata(&p).ok())
-            .is_some_and(|m| m.len() > 10);
-        if !has_credentials {
-            warn!("no shared credentials found");
-            if !output.is_json() {
-                println!();
-                println!(
-                    "No shared credentials found. Log in to Claude Code on this machine first."
-                );
-            }
-        }
-    }
+    warn_if_default_agent_unseeded(config.agent, output);
 
     match builderd::start_builderd(config, output) {
         Ok(()) => info!("builderd started"),
@@ -849,7 +862,22 @@ async fn process_launch(
     // Refresh credentials for every known agent and ensure config exists.
     // Re-seed if the file is older than a day so host re-logins propagate
     // without clobbering fresh container-driven token refreshes.
-    credential::ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))?;
+    //
+    // A seeding failure warns rather than aborting the launch: this loops every
+    // agent in `AgentType::ALL` (mode resolution is server-side, so the CLI
+    // cannot know which one this launch will use), and one agent's broken host
+    // source — say an empty `~/.codex/auth.json` — must not block a launch that
+    // resolves to a different, perfectly healthy agent. Not silent, and not a
+    // swallowed error either: the server's `check_credentials_seeded` rejects
+    // the launch with an actionable `MissingCredentials` status if the agent it
+    // *does* resolve to has nothing seeded.
+    if let Err(e) = credential::ensure_credentials_for_all_agents(Duration::from_secs(60 * 60 * 24))
+    {
+        warn!(ticket_id, error = %e, "credential seeding failed");
+        if !output.is_json() {
+            eprintln!("Warning: credential seeding failed — {e:#}");
+        }
+    }
     debug!(ticket_id, "credentials ensured");
 
     // Resolve workspace to an absolute path if provided
@@ -1113,11 +1141,7 @@ fn handle_worker_reseed_credentials(
     };
     cred_mgr.ensure_credentials(Duration::ZERO)?;
     let path = cred_mgr.host_credentials_path()?;
-    if !path.exists()
-        || std::fs::metadata(&path)
-            .map(|m| m.len() < 10)
-            .unwrap_or(true)
-    {
+    if !ur_config::credentials_file_is_seeded(&path) {
         anyhow::bail!(
             "no host credentials found to seed for agent {} — log in to that agent on this machine first",
             agent.name()

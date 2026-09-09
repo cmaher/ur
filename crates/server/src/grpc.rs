@@ -235,8 +235,7 @@ fn check_credentials_seeded(
     let Some(path) = agent.host_credentials_path(config_dir) else {
         return Ok(());
     };
-    let seeded = std::fs::metadata(&path).is_ok_and(|m| m.len() >= 10);
-    if seeded {
+    if ur_config::credentials_file_is_seeded(&path) {
         Ok(())
     } else {
         Err(CoreError::MissingCredentials {

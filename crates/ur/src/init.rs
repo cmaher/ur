@@ -41,10 +41,25 @@ function transform(command, args, working_dir, worker_context)
 end
 ";
 
+/// Domains seeded into `$UR_CONFIG/squid/allowlist.txt`, the file Squid actually
+/// reads (mounted at `/etc/squid/allowlist.txt`, see `compose.rs`).
+///
+/// One shared Squid instance serves every worker regardless of which agent it
+/// runs, so this must cover every agent in `AgentType::ALL` — a domain missing
+/// here is a worker that boots healthy and then cannot reach its API.
+/// Deliberately a literal rather than a fold over `AgentType::proxy_domains()`:
+/// `ur init` writes this once and never rewrites it, so an existing config dir
+/// keeps whatever it was seeded with either way. Adding an agent means adding
+/// its domains in both places (here and `proxy_domains()`), and existing
+/// installs need `ur init --force-squid` or `ur proxy allow <domain>`.
 const DEFAULT_ALLOWLIST: &str = "\
 api.anthropic.com
 platform.claude.com
+downloads.claude.ai
 mcp-proxy.anthropic.com
+chatgpt.com
+api.openai.com
+auth.openai.com
 ";
 
 pub struct InitFlags {
@@ -230,6 +245,27 @@ mod tests {
         assert!(content.contains("api.anthropic.com"));
         assert!(content.contains("platform.claude.com"));
         assert!(content.contains("mcp-proxy.anthropic.com"));
+    }
+
+    /// The seeded `allowlist.txt` is what Squid actually reads, and one Squid
+    /// instance serves every worker — so a domain any agent needs but this file
+    /// omits is a worker that boots healthy and then can't reach its API.
+    #[test]
+    fn allowlist_covers_every_agents_proxy_domains() {
+        let tmp = TempDir::new().unwrap();
+        run_with_dir(tmp.path(), flags(false, false, false)).unwrap();
+
+        let content = fs::read_to_string(tmp.path().join("squid/allowlist.txt")).unwrap();
+        let seeded: Vec<&str> = content.lines().map(str::trim).collect();
+        for agent in ur_config::AgentType::ALL {
+            for domain in agent.proxy_domains() {
+                assert!(
+                    seeded.contains(domain),
+                    "{} needs '{domain}' but DEFAULT_ALLOWLIST omits it: {seeded:?}",
+                    agent.name()
+                );
+            }
+        }
     }
 
     #[test]

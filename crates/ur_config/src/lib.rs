@@ -1,7 +1,10 @@
 mod agent;
 mod template_path;
 
-pub use agent::{AgentAuth, AgentType, AuthSource, ParseAgentError, UnknownAliasError};
+pub use agent::{
+    AgentAuth, AgentType, AuthSource, MIN_SEEDED_CREDENTIALS_BYTES, ParseAgentError,
+    UnknownAliasError, credentials_file_is_seeded,
+};
 pub use template_path::{
     ResolvedTemplatePath, WORKSPACE_TEMPLATE, resolve_template_path, resolve_workspace_content,
 };

@@ -46,7 +46,7 @@ impl AgentCredentialManager for ClaudeCredentialManager {
         // bind-mount setup, so treat it as missing.
         let needs_seed = match std::fs::metadata(&creds_path) {
             Err(_) => true,
-            Ok(meta) if meta.len() < 10 => true,
+            Ok(meta) if meta.len() < ur_config::MIN_SEEDED_CREDENTIALS_BYTES => true,
             Ok(meta) => match meta.modified() {
                 Ok(mtime) => mtime.elapsed().map(|age| age >= max_age).unwrap_or(true),
                 Err(_) => true,
@@ -104,7 +104,13 @@ impl AgentCredentialManager for ClaudeCredentialManager {
             .join(self.agent_type().name())
             .join(home_relative_filename(self.auth.credentials_path)?))
     }
+}
 
+impl ClaudeCredentialManager {
+    /// Resolve the host-side `.claude.json` path. Inherent rather than a trait
+    /// method: Claude is the only agent that extracts an app config from a
+    /// container (codex's `config.toml` is baked into the image), and
+    /// `save_from_container` above is its only caller.
     fn host_app_config_path(&self) -> Result<PathBuf> {
         let config_dir = ur_config::resolve_config_dir()?;
         Ok(config_dir
@@ -204,7 +210,9 @@ mod tests {
 
     #[test]
     fn host_config_path_is_under_config_dir() {
-        let mgr = credential_manager_for(AgentType::Claude).expect("claude has a manager");
+        let mgr = ClaudeCredentialManager {
+            auth: AgentType::Claude.auth().expect("claude has auth"),
+        };
         if let Ok(path) = mgr.host_app_config_path() {
             assert!(path.ends_with(".claude.json"));
         }

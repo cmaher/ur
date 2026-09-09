@@ -125,9 +125,13 @@ Two accessors are deliberately `None` for `Codex`:
   follow the same optional pattern for an agent with no settings-file or no-credentials
   concept.)
 
-`proxy_domains()` returns the domains an agent needs through the forward proxy; wiring the
-squid allowlist to this accessor (rather than the historical hardcoded
-`default_proxy_allowlist()`) is tracked separately.
+`proxy_domains()` returns the domains an agent needs through the forward proxy, and
+`default_proxy_allowlist()` (`lib.rs`) folds it over `AgentType::ALL` for the `[proxy].allowlist`
+default. Careful: that config field is *not* what Squid reads — the live list is
+`$UR_CONFIG/squid/allowlist.txt`, seeded once by `ur init` from `DEFAULT_ALLOWLIST`
+(`crates/ur/src/init.rs`), so adding an agent means adding its domains **in both places**.
+`allowlist_covers_every_agents_proxy_domains` (`crates/ur/src/init.rs`) is the test that fails
+when they drift. See `docs/codeflows/server-lifecycle.md#squid-allowlist-default`.
 
 Command phrasing (`clear_command()`, `skill_invocation(skill, args)`) is agent-owned too, not
 a workerd concern: Claude has a custom slash command per skill (`/implement ur-x`) and resets
@@ -164,6 +168,11 @@ no auth profile).
   directory, so callers building a host path take only the filename component (via
   `Path::file_name()`) of `credentials_path` / `app_config_path` rather than the full
   relative path.
+- `credentials_file_is_seeded(path)` / `MIN_SEEDED_CREDENTIALS_BYTES` — the one definition of
+  "this file holds real credentials, not the empty stub a Docker bind-mount left behind." Both
+  the CLI's seeding and `ur start` warning (`crates/ur`) and the server's pre-launch gate
+  (`check_credentials_seeded`, `crates/server/src/grpc.rs`) go through it, so the byte
+  threshold can't drift between them. Never reads the file's contents.
 
 ## Other Config
 

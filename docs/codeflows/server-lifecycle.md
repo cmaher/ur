@@ -133,17 +133,31 @@ a third agent's images is a data change to that table, not a code change to the 
 ## Squid Allowlist Default
 
 There is **one shared `ur-squid` instance for every worker**, regardless of which agent it
-runs, so the default allowlist (`[proxy].allowlist` when unset in `ur.toml`) must cover every
-known agent's domains, not just one. `default_proxy_allowlist()` (`crates/ur_config/src/lib.rs`)
-folds over `AgentType::ALL`, collecting each agent's `proxy_domains()` into a deduplicated,
-stably-ordered list — Claude's three domains plus Codex's three (`chatgpt.com`,
-`api.openai.com`, `auth.openai.com`) today.
+runs, so the allowlist must cover every known agent's domains, not just one. Two separate
+places carry a default, and it is worth knowing which one Squid actually reads:
 
-An explicit `[proxy] allowlist = [...]` in `ur.toml` still **overrides the default entirely**
-rather than merging with it — unchanged behavior. The consequence: someone who pinned a
-Claude-only allowlist before Codex support existed must add the Codex domains by hand: the
-failure mode is a Codex worker that starts but can't reach its API, not a config error at
-startup.
+- **`$UR_CONFIG/squid/allowlist.txt`** — the live list. Compose mounts it at
+  `/etc/squid/allowlist.txt` and `squid.conf` reads it (`acl allowed_domains dstdomain`). It is
+  seeded from `DEFAULT_ALLOWLIST` (`crates/ur/src/init.rs`) by `ur init`, **written once**, and
+  never rewritten afterwards — so this is the file that decides whether a worker can reach its
+  API. `ur proxy allow/block <domain>` edits it in place and signals `squid -k reconfigure`.
+- **`ProxyConfig.allowlist`** — the `[proxy].allowlist` config field, defaulted by
+  `default_proxy_allowlist()` (`crates/ur_config/src/lib.rs`), which folds over
+  `AgentType::ALL` collecting each agent's `proxy_domains()` into a deduplicated,
+  stably-ordered list. Nothing writes it to `allowlist.txt` today (`SquidManager` would, but is
+  not constructed), so it does not affect a running stack — treat it as the declarative
+  default, and keep it in sync with `DEFAULT_ALLOWLIST`.
+
+Both cover Claude's domains plus Codex's three (`chatgpt.com`, `api.openai.com`,
+`auth.openai.com`); `allowlist_covers_every_agents_proxy_domains` (`crates/ur/src/init.rs`)
+fails if the seeded file drops one an agent declares.
+
+**Existing config dirs do not pick up new domains.** Because `ur init` never rewrites
+`allowlist.txt`, anyone who ran it before Codex support existed keeps the old list, and an
+explicit `[proxy] allowlist = [...]` in `ur.toml` overrides the default entirely rather than
+merging — unchanged behavior. Remedy either with `ur proxy allow <domain>` per domain or
+`ur init --force-squid`. The failure mode is a worker that starts healthy and then can't reach
+its API, not a config error at startup.
 
 ## Concurrency Safety
 

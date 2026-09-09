@@ -13,8 +13,16 @@ the new version.
 
 Unlike `vendor/claude/install.sh`, `codex/install.sh` still resolves the
 release *metadata* (asset URL for the current version) from GitHub's API at
-build time — the script itself is vendored, but codex has no fixed-checksum
-manifest to pin against the way Claude Code's GCS bucket does.
+build time: the script itself is vendored and reviewable, but codex publishes
+no fixed-version manifest to pin a URL against the way Claude Code's GCS
+bucket does, so "latest release" is resolved per build.
+
+The payload is not trusted blindly. `codex/install.sh` matches the exact
+expected asset name, then verifies the downloaded archive against that
+release's own `<asset>.sha256` sidecar before installing it; a mismatch fails
+the build. A missing or unparseable sidecar warns and proceeds, since upstream
+owns that layout — if you see that warning, check whether the sidecars moved
+before shipping the image.
 
 Agent-agnostic vendored files (mise, superpowers) live in
 `containers/worker-base/vendor/` instead.

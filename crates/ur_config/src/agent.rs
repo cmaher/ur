@@ -25,6 +25,22 @@ pub struct AgentAuth {
     pub app_config_path: &'static str,
 }
 
+/// Smallest a seeded credentials file can plausibly be. Anything shorter is a
+/// stub — an empty file the server's Docker bind-mount setup created so the
+/// mount would succeed, or a truncated seed — and counts as "not seeded".
+///
+/// Single definition on purpose: the CLI's per-agent seeding (`crates/ur`), its
+/// `ur start` warning, and the server's pre-launch gate (`check_credentials_seeded`)
+/// must all agree on the boundary, and previously each carried its own literal
+/// with a different comparison.
+pub const MIN_SEEDED_CREDENTIALS_BYTES: u64 = 10;
+
+/// Whether `path` holds credentials that look actually seeded (exists and is at
+/// least [`MIN_SEEDED_CREDENTIALS_BYTES`]). Never reads the file's contents.
+pub fn credentials_file_is_seeded(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.len() >= MIN_SEEDED_CREDENTIALS_BYTES)
+}
+
 /// Which AI agent runs a worker. `Claude` (Claude Code) and `Codex` (OpenAI
 /// Codex CLI) today; future agents add variants here.
 ///
@@ -541,6 +557,29 @@ mod tests {
                 path_from_home: ".codex/auth.json",
             }
         );
+    }
+
+    #[test]
+    fn credentials_file_is_seeded_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("missing.json");
+        assert!(!credentials_file_is_seeded(&missing), "missing file");
+
+        let empty = tmp.path().join("empty.json");
+        std::fs::write(&empty, "").unwrap();
+        assert!(!credentials_file_is_seeded(&empty), "empty stub");
+
+        let short = tmp.path().join("short.json");
+        std::fs::write(
+            &short,
+            "x".repeat(MIN_SEEDED_CREDENTIALS_BYTES as usize - 1),
+        )
+        .unwrap();
+        assert!(!credentials_file_is_seeded(&short), "truncated seed");
+
+        let exact = tmp.path().join("exact.json");
+        std::fs::write(&exact, "x".repeat(MIN_SEEDED_CREDENTIALS_BYTES as usize)).unwrap();
+        assert!(credentials_file_is_seeded(&exact), "at the threshold");
     }
 
     #[test]

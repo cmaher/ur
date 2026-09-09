@@ -3,13 +3,32 @@ FROM ur-worker-base:${BASE_TAG}
 
 # Install the codex CLI as root — it's a single native binary at a
 # system-wide path, not a per-user install like Claude Code's own installer.
-# install-codex.sh stays around (deleted after the CACHEBUST update step
-# below re-runs it) rather than being removed here. Both the initial install
-# and the later update run as root: `install`'s destination-replace step
-# unlinks the existing file first, which needs write access to the
-# (root-owned) /usr/local/bin directory itself, not just the file.
+# Root because `install`'s destination-replace step unlinks the existing file
+# first, which needs write access to the (root-owned) /usr/local/bin directory
+# itself, not just the file.
+#
+# This is also the *update* layer, which is why the install and its CACHEBUST
+# gate are one step rather than claude's install-then-`claude update` pair:
+# `codex update` does NOT work here — it refuses to update a binary it didn't
+# install itself, failing with "Could not detect the Codex installation
+# method" — so re-running this script is the only update mechanism. A separate
+# unconditional install layer would just download the same release twice on a
+# cold build. Pass --build-arg CACHEBUST=<timestamp> to force a re-install
+# (UR_UPDATE_AGENT=codex / UR_FORCE_REBUILD_BASE=1 do this for you via
+# scripts/build/image.sh — see cargo make install-update-codex); with the
+# default, this layer caches like any other, so codex stays pinned at the baked
+# version, and rebuilds that only change the worker binaries below reuse it
+# instead of re-downloading.
+#
+# CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
+# cache for layers that actually use the ARG, not merely declare it.
+# A failed install fails the build on purpose: silently shipping a stale (or
+# missing) codex is worse than a red build, since the cached layer would then
+# hide it for weeks.
+ARG CACHEBUST=0
 COPY vendor/codex/install.sh /tmp/install-codex.sh
-RUN bash /tmp/install-codex.sh
+RUN echo "CACHEBUST=$CACHEBUST" && bash /tmp/install-codex.sh && codex --version
+RUN rm /tmp/install-codex.sh
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -44,26 +63,6 @@ COPY managed_config.toml /etc/codex/managed_config.toml
 
 # UR_GRPC_HOST and UR_GRPC_PORT are set at runtime by the server when launching the container.
 
-# Codex CLI update. Pass --build-arg CACHEBUST=<timestamp> to bust the cache
-# on this layer (UR_UPDATE_AGENT=codex / UR_FORCE_REBUILD_BASE=1 do this for
-# you via scripts/build/image.sh — see cargo make install-update-claude for
-# the equivalent claude-only task).
-#
-# `codex update` itself does NOT work here: it refuses to update a binary it
-# didn't install itself, failing with "Could not detect the Codex
-# installation method" — unlike Claude Code, whose own CLI tracks and
-# self-updates a manually-dropped native binary just fine. Re-running our own
-# install script (as root, same as the initial install above) is the actual
-# update mechanism: it re-resolves and re-downloads the latest release,
-# replacing the binary at /usr/local/bin/codex.
-#
-# CACHEBUST must be referenced in the RUN command — BuildKit only invalidates
-# cache for layers that actually use the ARG, not merely declare it.
-# A failed update fails the build on purpose: silently shipping a stale codex
-# is worse than a red build, since the cached layer would then hide it for weeks.
-ARG CACHEBUST=0
-RUN echo "CACHEBUST=$CACHEBUST" && bash /tmp/install-codex.sh && codex --version
-RUN rm /tmp/install-codex.sh
 USER worker
 WORKDIR /workspace
 

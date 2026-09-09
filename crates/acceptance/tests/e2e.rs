@@ -5200,13 +5200,27 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
     }
 }
 
-/// The same agent-agnostic `container.image = "ur-worker-rust"` alias resolves to
-/// a different concrete image depending on the launching agent: `ur-worker-rust-claude`
-/// for "rustproj" (a claude-agent project), `ur-worker-rust-codex` for "rustcodexproj"
-/// (a codex-agent project) — two project entries rather than one launched twice,
-/// since there is no `ur worker launch --image` flag to override a project's
-/// pre-resolved full reference per-launch (see create_project_fixtures). Exercises
-/// `AgentType::resolve_image` / `resolve_worker_image` (`crates/server/src/grpc.rs`).
+/// A claude-agent project and a codex-agent project, both configured from the
+/// same `container.image = "ur-worker-rust"` alias in `ProjectEntry`, each land
+/// in their own agent's rust image: `ur-worker-rust-claude` for "rustproj",
+/// `ur-worker-rust-codex` for "rustcodexproj". Two project entries rather than
+/// one launched twice, since there is no `ur worker launch --image` flag to
+/// override a project's image per-launch (see create_project_fixtures).
+///
+/// **What this does not cover.** It does not exercise `AgentType::resolve_image`
+/// / `resolve_worker_image` (`crates/server/src/grpc.rs`): `render_projects_toml`
+/// bakes each entry's alias into a full, CI-tagged reference
+/// (`ur-worker-rust-codex:ci-<label>`) because the suite builds CI-tagged
+/// images, and `resolve_image` returns any value containing `:` unchanged. So
+/// the resolved tag asserted here is the one this test wrote into `ur.toml`
+/// itself — what it really pins is that a full reference reaches `docker run`
+/// untouched for either agent, and that a codex-agent project boots that image
+/// healthy. Alias-to-tag resolution is unit-tested instead
+/// (`resolve_image_per_alias_and_agent` in `crates/ur_config`,
+/// `resolve_worker_image_*` in `crates/server/src/grpc.rs`); covering it here
+/// would need `resolve_image` to honor `UR_IMAGE_TAG` rather than hardcoding
+/// `:latest`, since a bare alias always resolves to `:latest` and CI never
+/// builds that tag.
 fn scenario_codex_image_template(env: &TestEnv) {
     let claude_ticket_id = "rust-image-template-claude-test";
     let codex_ticket_id = "rust-image-template-codex-test";
@@ -5270,11 +5284,12 @@ fn scenario_codex_image_template(env: &TestEnv) {
         );
 
         // ---- "rustcodexproj" — the SAME configured alias ("ur-worker-rust"),
-        // on a project entry dedicated to codex — resolves to the codex image.
+        // on a project entry dedicated to codex — lands in the codex image.
         // There is no `ur worker launch --image` flag to override a project's
         // pre-resolved full reference per-launch (see create_project_fixtures),
         // so this uses a second project rather than --agent codex against
-        // "rustproj" itself. ----
+        // "rustproj" itself. Note the tag came from render_projects_toml, not
+        // from resolve_image — see this function's doc comment. ----
         seed_dummy_codex_credentials(&env.config_path);
         launch_and_verify_image(
             "rustcodexproj",

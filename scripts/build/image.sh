@@ -64,19 +64,14 @@ build_image_no_cache() {
 # UR_FORCE_REBUILD_BASE=1 busts every agent (the base rebuild already
 # invalidates their cache, so this just makes the intent explicit).
 # UR_UPDATE_AGENT names one agent, or a comma-separated list, to bust
-# specifically. UR_UPDATE_CLAUDE=1 is a back-compat alias for
-# UR_UPDATE_AGENT=claude, kept so `cargo make install-update-claude` needs no
-# changes.
+# specifically — one knob for every agent (`cargo make install-update-claude`
+# and `install-update-codex` both set it).
 should_bust_agent() {
     local agent="$1"
     if [ "${UR_FORCE_REBUILD_BASE:-}" = "1" ]; then
         return 0
     fi
-    local update_agents="${UR_UPDATE_AGENT:-}"
-    if [ "${UR_UPDATE_CLAUDE:-}" = "1" ]; then
-        update_agents="${update_agents:+$update_agents,}claude"
-    fi
-    case ",${update_agents}," in
+    case ",${UR_UPDATE_AGENT:-}," in
         *",${agent},"*) return 0 ;;
         *) return 1 ;;
     esac
@@ -100,9 +95,11 @@ AGENT_IMAGES=(
     "worker-rust-codex:ur-worker-rust-codex:codex:false"
 )
 
-# Stage vendored mise installer into each rust worker build context
+# Stage vendored mise installer into the claude rust worker build context.
+# worker-rust-codex deliberately gets no copy: nothing in its Dockerfile
+# references install-mise.sh, so staging one there would only check a
+# generated file into a second build context.
 cp "$BASE_CONTEXT/vendor/mise/install.sh" "containers/worker-rust-claude/install-mise.sh"
-cp "$BASE_CONTEXT/vendor/mise/install.sh" "containers/worker-rust-codex/install-mise.sh"
 
 # `ur-worker-base` now carries only agent-agnostic assets (shell setup, skills,
 # instructions) — no agent CLI install — so UR_FORCE_REBUILD_BASE no longer

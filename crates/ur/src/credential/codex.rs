@@ -73,13 +73,6 @@ impl AgentCredentialManager for CodexCredentialManager {
             .join(self.agent_type().name())
             .join(home_relative_filename(self.auth.credentials_path)?))
     }
-
-    fn host_app_config_path(&self) -> Result<PathBuf> {
-        let config_dir = ur_config::resolve_config_dir()?;
-        Ok(config_dir
-            .join(self.agent_type().name())
-            .join(home_relative_filename(self.auth.app_config_path)?))
-    }
 }
 
 /// Re-seeds `creds_path` from `source_path` if `creds_path` is missing, empty,
@@ -97,7 +90,7 @@ fn seed_from_host_file(creds_path: &Path, source_path: &Path, max_age: Duration)
     // bind-mount setup, so treat it as missing.
     let needs_seed = match std::fs::metadata(creds_path) {
         Err(_) => true,
-        Ok(meta) if meta.len() < 10 => true,
+        Ok(meta) if meta.len() < ur_config::MIN_SEEDED_CREDENTIALS_BYTES => true,
         Ok(meta) => match meta.modified() {
             Ok(mtime) => mtime.elapsed().map(|age| age >= max_age).unwrap_or(true),
             Err(_) => true,
@@ -138,14 +131,6 @@ mod tests {
         let mgr = credential_manager_for(AgentType::Codex).expect("codex has a manager");
         if let Ok(path) = mgr.host_credentials_path() {
             assert!(path.ends_with("auth.json"));
-        }
-    }
-
-    #[test]
-    fn host_config_path_is_under_config_dir() {
-        let mgr = credential_manager_for(AgentType::Codex).expect("codex has a manager");
-        if let Ok(path) = mgr.host_app_config_path() {
-            assert!(path.ends_with("config.toml"));
         }
     }
 
