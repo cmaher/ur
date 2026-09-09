@@ -203,6 +203,11 @@ struct ProjectEntry {
     local: bool,
     /// Container image alias (e.g. "ur-worker", "ur-worker-rust") or full reference.
     image: String,
+    /// Agent name (e.g. "claude", "codex") the image alias resolves against when
+    /// rendering the config's full CI-tagged reference — see `render_projects_toml`.
+    /// There is no `ur worker launch --image` CLI flag to override this per-launch, so
+    /// a project meant to exercise a specific agent's image must declare it here.
+    agent: &'static str,
     /// Paths to hostexec scripts declared for this project (e.g. `["host-only.sh"]`).
     hostexec_scripts: Vec<String>,
     /// Additional volume mounts for this project (raw mount strings, e.g. `"/host/path:/mnt/test:ro"`).
@@ -255,19 +260,23 @@ fn test_names(label: &str) -> TestNames {
 /// "opus" for design) that other scenarios assert against.
 /// Render the `[projects.<key>]` TOML blocks for all project entries.
 ///
-/// Resolves each image alias against the configured tag (and the claude agent
-/// layer — these scenarios are all Claude-only) and emits the optional
-/// `hostexec_scripts`, `mounts`, `memory_dir`, and `brain_dir` fields only when set.
+/// Resolves each image alias against the configured tag and the entry's own
+/// `agent` field (baking a full, CI-tagged reference — there is no `ur worker
+/// launch --image` flag to override this per-launch, so a project that must
+/// exercise a specific agent's image declares that agent up front) and emits
+/// the optional `hostexec_scripts`, `mounts`, `memory_dir`, and `brain_dir`
+/// fields only when set.
 fn render_projects_toml(projects: &[ProjectEntry]) -> String {
     let tag = &*IMAGE_TAG;
     let mut projects_toml = String::new();
     for proj in projects {
-        // Resolve image alias to a full reference with the configured tag.
-        // If the image already contains ':' or '/', it is a full reference and used as-is.
+        // Resolve image alias to a full reference with the configured tag, against
+        // proj.agent. If the image already contains ':' or '/', it is a full
+        // reference and used as-is.
         let image_ref = if proj.image.contains(':') || proj.image.contains('/') {
             proj.image.clone()
         } else {
-            format!("{}-claude:{}", proj.image, tag)
+            format!("{}-{}:{}", proj.image, proj.agent, tag)
         };
         let scripts_line = if proj.hostexec_scripts.is_empty() {
             String::new()
@@ -641,6 +650,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             repo: repo.clone(),
             local: false,
             image: "ur-worker".into(),
+            agent: "claude",
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", host_mount_path.display())],
             memory_dir: None,
@@ -651,6 +661,7 @@ fn setup_mount_projects(config_path: &Path) -> (tempfile::TempDir, Vec<ProjectEn
             repo,
             local: false,
             image: "ur-worker".into(),
+            agent: "claude",
             hostexec_scripts: vec![],
             mounts: vec![format!("{}:/mnt/test:ro", missing_mount_path.display())],
             memory_dir: None,
@@ -701,6 +712,7 @@ fn setup_memory_projects(config_path: &Path) -> (MemoryDirInfo, Vec<ProjectEntry
         repo,
         local: false,
         image: "ur-worker".into(),
+        agent: "claude",
         hostexec_scripts: vec![],
         mounts: vec![],
         memory_dir: Some(memory_path.to_string_lossy().into_owned()),
@@ -757,6 +769,7 @@ fn setup_brain_projects(config_path: &Path) -> (BrainDirInfo, Vec<ProjectEntry>)
         repo,
         local: false,
         image: "ur-worker".into(),
+        agent: "claude",
         hostexec_scripts: vec![],
         mounts: vec![],
         memory_dir: None,
@@ -951,6 +964,7 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
         repo,
         local: false,
         image: "ur-worker".into(),
+        agent: "claude",
         hostexec_scripts: vec![],
         mounts: vec![],
         memory_dir: None,
@@ -961,7 +975,53 @@ fn setup_hook_overlay_projects(config_path: &Path) -> Vec<ProjectEntry> {
 /// Create all bare git repositories, the test skill directory, and the complete
 /// project entry list needed by `write_test_config`. All temp directories in the
 /// returned struct must stay alive for the duration of the test.
-fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixtures {
+/// Create the `codexproj`/`rustcodexproj` project entries — codex-agent twins of
+/// the default and rust projects. There is no `ur worker launch --image` flag to
+/// override a project's configured image per-launch, and `container.image` gets
+/// baked into a full, CI-tagged reference (see `render_projects_toml`) rather
+/// than left as an alias re-resolved per agent — so codex scenarios need their
+/// own dedicated project entries rather than reusing `project_key`/`rustproj`
+/// with `--agent codex`.
+fn create_codex_project_entries(config_path: &Path) -> Vec<ProjectEntry> {
+    let codex_repos_dir = config_path.join("codex-repos");
+    std::fs::create_dir_all(&codex_repos_dir).expect("failed to create codex-repos dir");
+    let bare_repo_codex = create_bare_repo(&codex_repos_dir);
+
+    let rust_codex_repos_dir = config_path.join("rust-codex-repos");
+    std::fs::create_dir_all(&rust_codex_repos_dir).expect("failed to create rust-codex-repos dir");
+    let bare_repo_rust_codex = create_bare_repo(&rust_codex_repos_dir);
+
+    vec![
+        ProjectEntry {
+            key: "codexproj".into(),
+            repo: bare_repo_codex.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker".into(),
+            agent: "codex",
+            hostexec_scripts: vec![],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+        },
+        ProjectEntry {
+            key: "rustcodexproj".into(),
+            repo: bare_repo_rust_codex.to_string_lossy().into_owned(),
+            local: false,
+            image: "ur-worker-rust".into(),
+            agent: "codex",
+            hostexec_scripts: vec![],
+            mounts: vec![],
+            memory_dir: None,
+            brain_dir: None,
+        },
+    ]
+}
+
+fn create_project_fixtures(
+    config_path: &Path,
+    project_key: &str,
+    primary_agent: &'static str,
+) -> ProjectFixtures {
     let bare_repo = create_bare_repo(config_path);
 
     let rust_repos_dir = config_path.join("rust-repos");
@@ -997,6 +1057,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             repo: bare_repo.to_string_lossy().into_owned(),
             local: false,
             image: "ur-worker".into(),
+            agent: primary_agent,
             hostexec_scripts: vec![],
             mounts: vec![],
             memory_dir: None,
@@ -1007,6 +1068,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             repo: bare_repo_rust.to_string_lossy().into_owned(),
             local: false,
             image: "ur-worker-rust".into(),
+            agent: "claude",
             hostexec_scripts: vec![],
             mounts: vec![],
             memory_dir: None,
@@ -1017,6 +1079,7 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             repo: bare_repo_script.to_string_lossy().into_owned(),
             local: false,
             image: "ur-worker".into(),
+            agent: "claude",
             hostexec_scripts: vec!["host-only.sh".into()],
             mounts: vec![],
             memory_dir: None,
@@ -1030,12 +1093,14 @@ fn create_project_fixtures(config_path: &Path, project_key: &str) -> ProjectFixt
             repo: String::new(),
             local: true,
             image: "ur-worker".into(),
+            agent: "claude",
             hostexec_scripts: vec!["host-only.sh".into()],
             mounts: vec![],
             memory_dir: None,
             brain_dir: None,
         },
     ];
+    projects.extend(create_codex_project_entries(config_path));
     projects.extend(mount_projects);
     projects.extend(memory_projects);
     projects.extend(brain_projects);
@@ -1077,7 +1142,7 @@ fn e2e_all() {
     let logs_dir = config_path.join("logs");
     let _log_guard = init_test_logging(&logs_dir);
 
-    let fixtures = create_project_fixtures(&config_path, project_key);
+    let fixtures = create_project_fixtures(&config_path, project_key, "claude");
 
     write_test_config(
         &config_path,
@@ -4885,6 +4950,7 @@ fn scenario_hook_overlay_precedence(env: &TestEnv) {
 /// codex cases.
 fn assert_agent_type_in_summary(
     env: &TestEnv,
+    project_key: &str,
     ticket_id: &str,
     agent_flag: Option<&str>,
     expected_agent: &str,
@@ -4893,7 +4959,7 @@ fn assert_agent_type_in_summary(
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
-    let mut launch_args = vec!["worker", "launch", "-p", env.project_key, ticket_id];
+    let mut launch_args = vec!["worker", "launch", "-p", project_key, ticket_id];
     if let Some(agent) = agent_flag {
         launch_args.push("--agent");
         launch_args.push(agent);
@@ -4902,7 +4968,7 @@ fn assert_agent_type_in_summary(
     assert!(
         launch_output.status.success(),
         "ur worker launch -p {} {} failed.\nstdout: {}\nstderr: {}",
-        env.project_key,
+        project_key,
         agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
         String::from_utf8_lossy(&launch_output.stdout),
         String::from_utf8_lossy(&launch_output.stderr),
@@ -4952,11 +5018,13 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- Default code-mode pool worker: no --agent flag resolves to claude ----
-        assert_agent_type_in_summary(env, claude_ticket_id, None, "claude");
+        assert_agent_type_in_summary(env, env.project_key, claude_ticket_id, None, "claude");
 
-        // ---- Explicit --agent codex resolves to codex ----
+        // ---- Explicit --agent codex resolves to codex. Uses "codexproj", a
+        // project dedicated to the codex image (env.project_key's image is a
+        // pre-resolved full claude reference — see create_project_fixtures). ----
         seed_dummy_codex_credentials(&env.config_path);
-        assert_agent_type_in_summary(env, codex_ticket_id, Some("codex"), "codex");
+        assert_agent_type_in_summary(env, "codexproj", codex_ticket_id, Some("codex"), "codex");
     }));
 
     if let Err(e) = result {
@@ -4971,12 +5039,17 @@ fn scenario_agent_type_in_summary(env: &TestEnv) {
 /// the worker afterward. Shared by `scenario_agent_shared_layout`'s claude and
 /// codex cases — `.agent-shared/` is baked into `worker-base`, which every
 /// per-agent image extends, so the layout must be identical regardless of agent.
-fn assert_agent_shared_layout(env: &TestEnv, ticket_id: &str, agent_flag: Option<&str>) {
+fn assert_agent_shared_layout(
+    env: &TestEnv,
+    project_key: &str,
+    ticket_id: &str,
+    agent_flag: Option<&str>,
+) {
     let container_name = env.container_name(ticket_id);
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
-    let mut launch_args = vec!["worker", "launch", "-p", env.project_key, ticket_id];
+    let mut launch_args = vec!["worker", "launch", "-p", project_key, ticket_id];
     if let Some(agent) = agent_flag {
         launch_args.push("--agent");
         launch_args.push(agent);
@@ -4985,7 +5058,7 @@ fn assert_agent_shared_layout(env: &TestEnv, ticket_id: &str, agent_flag: Option
     assert!(
         launch_output.status.success(),
         "ur worker launch -p {} {} failed.\nstdout: {}\nstderr: {}",
-        env.project_key,
+        project_key,
         agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
         String::from_utf8_lossy(&launch_output.stdout),
         String::from_utf8_lossy(&launch_output.stderr),
@@ -5028,10 +5101,10 @@ fn scenario_agent_shared_layout(env: &TestEnv) {
     let codex_container_name = env.container_name(codex_ticket_id);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        assert_agent_shared_layout(env, claude_ticket_id, None);
+        assert_agent_shared_layout(env, env.project_key, claude_ticket_id, None);
 
         seed_dummy_codex_credentials(&env.config_path);
-        assert_agent_shared_layout(env, codex_ticket_id, Some("codex"));
+        assert_agent_shared_layout(env, "codexproj", codex_ticket_id, Some("codex"));
     }));
 
     if let Err(e) = result {
@@ -5056,13 +5129,16 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
         seed_dummy_codex_credentials(&env.config_path);
 
         // ---- Launch a code-mode pool worker with --agent codex ----
+        // Uses "codexproj", a project dedicated to the codex image (there is no
+        // `ur worker launch --image` flag to override env.project_key's
+        // pre-resolved full claude reference per-launch).
         let launch_output = run_cmd(
             &env.ur,
             &[
                 "worker",
                 "launch",
                 "-p",
-                env.project_key,
+                "codexproj",
                 "--agent",
                 "codex",
                 ticket_id,
@@ -5071,8 +5147,7 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch -p {} --agent codex failed.\nstdout: {}\nstderr: {}",
-            env.project_key,
+            "ur worker launch -p codexproj --agent codex failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
@@ -5153,11 +5228,13 @@ fn scenario_codex_manual_worker(env: &TestEnv) {
     }
 }
 
-/// A single project configured with the agent-agnostic `container.image = "ur-worker-rust"`
-/// alias resolves to a different concrete image per launch agent: `ur-worker-rust-claude`
-/// for the default agent, `ur-worker-rust-codex` for `--agent codex`. Exercises
-/// `AgentType::resolve_image` / `resolve_worker_image` (`crates/server/src/grpc.rs`),
-/// the single decision point for both project-configured image and `ur --image`.
+/// The same agent-agnostic `container.image = "ur-worker-rust"` alias resolves to
+/// a different concrete image depending on the launching agent: `ur-worker-rust-claude`
+/// for "rustproj" (a claude-agent project), `ur-worker-rust-codex` for "rustcodexproj"
+/// (a codex-agent project) — two project entries rather than one launched twice,
+/// since there is no `ur worker launch --image` flag to override a project's
+/// pre-resolved full reference per-launch (see create_project_fixtures). Exercises
+/// `AgentType::resolve_image` / `resolve_worker_image` (`crates/server/src/grpc.rs`).
 fn scenario_codex_image_template(env: &TestEnv) {
     let claude_ticket_id = "rust-image-template-claude-test";
     let codex_ticket_id = "rust-image-template-codex-test";
@@ -5166,11 +5243,12 @@ fn scenario_codex_image_template(env: &TestEnv) {
     let env_pairs = env.env();
     let env_slice = env_pairs.to_vec();
 
-    let launch_and_verify_image = |ticket_id: &str,
+    let launch_and_verify_image = |project_key: &str,
+                                   ticket_id: &str,
                                    container_name: &str,
                                    agent_flag: Option<&str>,
                                    expected_image_substr: &str| {
-        let mut launch_args = vec!["worker", "launch", "-p", "rustproj"];
+        let mut launch_args = vec!["worker", "launch", "-p", project_key];
         if let Some(agent) = agent_flag {
             launch_args.push("--agent");
             launch_args.push(agent);
@@ -5179,7 +5257,7 @@ fn scenario_codex_image_template(env: &TestEnv) {
         let launch_output = run_cmd(&env.ur, &launch_args, &env_slice);
         assert!(
             launch_output.status.success(),
-            "ur worker launch -p rustproj {} failed.\nstdout: {}\nstderr: {}",
+            "ur worker launch -p {project_key} {} failed.\nstdout: {}\nstderr: {}",
             agent_flag.map_or(String::new(), |a| format!("--agent {a}")),
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
@@ -5209,17 +5287,25 @@ fn scenario_codex_image_template(env: &TestEnv) {
     };
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // ---- Default agent resolves "ur-worker-rust" -> ur-worker-rust-claude ----
+        // ---- "rustproj" (container.image = "ur-worker-rust") resolves to the
+        // claude image for its own (claude-agent) project entry ----
         launch_and_verify_image(
+            "rustproj",
             claude_ticket_id,
             &claude_container_name,
             None,
             "ur-worker-rust-claude",
         );
 
-        // ---- --agent codex resolves the SAME configured alias -> ur-worker-rust-codex ----
+        // ---- "rustcodexproj" — the SAME configured alias ("ur-worker-rust"),
+        // on a project entry dedicated to codex — resolves to the codex image.
+        // There is no `ur worker launch --image` flag to override a project's
+        // pre-resolved full reference per-launch (see create_project_fixtures),
+        // so this uses a second project rather than --agent codex against
+        // "rustproj" itself. ----
         seed_dummy_codex_credentials(&env.config_path);
         launch_and_verify_image(
+            "rustcodexproj",
             codex_ticket_id,
             &codex_container_name,
             Some("codex"),
@@ -5246,18 +5332,42 @@ fn scenario_codex_dispatch(env: &TestEnv) {
 
     seed_dummy_codex_credentials(&env.config_path);
 
-    let ticket_id = create_test_ticket(env, "Codex dispatch test");
+    // Created against "codexproj" (not env.project_key) to match the launch
+    // project below.
+    let create_output = run_cmd(
+        &env.ur,
+        &[
+            "--output",
+            "json",
+            "ticket",
+            "create",
+            "Codex dispatch test",
+            "-p",
+            "codexproj",
+        ],
+        &env_slice,
+    );
+    assert!(
+        create_output.status.success(),
+        "ur ticket create -p codexproj failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
+    );
+    let ticket_id = parse_ticket_id_from_create(&create_output.stdout);
     let container_name = env.container_name(&ticket_id);
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ---- Launch a codex-agent worker with dispatch (-d) ----
+        // Uses "codexproj" (dedicated to the codex image) rather than
+        // env.project_key, whose image is a pre-resolved full claude reference
+        // with no per-launch override available.
         let launch_output = run_cmd(
             &env.ur,
             &[
                 "worker",
                 "launch",
                 "-p",
-                env.project_key,
+                "codexproj",
                 "--agent",
                 "codex",
                 "-d",
@@ -5267,8 +5377,7 @@ fn scenario_codex_dispatch(env: &TestEnv) {
         );
         assert!(
             launch_output.status.success(),
-            "ur worker launch -p {} --agent codex -d failed.\nstdout: {}\nstderr: {}",
-            env.project_key,
+            "ur worker launch -p codexproj --agent codex -d failed.\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&launch_output.stdout),
             String::from_utf8_lossy(&launch_output.stderr),
         );
@@ -5322,7 +5431,10 @@ fn scenario_default_agent_config(runtime: &str) {
     let config_path = config_dir.path().to_path_buf();
 
     let project_key = "agentdefaultproj";
-    let fixtures = create_project_fixtures(&config_path, project_key);
+    // primary_agent = "codex": this scenario launches with no --agent flag and no
+    // mode agent field, relying entirely on the top-level `agent = "codex"`
+    // default below — the project's own image must already be the codex one.
+    let fixtures = create_project_fixtures(&config_path, project_key, "codex");
     write_test_config(
         &config_path,
         server_port,
