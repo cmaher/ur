@@ -622,6 +622,7 @@ mod tests {
             retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
         };
         ur_config::Config {
+            agent: ur_config::AgentType::Claude,
             config_dir: PathBuf::from("/test/config"),
             logs_dir: PathBuf::from("/test/config/logs"),
             workspace: PathBuf::from("/test/workspace"),
@@ -1195,6 +1196,7 @@ mod tests {
     fn compose_manager_from_config_registers_init_sql_file() {
         let tmp = TempDir::new().unwrap();
         let config = ur_config::Config {
+            agent: ur_config::AgentType::Claude,
             config_dir: tmp.path().to_path_buf(),
             logs_dir: tmp.path().join("logs"),
             workspace: tmp.path().join("workspace"),

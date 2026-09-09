@@ -138,6 +138,16 @@ with `/new`. `skill_invocation` takes `args: &[&str]` rather than a pre-joined s
 multi-argument skill (e.g. `address-feedback`, which takes a ticket and a PR number) doesn't
 push joining logic out to the caller.
 
+## Top-level `agent` default
+
+`Config.agent: AgentType` comes from the top-level `agent` key in `ur.toml` (omitted → claude).
+`resolve_top_level_agent` is `pub` specifically so `crates/server`'s `WorkerModesConfig::from_toml`
+— which independently re-parses the same `ur.toml` document to pull `[worker_modes]` and
+`[worker_models]` — resolves the identical key the identical way (same default, same error
+message naming the valid agents) instead of reimplementing the logic. See
+`docs/codeflows/config.md#agent-default-precedence` for the full precedence chain
+(`--agent` flag → `worker_modes.<mode>.agent` → this top-level default → claude).
+
 ## Agent Auth (`AgentAuth` / `AuthSource`)
 
 `AgentType::auth()` returns an optional [`AgentAuth`] describing how an agent's credentials

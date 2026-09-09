@@ -154,8 +154,9 @@ fn effective_default_model(
 
 /// Seed the built-in strategies/models maps, one entry per [`WorkerStrategy`],
 /// using `overrides` (parsed from `[worker_models]`) to compute each mode's
-/// effective default model. `agent` is the agent running these built-in modes
-/// (always claude today — only custom modes can override their agent).
+/// effective default model. `agent` is the agent running these built-in modes:
+/// the configured top-level default (`ur.toml`'s `agent` key, claude if
+/// omitted) — only custom modes can override their agent individually.
 fn seed_strategies_and_models(
     agent: ur_config::AgentType,
     overrides: &RawWorkerModels,
@@ -172,25 +173,26 @@ fn seed_strategies_and_models(
     (strategies, models)
 }
 
-/// Seed the built-in agents map, one entry per [`WorkerStrategy`] — all claude,
-/// since built-in modes have no `agent` field of their own.
-fn default_agents() -> HashMap<String, ur_config::AgentType> {
+/// Seed the built-in agents map, one entry per [`WorkerStrategy`] — all
+/// `default_agent`, since built-in modes have no `agent` field of their own.
+fn default_agents(default_agent: ur_config::AgentType) -> HashMap<String, ur_config::AgentType> {
     WorkerStrategy::ALL
         .iter()
-        .map(|strategy| (strategy.name().to_owned(), ur_config::AgentType::Claude))
+        .map(|strategy| (strategy.name().to_owned(), default_agent))
         .collect()
 }
 
-/// Resolve a custom mode's agent field, defaulting to claude when omitted.
+/// Resolve a custom mode's agent field, defaulting to `default_agent` when omitted.
 /// Errors name the offending mode, matching the `base` validation convention.
 fn resolve_entry_agent(
     mode_name: &str,
     raw_agent: Option<&str>,
+    default_agent: ur_config::AgentType,
 ) -> Result<ur_config::AgentType, String> {
     match raw_agent {
         Some(name) => ur_config::AgentType::parse(name)
             .map_err(|e| format!("invalid agent '{name}' for worker mode '{mode_name}': {e}")),
-        None => Ok(ur_config::AgentType::Claude),
+        None => Ok(default_agent),
     }
 }
 
@@ -207,20 +209,27 @@ pub struct WorkerModesConfig {
     /// `[worker_models]`; custom modes may further override via
     /// `worker_modes.<name>.model`.
     models: HashMap<String, String>,
-    /// Maps mode names to their agent. Built-in modes default to claude;
+    /// Maps mode names to their agent. Built-in modes default to `default_agent`;
     /// custom modes may override via `worker_modes.<name>.agent`.
     agents: HashMap<String, ur_config::AgentType>,
+    /// The top-level `agent` default (from `ur.toml`'s `agent` key, or claude
+    /// when omitted). `resolve_mode`'s fallback uses this instead of a
+    /// hardcoded `AgentType::Claude` — it is the floor beneath a mode's own
+    /// `agent` field and an explicit `--agent`/launch-request override.
+    default_agent: ur_config::AgentType,
 }
 
 impl Default for WorkerModesConfig {
     fn default() -> Self {
+        let default_agent = ur_config::AgentType::Claude;
         let (strategies, models) =
-            seed_strategies_and_models(ur_config::AgentType::Claude, &RawWorkerModels::default());
+            seed_strategies_and_models(default_agent, &RawWorkerModels::default());
         Self {
             modes: default_worker_modes(),
             strategies,
             models,
-            agents: default_agents(),
+            agents: default_agents(default_agent),
+            default_agent,
         }
     }
 }
@@ -241,6 +250,10 @@ impl WorkerModesConfig {
         let value: toml::Value =
             toml::from_str(toml_content).map_err(|e| format!("invalid TOML: {e}"))?;
 
+        let default_agent =
+            ur_config::resolve_top_level_agent(value.get("agent").and_then(toml::Value::as_str))
+                .map_err(|e| e.to_string())?;
+
         let model_overrides: RawWorkerModels = match value.get("worker_models") {
             Some(section) => section
                 .clone()
@@ -250,13 +263,13 @@ impl WorkerModesConfig {
         };
 
         let Some(section) = value.get("worker_modes") else {
-            let (strategies, models) =
-                seed_strategies_and_models(ur_config::AgentType::Claude, &model_overrides);
+            let (strategies, models) = seed_strategies_and_models(default_agent, &model_overrides);
             return Ok(Self {
                 modes: default_worker_modes(),
                 strategies,
                 models,
-                agents: default_agents(),
+                agents: default_agents(default_agent),
+                default_agent,
             });
         };
 
@@ -266,8 +279,8 @@ impl WorkerModesConfig {
             .map_err(|e| format!("invalid worker_modes config: {e}"))?;
         let mut modes = default_worker_modes();
         let (mut strategies, mut models) =
-            seed_strategies_and_models(ur_config::AgentType::Claude, &model_overrides);
-        let mut agents = default_agents();
+            seed_strategies_and_models(default_agent, &model_overrides);
+        let mut agents = default_agents(default_agent);
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
                 format!(
@@ -275,7 +288,7 @@ impl WorkerModesConfig {
                     entry.base, name
                 )
             })?;
-            let agent = resolve_entry_agent(&name, entry.agent.as_deref())?;
+            let agent = resolve_entry_agent(&name, entry.agent.as_deref(), default_agent)?;
             let model = entry
                 .model
                 .unwrap_or_else(|| effective_default_model(agent, strategy, &model_overrides));
@@ -289,6 +302,7 @@ impl WorkerModesConfig {
             strategies,
             models,
             agents,
+            default_agent,
         })
     }
 
@@ -321,7 +335,8 @@ impl WorkerModesConfig {
     /// An empty mode name defaults to "code".
     ///
     /// Agent resolution order: `requested_agent` (explicit override, e.g. from
-    /// the launch request) → the mode's `agent` field → claude.
+    /// the launch request) → the mode's `agent` field → the top-level `agent`
+    /// default from `ur.toml` (claude if that key is omitted too).
     pub fn resolve_mode(
         &self,
         mode: &str,
@@ -347,7 +362,7 @@ impl WorkerModesConfig {
             self.agents
                 .get(mode_name)
                 .copied()
-                .unwrap_or(ur_config::AgentType::Claude)
+                .unwrap_or(self.default_agent)
         });
         Ok(ResolvedMode {
             strategy,
@@ -1298,6 +1313,7 @@ mod tests {
 
     fn test_config(workspace_path: &std::path::Path) -> ur_config::Config {
         ur_config::Config {
+            agent: ur_config::AgentType::Claude,
             config_dir: workspace_path.to_path_buf(),
             logs_dir: workspace_path.join("logs"),
             workspace: workspace_path.to_path_buf(),
@@ -2180,6 +2196,64 @@ agent = "bogus"
         let msg = result.unwrap_err();
         assert!(msg.contains("bad-agent"), "{msg}");
         assert!(msg.contains("bogus"), "{msg}");
+    }
+
+    /// The top-level `agent` key becomes the floor for every built-in mode,
+    /// and default models follow the agent — codex's `code` mode gets
+    /// `gpt-5.6-terra`, not `sonnet`.
+    #[test]
+    fn top_level_agent_default_applies_to_builtin_modes() {
+        let toml = "agent = \"codex\"\n";
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+
+        for mode in ["code", "design", "manual"] {
+            let ResolvedMode { agent, .. } = cfg.resolve_mode(mode, None).unwrap();
+            assert_eq!(agent, ur_config::AgentType::Codex, "mode {mode}");
+        }
+
+        let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
+        assert_eq!(model, "gpt-5.6-terra");
+    }
+
+    /// An omitted top-level `agent` key still defaults every built-in mode to claude.
+    #[test]
+    fn top_level_agent_default_omitted_is_claude() {
+        let cfg = WorkerModesConfig::from_toml("").unwrap();
+        for mode in ["code", "design", "manual"] {
+            let ResolvedMode { agent, .. } = cfg.resolve_mode(mode, None).unwrap();
+            assert_eq!(agent, ur_config::AgentType::Claude, "mode {mode}");
+        }
+    }
+
+    /// A mode's own `agent` field still overrides the top-level default.
+    #[test]
+    fn mode_agent_field_overrides_top_level_default() {
+        let toml = r#"
+agent = "codex"
+
+[worker_modes.claude-only]
+base = "code"
+skills = []
+agent = "claude"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+        let ResolvedMode { agent, .. } = cfg.resolve_mode("claude-only", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Claude);
+
+        // A mode with no `agent` field of its own still picks up the top-level default.
+        let ResolvedMode { agent, .. } = cfg.resolve_mode("code", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Codex);
+    }
+
+    #[test]
+    fn from_toml_rejects_unknown_top_level_agent() {
+        let toml = "agent = \"bogus\"\n";
+        let result = WorkerModesConfig::from_toml(toml);
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("bogus"), "{msg}");
+        assert!(msg.contains("claude"), "{msg}");
+        assert!(msg.contains("codex"), "{msg}");
     }
 
     #[tokio::test]

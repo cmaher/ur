@@ -12,6 +12,7 @@ Loaded by `Config::load()` / `Config::load_from()` in `crates/ur_config/src/lib.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"` or `"codex"`). An unrecognized value is a startup config error naming the valid agents — never a silent fallback. See [Agent Default Precedence](#agent-default-precedence) |
 | `workspace` | path | `<config_dir>/workspace` | Worker workspace directory (host-side) |
 | `server_port` | u16 | 12321 | TCP port for ur→server gRPC |
 | `builderd_port` | u16 | `server_port + 2` | TCP port for builderd |
@@ -153,6 +154,32 @@ How each resolved variant maps to container behavior:
 - **`ProjectRelative(rel_path)`**: The path exists inside the already-mounted workspace. No additional volume mount is created. The container path is `/workspace/<rel_path>`. Works for both `-w` workspace mode (user's checkout) and `-p` pool mode (pool slot's clone) — but only if the path exists in the repo checkout.
 
 - **`HostPath(host_path)`**: A host-side directory is volume-mounted into the container at the specified destination. Used for files that live outside the project repo (e.g., `%URCONFIG%/...` or `/opt/...`). Used by `mounts` and `instruction_md`.
+
+## Agent Default Precedence
+
+Which agent a worker runs is resolved in this order, highest priority first:
+
+```
+--agent flag (ur worker launch)
+  → worker_modes.<mode>.agent          (per-mode override, crates/server/src/worker.rs)
+  → top-level `agent` key in ur.toml   (Config.agent / WorkerModesConfig's default_agent)
+  → claude                             (built-in floor when the key is omitted)
+```
+
+`Config.agent` (`crates/ur_config/src/lib.rs`) and `WorkerModesConfig`'s `default_agent`
+(`crates/server/src/worker.rs`) both come from the *same* top-level `agent` key, parsed
+independently from the same `ur.toml` document by `ur_config::resolve_top_level_agent` —
+`WorkerModesConfig::from_toml` already re-parses the whole file to pull out `[worker_modes]`
+and `[worker_models]`, so reading one more top-level key needs no new plumbing.
+
+**Consequence worth flagging:** default models are agent-derived (`AgentType::default_model`),
+so setting `agent = "codex"` globally does not just swap which binary runs — the built-in
+`code` mode also resolves to `gpt-5.6-terra` instead of `sonnet`, because nothing in `code`'s
+definition names a model directly. Use `[worker_models.<agent>]` (per-agent model overrides)
+if a mode's model needs to stay agent-independent.
+
+Deliberately out of scope: a per-project `[projects.<key>].agent` override. A project that
+needs a specific harness declares a custom mode with an explicit `agent` field instead.
 
 ## Config Flow Through the System
 

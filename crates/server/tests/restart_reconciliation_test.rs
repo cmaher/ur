@@ -25,6 +25,7 @@ fn test_config(dir: &Path, workspace: &Path) -> ur_config::Config {
         retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
     };
     ur_config::Config {
+        agent: ur_config::AgentType::Claude,
         config_dir: dir.to_path_buf(),
         logs_dir: dir.join("logs"),
         workspace: workspace.to_path_buf(),

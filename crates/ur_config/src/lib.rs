@@ -321,6 +321,8 @@ pub const DEFAULT_BACKUP_RETAIN_COUNT: u64 = 3;
 /// Raw TOML representation — all fields optional so missing keys use defaults.
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
+    /// Default agent harness for every worker (e.g. "codex"). Omitted means "claude".
+    agent: Option<String>,
     workspace: Option<PathBuf>,
     server_port: Option<u16>,
     worker_port: Option<u16>,
@@ -1238,6 +1240,10 @@ impl ProjectConfig {
 /// Resolved, ready-to-use daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// Default agent harness for every worker (default: [`AgentType::Claude`]).
+    /// `worker_modes.<mode>.agent` and the `--agent` launch flag both override
+    /// this per mode/launch; this is only the floor when neither is set.
+    pub agent: AgentType,
     /// Root config directory (`$UR_CONFIG` or `~/.ur`).
     pub config_dir: PathBuf,
     /// Worker workspace directory.
@@ -1339,6 +1345,8 @@ impl Config {
     pub fn from_toml_str(contents: &str, config_dir: &Path) -> anyhow::Result<Self> {
         let raw: RawConfig = toml::from_str(contents)?;
 
+        let agent = resolve_top_level_agent(raw.agent.as_deref())?;
+
         let workspace = raw
             .workspace
             .unwrap_or_else(|| config_dir.join("workspace"));
@@ -1384,6 +1392,7 @@ impl Config {
         let workspace_brain_dir = validate_workspace_brain_dir(raw.workspace_brain_dir)?;
 
         Ok(Config {
+            agent,
             config_dir: config_dir.to_path_buf(),
             workspace,
             server_port,
@@ -1404,6 +1413,27 @@ impl Config {
             global_skills,
             workspace_brain_dir,
         })
+    }
+}
+
+/// Resolve the top-level `agent` key: the default harness for every worker.
+///
+/// An omitted key defaults to [`AgentType::Claude`]. An unrecognized value is a
+/// startup config error naming the valid agents — never a silent fallback, since
+/// a typo'd harness name that quietly launches Claude is the kind of thing
+/// nobody notices until the wrong model has done the work.
+///
+/// Public so `crates/server`'s `WorkerModesConfig::from_toml` — which parses the
+/// same `ur.toml` document independently to extract `[worker_modes]` and
+/// `[worker_models]` — resolves the identical top-level key the identical way,
+/// rather than reimplementing the default/error logic.
+pub fn resolve_top_level_agent(raw: Option<&str>) -> anyhow::Result<AgentType> {
+    match raw {
+        Some(name) => AgentType::parse(name).map_err(|_| {
+            let valid: Vec<&str> = AgentType::ALL.iter().map(AgentType::name).collect();
+            anyhow::anyhow!("agent: unknown agent '{name}'. Valid agents: {valid:?}")
+        }),
+        None => Ok(AgentType::Claude),
     }
 }
 
@@ -3183,6 +3213,41 @@ image = "ur-worker"
         let msg = err.to_string();
         assert!(msg.contains("brain_dir"), "{msg}");
         assert!(msg.contains("%PROJECT%"), "{msg}");
+    }
+
+    #[test]
+    fn agent_defaults_to_claude_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("ur.toml"), "node_id = \"n\"\n").unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.agent, AgentType::Claude);
+    }
+
+    #[test]
+    fn agent_parses_codex() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nagent = \"codex\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(tmp.path()).unwrap();
+        assert_eq!(cfg.agent, AgentType::Codex);
+    }
+
+    #[test]
+    fn agent_rejects_unknown_value() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("ur.toml"),
+            "node_id = \"n\"\nagent = \"bogus\"\n",
+        )
+        .unwrap();
+        let err = Config::load_from(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bogus"), "{msg}");
+        assert!(msg.contains("claude"), "{msg}");
+        assert!(msg.contains("codex"), "{msg}");
     }
 
     #[test]

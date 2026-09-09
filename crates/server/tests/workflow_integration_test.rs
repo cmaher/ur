@@ -291,6 +291,7 @@ fn config_with_projects(
         retain_count: ur_config::DEFAULT_BACKUP_RETAIN_COUNT,
     };
     Arc::new(ur_config::Config {
+        agent: ur_config::AgentType::Claude,
         config_dir: std::path::PathBuf::from("/tmp/test"),
         logs_dir: std::path::PathBuf::from("/tmp/test/logs"),
         workspace: std::path::PathBuf::from("/tmp/test/workspace"),
