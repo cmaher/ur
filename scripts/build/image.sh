@@ -96,6 +96,7 @@ BASE_CONTEXT=containers/worker-base
 AGENT_IMAGES=(
     "worker-claude:ur-worker-claude:claude:true"
     "worker-rust-claude:ur-worker-rust-claude:claude:false"
+    "worker-codex:ur-worker-codex:codex:true"
 )
 
 # Stage vendored mise installer into the rust worker build context

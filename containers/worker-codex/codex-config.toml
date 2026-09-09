@@ -1,0 +1,22 @@
+# Baked to ~/.codex/potential-settings.json (see CLAUDE.md for why the
+# on-disk filename says .json while this content is TOML) and copied
+# verbatim to ~/.codex/config.toml by InitSettingsManager at container init.
+
+# Fall back to a repo's existing CLAUDE.md when it has no AGENTS.md of its
+# own — no ur-managed repo needs to add an AGENTS.md just for codex.
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+# The container itself is the sandbox boundary: no internet beyond the
+# ur-squid proxy, and the workspace mount is the only writable checkout.
+# codex's own approval/sandbox layer would only add prompts nothing here can
+# answer, mirroring Claude's `permissions.defaultMode: "bypassPermissions"`.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+model_reasoning_effort = "high"
+
+# Skip the interactive trust prompt for the workspace mount — every worker
+# mounts its repo at /workspace. Table headers must come last: any key
+# written after a `[table]` header belongs to that table, not the top level.
+[projects."/workspace"]
+trust_level = "trusted"

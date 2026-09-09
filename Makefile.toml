@@ -112,6 +112,19 @@ dependencies = ["image-update-claude"]
 script_runner = "@shell"
 script = ["scripts/build/install.sh"]
 
+[tasks.image-update-codex]
+description = "Build all container images, forcing a codex update in the worker image (keeps the base image cache)"
+dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
+env = { "UR_UPDATE_AGENT" = "codex" }
+script_runner = "@shell"
+script = ["scripts/build/image.sh"]
+
+[tasks.install-update-codex]
+description = "Same as install but forces a codex update in the worker image (no base rebuild)"
+dependencies = ["image-update-codex"]
+script_runner = "@shell"
+script = ["scripts/build/install.sh"]
+
 [tasks.image-force-base]
 description = "Build all container images, force-rebuilding the base image (no Docker cache)"
 dependencies = ["stage-workercmd", "stage-server", "stage-builderd"]
