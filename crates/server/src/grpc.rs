@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("invalid agent: {reason}")]
     InvalidAgent { reason: String },
 
+    #[error("invalid image: {reason}")]
+    InvalidImage { reason: String },
+
     #[error("pool slot acquisition failed: {reason}")]
     PoolSlotFailed { reason: String },
 
@@ -81,6 +84,13 @@ impl From<CoreError> for Status {
                 HashMap::new(),
             ),
             CoreError::InvalidAgent { .. } => error::status_with_info(
+                Code::InvalidArgument,
+                err.to_string(),
+                DOMAIN_CORE,
+                INVALID_ARGUMENT,
+                HashMap::new(),
+            ),
+            CoreError::InvalidImage { .. } => error::status_with_info(
                 Code::InvalidArgument,
                 err.to_string(),
                 DOMAIN_CORE,
@@ -185,10 +195,11 @@ struct ResolvedLaunch {
 
 /// Resolve `WorkerLaunchRequest.agent_type` into an explicit agent override.
 ///
-/// Empty means "no override" — the mode's own `agent` field (or claude) decides,
-/// which is what every in-tree client sends today since launch has no `--agent`
-/// flag yet. A non-empty unknown name is a client error, not a silent fallback
-/// to claude: launching the wrong agent is worse than a rejected request.
+/// Empty means "no override" — the mode's own `agent` field, then the
+/// top-level `agent` default, decides. Every client that has no `--agent`
+/// flag of its own (or where the user omits it) sends empty. A non-empty
+/// unknown name is a client error, not a silent fallback to claude: launching
+/// the wrong agent is worse than a rejected request.
 fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType>, CoreError> {
     if agent_type.is_empty() {
         return Ok(None);
@@ -198,6 +209,37 @@ fn parse_requested_agent(agent_type: &str) -> Result<Option<ur_config::AgentType
         .map_err(|e| CoreError::InvalidAgent {
             reason: e.to_string(),
         })
+}
+
+/// Resolve the image to launch for `agent`: `requested_image_id` (from
+/// `ur --image`) wins if set, else `project_image` (the project's configured
+/// `container.image`, alias or full reference, as written), else
+/// `agent.fallback_image()`.
+///
+/// This is the single decision point that resolves an image alias against an
+/// agent — both the project-configured image and the CLI override are
+/// unresolved aliases until the agent is known, which happens no earlier than
+/// this call in the launch path.
+fn resolve_worker_image(
+    agent: ur_config::AgentType,
+    requested_image_id: &str,
+    project_image: &str,
+) -> Result<String, CoreError> {
+    let raw = if !requested_image_id.is_empty() {
+        Some(requested_image_id)
+    } else if !project_image.is_empty() {
+        Some(project_image)
+    } else {
+        None
+    };
+    match raw {
+        Some(raw) => agent
+            .resolve_image(raw)
+            .map_err(|e| CoreError::InvalidImage {
+                reason: e.to_string(),
+            }),
+        None => Ok(agent.fallback_image()),
+    }
 }
 
 /// Shared worker launch and stop logic used by both the host-facing
@@ -579,6 +621,11 @@ impl LaunchManager {
     /// Build a `WorkerConfig` from resolved launch fields and the original request.
     ///
     /// Extracted from `launch` to keep method body within the line limit.
+    ///
+    /// Resolves the image alias (or full reference) against `agent` here — the
+    /// single decision point that covers both the project-configured
+    /// `container.image` and `req.image_id` (from `ur --image`), since neither
+    /// is known to be agent-specific until `agent` itself is resolved.
     #[allow(clippy::too_many_arguments)]
     fn build_worker_config(
         &self,
@@ -593,7 +640,7 @@ impl LaunchManager {
         agent: ur_config::AgentType,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
-    ) -> crate::WorkerConfig {
+    ) -> Result<crate::WorkerConfig, CoreError> {
         let mode_skills = if req.skills.is_empty() {
             resolved_skills
         } else {
@@ -611,15 +658,7 @@ impl LaunchManager {
             memory_dir,
             brain_dir,
         ) = self.extract_project_launch_fields(&project_key);
-        let image_id = if req.image_id.is_empty() {
-            if resolved_image.is_empty() {
-                ur_config::DEFAULT_FALLBACK_IMAGE.to_owned()
-            } else {
-                resolved_image
-            }
-        } else {
-            req.image_id.clone()
-        };
+        let image_id = resolve_worker_image(agent, &req.image_id, &resolved_image)?;
         let cpus = if req.cpus == 0 {
             ur_config::DEFAULT_WORKER_CPUS
         } else {
@@ -630,7 +669,7 @@ impl LaunchManager {
         } else {
             req.memory.clone()
         };
-        crate::WorkerConfig {
+        Ok(crate::WorkerConfig {
             process_id,
             worker_id,
             image_id,
@@ -653,7 +692,7 @@ impl LaunchManager {
             memory_dir,
             brain_dir,
             workspace_brain_dir: self.workspace_brain_dir.clone(),
-        }
+        })
     }
 
     /// Execute a full worker launch: resolve workspace, prepare, run, and post-launch setup.
@@ -710,7 +749,7 @@ impl LaunchManager {
             agent,
             workspace_dir,
             context_mounts,
-        );
+        )?;
         let (container_id, _worker_secret) = self
             .worker_manager
             .run_and_record(config)
@@ -1792,6 +1831,67 @@ mod tests {
             "{}",
             status.message()
         );
+    }
+
+    // ── image resolution on the launch request ──────────────────────────
+
+    #[test]
+    fn resolve_worker_image_neither_set_uses_fallback() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Claude, "", "").unwrap(),
+            ur_config::AgentType::Claude.fallback_image()
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
+            "ur-worker-rust-codex:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_project_image_resolves_per_agent() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Claude, "", "ur-worker").unwrap(),
+            "ur-worker-claude:latest"
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker").unwrap(),
+            "ur-worker-codex:latest"
+        );
+    }
+
+    /// `ur --image` (`requested_image_id`) wins over the project's configured
+    /// image, and still resolves against whichever agent the launch settled on.
+    #[test]
+    fn resolve_worker_image_requested_id_overrides_project_image_per_agent() {
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Codex, "ur-worker-rust", "ur-worker")
+                .unwrap(),
+            "ur-worker-rust-codex:latest"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_full_reference_passes_through() {
+        assert_eq!(
+            resolve_worker_image(
+                ur_config::AgentType::Codex,
+                "myregistry/custom-image:v1",
+                ""
+            )
+            .unwrap(),
+            "myregistry/custom-image:v1"
+        );
+    }
+
+    #[test]
+    fn resolve_worker_image_unknown_alias_is_invalid_image() {
+        let err = resolve_worker_image(ur_config::AgentType::Codex, "", "bogus")
+            .expect_err("should reject");
+        assert!(matches!(err, CoreError::InvalidImage { .. }), "{err:?}");
+        let status: Status = err.into();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("bogus"), "{}", status.message());
+        assert!(status.message().contains("codex"), "{}", status.message());
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────

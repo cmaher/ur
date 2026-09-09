@@ -49,6 +49,29 @@ impl fmt::Display for ParseAgentError {
 
 impl std::error::Error for ParseAgentError {}
 
+/// Error returned when [`AgentType::resolve_image`] is given a value that is
+/// neither a known alias nor a full image reference (`:` or `/`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownAliasError {
+    pub raw: String,
+    pub agent: AgentType,
+}
+
+impl fmt::Display for UnknownAliasError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown image alias '{}' for agent '{}'. Valid aliases: {:?}. \
+             Use a full image reference (e.g. 'myimage:tag') for custom images.",
+            self.raw,
+            self.agent.name(),
+            crate::IMAGE_ALIASES
+        )
+    }
+}
+
+impl std::error::Error for UnknownAliasError {}
+
 impl AgentType {
     /// All known agent variants. Lets callers with no dependency on the crate
     /// that parses `[worker_modes]` (e.g. the host CLI) iterate agents anyway.
@@ -94,16 +117,39 @@ impl AgentType {
         }
     }
 
-    // No `image_name()`: image selection is not agent-derived today. Project
-    // images come from `ur.toml` (`IMAGE_ALIASES`) and the no-project fallback
-    // is `DEFAULT_FALLBACK_IMAGE` (`ur-worker-rust:latest`, deliberately the
-    // rust-toolchain image). A second agent adds `ur-worker-<agent>` and an
-    // accessor here at the point something actually resolves an image per agent.
-    //
-    // No `binary_name()` either: the workerd exit watcher matches
-    // shell-vs-non-shell foreground processes, never a binary name (Claude
-    // Code's foreground process is `node`, not `claude`), and `spawn_command`
-    // already carries the launch line. Add one when a caller needs it.
+    // No `binary_name()`: the workerd exit watcher matches shell-vs-non-shell
+    // foreground processes, never a binary name (Claude Code's foreground
+    // process is `node`, not `claude`), and `spawn_command` already carries
+    // the launch line. Add one when a caller needs it.
+
+    /// Resolve a config `container.image` value for this agent.
+    ///
+    /// A known alias (one of [`crate::IMAGE_ALIASES`]) becomes
+    /// `<alias>-<agent-name>:latest`. A value containing `:` or `/` is a full
+    /// image reference and is returned unchanged — it can never disagree with
+    /// the agent, since it names an image outside the alias system entirely.
+    pub fn resolve_image(&self, raw: &str) -> Result<String, UnknownAliasError> {
+        if raw.contains(':') || raw.contains('/') {
+            return Ok(raw.to_string());
+        }
+        if crate::IMAGE_ALIASES.contains(&raw) {
+            return Ok(format!("{raw}-{}:latest", self.name()));
+        }
+        Err(UnknownAliasError {
+            raw: raw.to_string(),
+            agent: *self,
+        })
+    }
+
+    /// Image used when a project configures none.
+    ///
+    /// Deliberately the rust-toolchain alias — resolving the plain `ur-worker`
+    /// alias here instead would silently drop the rust toolchain from default
+    /// launches.
+    pub fn fallback_image(&self) -> String {
+        self.resolve_image("ur-worker-rust")
+            .expect("'ur-worker-rust' is always a valid alias")
+    }
 
     /// Full shell command to launch the agent in the tmux pane, with the
     /// model flag applied if `model` is `Some` and non-blank.

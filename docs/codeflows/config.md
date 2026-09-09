@@ -189,6 +189,36 @@ if a mode's model needs to stay agent-independent.
 Deliberately out of scope: a per-project `[projects.<key>].agent` override. A project that
 needs a specific harness declares a custom mode with an explicit `agent` field instead.
 
+## Image Aliases (`container.image`)
+
+`container.image` (`[projects.<key>.container]`) holds a logical alias (`"ur-worker"` or
+`"ur-worker-rust"`) or a full image reference (containing `:` or `/`) — **exactly as written**.
+Parse time (`validate_image_alias`, `crates/ur_config/src/lib.rs`) only checks that the value
+is syntactically valid; it does not resolve an alias to a tag, because the agent that will run
+the launch isn't known until `resolve_mode` runs at launch time (see [Agent Default
+Precedence](#agent-default-precedence) above).
+
+Resolution happens at the single point in the launch path where the agent is already settled —
+`resolve_worker_image` in `crates/server/src/grpc.rs`, called from `LaunchManager::build_worker_config`
+— via `AgentType::resolve_image`:
+
+```
+<alias>                     → <alias>-<agent-name>:latest        ("ur-worker" + codex → "ur-worker-codex:latest")
+<full reference (":" or "/")>  → passthrough, unchanged
+<unrecognized alias>        → error naming the value, the agent, and the valid aliases
+```
+
+`resolve_worker_image` picks the raw value first (`ur --image` request field, else the
+project's `container.image`, else `AgentType::fallback_image()` — deliberately the
+rust-toolchain alias, so a project configuring nothing doesn't silently lose the rust
+toolchain), then resolves it against the launch's resolved agent. This is the same decision
+point for both the project-configured image and the CLI override, so neither can end up
+resolved against the wrong agent.
+
+Because resolution is agent-derived, an alias can never disagree with the agent, and existing
+`ur.toml` files and `--image` flags keep working untouched — `"ur-worker"` and
+`"ur-worker-rust"` remain the only two alias names.
+
 ## Config Flow Through the System
 
 ```

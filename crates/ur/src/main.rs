@@ -871,11 +871,11 @@ async fn process_launch(
     {
         Some(image) => image,
         None if !workspace_dir.is_empty() => {
-            // Workspace mount without a project — use the base image
-            default_image = ur_config::IMAGE_ALIASES
+            // Workspace mount without a project — send the base image alias;
+            // the server resolves it against the launch's agent.
+            default_image = *ur_config::IMAGE_ALIASES
                 .first()
-                .expect("IMAGE_ALIASES must not be empty")
-                .1;
+                .expect("IMAGE_ALIASES must not be empty");
             default_image
         }
         None => {

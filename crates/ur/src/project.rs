@@ -473,7 +473,7 @@ mod tests {
             updated.projects["ur"].repo.as_deref(),
             Some("git@github.com:cmaher/ur.git")
         );
-        assert_eq!(updated.projects["ur"].container.image, "ur-worker:latest");
+        assert_eq!(updated.projects["ur"].container.image, "ur-worker");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(proj.repo.as_deref(), Some("git@github.com:cmaher/ur.git"));
         assert_eq!(proj.name, "My Project");
         assert_eq!(proj.pool_limit, 5);
-        assert_eq!(proj.container.image, "ur-worker-rust:latest");
+        assert_eq!(proj.container.image, "ur-worker-rust");
     }
 
     #[test]
@@ -577,10 +577,7 @@ image = "ur-worker"
         .unwrap();
 
         let updated = ur_config::Config::load_from(tmp.path()).unwrap();
-        assert_eq!(
-            updated.projects["myproj"].container.image,
-            "ur-worker-rust:latest"
-        );
+        assert_eq!(updated.projects["myproj"].container.image, "ur-worker-rust");
     }
 
     #[test]
@@ -683,7 +680,7 @@ image = "ur-worker"
         let proj = &updated.projects["myapp"];
         assert!(proj.is_local());
         assert_eq!(proj.repo, None);
-        assert_eq!(proj.container.image, "ur-worker:latest");
+        assert_eq!(proj.container.image, "ur-worker");
 
         // The written TOML must carry `local = true`, not an empty `repo`.
         let raw = std::fs::read_to_string(tmp.path().join("ur.toml")).unwrap();
