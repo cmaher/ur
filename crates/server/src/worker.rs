@@ -922,7 +922,7 @@ impl WorkerManager {
         .workdir("/workspace")
         .add_workspace(&config.workspace_dir)
         .add_logs_dir(&self.host_logs_dir, &self.logs_dir, &config.worker_id.0)
-        .add_credentials(&self.host_config_dir, agent)?
+        .add_credentials(&self.host_config_dir, &self.local_config_dir, agent)?
         .add_host_hooks_overlay(
             &config.project_key,
             &self.host_config_dir,
@@ -1464,8 +1464,18 @@ pub(crate) fn ensure_file_exists(path: &PathBuf) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, "{}")?;
-    Ok(())
+    use std::os::unix::fs::OpenOptionsExt;
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+    {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// Build `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` env var pairs for container injection.
@@ -2437,6 +2447,33 @@ code = { model = "gpt-5.6-terra-custom" }
         );
     }
 
+    #[test]
+    fn agy_worker_models_apply_without_leaking() {
+        let toml = r#"
+[worker_models.agy]
+code = { model = "gemini-custom", effort = "high" }
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+
+        let ResolvedMode {
+            agent,
+            model,
+            effort,
+            ..
+        } = cfg
+            .resolve_mode("code", Some(ur_config::AgentType::Agy))
+            .unwrap();
+        assert_eq!(agent, ur_config::AgentType::Agy);
+        assert_eq!(model, "gemini-custom");
+        assert_eq!(effort, "high");
+
+        let ResolvedMode { model, effort, .. } = cfg
+            .resolve_mode("code", Some(ur_config::AgentType::Claude))
+            .unwrap();
+        assert_eq!(model, "sonnet");
+        assert_eq!(effort, "medium");
+    }
+
     /// With no `[worker_models]` at all, every agent falls straight through
     /// to `agent.default_model(strategy)`.
     #[test]
@@ -2464,6 +2501,7 @@ code = { model = "opus" }
         assert!(err.contains("codexx"), "{err}");
         assert!(err.contains("claude"), "{err}");
         assert!(err.contains("codex"), "{err}");
+        assert!(err.contains("agy"), "{err}");
     }
 
     #[test]
@@ -2538,6 +2576,31 @@ agent = "bogus"
 
         let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
         assert_eq!(model, "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn agy_agent_precedence() {
+        let toml = r#"
+agent = "agy"
+
+[worker_modes.claude-mode]
+base = "code"
+skills = []
+agent = "claude"
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+
+        let ResolvedMode { agent, model, .. } = cfg.resolve_mode("code", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Agy);
+        assert_eq!(model, "gemini-3.8-flash");
+
+        let ResolvedMode { agent, .. } = cfg.resolve_mode("claude-mode", None).unwrap();
+        assert_eq!(agent, ur_config::AgentType::Claude);
+
+        let ResolvedMode { agent, .. } = cfg
+            .resolve_mode("claude-mode", Some(ur_config::AgentType::Agy))
+            .unwrap();
+        assert_eq!(agent, ur_config::AgentType::Agy);
     }
 
     /// An omitted top-level `agent` key still defaults every built-in mode to claude.

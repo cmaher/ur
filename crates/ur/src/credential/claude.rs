@@ -142,6 +142,9 @@ fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String
         AuthSource::HostFile { path_from_home } => {
             return read_host_file_credentials(agent, path_from_home);
         }
+        AuthSource::InContainer => {
+            anyhow::bail!("in-container credentials have no macOS host source");
+        }
     };
     debug!(
         agent = agent.name(),
@@ -174,6 +177,9 @@ fn read_platform_credentials(agent: AgentType, auth: AgentAuth) -> Result<String
     let path_from_home = match auth.source {
         AuthSource::Keychain { linux_fallback, .. } => linux_fallback,
         AuthSource::HostFile { path_from_home } => path_from_home,
+        AuthSource::InContainer => {
+            anyhow::bail!("in-container credentials have no Linux host source");
+        }
     };
     read_host_file_credentials(agent, path_from_home)
 }

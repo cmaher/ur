@@ -15,7 +15,7 @@ Config is loaded by `Config::load()` in `crates/ur_config/src/lib.rs`. Missing f
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"` or `"codex"`), when not overridden by `--agent` or `worker_modes.<mode>.agent`. See "Agent precedence" under the `[worker_models]` section below. An unrecognized value is a startup config error naming the valid agents |
+| `agent` | string | `"claude"` | Default agent harness for every worker (`"claude"`, `"codex"`, or `"agy"`), when not overridden by `--agent` or `worker_modes.<mode>.agent`. See "Agent precedence" under the `[worker_models]` section below. An unrecognized value is a startup config error naming the valid agents |
 | `workspace` | path | `<config_dir>/workspace` | Host-side worker workspace directory |
 | `server_port` | u16 | `12321` | TCP port for ur→server gRPC |
 | `worker_port` | u16 | `server_port + 1` | TCP port for the shared worker gRPC server |
@@ -34,13 +34,23 @@ Forward proxy (Squid) configuration controlling what external hosts containers m
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hostname` | string | `"ur-squid"` | Proxy hostname via Docker DNS |
-| `allowlist` | string[] | `["api.anthropic.com", "platform.claude.com"]` | Allowed external domains |
+| `allowlist` | string[] | all supported-agent domains | Allowed external domains, assembled from `AgentType::ALL` (Claude, Codex, and AGY API/OAuth requirements) |
 
 ```toml
 [proxy]
 hostname = "ur-squid"
-allowlist = ["api.anthropic.com", "platform.claude.com", "registry.npmjs.org"]
+allowlist = [
+  "api.anthropic.com", "platform.claude.com", "downloads.claude.ai",
+  "chatgpt.com", "api.openai.com", "auth.openai.com",
+  "oauth2.googleapis.com", "www.googleapis.com", "cloudcode-pa.googleapis.com",
+  "daily-cloudcode-pa.googleapis.com", "lh3.googleusercontent.com",
+  "accounts.google.com", "registry.npmjs.org",
+]
 ```
+
+Setting `allowlist` replaces the assembled default; it does not merge. An AGY-capable custom
+list must retain all six Google hosts shown above. `lh3.googleusercontent.com` looks optional
+but is a hard AGY startup dependency because the eligibility check fetches the profile image.
 
 ---
 
@@ -199,7 +209,7 @@ Built-in modes come from `WorkerStrategy::skills()` (`crates/server/src/strategy
 | `skills` | string[] | **yes** | Full skill list — **replaces** the base strategy's list, does not extend it |
 | `model` | string | no | Model alias override |
 | `effort` | string | no | Reasoning-effort override for the mode's agent |
-| `agent` | string | no | Which agent runs this mode (e.g. `"claude"`). Defaults to `"claude"` when omitted; an unrecognized value is a config error naming the mode |
+| `agent` | string | no | Which agent runs this mode (e.g. `"agy"`). When omitted, falls through to the top-level `agent`, then `"claude"`; an unrecognized value is a config error naming the mode |
 
 Custom modes are added alongside the built-in three; defining `[worker_modes.code]` replaces the built-in `code`.
 
@@ -223,15 +233,25 @@ code = { model = "sonnet", effort = "high" }
 code = { model = "gpt-5.6-terra", effort = "high" }
 ```
 
-Every `[worker_models]` key is an agent table (`claude` or `codex`). Each strategy entry is an
+Every `[worker_models]` key is an agent table (`claude`, `codex`, or `agy`). Each strategy entry is an
 inline table with independently optional `model` and `effort`; flat strings are a hard migration
 error. Unknown agents, strategies, and unsupported agent effort values are rejected at parse time.
 
-| Key | Built-in Default (claude) |
-|-----|------------------|
-| `code` | `sonnet` |
-| `design` | `opus` |
-| `manual` | `opus` |
+| Strategy | Claude | Codex | AGY |
+|----------|--------|-------|-----|
+| `code` | `sonnet` | `gpt-5.6-terra` | `gemini-3.8-flash` |
+| `design` | `opus` | `gpt-5.6-sol` | `gemini-3.8-flash` |
+| `manual` | `opus` | `gpt-5.6-sol` | `gemini-3.8-flash` |
+
+All agents default to `effort = "medium"`. AGY accepts the shared effort vocabulary
+(`low`, `medium`, `high`, `xhigh`, `max`, `ultra`) at config-parse time and leaves the
+model/effort matrix to AGY itself. Use the base model ID, such as `gemini-3.8-flash`, rather
+than an effort-suffixed model ID when setting an AGY model.
+
+```toml
+[worker_models.agy]
+code = { model = "gemini-3.8-flash", effort = "high" }
+```
 
 ```toml
 [worker_models.claude]
@@ -325,9 +345,27 @@ Both `memory_dir` and `brain_dir` are `create_dir_all`'d and chowned to the work
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `image` | string | **yes** | Container image alias or full reference. Aliases (`"ur-worker"`, `"ur-worker-rust"`) resolve per-agent at launch time, e.g. `"ur-worker"` → `ur-worker-claude:latest` for a Claude worker. Use `"image:tag"` or `"registry/image:tag"` for a full reference, used unchanged for any agent |
+| `image` | string | **yes** | Container image alias or full reference. Aliases (`"ur-worker"`, `"ur-worker-rust"`) resolve per-agent at launch time; see the table below. Use `"image:tag"` or `"registry/image:tag"` for a full reference, used unchanged for any agent |
 | `mounts` | string[] | no | Extra volume mounts: `"source:destination"`. Source supports `%URCONFIG%/...` or absolute paths (`%PROJECT%` **not allowed** here) |
 | `ports` | string[] | no | Port mappings: `"host_port:container_port"` |
+
+| Alias | Claude | Codex | AGY |
+|-------|--------|-------|-----|
+| `ur-worker` | `ur-worker-claude:latest` | `ur-worker-codex:latest` | `ur-worker-agy:latest` |
+| `ur-worker-rust` | `ur-worker-rust-claude:latest` | `ur-worker-rust-codex:latest` | `ur-worker-rust-agy:latest` |
+
+### AGY credentials and paths
+
+AGY stores runtime state under `~/.gemini/antigravity-cli/`, but ur-managed customizations
+(skills, skill hooks, and `AGENTS.md`) under `~/.gemini/config/`. Its renewable OAuth bundle
+is the single read-write bind mount
+`$UR_CONFIG/agy/antigravity-oauth-token` →
+`~/.gemini/antigravity-cli/antigravity-oauth-token`; ur never mounts all of `~/.gemini`,
+because that tree also contains per-worker SQLite state, logs, updater state, and installation
+identity. `ur init` creates the parent and empty token at mode 0600. An empty token is
+intentional: launch the worker and complete sign-in in its pane. There is no host seed or save
+round trip, and a missing token must not block launch. AGY refreshes expired credentials in
+place; the single-file cache remains valid even when concurrent workers refresh it.
 
 ### `[projects.<key>.tui]`
 

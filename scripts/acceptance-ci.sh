@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/build/agent-images.sh"
+
 # Run acceptance tests with isolated CI-tagged images.
 # Builds every image with a unique ci-<label> tag, runs acceptance tests,
 # then cleans up the tagged images (even on failure).
 
 LABEL=$(od -An -tx1 -N5 /dev/urandom | tr -d ' \n' | cut -c1-5)
 TAG="ci-${LABEL}"
-# Keep in sync with scripts/build/image.sh's AGENT_IMAGES table (image tag
-# column) plus the non-agent images it also builds (base, server, squid).
-IMAGES=(ur-worker-base ur-worker-claude ur-worker-rust-claude ur-worker-codex ur-worker-rust-codex ur-server ur-squid)
+IMAGES=(ur-worker-base ur-server ur-squid)
+for entry in "${AGENT_IMAGES[@]}"; do
+    IFS=':' read -r _dir image_tag _agent _cachebust _stage_binaries <<< "$entry"
+    IMAGES+=("$image_tag")
+done
 
 # --- Mutex: only one acceptance-ci / pre-push runs image builds at a time ---
 LOCK_DIR="${UR_CONFIG:-$HOME/.ur}/locks/pre-push"

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/../build/agent-images.sh"
+
 # Rebuild and redeploy a worker container.
 # Stages workercmd binaries, rebuilds worker images, and relaunches the worker.
 #
@@ -23,11 +25,12 @@ else
     exit 1
 fi
 
-WORKER_CONTEXT=containers/worker-claude
-RUST_WORKER_CONTEXT=containers/worker-rust-claude
-
-$RUNTIME build -t ur-worker-claude:latest -f "$WORKER_CONTEXT/Dockerfile" "$WORKER_CONTEXT"
-$RUNTIME build -t ur-worker-rust-claude:latest -f "$RUST_WORKER_CONTEXT/Dockerfile" "$RUST_WORKER_CONTEXT"
+for entry in "${AGENT_IMAGES[@]}"; do
+    IFS=':' read -r dir image_tag _agent _cachebust _stage_binaries <<< "$entry"
+    context="containers/$dir"
+    $RUNTIME build --build-arg BASE_TAG=latest -t "$image_tag:latest" \
+        -f "$context/Dockerfile" "$context"
+done
 
 echo ""
 echo "=== Relaunching worker $PROCESS_ID ==="

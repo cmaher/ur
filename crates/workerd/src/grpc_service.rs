@@ -659,4 +659,38 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn implement_commands_agy() {
+        let commands = dispatch_commands(ur_config::AgentType::Agy, "implement", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec!["/clear".to_string(), "/implement ur-x".to_string()]
+        );
+    }
+
+    #[test]
+    fn design_commands_agy() {
+        let commands = dispatch_commands(ur_config::AgentType::Agy, "design", &["ur-x"]);
+        assert_eq!(
+            Vec::from(commands),
+            vec!["/clear".to_string(), "/design ur-x".to_string()]
+        );
+    }
+
+    #[test]
+    fn address_feedback_commands_agy() {
+        let commands = dispatch_commands(
+            ur_config::AgentType::Agy,
+            "address-feedback",
+            &["ur-x", "123"],
+        );
+        assert_eq!(
+            Vec::from(commands),
+            vec![
+                "/clear".to_string(),
+                "/address-feedback ur-x 123".to_string()
+            ]
+        );
+    }
 }

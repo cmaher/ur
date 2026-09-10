@@ -233,6 +233,12 @@ fn check_credentials_seeded(
     agent: ur_config::AgentType,
     config_dir: &Path,
 ) -> Result<(), CoreError> {
+    if agent
+        .auth()
+        .is_some_and(|auth| auth.source == ur_config::AuthSource::InContainer)
+    {
+        return Ok(());
+    }
     let Some(path) = agent.host_credentials_path(config_dir) else {
         return Ok(());
     };
@@ -1847,6 +1853,13 @@ mod tests {
             "{}",
             status.message()
         );
+        for agent in ur_config::AgentType::ALL {
+            assert!(
+                status.message().contains(agent.name()),
+                "{}",
+                status.message()
+            );
+        }
     }
 
     // ── image resolution on the launch request ──────────────────────────
@@ -1861,6 +1874,10 @@ mod tests {
             resolve_worker_image(ur_config::AgentType::Codex, "", "").unwrap(),
             "ur-worker-rust-codex:latest"
         );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Agy, "", "").unwrap(),
+            "ur-worker-rust-agy:latest"
+        );
     }
 
     #[test]
@@ -1872,6 +1889,10 @@ mod tests {
         assert_eq!(
             resolve_worker_image(ur_config::AgentType::Codex, "", "ur-worker").unwrap(),
             "ur-worker-codex:latest"
+        );
+        assert_eq!(
+            resolve_worker_image(ur_config::AgentType::Agy, "", "ur-worker").unwrap(),
+            "ur-worker-agy:latest"
         );
     }
 
@@ -1964,6 +1985,12 @@ mod tests {
             matches!(err, CoreError::MissingCredentials { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn check_credentials_seeded_allows_agy_to_sign_in_in_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(check_credentials_seeded(ur_config::AgentType::Agy, tmp.path()).is_ok());
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────

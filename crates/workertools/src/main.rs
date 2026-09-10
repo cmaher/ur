@@ -64,8 +64,12 @@ enum Commands {
         #[command(subcommand)]
         command: repo::RepoCommands,
     },
-    /// Notify workerd that Claude Code is idle (waiting for user input)
-    NotifyIdle,
+    /// Notify workerd that the coding agent is idle (waiting for user input)
+    NotifyIdle {
+        /// Print an empty JSON object after a successful notification
+        #[arg(long)]
+        json: bool,
+    },
     /// Agent status signaling commands
     Status {
         #[command(subcommand)]
@@ -125,8 +129,8 @@ async fn main() {
         Commands::Repo { command } => {
             std::process::exit(repo::run(command).await);
         }
-        Commands::NotifyIdle => {
-            run_notify_idle().await;
+        Commands::NotifyIdle { json } => {
+            std::process::exit(run_notify_idle(json).await);
         }
         Commands::Status { command } => {
             std::process::exit(status::run(command).await);
@@ -255,19 +259,41 @@ async fn exec_host_request(display_name: &str, req: HostExecRequest, bidi: bool)
 
 const WORKERD_PORT: u16 = 9120;
 
-async fn run_notify_idle() {
+fn notify_idle_success_output(json: bool) -> &'static str {
+    if json { "{}\n" } else { "" }
+}
+
+async fn run_notify_idle(json: bool) -> i32 {
     eprintln!("[workertools] notify-idle: sending idle notification to workerd");
     let addr = format!("http://127.0.0.1:{WORKERD_PORT}");
     let channel = match Endpoint::try_from(addr).unwrap().connect().await {
         Ok(ch) => ch,
         Err(e) => {
             eprintln!("[workertools] notify-idle: failed to connect to workerd: {e}");
-            return;
+            return 1;
         }
     };
     let mut client = WorkerDaemonServiceClient::new(channel);
     match client.notify_idle(NotifyIdleRequest {}).await {
-        Ok(_) => eprintln!("[workertools] notify-idle: success"),
-        Err(e) => eprintln!("[workertools] notify-idle: RPC failed: {e}"),
+        Ok(_) => {
+            eprintln!("[workertools] notify-idle: success");
+            print!("{}", notify_idle_success_output(json));
+            0
+        }
+        Err(e) => {
+            eprintln!("[workertools] notify-idle: RPC failed: {e}");
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notify_idle_success_output;
+
+    #[test]
+    fn notify_idle_stdout_shapes() {
+        assert_eq!(notify_idle_success_output(false), "");
+        assert_eq!(notify_idle_success_output(true), "{}\n");
     }
 }

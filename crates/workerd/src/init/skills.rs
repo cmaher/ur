@@ -21,11 +21,11 @@ impl InitSkillsManager {
     }
 
     /// Copy the skills named in `UR_WORKER_SKILLS` from `.agent-shared/potential-skills/`
-    /// into `~/{agent.home_subdir()}/{agent.skill_subdir()}/`.
+    /// into `~/{agent.customization_root()}/{agent.skill_subdir()}/`.
     pub async fn run(&self) -> Result<(), std::io::Error> {
         let skills_dir = self
             .home
-            .join(self.agent.home_subdir())
+            .join(self.agent.customization_root())
             .join(self.agent.skill_subdir());
         let potential_dir = self.home.join(POTENTIAL_SKILLS_DIR);
 
@@ -148,5 +148,20 @@ mod tests {
             !skills_dir.join("stale-skill").exists(),
             "stale skill should be wiped"
         );
+    }
+
+    #[tokio::test]
+    async fn agy_uses_customization_root() {
+        let _lock = ENV_LOCK.lock().await;
+        let tmp = TempDir::new().unwrap();
+
+        unsafe { std::env::remove_var(SKILLS_ENV) };
+        InitSkillsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+            .run()
+            .await
+            .unwrap();
+
+        assert!(tmp.path().join(".gemini/config/skills").exists());
+        assert!(!tmp.path().join(".gemini/antigravity-cli/skills").exists());
     }
 }

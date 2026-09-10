@@ -174,14 +174,14 @@ Served by the `workerd` daemon inside each worker container on port 9120.
 **`Implement(ticket_id)`** -- Server dispatches implementation work.
 - Populates `DispatchBuffer` via `dispatch_commands(agent, "implement", &[ticket_id])`:
   `[agent.clear_command(), agent.skill_invocation("implement", &[ticket_id])]` — for Claude
-  that's `["/clear", "/implement {ticket_id}"]`; Codex has no custom slash commands, so it's
+  and AGY that's `["/clear", "/implement {ticket_id}"]`; Codex has no custom slash commands, so it's
   `["/new", "Run the `implement` skill. Arguments: {ticket_id}"]`. `agent` is injected into
   the gRPC service at startup (`WorkerDaemonServiceImpl.agent`), never read per-handler.
 - Sets `lifecycle_step = "implementing"`
 - Pops and sends the first command (context reset) to tmux immediately
 
 **`NotifyIdle()`** -- Called by the agent's own `Stop` hook (`workertools notify-idle`) as its
-turn ends — Claude Code's and Codex's `Stop` hooks both wire to this the same way. For Claude
+turn ends. For Claude
 the hook is user-config (`~/.claude/settings.json`, `permissions`/`hooks` baked at build time).
 For Codex it is declared in `/etc/codex/managed_config.toml` (`allow_managed_hooks_only = true`)
 rather than `~/.codex/config.toml`, because `bypass_hook_trust` is only a CLI flag
@@ -191,6 +191,12 @@ container. Codex also fires `SessionStart` into the same `NotifyIdle` handler (c
 dispatch is active yet at session start), which is how a freshly-launched codex worker reports
 `idle` for the first time without ever having run a `Stop` hook. See
 `containers/worker-codex/CLAUDE.md` for the full managed-hooks rationale.
+For AGY, the trusted global hook is the named-hook entry in `~/.gemini/config/hooks.json` and
+runs `workertools notify-idle --json`, because AGY requires a JSON object on stdout. Repo-local
+`.agents/hooks.json` hooks can also execute: a same-named repo hook merges rather than replacing
+the ur hook, but repo hooks remain arbitrary code in the worker container. Treat inconsistent
+workspace-hook loading in AGY 1.2.0 as a bug, not a security boundary. See
+`containers/worker-agy/CLAUDE.md`.
 - 4-state machine:
   1. Buffer has commands → pop and send to tmux
   2. Buffer empty + step_complete → send `WorkflowStepComplete` RPC to server
@@ -202,7 +208,8 @@ dispatch is active yet at session start), which is how a freshly-launched codex 
   queued-message buffer and a queued command never executes. Deferring the send lets the RPC
   return, the hook finish, and the prompt come back first. Codex's hook handlers accept
   `async = true` so this hazard may not apply there, but the deferred send stays for both
-  agents rather than special-casing it away.
+  agents rather than special-casing it away. AGY hooks are also synchronous, so deferral is
+  required there.
 
 **`StepComplete()`** -- Called by `workertools status step-complete` when agent finishes work.
 - Sets `step_complete = true` on the `DispatchBuffer`

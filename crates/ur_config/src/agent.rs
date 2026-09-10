@@ -12,6 +12,9 @@ pub enum AuthSource {
     },
     /// Plain file under the host user's home directory.
     HostFile { path_from_home: &'static str },
+    /// Credentials are created by the agent inside the container and persist
+    /// through the bind-mounted credentials file; there is no host source to seed.
+    InContainer,
 }
 
 /// Auth profile for an agent. Future agents may use other auth styles —
@@ -51,6 +54,7 @@ pub fn credentials_file_is_seeded(path: &std::path::Path) -> bool {
 pub enum AgentType {
     Claude,
     Codex,
+    Agy,
 }
 
 /// Error returned when parsing an unrecognized agent type string.
@@ -59,7 +63,8 @@ pub struct ParseAgentError(pub String);
 
 impl fmt::Display for ParseAgentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown agent type: {}", self.0)
+        let valid: Vec<&str> = AgentType::ALL.iter().map(AgentType::name).collect();
+        write!(f, "unknown agent type: {}. Valid agents: {valid:?}", self.0)
     }
 }
 
@@ -91,7 +96,7 @@ impl std::error::Error for UnknownAliasError {}
 impl AgentType {
     /// All known agent variants. Lets callers with no dependency on the crate
     /// that parses `[worker_modes]` (e.g. the host CLI) iterate agents anyway.
-    pub const ALL: &'static [AgentType] = &[AgentType::Claude, AgentType::Codex];
+    pub const ALL: &'static [AgentType] = &[AgentType::Claude, AgentType::Codex, AgentType::Agy];
 
     /// Short, stable name for this agent. Used as the `UR_AGENT_TYPE` value,
     /// the credential directory name, and in `agent_type` proto fields.
@@ -99,15 +104,28 @@ impl AgentType {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Agy => "agy",
         }
     }
 
     /// Home subdirectory (relative to the worker's home directory) holding
-    /// this agent's config, skills, and instructions.
+    /// this agent's runtime settings and state.
     pub fn home_subdir(&self) -> &'static str {
         match self {
             Self::Claude => ".claude",
             Self::Codex => ".codex",
+            Self::Agy => ".gemini/antigravity-cli",
+        }
+    }
+
+    /// Home subdirectory holding customizations such as skills and instructions.
+    ///
+    /// AGY keeps these separate from its runtime settings and state. Existing
+    /// agents use one root for both concepts.
+    pub fn customization_root(&self) -> &'static str {
+        match self {
+            Self::Agy => ".gemini/config",
+            Self::Claude | Self::Codex => self.home_subdir(),
         }
     }
 
@@ -115,21 +133,21 @@ impl AgentType {
     pub fn instruction_filename(&self) -> &'static str {
         match self {
             Self::Claude => "CLAUDE.md",
-            Self::Codex => "AGENTS.md",
+            Self::Codex | Self::Agy => "AGENTS.md",
         }
     }
 
     /// Subdirectory (relative to `home_subdir()`) holding installed skills.
     pub fn skill_subdir(&self) -> &'static str {
         match self {
-            Self::Claude | Self::Codex => "skills",
+            Self::Claude | Self::Codex | Self::Agy => "skills",
         }
     }
 
     /// Subdirectory (relative to `home_subdir()`) holding skill hooks.
     pub fn skill_hooks_subdir(&self) -> &'static str {
         match self {
-            Self::Claude | Self::Codex => "skill-hooks",
+            Self::Claude | Self::Codex | Self::Agy => "skill-hooks",
         }
     }
 
@@ -187,6 +205,12 @@ impl AgentType {
                 }
                 _ => format!("codex -c model_reasoning_effort=\"{effort}\""),
             },
+            Self::Agy => match model.map(str::trim) {
+                Some(model) if !model.is_empty() => format!(
+                    "agy --model '{model}' --effort '{effort}' --dangerously-skip-permissions"
+                ),
+                _ => format!("agy --effort '{effort}' --dangerously-skip-permissions"),
+            },
         }
     }
 
@@ -196,6 +220,7 @@ impl AgentType {
         match self {
             Self::Claude => &["low", "medium", "high", "xhigh", "max"],
             Self::Codex => &["low", "medium", "high", "xhigh", "max", "ultra"],
+            Self::Agy => &["low", "medium", "high", "xhigh", "max", "ultra"],
         }
     }
 
@@ -203,7 +228,7 @@ impl AgentType {
     /// supplies one. Unlike [`Self::default_model`], it is not strategy-keyed.
     pub fn default_effort(&self) -> &'static str {
         match self {
-            Self::Claude | Self::Codex => "medium",
+            Self::Claude | Self::Codex | Self::Agy => "medium",
         }
     }
 
@@ -212,6 +237,7 @@ impl AgentType {
         match self {
             Self::Claude => "/clear",
             Self::Codex => "/new",
+            Self::Agy => "/clear",
         }
     }
 
@@ -230,7 +256,7 @@ impl AgentType {
     /// out of `AgentType`.
     pub fn skill_invocation(&self, skill: &str, args: &[&str]) -> String {
         match self {
-            Self::Claude => {
+            Self::Claude | Self::Agy => {
                 let mut invocation = format!("/{skill}");
                 for arg in args {
                     invocation.push(' ');
@@ -266,6 +292,10 @@ impl AgentType {
                 "design" | "manual" => Some("gpt-5.6-sol"),
                 _ => None,
             },
+            Self::Agy => match strategy {
+                "code" | "design" | "manual" => Some("gemini-3.8-flash"),
+                _ => None,
+            },
         }
     }
 
@@ -275,6 +305,7 @@ impl AgentType {
         match self {
             Self::Claude => Some("settings.json"),
             Self::Codex => Some("config.toml"),
+            Self::Agy => Some("settings.json"),
         }
     }
 
@@ -288,7 +319,7 @@ impl AgentType {
     pub fn memory_subdir(&self) -> Option<&'static str> {
         match self {
             Self::Claude => Some("projects/-workspace/memory"),
-            Self::Codex => None,
+            Self::Codex | Self::Agy => None,
         }
     }
 
@@ -311,6 +342,11 @@ impl AgentType {
                 },
                 credentials_path: ".codex/auth.json",
                 app_config_path: ".codex/config.toml",
+            }),
+            Self::Agy => Some(AgentAuth {
+                source: AuthSource::InContainer,
+                credentials_path: ".gemini/antigravity-cli/antigravity-oauth-token",
+                app_config_path: ".gemini/antigravity-cli/settings.json",
             }),
         }
     }
@@ -337,6 +373,7 @@ impl AgentType {
         match self {
             Self::Claude => "log in to Claude Code on this machine",
             Self::Codex => "run `codex login` on this machine",
+            Self::Agy => "launch a worker and complete the sign-in in the pane",
         }
     }
 
@@ -346,6 +383,13 @@ impl AgentType {
     /// when `auth()` is `Some` — an agent with no auth profile has nothing to
     /// remediate.
     pub fn credentials_remediation(&self) -> String {
+        if matches!(self, Self::Agy) {
+            return format!(
+                "no credentials for agent '{}' — {}",
+                self.name(),
+                self.login_instruction()
+            );
+        }
         format!(
             "no credentials for agent '{name}' — {login}, then run \
              `ur worker reseed-credentials --agent {name}`",
@@ -363,6 +407,14 @@ impl AgentType {
                 "downloads.claude.ai",
             ],
             Self::Codex => &["chatgpt.com", "api.openai.com", "auth.openai.com"],
+            Self::Agy => &[
+                "oauth2.googleapis.com",
+                "www.googleapis.com",
+                "cloudcode-pa.googleapis.com",
+                "daily-cloudcode-pa.googleapis.com",
+                "lh3.googleusercontent.com",
+                "accounts.google.com",
+            ],
         }
     }
 
@@ -371,6 +423,7 @@ impl AgentType {
         match s {
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
+            "agy" => Ok(Self::Agy),
             other => Err(ParseAgentError(other.to_string())),
         }
     }
@@ -423,6 +476,18 @@ mod tests {
     }
 
     #[test]
+    fn agy_name_and_subdirs() {
+        assert_eq!(AgentType::Agy.name(), "agy");
+        assert_eq!(AgentType::Agy.home_subdir(), ".gemini/antigravity-cli");
+        assert_eq!(AgentType::Agy.customization_root(), ".gemini/config");
+        assert_eq!(AgentType::Agy.instruction_filename(), "AGENTS.md");
+        assert_eq!(AgentType::Agy.skill_subdir(), "skills");
+        assert_eq!(AgentType::Agy.skill_hooks_subdir(), "skill-hooks");
+        assert_eq!(AgentType::Claude.customization_root(), ".claude");
+        assert_eq!(AgentType::Codex.customization_root(), ".codex");
+    }
+
+    #[test]
     fn spawn_command_no_model_keeps_effort() {
         assert_eq!(
             AgentType::Claude.spawn_command(None, "high"),
@@ -431,6 +496,10 @@ mod tests {
         assert_eq!(
             AgentType::Codex.spawn_command(None, "high"),
             "codex -c model_reasoning_effort=\"high\""
+        );
+        assert_eq!(
+            AgentType::Agy.spawn_command(None, "high"),
+            "agy --effort 'high' --dangerously-skip-permissions"
         );
     }
 
@@ -443,6 +512,10 @@ mod tests {
         assert_eq!(
             AgentType::Codex.spawn_command(Some("gpt-5.6-sol"), "max"),
             "codex -m 'gpt-5.6-sol' -c model_reasoning_effort=\"max\""
+        );
+        assert_eq!(
+            AgentType::Agy.spawn_command(Some("gemini-3.8-flash"), "medium"),
+            "agy --model 'gemini-3.8-flash' --effort 'medium' --dangerously-skip-permissions"
         );
     }
 
@@ -468,12 +541,32 @@ mod tests {
             AgentType::Codex.spawn_command(Some("   "), "low"),
             "codex -c model_reasoning_effort=\"low\""
         );
+        assert_eq!(
+            AgentType::Agy.spawn_command(Some("   "), "low"),
+            "agy --effort 'low' --dangerously-skip-permissions"
+        );
+    }
+
+    #[test]
+    fn image_resolution_per_agent() {
+        assert_eq!(
+            AgentType::Agy.resolve_image("ur-worker").unwrap(),
+            "ur-worker-agy:latest"
+        );
+        assert_eq!(AgentType::Agy.fallback_image(), "ur-worker-rust-agy:latest");
+        assert_eq!(
+            AgentType::Agy
+                .resolve_image("registry.example/worker:v1")
+                .unwrap(),
+            "registry.example/worker:v1"
+        );
     }
 
     #[test]
     fn clear_command_per_agent() {
         assert_eq!(AgentType::Claude.clear_command(), "/clear");
         assert_eq!(AgentType::Codex.clear_command(), "/new");
+        assert_eq!(AgentType::Agy.clear_command(), "/clear");
     }
 
     #[test]
@@ -485,6 +578,10 @@ mod tests {
         assert_eq!(
             AgentType::Codex.skill_invocation("implement", &[]),
             "Run the `implement` skill."
+        );
+        assert_eq!(
+            AgentType::Agy.skill_invocation("implement", &[]),
+            "/implement"
         );
     }
 
@@ -498,6 +595,10 @@ mod tests {
             AgentType::Codex.skill_invocation("implement", &["ur-x"]),
             "Run the `implement` skill. Arguments: ur-x"
         );
+        assert_eq!(
+            AgentType::Agy.skill_invocation("implement", &["ur-x"]),
+            "/implement ur-x"
+        );
     }
 
     #[test]
@@ -509,6 +610,10 @@ mod tests {
         assert_eq!(
             AgentType::Codex.skill_invocation("address-feedback", &["ur-x", "123"]),
             "Run the `address-feedback` skill. Arguments: ur-x, 123"
+        );
+        assert_eq!(
+            AgentType::Agy.skill_invocation("address-feedback", &["ur-x", "123"]),
+            "/address-feedback ur-x 123"
         );
     }
 
@@ -532,6 +637,14 @@ mod tests {
             Some("gpt-5.6-sol")
         );
         assert_eq!(AgentType::Codex.default_model("bogus"), None);
+
+        for strategy in ["code", "design", "manual"] {
+            assert_eq!(
+                AgentType::Agy.default_model(strategy),
+                Some("gemini-3.8-flash")
+            );
+        }
+        assert_eq!(AgentType::Agy.default_model("bogus"), None);
     }
 
     /// Every agent must have a default model for every strategy the workflow
@@ -569,11 +682,16 @@ mod tests {
 
         assert_eq!(AgentType::Codex.settings_filename(), Some("config.toml"));
         assert_eq!(AgentType::Codex.memory_subdir(), None);
+        assert_eq!(AgentType::Agy.settings_filename(), Some("settings.json"));
+        assert_eq!(AgentType::Agy.memory_subdir(), None);
     }
 
     #[test]
-    fn all_contains_claude_and_codex() {
-        assert_eq!(AgentType::ALL, &[AgentType::Claude, AgentType::Codex]);
+    fn all_contains_every_agent() {
+        assert_eq!(
+            AgentType::ALL,
+            &[AgentType::Claude, AgentType::Codex, AgentType::Agy]
+        );
     }
 
     #[test]
@@ -601,6 +719,20 @@ mod tests {
                 path_from_home: ".codex/auth.json",
             }
         );
+    }
+
+    #[test]
+    fn agy_auth_profile() {
+        let auth = AgentType::Agy.auth().expect("agy has auth");
+        assert_eq!(
+            auth.credentials_path,
+            ".gemini/antigravity-cli/antigravity-oauth-token"
+        );
+        assert_eq!(
+            auth.app_config_path,
+            ".gemini/antigravity-cli/settings.json"
+        );
+        assert_eq!(auth.source, AuthSource::InContainer);
     }
 
     #[test]
@@ -637,6 +769,10 @@ mod tests {
             AgentType::Codex.host_credentials_path(config_dir).unwrap(),
             std::path::PathBuf::from("/config/codex/auth.json")
         );
+        assert_eq!(
+            AgentType::Agy.host_credentials_path(config_dir).unwrap(),
+            std::path::PathBuf::from("/config/agy/antigravity-oauth-token")
+        );
     }
 
     #[test]
@@ -655,6 +791,9 @@ mod tests {
             codex_msg.contains("ur worker reseed-credentials --agent codex"),
             "{codex_msg}"
         );
+
+        let agy_msg = AgentType::Agy.credentials_remediation();
+        assert!(agy_msg.contains("sign-in in the pane"), "{agy_msg}");
     }
 
     #[test]
@@ -671,12 +810,24 @@ mod tests {
             AgentType::Codex.proxy_domains(),
             &["chatgpt.com", "api.openai.com", "auth.openai.com"]
         );
+        assert_eq!(
+            AgentType::Agy.proxy_domains(),
+            &[
+                "oauth2.googleapis.com",
+                "www.googleapis.com",
+                "cloudcode-pa.googleapis.com",
+                "daily-cloudcode-pa.googleapis.com",
+                "lh3.googleusercontent.com",
+                "accounts.google.com"
+            ]
+        );
     }
 
     #[test]
     fn parse_known_and_unknown() {
         assert_eq!(AgentType::parse("claude"), Ok(AgentType::Claude));
         assert_eq!(AgentType::parse("codex"), Ok(AgentType::Codex));
+        assert_eq!(AgentType::parse("agy"), Ok(AgentType::Agy));
         assert_eq!(
             AgentType::parse("bogus"),
             Err(ParseAgentError("bogus".to_string()))
@@ -723,6 +874,18 @@ mod tests {
             std::env::set_var(UR_AGENT_TYPE_ENV, "codex");
         }
         assert_eq!(AgentType::from_env(), AgentType::Codex);
+        unsafe {
+            std::env::remove_var(UR_AGENT_TYPE_ENV);
+        }
+    }
+
+    #[test]
+    fn from_env_reads_agy() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            std::env::set_var(UR_AGENT_TYPE_ENV, "agy");
+        }
+        assert_eq!(AgentType::from_env(), AgentType::Agy);
         unsafe {
             std::env::remove_var(UR_AGENT_TYPE_ENV);
         }

@@ -8,12 +8,15 @@ How `ur process launch` starts a worker container with agent credentials.
 Claude — macOS: Keychain ("Claude Code-credentials")
          Linux: ~/.claude/.credentials.json
 Codex  — any OS: ~/.codex/auth.json (no keychain integration)
+AGY    — no host source; first sign-in writes the mounted token cache in-container
     │
     ▼
 ur CLI: credential_manager_for(agent) -> Option<Box<dyn AgentCredentialManager>>
     │                                       [crates/ur/src/credential/mod.rs]
     │   None for a no-auth agent (agent.auth() is None) — every caller acknowledges
-    │   the no-auth path instead of the trait silently no-op'ing.
+    │   the no-auth path instead of the trait silently no-op'ing. AGY has an auth
+    │   profile with AuthSource::InContainer: its manager deliberately does no host
+    │   seed/save work.
     │   ClaudeCredentialManager [credential/claude.rs] and CodexCredentialManager
     │   [credential/codex.rs] each implement ensure_credentials(max_age): re-seeds
     │   if ~/.ur/{agent.name()}/{filename component of auth.credentials_path} is
@@ -22,6 +25,9 @@ ur CLI: credential_manager_for(agent) -> Option<Box<dyn AgentCredentialManager>>
     │       Claude, Linux: reads ~/.claude/.credentials.json directly
     │       Codex, any OS: reads ~/.codex/auth.json directly
     │       writes result to ~/.ur/{claude,codex}/{credentials file}
+    │   AGY: ur init creates an empty, mode-600
+    │       ~/.ur/agy/antigravity-oauth-token. It is the persistent cache, not a
+    │       seed copied from another login.
     │   A missing host source (never logged into that agent) is a skip with a
     │   warning, not a failure — one agent's absent login must not break
     │   ur start for users of the other agent. A host source that exists but is
@@ -54,6 +60,14 @@ ur-server: WorkerManager.run_and_record()            [crates/server/src/worker.r
     │   containers would let N processes open the same WAL simultaneously,
     │   which is exactly the corruption scenario WAL mode does not tolerate.
     │   Mounting only auth.json avoids sharing that file at all.)
+    │   AGY similarly mounts exactly one read-write file:
+    │   ~/.ur/agy/antigravity-oauth-token
+    │   → /home/worker/.gemini/antigravity-cli/antigravity-oauth-token.
+    │   Never mount ~/.gemini: it also contains SQLite conversations, logs,
+    │   updater state, and installation identity that must remain per-worker.
+    │   A missing cache is created through the server-visible config mount
+    │   (`local_config_dir`) at mode 600, while the volume request retains the
+    │   corresponding host path (`host_config_dir`) for builderd/Docker.
     │
     ▼  gRPC LaunchWorker RPC → builderd (host, native)
     │                         [BuilderContainerService::launch_worker]
@@ -65,6 +79,7 @@ Container: Claude Code reads ~/.claude/.credentials.json
             Claude Code reads ~/.claude.json (baked into image)
            Codex reads ~/.codex/auth.json
             Codex reads ~/.codex/config.toml (baked into image)
+           AGY reads/writes ~/.gemini/antigravity-cli/antigravity-oauth-token
 ```
 
 **Two files are required for Claude Code to skip login:**
@@ -72,6 +87,11 @@ Container: Claude Code reads ~/.claude/.credentials.json
 - `~/.claude.json` — App config with `hasCompletedOnboarding` and project trust (baked into the `worker-claude` image layer). This is a `COPY`, never a mount — a mount here would shadow the baked file and break the onboarding-skip, which is why `add_credentials` mounts only the credentials file.
 
 **Session ownership:** Credentials are seeded from the host Claude Code installation (macOS Keychain or Linux credentials file) on `ur start` and on `ur worker launch` when the shared file is older than a day. Between re-seeds, containers own their token lifecycle — refreshes write back to the shared mount without touching the host credentials. The age check lets host re-logins propagate without clobbering fresh container-driven token refreshes on every launch. To force a re-seed without restarting, run `ur worker reseed-credentials`.
+
+**AGY bootstrap is intentionally different:** the pre-launch credential gate permits an empty
+token file. The first AGY worker prompts for OAuth in its pane and writes the renewable bundle
+in place; later workers reuse and refresh that same file. `ensure_credentials_for_all_agents`,
+`reseed-credentials`, and `save-credentials` do not seed or extract AGY credentials.
 
 ## Process Launch Sequence
 
@@ -110,8 +130,8 @@ ur worker launch <ticket-id> [-w <workspace>] [-a] [-f]
        │   └── NO_PROXY = ""
        ├── Build volumes (RunOptsBuilder):
        │   ├── workspace_dir → /workspace (if provided)
-       │   └── ~/.ur/claude/.credentials.json → /home/worker/.claude/.credentials.json
-       │       (add_credentials, no-op if the agent has no auth profile)
+       │   └── one agent credential file → its container credential path
+       │       (AGY's empty in-container cache is valid and mounted read-write)
        ├── LaunchWorker RPC → builderd (host)
        │   ├── stats each volume source on host filesystem
        │   └── docker run (image: ur-worker-claude:latest, network: worker network)
@@ -142,6 +162,14 @@ containers/worker-claude/Dockerfile (ur-worker-claude:latest)
 │   └── permissions.defaultMode: "bypassPermissions" (skip permissions for non-interactive use)
 ├── USER worker
 └── ENTRYPOINT ["/entrypoint.sh"]
+
+containers/worker-agy/Dockerfile (ur-worker-agy:latest)
+├── FROM ur-worker-base:latest
+├── USER worker → vendored AGY installer (run with bash)
+├── COPY onboarding/settings runtime files under ~/.gemini/antigravity-cli/
+├── COPY trusted Stop hook → ~/.gemini/config/hooks.json
+├── pre-create both trees with worker ownership
+└── ENTRYPOINT ["/entrypoint.sh"]
 ```
 
 The Claude CLI install moved from the base image into the `worker-claude` layer (inverting the pre-split caching story — see `docs/codeflows/skill-loading.md` and `scripts/build/image.sh` for the `UR_FORCE_REBUILD_BASE`/`UR_UPDATE_AGENT` cache-busting behavior this implies). Image tags: `ur-worker-base:latest`, `ur-worker-claude:latest`, `ur-worker-rust-claude:latest` — each directory name matches its tag.
@@ -165,6 +193,7 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 | `crates/ur/src/credential/mod.rs` | `AgentCredentialManager` trait, `credential_manager_for(agent)` factory, `ensure_credentials_for_all_agents`, shared file/container-read helpers |
 | `crates/ur/src/credential/claude.rs` | `ClaudeCredentialManager` impl (Keychain on macOS, home-relative file fallback on Linux) |
 | `crates/ur/src/credential/codex.rs` | `CodexCredentialManager` impl (always a home-relative host file, no keychain) |
+| `crates/ur/src/credential/agy.rs` | `AgyCredentialManager` impl (in-container OAuth; no host seed/save) |
 | `crates/ur/src/main.rs` | CLI entry; `process_launch()` and `start_server()` call `ensure_credentials_for_all_agents()` |
 | `crates/server/src/worker.rs` | WorkerManager: injects `UR_AGENT_TYPE`, launches containers |
 | `crates/server/src/run_opts_builder.rs` | `add_credentials` — mounts the credentials file, no-op when `agent.auth()` is `None` |
@@ -177,8 +206,8 @@ The Claude CLI install moved from the base image into the `worker-claude` layer 
 
 ## Manual Credential Management
 
-- `ur worker reseed-credentials [--agent claude|codex]` — force re-seed that agent's credentials file from the host (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json` on any OS). Use after re-logging in on the host when you don't want to wait for the next `ur start` or 1-day age trigger. `--agent` defaults to the top-level `agent` key in `ur.toml` (claude when that key is omitted), not to a hardcoded `claude` — see `docs/codeflows/config.md#agent-default-precedence`; an unrecognized value is a descriptive error, not a panic. If the agent has never been logged into on this host, this fails loudly (unlike the `ensure_credentials_for_all_agents` skip-with-warning path, since a manual reseed request implies the caller expects a source to exist).
-- `ur worker save-credentials <id> [--agent claude|codex]` — copy that agent's credential files from a running container to `~/.ur/{agent}/` (`.credentials.json` + `.claude.json` for Claude, `auth.json` only for Codex — its app config is baked into the image, not extracted). Use it to capture a *re-login performed inside a running container* (e.g. the shared token expired and you re-authenticated in the pane) so the refreshed token becomes the shared host copy.
+- `ur worker reseed-credentials [--agent claude|codex|agy]` — force re-seed a host-sourced agent's credentials (Claude: Keychain on macOS, `~/.claude/.credentials.json` on Linux; Codex: `~/.codex/auth.json` on any OS). AGY has no host source, so selecting it reports that sign-in happens in the pane. `--agent` defaults to the top-level `agent` key in `ur.toml` (claude when omitted).
+- `ur worker save-credentials <id> [--agent claude|codex|agy]` — copy a host-sourced agent's credential files from a running container. AGY needs no save operation because its token is already a read-write host bind mount.
 
-  **Not a from-nothing bootstrap.** `check_credentials_seeded` (`crates/server/src/grpc.rs`) rejects a launch whose agent has no seeded host credentials, so there is no container to log into until `~/.ur/{agent}/` already holds a real file. On a host that cannot run the agent's own login flow, seed that file by hand (or copy it from a host that can) and then `ur worker reseed-credentials --agent <name>`.
-- Delete `~/.ur/claude/.credentials.json` (or `~/.ur/codex/auth.json`) to force re-seeding from host credentials on next launch.
+  **Host-sourced agents are not from-nothing bootstraps.** `check_credentials_seeded` rejects a Claude or Codex launch whose host credential is absent. AGY is the exception: the gate permits its empty cache so the pane can perform first sign-in.
+- Delete `~/.ur/claude/.credentials.json` (or `~/.ur/codex/auth.json`) to force re-seeding from host credentials on next launch. Do not delete AGY's token for this purpose; it has no host seed.

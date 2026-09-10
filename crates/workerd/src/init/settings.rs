@@ -108,4 +108,23 @@ mod tests {
             "settings.json must not be written when potential-settings.json is absent"
         );
     }
+
+    #[tokio::test]
+    async fn agy_settings_stay_under_runtime_root() {
+        let tmp = TempDir::new().unwrap();
+        let runtime_dir = tmp.path().join(".gemini/antigravity-cli");
+        std::fs::create_dir_all(&runtime_dir).unwrap();
+        std::fs::write(runtime_dir.join("potential-settings.json"), BASE_SETTINGS).unwrap();
+
+        InitSettingsManager::new(tmp.path().to_path_buf(), AgentType::Agy)
+            .run()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(runtime_dir.join("settings.json")).unwrap(),
+            BASE_SETTINGS
+        );
+        assert!(!tmp.path().join(".gemini/config/settings.json").exists());
+    }
 }

@@ -11,15 +11,15 @@ Two directories in the **base** container build context supply skills:
 
 Both are merged into a single `potential-skills/` pool during the Docker build. **`potential-skills/` copies second, so project-specific versions override vendor skills with the same name.**
 
-These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not either agent-specific layer (`ur-worker-claude:latest`/`ur-worker-codex:latest`) — any future agent image built on the same base inherits them for free.
+These sources are agent-agnostic and live in the base image (`ur-worker-base:latest`), not an
+agent-specific Claude, Codex, or AGY layer. Every agent image built on the base inherits them.
 
-**Skills themselves did not change for Codex.** There is no codex-specific skill format, no
-second `SKILL.md` dialect, and no codex-only skill source directory — `potential-skills/` is
-shared verbatim, and the only thing that varies per agent is *where* a selected skill gets
-copied at init time (`~/{agent.home_subdir()}/{agent.skill_subdir()}/`, i.e. `~/.claude/skills/`
-vs `~/.codex/skills/` — both literally `"skills"` for `skill_subdir()`). Codex discovers
-installed skills via its own `skill_search` tool over that same directory; nothing in the
-image build or `[skills]`/`[worker_modes]` config needed to change to support a second agent.
+There is one `SKILL.md` dialect and one shared `potential-skills/` source. The destination is
+`~/{agent.customization_root()}/{agent.skill_subdir()}/`: `~/.claude/skills/`,
+`~/.codex/skills/`, or `~/.gemini/config/skills/`. AGY is the reason
+`customization_root()` is distinct from `home_subdir()`; its runtime settings and state remain
+under `~/.gemini/antigravity-cli/` while ur-managed customizations live in
+`~/.gemini/config/`.
 
 ## Build Time (Dockerfile)
 
@@ -44,23 +44,23 @@ WorkerManager::resolve_mode(mode, requested_agent)     [crates/server/src/worker
     │     2. Strategy from built-in or custom mode's `base` field
     │     3. Skills: explicit `skills` param > mode's skill list > code defaults
     │     4. Model: mode's `model` field, else the three-level chain below
-    │     5. Agent: explicit `requested_agent` param > mode's `agent` field > claude
+    │     5. Agent: explicit `requested_agent` param > mode's `agent` field > top-level agent > claude
     │
     ▼
 UR_WORKER_SKILLS env var set on container       (comma-separated skill names)
 UR_WORKER_MODEL env var set on container        (model name, e.g. "sonnet", "opus")
-UR_AGENT_TYPE env var set on container          (e.g. "claude")
+UR_AGENT_TYPE env var set on container          ("claude", "codex", or "agy")
 ```
 
 ### Default Modes (hardcoded, overridable via ur.toml)
 
 Default skill lists are defined in `crates/server/src/strategy.rs` (`WorkerStrategy::skills()`, `common_skills()`). Default models are defined per agent in `crates/ur_config/src/agent.rs` (`AgentType::default_model()`). See those files for the current lists.
 
-| Mode | Default Model (claude) |
-|------|---------------|
-| code | sonnet |
-| design | opus |
-| manual | opus |
+| Mode | Claude | Codex | AGY |
+|------|--------|-------|-----|
+| code | sonnet | gpt-5.6-terra | gemini-3.8-flash |
+| design | opus | gpt-5.6-sol | gemini-3.8-flash |
+| manual | opus | gpt-5.6-sol | gemini-3.8-flash |
 
 ### ur.toml Override
 
@@ -91,7 +91,7 @@ code = { effort = "high" }
 
 `[worker_models]` (parsed in `WorkerModesConfig::from_toml`, `crates/server/src/worker.rs`) overrides the built-in default model and reasoning effort per **strategy** ("code", "design", "manual") rather than per mode. It changes what every mode based on that strategy resolves to when it doesn't specify its own `model`/`effort` — including the built-in `code`/`design` modes themselves.
 
-Every top-level key must be an **agent table** (`claude`, `codex`); a bare `code = "opus"` at the top level, or under an agent, is a hard config error telling you to use `[worker_models.<agent>]` with inline `{ model, effort }` entries. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key, an unknown agent table is rejected with the valid agent list, and an `effort` value outside `agent.supported_efforts()` is rejected at parse time. Every key is optional; `model` and `effort` resolve independently, so an entry may set just one.
+Every top-level key must be an **agent table** (`claude`, `codex`, or `agy`); a bare `code = "opus"` at the top level, or under an agent, is a hard config error telling you to use `[worker_models.<agent>]` with inline `{ model, effort }` entries. `deny_unknown_fields` rejects typos or unrecognized strategy names with an error naming the bad key, an unknown agent table is rejected with the valid agent list, and an `effort` value outside `agent.supported_efforts()` is rejected at parse time. Every key is optional; `model` and `effort` resolve independently, so an entry may set just one.
 
 ### Model / Effort Resolution Precedence (highest wins)
 
@@ -99,9 +99,9 @@ Each field resolves on its own:
 
 1. A custom mode's explicit `worker_modes.<name>.model` / `.effort`
 2. The `[worker_models.<agent>].<strategy>` entry's `model` / `effort` for that mode's base strategy
-3. `agent.default_model(strategy)` — the agent's own built-in table ("sonnet" for code, "opus" for design/manual, for Claude) — and `agent.default_effort()` ("medium" for both agents)
+3. `agent.default_model(strategy)` — the agent's own built-in table — and `agent.default_effort()` (`"medium"` for all agents)
 
-Resolution happens after the agent is resolved, so an explicit `--agent` launch override picks up that agent's tables and defaults. The resolved values reach the container as `UR_WORKER_MODEL` and `UR_WORKER_EFFORT` and are turned into agent-specific flags by `agent.spawn_command(model, effort)` (`--model`/`--effort` for Claude, `-m`/`-c model_reasoning_effort` for Codex) — **they are not injected into `settings.json`**, because Claude Code rewrites `~/.claude/settings.json` on startup and silently drops unrecognized keys.
+Resolution happens after the agent is resolved, so an explicit `--agent` launch override picks up that agent's tables and defaults. The resolved values reach the container as `UR_WORKER_MODEL` and `UR_WORKER_EFFORT` and are turned into agent-specific flags by `agent.spawn_command(model, effort)` (`--model`/`--effort` for Claude, `-m`/`-c model_reasoning_effort` for Codex, and `--model`/`--effort` plus `--dangerously-skip-permissions` for AGY). They are not injected into settings files.
 
 ## Container Startup (entrypoint.sh → workerd init)
 
@@ -113,11 +113,11 @@ workerd init                          [crates/workerd/src/init/{skills,instructi
     │   let agent = AgentType::from_env();   // reads UR_AGENT_TYPE, defaults to claude
     │
     ├─ InitSkillsManager::run()            [init/skills.rs]
-    │     1. Wipe ~/{agent.home_subdir()}/{agent.skill_subdir()}/ (remove + recreate)
+    │     1. Wipe ~/{agent.customization_root()}/{agent.skill_subdir()}/ (remove + recreate)
     │     2. Read UR_WORKER_SKILLS env var
     │     3. For each comma-separated skill name:
     │        - src: ~/.agent-shared/potential-skills/<name>/
-    │        - dst: ~/{agent.home_subdir()}/{agent.skill_subdir()}/<name>/
+    │        - dst: ~/{agent.customization_root()}/{agent.skill_subdir()}/<name>/
     │        - Recursive directory copy (preserves subdirs)
     │        - Missing skills log a warning, don't fail
     │
