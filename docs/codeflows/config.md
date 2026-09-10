@@ -191,33 +191,27 @@ needs a specific harness declares a custom mode with an explicit `agent` field i
 
 ## `[worker_models]` Section
 
-Overrides the built-in default model per worker strategy (`code`/`design`/`manual`). Two
-shapes live under the same table:
+Overrides built-in model and reasoning-effort defaults per agent and worker strategy.
 
 ```toml
-[worker_models]            # applies to any agent
-code = "sonnet"
+[worker_models.claude]
+code = { model = "sonnet", effort = "high" }
 
-[worker_models.codex]      # wins over the flat table, for codex modes only
-code = "gpt-5.6-terra"
-design = "gpt-5.6-sol"
+[worker_models.codex]
+code = { model = "gpt-5.6-terra", effort = "high" }
 ```
 
-`RawWorkerModels::from_value` (`crates/server/src/worker.rs`) classifies each key under
-`[worker_models]` by its TOML value type — a table means a per-agent override
-(`AgentType::parse`d from the key name), anything else joins the flat table — since a plain
-`#[derive(Deserialize)]` struct can't express "some values are strings, some are tables" in one
-shape. Both the flat table and every per-agent table use `deny_unknown_fields`, so a typo'd
-strategy key errors in either; an unrecognized agent table name (e.g. `[worker_models.codexx]`)
-errors naming the valid agents.
+Every key is an agent table; strategy entries are inline tables whose `model` and `effort`
+fields are independently optional. Flat entries such as `code = "sonnet"` are a hard migration
+error. Unknown agents and strategy fields are rejected, and effort is validated against the
+selected agent's supported set during parsing.
 
 Model resolution precedence, most specific first:
 
 ```
-custom mode's explicit `model`
-  → [worker_models.<agent>].<strategy>
-  → [worker_models].<strategy>
-  → agent.default_model(strategy)
+worker_modes.<mode>.model / .effort
+  → [worker_models.<agent>].<strategy>.model / .effort
+  → agent.default_model(strategy) / agent.default_effort()
 ```
 
 ## Image Aliases (`container.image`)

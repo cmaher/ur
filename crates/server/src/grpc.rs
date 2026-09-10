@@ -163,6 +163,7 @@ struct ResolvedLaunch {
     resolved_skills: Vec<String>,
     strategy: crate::WorkerStrategy,
     model: String,
+    effort: String,
     agent: ur_config::AgentType,
     generated_process_id: Option<String>,
 }
@@ -494,6 +495,7 @@ impl LaunchManager {
             strategy,
             skills: resolved_skills,
             model,
+            effort,
             agent,
         } = self
             .worker_manager
@@ -584,6 +586,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            effort,
             agent,
             generated_process_id,
         })
@@ -644,6 +647,7 @@ impl LaunchManager {
         resolved_skills: Vec<String>,
         strategy: crate::WorkerStrategy,
         model: String,
+        effort: String,
         agent: ur_config::AgentType,
         workspace_dir: Option<PathBuf>,
         context_mounts: Vec<(String, std::path::PathBuf)>,
@@ -689,6 +693,7 @@ impl LaunchManager {
             strategy,
             skills,
             model,
+            effort,
             instruction_md,
             mounts,
             ports,
@@ -715,6 +720,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            effort,
             agent,
             generated_process_id,
         } = self.resolve_launch_workspace(&req).await?;
@@ -755,6 +761,7 @@ impl LaunchManager {
             resolved_skills,
             strategy,
             model,
+            effort,
             agent,
             workspace_dir,
             context_mounts,

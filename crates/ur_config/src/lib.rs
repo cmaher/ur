@@ -182,6 +182,10 @@ pub const UR_WORKER_SECRET_ENV: &str = "UR_WORKER_SECRET";
 /// `--model <name>`. Empty/unset means no `--model` flag.
 pub const UR_WORKER_MODEL_ENV: &str = "UR_WORKER_MODEL";
 
+/// Resolved reasoning effort for a worker. Read by workerd at daemon startup
+/// and passed to the selected agent's launch command.
+pub const UR_WORKER_EFFORT_ENV: &str = "UR_WORKER_EFFORT";
+
 /// gRPC metadata header key for the worker secret.
 /// Sent by workertools on every request to the worker server for authentication.
 pub const WORKER_SECRET_HEADER: &str = "ur-worker-secret";

@@ -188,6 +188,7 @@ Built-in modes come from `WorkerStrategy::skills()` (`crates/server/src/strategy
 | `base` | string | **yes** | `"code"`, `"design"`, or `"manual"`. Sets pool-slot semantics (exclusive vs shared) and the default model |
 | `skills` | string[] | **yes** | Full skill list — **replaces** the base strategy's list, does not extend it |
 | `model` | string | no | Model alias override |
+| `effort` | string | no | Reasoning-effort override for the mode's agent |
 | `agent` | string | no | Which agent runs this mode (e.g. `"claude"`). Defaults to `"claude"` when omitted; an unrecognized value is a config error naming the mode |
 
 Custom modes are added alongside the built-in three; defining `[worker_modes.code]` replaces the built-in `code`.
@@ -202,36 +203,32 @@ agent = "claude"
 
 ### `[worker_models]` Section
 
-Default model per **strategy** (not per mode), with an optional per-agent override layer. Two
-shapes share one table:
+Default model and reasoning effort per **agent** and strategy (not per mode).
 
 ```toml
-[worker_models]              # flat: applies to any agent
-code = "sonnet"
+[worker_models.claude]
+code = { model = "sonnet", effort = "high" }
 
-[worker_models.codex]        # per-agent: wins over the flat table, codex modes only
-code = "gpt-5.6-terra"
-design = "gpt-5.6-sol"
+[worker_models.codex]
+code = { model = "gpt-5.6-terra", effort = "high" }
 ```
 
-Each key under `[worker_models]` is classified by its TOML value type — a bare string is a
-flat, agent-independent strategy override (`code`/`design`/`manual`); a table (`[worker_models.<agent>]`)
-is a per-agent override, keyed by agent name (`claude`/`codex`). Both the flat table and every
-per-agent table use `deny_unknown_fields` — a typo'd strategy key errors either way, and an
-unrecognized agent table name (e.g. `[worker_models.codexx]`) errors naming the valid agents.
+Every `[worker_models]` key is an agent table (`claude` or `codex`). Each strategy entry is an
+inline table with independently optional `model` and `effort`; flat strings are a hard migration
+error. Unknown agents, strategies, and unsupported agent effort values are rejected at parse time.
 
-| Key (flat or per-agent) | Built-in Default (claude) |
+| Key | Built-in Default (claude) |
 |-----|------------------|
 | `code` | `sonnet` |
 | `design` | `opus` |
 | `manual` | `opus` |
 
 ```toml
-[worker_models]
-manual = "claude-opus-5[1m]"
+[worker_models.claude]
+manual = { model = "claude-opus-5[1m]", effort = "high" }
 ```
 
-**Model precedence:** `worker_modes.<mode>.model` → `[worker_models.<agent>].<base>` → `[worker_models].<base>` → `agent.default_model(strategy)` (`AgentType::default_model`, `crates/ur_config/src/agent.rs`). Model resolution happens *after* the agent is resolved (not at parse time), since an explicit `--agent` launch override can pick a different agent than the mode's own configured/default one.
+**Model and effort precedence:** each field resolves independently: `worker_modes.<mode>.<field>` → `[worker_models.<agent>].<base>.<field>` → `agent.default_model(strategy)` / `agent.default_effort()` (`AgentType`, `crates/ur_config/src/agent.rs`). Resolution happens after the agent is resolved, so an explicit `--agent` launch override uses that agent's defaults.
 
 **Agent precedence** (`resolve_mode`, and see the top-level `agent` field above): `--agent` launch flag → `worker_modes.<mode>.agent` → top-level `agent` key → `"claude"`.
 

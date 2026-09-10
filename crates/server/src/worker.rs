@@ -102,6 +102,8 @@ struct RawModeEntry {
     /// else `agent.default_model(strategy)`) from its base strategy.
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
     /// Optional agent override for this mode (e.g. "claude"). Defaults to
     /// claude when omitted.
     #[serde(default)]
@@ -115,37 +117,32 @@ struct RawModeEntry {
 /// naming the bad key, since only "code", "design", and "manual" are valid.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawStrategyModels {
-    code: Option<String>,
-    design: Option<String>,
-    manual: Option<String>,
+struct RawStrategyDefaults {
+    code: Option<StrategyEntry>,
+    design: Option<StrategyEntry>,
+    manual: Option<StrategyEntry>,
 }
 
-impl RawStrategyModels {
-    /// Look up the configured model override for a strategy, if any.
-    fn get(&self, strategy: WorkerStrategy) -> Option<&str> {
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrategyEntry {
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl RawStrategyDefaults {
+    fn get(&self, strategy: WorkerStrategy) -> Option<&StrategyEntry> {
         match strategy {
-            WorkerStrategy::Code => self.code.as_deref(),
-            WorkerStrategy::Design => self.design.as_deref(),
-            WorkerStrategy::Manual => self.manual.as_deref(),
+            WorkerStrategy::Code => self.code.as_ref(),
+            WorkerStrategy::Design => self.design.as_ref(),
+            WorkerStrategy::Manual => self.manual.as_ref(),
         }
     }
 }
 
-/// Resolved `[worker_models]` section: a flat table (applies to any agent)
-/// plus optional per-agent sub-tables that win for that agent.
-///
-/// `[worker_models]` mixes two value shapes under one TOML table — strategy
-/// keys map to a model string, agent-name keys map to a nested table of the
-/// same three strategy keys — which a single `#[derive(Deserialize)]` struct
-/// can't express (some values are strings, some are tables). `from_value`
-/// classifies each key by its TOML value type instead.
 #[derive(Debug, Clone, Default)]
 struct RawWorkerModels {
-    /// Applies to any agent.
-    flat: RawStrategyModels,
-    /// Per-agent overrides, keyed by a validated `AgentType`.
-    per_agent: HashMap<ur_config::AgentType, RawStrategyModels>,
+    per_agent: HashMap<ur_config::AgentType, RawStrategyDefaults>,
 }
 
 /// Error message for an unrecognized `[worker_models.<agent>]` table name.
@@ -157,51 +154,57 @@ fn unknown_worker_models_agent_error(key: &str) -> String {
     )
 }
 
-impl RawWorkerModels {
-    /// Parse `[worker_models]` from its raw `toml::Value`, or return the
-    /// (empty) default when the section is absent.
-    fn from_value(section: Option<&toml::Value>) -> Result<Self, String> {
-        let Some(section) = section else {
-            return Ok(Self::default());
-        };
+fn validate_effort(agent: ur_config::AgentType, effort: &str, context: &str) -> Result<(), String> {
+    if agent.supported_efforts().contains(&effort) {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid {context}: agent '{}' does not support effort '{effort}'. Valid efforts: {:?}",
+        agent.name(),
+        agent.supported_efforts()
+    ))
+}
+
+fn parse_worker_models(section: Option<&toml::Value>) -> Result<RawWorkerModels, String> {
+    let Some(section) = section else {
+        return Ok(RawWorkerModels::default());
+    };
+    {
         let table = section
             .as_table()
             .ok_or_else(|| "invalid worker_models config: expected a table".to_string())?;
-
-        let mut flat_table = toml::map::Map::new();
-        let mut per_agent = HashMap::new();
         for (key, val) in table {
-            if let toml::Value::Table(_) = val {
-                let agent = ur_config::AgentType::parse(key)
-                    .map_err(|_| unknown_worker_models_agent_error(key))?;
-                let strategy_models: RawStrategyModels = val
-                    .clone()
-                    .try_into()
-                    .map_err(|e| format!("invalid worker_models.{key} config: {e}"))?;
-                per_agent.insert(agent, strategy_models);
-            } else {
-                flat_table.insert(key.clone(), val.clone());
+            if !val.is_table() {
+                return Err(format!(
+                    "invalid worker_models config: '{key}' must be an agent table; use [worker_models.<agent>] with inline {{ model, effort }} strategy entries"
+                ));
             }
         }
-        let flat: RawStrategyModels = toml::Value::Table(flat_table)
-            .try_into()
-            .map_err(|e| format!("invalid worker_models config: {e}"))?;
-        Ok(Self { flat, per_agent })
     }
 
-    /// Look up the configured model override for `agent`/`strategy`: the
-    /// agent-specific table wins over the flat table.
-    fn get(&self, agent: ur_config::AgentType, strategy: WorkerStrategy) -> Option<&str> {
-        self.per_agent
-            .get(&agent)
-            .and_then(|m| m.get(strategy))
-            .or_else(|| self.flat.get(strategy))
+    let raw: HashMap<String, RawStrategyDefaults> = section
+        .clone()
+        .try_into()
+        .map_err(|e| format!("invalid worker_models config: {e}"))?;
+    let mut per_agent = HashMap::new();
+    for (key, defaults) in raw {
+        let agent = ur_config::AgentType::parse(&key)
+            .map_err(|_| unknown_worker_models_agent_error(&key))?;
+        for entry in [&defaults.code, &defaults.design, &defaults.manual]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(effort) = &entry.effort {
+                validate_effort(agent, effort, "worker_models config")?;
+            }
+        }
+        per_agent.insert(agent, defaults);
     }
+    Ok(RawWorkerModels { per_agent })
 }
 
 /// Resolve the effective default model for a strategy, most specific first:
-/// `[worker_models.<agent>]` override, then the flat `[worker_models]`
-/// override, then `agent.default_model(strategy)`.
+/// `[worker_models.<agent>]` override, then `agent.default_model(strategy)`.
 ///
 /// An empty string means "no model" and is a valid outcome, not a failure: it
 /// is what an agent with no model concept returns, and `build_worker_env_vars`
@@ -215,9 +218,26 @@ fn effective_default_model(
     overrides: &RawWorkerModels,
 ) -> String {
     overrides
-        .get(agent, strategy)
+        .per_agent
+        .get(&agent)
+        .and_then(|m| m.get(strategy))
+        .and_then(|entry| entry.model.as_deref())
         .or_else(|| agent.default_model(strategy.name()))
         .unwrap_or_default()
+        .to_owned()
+}
+
+fn effective_default_effort(
+    agent: ur_config::AgentType,
+    strategy: WorkerStrategy,
+    overrides: &RawWorkerModels,
+) -> String {
+    overrides
+        .per_agent
+        .get(&agent)
+        .and_then(|m| m.get(strategy))
+        .and_then(|entry| entry.effort.as_deref())
+        .unwrap_or_else(|| agent.default_effort())
         .to_owned()
 }
 
@@ -277,6 +297,7 @@ pub struct WorkerModesConfig {
     /// effective model from `model_overrides` and the *final* resolved agent,
     /// falling back to this map only for a mode's own explicit pin.
     explicit_models: HashMap<String, String>,
+    explicit_efforts: HashMap<String, String>,
     /// Maps mode names to their agent. Built-in modes default to `default_agent`;
     /// custom modes may override via `worker_modes.<name>.agent`.
     agents: HashMap<String, ur_config::AgentType>,
@@ -298,6 +319,7 @@ impl Default for WorkerModesConfig {
             modes: default_worker_modes(),
             strategies: seed_strategies(),
             explicit_models: HashMap::new(),
+            explicit_efforts: HashMap::new(),
             agents: default_agents(default_agent),
             default_agent,
             model_overrides: RawWorkerModels::default(),
@@ -329,13 +351,14 @@ impl WorkerModesConfig {
             ur_config::resolve_top_level_agent(value.get("agent").and_then(toml::Value::as_str))
                 .map_err(|e| e.to_string())?;
 
-        let model_overrides = RawWorkerModels::from_value(value.get("worker_models"))?;
+        let model_overrides = parse_worker_models(value.get("worker_models"))?;
 
         let Some(section) = value.get("worker_modes") else {
             return Ok(Self {
                 modes: default_worker_modes(),
                 strategies: seed_strategies(),
                 explicit_models: HashMap::new(),
+                explicit_efforts: HashMap::new(),
                 agents: default_agents(default_agent),
                 default_agent,
                 model_overrides,
@@ -349,6 +372,7 @@ impl WorkerModesConfig {
         let mut modes = default_worker_modes();
         let mut strategies = seed_strategies();
         let mut explicit_models = HashMap::new();
+        let mut explicit_efforts = HashMap::new();
         let mut agents = default_agents(default_agent);
         for (name, entry) in raw.modes {
             let strategy = WorkerStrategy::from_name(&entry.base).map_err(|_| {
@@ -361,6 +385,10 @@ impl WorkerModesConfig {
             if let Some(model) = entry.model {
                 explicit_models.insert(name.clone(), model);
             }
+            if let Some(effort) = entry.effort {
+                validate_effort(agent, &effort, &format!("worker mode '{name}'"))?;
+                explicit_efforts.insert(name.clone(), effort);
+            }
             strategies.insert(name.clone(), strategy);
             agents.insert(name.clone(), agent);
             modes.insert(name, entry.skills);
@@ -369,6 +397,7 @@ impl WorkerModesConfig {
             modes,
             strategies,
             explicit_models,
+            explicit_efforts,
             agents,
             default_agent,
             model_overrides,
@@ -439,10 +468,16 @@ impl WorkerModesConfig {
             .get(mode_name)
             .cloned()
             .unwrap_or_else(|| effective_default_model(agent, strategy, &self.model_overrides));
+        let effort = self
+            .explicit_efforts
+            .get(mode_name)
+            .cloned()
+            .unwrap_or_else(|| effective_default_effort(agent, strategy, &self.model_overrides));
         Ok(ResolvedMode {
             strategy,
             skills,
             model,
+            effort,
             agent,
         })
     }
@@ -459,6 +494,8 @@ pub struct ResolvedMode {
     pub skills: Vec<String>,
     /// Model alias for the agent, or empty for "no model flag".
     pub model: String,
+    /// Resolved reasoning effort for the agent.
+    pub effort: String,
     /// Which agent runs this mode.
     pub agent: ur_config::AgentType,
 }
@@ -511,6 +548,8 @@ pub struct WorkerConfig {
     /// `AgentType::spawn_command(None)` launches the agent with no model flag
     /// and it falls back to its own built-in default.
     pub model: String,
+    /// Resolved reasoning effort to pass to workerd.
+    pub effort: String,
     /// Optional project instruction-file (e.g. CLAUDE.md) template string from
     /// project config. When None, the server falls back to
     /// `<config_dir>/projects/<project_key>/{agent.instruction_filename()}`.
@@ -1183,6 +1222,10 @@ fn build_worker_env_vars(
     if !config.model.is_empty() {
         env_vars.push((ur_config::UR_WORKER_MODEL_ENV.into(), config.model.clone()));
     }
+    env_vars.push((
+        ur_config::UR_WORKER_EFFORT_ENV.into(),
+        config.effort.clone(),
+    ));
 
     // Inject project key so workers can resolve project context via env
     if !config.project_key.is_empty() {
@@ -1687,6 +1730,7 @@ mod tests {
             strategy,
             skills: Vec::new(),
             model: model.into(),
+            effort: "medium".into(),
             instruction_md: None,
             mounts: Vec::new(),
             ports: Vec::new(),
@@ -1734,6 +1778,10 @@ mod tests {
         assert!(
             vars.contains(&("UR_WORKER_MODEL".into(), "sonnet".into())),
             "code mode should inject UR_WORKER_MODEL=sonnet; got {vars:?}"
+        );
+        assert!(
+            vars.contains(&(ur_config::UR_WORKER_EFFORT_ENV.into(), "medium".into())),
+            "code mode should inject the default effort; got {vars:?}"
         );
     }
 
@@ -2031,10 +2079,10 @@ model = "haiku"
     #[test]
     fn worker_models_override_applies_to_builtin_modes() {
         let toml = r#"
-[worker_models]
-code   = "opus"
-design = "haiku"
-manual = "haiku"
+[worker_models.claude]
+code   = { model = "opus" }
+design = { model = "haiku" }
+manual = { model = "haiku" }
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let ResolvedMode {
@@ -2054,10 +2102,28 @@ manual = "haiku"
     }
 
     #[test]
+    fn worker_models_resolve_model_and_effort_independently() {
+        let toml = r#"
+[worker_models.claude]
+code = { effort = "high" }
+design = { model = "haiku" }
+"#;
+        let cfg = WorkerModesConfig::from_toml(toml).unwrap();
+
+        let ResolvedMode { model, effort, .. } = cfg.resolve_mode("code", None).unwrap();
+        assert_eq!(model, "sonnet");
+        assert_eq!(effort, "high");
+
+        let ResolvedMode { model, effort, .. } = cfg.resolve_mode("design", None).unwrap();
+        assert_eq!(model, "haiku");
+        assert_eq!(effort, "medium");
+    }
+
+    #[test]
     fn worker_models_omitted_key_falls_back_to_default_model() {
         let toml = r#"
-[worker_models]
-code = "opus"
+[worker_models.claude]
+code = { model = "opus" }
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
         let ResolvedMode {
@@ -2089,8 +2155,8 @@ code = "opus"
     #[test]
     fn worker_models_unknown_key_errors_naming_bad_key() {
         let toml = r#"
-[worker_models]
-bogus-strategy = "opus"
+[worker_models.claude]
+bogus-strategy = { model = "opus" }
 "#;
         let result = WorkerModesConfig::from_toml(toml);
         assert!(result.is_err());
@@ -2098,10 +2164,27 @@ bogus-strategy = "opus"
     }
 
     #[test]
+    fn worker_models_flat_entry_is_a_migration_error() {
+        let err = WorkerModesConfig::from_toml("[worker_models]\ncode = \"sonnet\"\n").unwrap_err();
+        assert!(err.contains("code"), "{err}");
+        assert!(err.contains("agent table"), "{err}");
+    }
+
+    #[test]
+    fn worker_models_rejects_unknown_effort_for_agent() {
+        let err =
+            WorkerModesConfig::from_toml("[worker_models.claude]\ncode = { effort = \"ultra\" }\n")
+                .unwrap_err();
+        assert!(err.contains("claude"), "{err}");
+        assert!(err.contains("ultra"), "{err}");
+        assert!(err.contains("xhigh"), "{err}");
+    }
+
+    #[test]
     fn worker_models_custom_mode_inherits_override() {
         let toml = r#"
-[worker_models]
-design = "haiku"
+[worker_models.claude]
+design = { model = "haiku" }
 
 [worker_modes.my-docs]
 base = "design"
@@ -2118,8 +2201,8 @@ skills = ["tickets"]
     #[test]
     fn worker_models_custom_mode_explicit_model_overrides_worker_models() {
         let toml = r#"
-[worker_models]
-design = "haiku"
+[worker_models.claude]
+design = { model = "haiku" }
 
 [worker_modes.my-docs]
 base = "design"
@@ -2191,7 +2274,7 @@ model = "opus"
         }
     }
 
-    /// mode `model` beats `[worker_models]` beats `agent.default_model(strategy)`,
+    /// mode `model` beats `[worker_models.<agent>]` beats `agent.default_model(strategy)`,
     /// across all three strategies.
     #[test]
     fn model_resolution_precedence() {
@@ -2207,16 +2290,17 @@ model = "opus"
                 "bottom rung for {base}"
             );
 
-            // Middle rung: [worker_models] override beats the built-in default.
-            let toml =
-                format!("[worker_models]\n{worker_models_key} = \"worker-models-override\"\n");
+            // Middle rung: the agent's worker_models override beats the built-in default.
+            let toml = format!(
+                "[worker_models.claude]\n{worker_models_key} = {{ model = \"worker-models-override\" }}\n"
+            );
             let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
             let ResolvedMode { model, .. } = cfg.resolve_mode(base, None).unwrap();
             assert_eq!(model, "worker-models-override", "middle rung for {base}");
 
             // Top rung: an explicit mode `model` beats both [worker_models] and the default.
             let toml = format!(
-                "[worker_models]\n{worker_models_key} = \"worker-models-override\"\n\n\
+                "[worker_models.claude]\n{worker_models_key} = {{ model = \"worker-models-override\" }}\n\n\
                  [worker_modes.custom-{base}]\nbase = \"{base}\"\nskills = []\nmodel = \"mode-override\"\n"
             );
             let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
@@ -2226,9 +2310,8 @@ model = "opus"
         }
     }
 
-    /// Full four-level precedence, across both agents: mode `model` >
-    /// `[worker_models.<agent>]` > flat `[worker_models]` >
-    /// `agent.default_model(strategy)`.
+    /// Model and effort each resolve independently from mode override to an
+    /// agent-scoped strategy entry, then to the agent's built-in default.
     #[test]
     fn model_resolution_precedence_per_agent() {
         for agent in ur_config::AgentType::ALL {
@@ -2244,27 +2327,18 @@ model = "opus"
                 "bottom rung for {name}"
             );
 
-            // Second rung: the flat [worker_models] table beats the built-in default.
-            let toml = format!("agent = \"{name}\"\n[worker_models]\ncode = \"flat-override\"\n");
-            let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
-            let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
-            assert_eq!(model, "flat-override", "flat rung for {name}");
-
-            // Third rung: [worker_models.<agent>] beats the flat table.
+            // Second rung: the agent's worker_models table beats the built-in default.
             let toml = format!(
-                "agent = \"{name}\"\n\
-                 [worker_models]\ncode = \"flat-override\"\n\n\
-                 [worker_models.{name}]\ncode = \"agent-override\"\n"
+                "agent = \"{name}\"\n[worker_models.{name}]\ncode = {{ model = \"agent-override\" }}\n"
             );
             let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
             let ResolvedMode { model, .. } = cfg.resolve_mode("code", None).unwrap();
-            assert_eq!(model, "agent-override", "per-agent rung for {name}");
+            assert_eq!(model, "agent-override", "agent rung for {name}");
 
             // Top rung: an explicit mode `model` beats everything else.
             let toml = format!(
                 "agent = \"{name}\"\n\
-                 [worker_models]\ncode = \"flat-override\"\n\n\
-                 [worker_models.{name}]\ncode = \"agent-override\"\n\n\
+                 [worker_models.{name}]\ncode = {{ model = \"agent-override\" }}\n\n\
                  [worker_modes.custom]\nbase = \"code\"\nskills = []\nmodel = \"mode-override\"\n"
             );
             let cfg = WorkerModesConfig::from_toml(&toml).unwrap();
@@ -2280,7 +2354,7 @@ model = "opus"
     fn worker_models_per_agent_table_does_not_leak_to_other_agent() {
         let toml = r#"
 [worker_models.codex]
-code = "gpt-5.6-terra-custom"
+code = { model = "gpt-5.6-terra-custom" }
 "#;
         let cfg = WorkerModesConfig::from_toml(toml).unwrap();
 
@@ -2319,7 +2393,7 @@ code = "gpt-5.6-terra-custom"
     fn worker_models_unknown_agent_table_name_errors_naming_valid_agents() {
         let toml = r#"
 [worker_models.codexx]
-code = "opus"
+code = { model = "opus" }
 "#;
         let err = WorkerModesConfig::from_toml(toml).unwrap_err();
         assert!(err.contains("codexx"), "{err}");
@@ -2331,7 +2405,7 @@ code = "opus"
     fn worker_models_per_agent_table_unknown_strategy_key_errors() {
         let toml = r#"
 [worker_models.codex]
-bogus-strategy = "opus"
+bogus-strategy = { model = "opus" }
 "#;
         let err = WorkerModesConfig::from_toml(toml).unwrap_err();
         assert!(err.contains("bogus-strategy"), "{err}");

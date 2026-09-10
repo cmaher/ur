@@ -254,7 +254,8 @@ fn test_names(label: &str) -> TestNames {
 /// callers to inject additional sections (e.g. `[skills.code]`) without
 /// touching the shared base config.
 ///
-/// The base config also seeds a `[worker_models]` override (`manual = "sonnet"`)
+/// The base config also seeds a `[worker_models.claude]` override
+/// (`manual = { model = "sonnet" }`)
 /// so `scenario_worker_models_config_override` can assert the override reaches
 /// the container, without disturbing the built-in defaults ("sonnet" for code,
 /// "opus" for design) that other scenarios assert against.
@@ -397,8 +398,8 @@ fn write_test_config(
          skills = [\"implement\"]\n\
          model = \"my-custom-model\"\n\
          \n\
-         [worker_models]\n\
-         manual = \"sonnet\"\n\
+         [worker_models.claude]\n\
+         manual = {{ model = \"sonnet\" }}\n\
          \n\
          {projects_toml}\n\
          {extra_toml}",
@@ -4026,7 +4027,7 @@ fn scenario_manual_worker(env: &TestEnv) {
 
 /// `[worker_models]` config override: verify a strategy-level model override
 /// (no custom mode, no explicit `model` field) reaches the container. The
-/// shared test config sets `[worker_models] manual = "sonnet"`, overriding
+/// shared test config sets `[worker_models.claude] manual = { model = "sonnet" }`, overriding
 /// the built-in `manual` default of "opus" (see `write_test_config`). Uses the
 /// built-in "manual" mode (same slot-reuse behavior as `scenario_manual_worker`,
 /// which runs immediately before this and frees slot 0 on stop).
