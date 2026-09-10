@@ -323,6 +323,12 @@ fn prepare_project_mounts(config: &ur_config::Config) {
 /// versa), and a launch that resolves to some *other* agent still fails loudly
 /// at the RPC via `check_credentials_seeded` with the same remediation text.
 fn warn_if_default_agent_unseeded(agent: ur_config::AgentType, output: &OutputManager) {
+    if agent
+        .auth()
+        .is_some_and(|auth| auth.source == ur_config::AuthSource::InContainer)
+    {
+        return;
+    }
     let Some(cred_mgr) = credential::credential_manager_for(agent) else {
         return;
     };

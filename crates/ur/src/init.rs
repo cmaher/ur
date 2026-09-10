@@ -1,4 +1,7 @@
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -85,8 +88,9 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
     let squid_dir = config_dir.join("squid");
     init_dir(&squid_dir, output)?;
 
-    let claude_dir = config_dir.join(ur_config::AgentType::Claude.name());
-    init_dir(&claude_dir, output)?;
+    for agent in [ur_config::AgentType::Claude, ur_config::AgentType::Agy] {
+        init_dir(&config_dir.join(agent.name()), output)?;
+    }
 
     let hostexec_dir = config_dir.join(ur_config::HOSTEXEC_DIR);
     init_dir(&hostexec_dir, output)?;
@@ -127,21 +131,40 @@ fn run_in(config_dir: PathBuf, flags: InitFlags, output: &OutputManager) -> Resu
 
     // Credentials file must exist on the host for Docker file mounts to work
     // (otherwise Docker creates a directory at the mount path).
-    let credentials_path = ur_config::AgentType::Claude
+    for agent in [ur_config::AgentType::Claude, ur_config::AgentType::Agy] {
+        init_credentials_file(&config_dir, agent, output)?;
+    }
+
+    Ok(())
+}
+
+fn init_credentials_file(
+    config_dir: &Path,
+    agent: ur_config::AgentType,
+    output: &OutputManager,
+) -> Result<()> {
+    let credentials_path = agent
         .auth()
-        .expect("Claude has an auth profile")
+        .expect("credential file initialization requires an auth profile")
         .credentials_path;
-    let credentials_filename = Path::new(credentials_path)
+    let filename = Path::new(credentials_path)
         .file_name()
         .expect("credentials_path has a filename");
-    write_file(
-        &claude_dir.join(credentials_filename),
-        "",
-        false,
-        "--force",
-        output,
-    )?;
+    let path = config_dir.join(agent.name()).join(filename);
+    if path.exists() {
+        debug!(path = %path.display(), "skipping existing credentials file");
+        return Ok(());
+    }
 
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    output.print_text(&format!("Created {}", path.display()));
     Ok(())
 }
 
@@ -218,6 +241,14 @@ mod tests {
         assert!(tmp.path().join("logs").is_dir());
         assert!(tmp.path().join("ur.toml").exists());
         assert!(tmp.path().join("squid/allowlist.txt").exists());
+        assert!(tmp.path().join("agy").is_dir());
+        let agy_token = tmp.path().join("agy/antigravity-oauth-token");
+        assert_eq!(fs::metadata(&agy_token).unwrap().len(), 0);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(agy_token).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

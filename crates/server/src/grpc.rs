@@ -233,6 +233,12 @@ fn check_credentials_seeded(
     agent: ur_config::AgentType,
     config_dir: &Path,
 ) -> Result<(), CoreError> {
+    if agent
+        .auth()
+        .is_some_and(|auth| auth.source == ur_config::AuthSource::InContainer)
+    {
+        return Ok(());
+    }
     let Some(path) = agent.host_credentials_path(config_dir) else {
         return Ok(());
     };
@@ -1964,6 +1970,12 @@ mod tests {
             matches!(err, CoreError::MissingCredentials { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn check_credentials_seeded_allows_agy_to_sign_in_in_container() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(check_credentials_seeded(ur_config::AgentType::Agy, tmp.path()).is_ok());
     }
 
     // ── CoreError mapping ──────────────────────────────────────────────

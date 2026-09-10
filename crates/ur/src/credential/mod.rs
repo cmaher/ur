@@ -1,3 +1,4 @@
+mod agy;
 mod claude;
 mod codex;
 
@@ -9,6 +10,7 @@ use container::{ContainerId, ContainerRuntime, ExecOpts};
 use tracing::{debug, info, instrument};
 use ur_config::AgentType;
 
+pub use agy::AgyCredentialManager;
 pub use claude::ClaudeCredentialManager;
 pub use codex::CodexCredentialManager;
 
@@ -59,6 +61,7 @@ pub fn credential_manager_for(agent: AgentType) -> Option<Box<dyn AgentCredentia
     match agent {
         AgentType::Claude => Some(Box::new(ClaudeCredentialManager { auth })),
         AgentType::Codex => Some(Box::new(CodexCredentialManager { auth })),
+        AgentType::Agy => Some(Box::new(AgyCredentialManager { auth })),
     }
 }
 
@@ -155,5 +158,11 @@ mod tests {
     fn credential_manager_for_codex_returns_codex_manager() {
         let mgr = credential_manager_for(AgentType::Codex).expect("codex has a manager");
         assert_eq!(mgr.agent_type(), AgentType::Codex);
+    }
+
+    #[test]
+    fn credential_manager_for_agy_returns_agy_manager() {
+        let mgr = credential_manager_for(AgentType::Agy).expect("agy has a manager");
+        assert_eq!(mgr.agent_type(), AgentType::Agy);
     }
 }
