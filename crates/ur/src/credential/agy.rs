@@ -33,7 +33,9 @@ impl AgentCredentialManager for AgyCredentialManager {
         _runtime: &dyn ContainerRuntime,
         _container_id: &ContainerId,
     ) -> Result<Vec<PathBuf>> {
-        Ok(Vec::new())
+        anyhow::bail!(
+            "agy credentials are already bind-mounted from the host; no save operation is needed"
+        )
     }
 
     fn host_credentials_path(&self) -> Result<PathBuf> {

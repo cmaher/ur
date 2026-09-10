@@ -1142,6 +1142,15 @@ fn handle_worker_reseed_credentials(
 ) -> Result<()> {
     info!(agent = ?agent, "forcing credential re-seed from host");
     let agent = resolve_agent_flag(agent, default_agent)?;
+    if agent
+        .auth()
+        .is_some_and(|auth| auth.source == ur_config::AuthSource::InContainer)
+    {
+        anyhow::bail!(
+            "agent {} manages credentials in-container — launch a worker and complete the sign-in in the pane",
+            agent.name()
+        );
+    }
     let Some(cred_mgr) = credential::credential_manager_for(agent) else {
         anyhow::bail!("agent {} has no credentials to seed", agent.name());
     };
@@ -1921,6 +1930,30 @@ mod tests {
         );
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("bogus-agent"), "{msg}");
+    }
+
+    #[test]
+    fn reseed_credentials_rejects_in_container_auth() {
+        let result = handle_worker_reseed_credentials(
+            &text_output(),
+            Some("agy"),
+            ur_config::AgentType::Claude,
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("sign-in in the pane"), "{msg}");
+    }
+
+    #[test]
+    fn save_credentials_rejects_in_container_auth() {
+        let result = handle_worker_save_credentials(
+            "ur-worker-",
+            &text_output(),
+            "missing-worker",
+            Some("agy"),
+            ur_config::AgentType::Claude,
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("already bind-mounted"), "{msg}");
     }
 
     /// The `--agent` flag on the credential subcommands has no clap

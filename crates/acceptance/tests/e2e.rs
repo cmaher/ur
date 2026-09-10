@@ -5590,6 +5590,19 @@ fn scenario_agy_credentials(env: &TestEnv) {
             ],
         );
         assert_exec_success(&output, "AGY token mount must be a regular file");
+        let output = exec_in_container(
+            &env.runtime,
+            &container,
+            &[
+                "test",
+                "-w",
+                "/home/worker/.gemini/antigravity-cli/antigravity-oauth-token",
+            ],
+        );
+        assert_exec_success(
+            &output,
+            "AGY token mount must be writable by the worker user",
+        );
         let mounts = Command::new(&env.runtime)
             .args(["inspect", "--format", "{{json .Mounts}}", &container])
             .output()

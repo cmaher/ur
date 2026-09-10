@@ -105,6 +105,15 @@ impl RunOptsBuilder {
             .join(credentials_filename);
         ensure_file_exists(&local_creds)
             .map_err(|e| format!("failed to ensure credentials file: {e}"))?;
+        #[cfg(target_os = "linux")]
+        if auth.source == ur_config::AuthSource::InContainer {
+            std::os::unix::fs::chown(
+                &local_creds,
+                Some(ur_config::WORKER_UID),
+                Some(ur_config::WORKER_UID),
+            )
+            .map_err(|e| format!("failed to chown credentials file: {e}"))?;
+        }
         let worker_home = PathBuf::from(ur_config::WORKER_HOME);
         self.volumes
             .push((host_creds, worker_home.join(auth.credentials_path)));
@@ -618,6 +627,8 @@ mod tests {
 
     #[test]
     fn add_credentials_creates_through_local_config_but_mounts_host_path() {
+        #[cfg(target_os = "linux")]
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -634,9 +645,50 @@ mod tests {
         );
         assert_eq!(std::fs::read(&local_token).unwrap(), b"");
         assert_eq!(
-            std::fs::metadata(local_token).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&local_token)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            std::fs::metadata(&local_token).unwrap().uid(),
+            ur_config::WORKER_UID
+        );
+    }
+
+    #[test]
+    fn add_credentials_tolerates_concurrent_creation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..32)
+                .map(|_| {
+                    let barrier = barrier.clone();
+                    let path = tmp.path().to_path_buf();
+                    scope.spawn(move || add_agy_credentials_after_barrier(path, &barrier))
+                })
+                .collect();
+
+            for handle in handles {
+                assert!(handle.join().unwrap().is_ok());
+            }
+        });
+    }
+
+    fn add_agy_credentials_after_barrier(
+        path: PathBuf,
+        barrier: &std::sync::Barrier,
+    ) -> Result<RunOptsBuilder, String> {
+        barrier.wait();
+        RunOptsBuilder::new("img".into(), "name".into(), "net".into()).add_credentials(
+            &path,
+            &path,
+            AgentType::Agy,
+        )
     }
 
     #[test]
