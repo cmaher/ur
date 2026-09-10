@@ -2308,20 +2308,17 @@ mod tests {
     #[test]
     fn default_proxy_allowlist_is_union_of_all_agents() {
         let allowlist = default_proxy_allowlist();
-        for domain in [
-            "api.anthropic.com",
-            "platform.claude.com",
-            "downloads.claude.ai",
-            "chatgpt.com",
-            "api.openai.com",
-            "auth.openai.com",
-        ] {
-            assert!(
-                allowlist.contains(&domain.to_string()),
-                "missing {domain} in {allowlist:?}"
-            );
-        }
-        assert_eq!(allowlist.len(), 6, "unexpected duplicates in {allowlist:?}");
+        let expected = AgentType::ALL
+            .iter()
+            .flat_map(|agent| agent.proxy_domains().iter().copied())
+            .collect::<std::collections::HashSet<_>>();
+        let actual = allowlist
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(allowlist.len(), actual.len(), "duplicates in {allowlist:?}");
     }
 
     #[test]
